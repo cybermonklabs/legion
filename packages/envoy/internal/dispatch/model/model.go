@@ -81,6 +81,14 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ProjectScope is a broker-issued token's project scope as the broker answered it
+	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
+	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
+	// token. It is what tells a token that names a service and no person apart: a `named` one is
+	// an account entry's that names no person, whose writes are recorded under its account
+	// (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in on,
+	// which writes nothing. Empty for every other credential.
+	ProjectScope string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a

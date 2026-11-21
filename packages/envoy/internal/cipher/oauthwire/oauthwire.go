@@ -130,9 +130,10 @@ const (
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two.
+	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
+	// as the account itself for an account entry naming no person, and its Projects holds the
+	// entry's one project, or none for an account entry naming none (the shared public-session
+	// account's, and every account entry naming no person). It never holds two.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -217,10 +218,12 @@ type Introspection struct {
 	// Person is the person the session acts for.
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
-	// belongs to, as BROKER_VM_SERVICES names it, or the service a read entry names
-	// (BROKER_EXCHANGE_READ_ACCOUNTS). A token names a person or a service and never both, so a
-	// reader that records who is answerable for a write reads Person, and one that decides what a
-	// machine may reach reads this.
+	// belongs to, as BROKER_VM_SERVICES names it, the service a read entry names
+	// (BROKER_EXCHANGE_READ_ACCOUNTS), or the account of a BROKER_EXCHANGE_ACCOUNTS entry naming
+	// no person (system:serviceaccount:<namespace>:<name>), which that token acts as. A token
+	// names a person or a service and never both, so a reader that records who is answerable for
+	// a write reads Person, or this where Person is empty, and one that decides what a machine may
+	// reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only

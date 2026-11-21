@@ -14,9 +14,10 @@
 //
 //   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
 //     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
-//     for an entry that names none (<service account>==<person>), or a read entry keyed on it
-//     gives a service and the session its token reads as, and the token must carry the pod it is
-//     bound to;
+//     for an entry that names none (<service account>==<person>), or neither for an entry that
+//     names no person, whose token acts as the account itself (<service account>==), or a read
+//     entry keyed on it gives a service and the session its token reads as, and the token must
+//     carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person;
 //   - a machine's Google identity token, where an entry keyed on the account's email address
@@ -115,8 +116,9 @@ const (
 	// refuses the token: a Claims built by anything but this package's constructors has decided
 	// nothing, and 'no project named' must not read as 'no oversight'.
 	ProjectScopeUnset ProjectScope = iota
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person,
-	// and Claims.Projects holds the entry's one project, or none for an account entry naming none.
+	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
+	// as the account itself for an account entry naming no person, and Claims.Projects holds the
+	// entry's one project, or none for an account entry naming none.
 	ProjectScopeNamed
 	// ProjectScopePerson is a token that acts as its person: Claims.Projects holds the projects
 	// its trade asked for, none or more, which the exchange holds to what Dispatch says that
@@ -350,8 +352,10 @@ type Claims struct {
 	// is set.
 	Person string
 	// Service is the service a token that names no person is: the fleet a machine belongs to,
-	// which is what a machine whose entry names no person gets instead of a person, or the
-	// service a read entry names. It is empty for every other decision, each of which acts for a
+	// which is what a machine whose entry names no person gets instead of a person, the service
+	// a read entry names, or the account of an account entry that names no person, spelled as
+	// the entry spells it (system:serviceaccount:<namespace>:<name>), which Dispatch records
+	// that token's writes under. It is empty for every other decision, each of which acts for a
 	// person.
 	Service string
 	// Scope is what Projects means, and is always one of ProjectScopeNamed, ProjectScopePerson or
@@ -407,16 +411,20 @@ type Reservation struct {
 }
 
 // AccountEntry lists one Kubernetes service account and what a pod running as it may write.
-// Account and Person are required; Project and Session are not.
+// Account is required, and Person is required of an entry that names a project; Project and
+// Session are not.
 type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
 	Account string
 	// Project is the one project key the minted token may write, or empty for an entry that names
 	// none: the shared public-session account, whose named tokens act for Person and name no
-	// project. Only an account entry may leave it empty.
+	// project, or an entry that names no person either. Only an account entry may leave it empty.
 	Project string
-	// Person is who the account's pods act for.
+	// Person is who the account's pods act for, or empty for an entry that names no project
+	// either: such an entry's tokens act as the account itself, which they name as their service
+	// (Claims.Service) and Dispatch records their writes under. An entry naming a project names
+	// a person, so no project's write is personless.
 	Person string
 	// Session, when set, is the session name every token minted for this account carries, and a
 	// request naming any other is refused. It is how a long-running service keeps writing under
@@ -519,13 +527,14 @@ type Set struct {
 	signInDomain string
 	reservations []Reservation
 	// mapped is the person and project each listed principal's entry gives it, for
-	// MappedProjects; a Google entry naming no person and a read entry map their principal to
-	// neither.
+	// MappedProjects; a Google entry naming no person, an account entry naming no person and a
+	// read entry map their principal to neither.
 	mapped map[string]mapping
 }
 
 // mapping is what an operator's entry gives the tokens of its principal: a person and one
-// project, or, for a Google entry naming no person and for a read entry, neither.
+// project, a person and no project, or, for a Google entry naming no person, an account entry
+// naming no person and a read entry, neither.
 type mapping struct{ person, project string }
 
 // NewSet validates every entry and builds the set the exchange decides against. It refuses,
@@ -536,7 +545,9 @@ type mapping struct{ person, project string }
 // principal. A Google entry is refused on top of that for half a pin and for half a grant: one
 // that pins a Compute Engine project without an instance pattern or the other way round says
 // nothing clear about which machines it means, and one that names a person without a project, or
-// a project without a person, says nothing clear about what they may write.
+// a project without a person, says nothing clear about what they may write. An account entry
+// that names a project and no person is refused, naming that rule: such an entry names a person
+// or names no project either, so no project's write is personless.
 //
 // reads are the read entries, which list Kubernetes service accounts as accounts does. An
 // account both lists name is refused, naming its read entry, for the reason an identity listed
@@ -684,10 +695,10 @@ func (s *Set) Reservations() []Reservation {
 
 // MappedProjects is the person and the projects an operator's entry gives the tokens of
 // principal (AccountPrincipal, GooglePrincipal, or a workflow's), and false for a principal no
-// entry lists, a person's own among them. A Google entry naming no person, and a read entry,
-// answer neither, and true. It is how a reader holding no token — a release for a pod or a
-// machine — reads the list that pod's or that machine's token would carry. The slice is the
-// caller's own.
+// entry lists, a person's own among them. A Google entry naming no person, an account entry
+// naming no person, and a read entry, answer neither, and true. It is how a reader holding no
+// token — a release for a pod or a machine — reads the list that pod's or that machine's token
+// would carry. The slice is the caller's own.
 func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
 	entry, listed := s.mapped[principal]
 	if !listed {
@@ -733,17 +744,19 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 		ErrProjectsFixed, identity, project, oauthwire.JoinProjects(asked))
 }
 
-// checkGrant refuses what every entry shares: a blank person, which would mint a token answerable
-// to nobody, and a fixed session name no request could name back. The project is required too,
-// except where noProject allows an empty one: an account entry may name a person and no project,
-// which is the shared public-session account's entry, minting named tokens that name no project
-// (a pod account many people launch must never act as one person's own token). A project that is
-// blank without being empty is refused everywhere, and so is one that is no project key: every
-// token the entry mints names it, the exchange stores and reads that list through
-// oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
-// boot and then fail every trade.
-func checkGrant(where, project, person, session string, noProject bool) error {
-	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
+// checkGrant refuses what every entry that grants a write shares: a person that is blank, which
+// would mint a token answerable to nobody, and a fixed session name no request could name back.
+// The project is required too, except of an account entry (account set), which may name a person
+// and no project — the shared public-session account's entry, minting named tokens that name no
+// project (a pod account many people launch must never act as one person's own token) — or name
+// neither, when its tokens act as the account itself (Pod). An account entry that names a project
+// names a person, so no project's write is personless; every other entry names a person, since
+// its tokens act for someone. A person or a project that is blank without being empty is refused
+// everywhere, and so is a project that is no project key: every token the entry mints names it,
+// the exchange stores and reads that list through oauthwire.ParseProjects, which takes only
+// project keys, so an entry naming anything else would boot and then fail every trade.
+func checkGrant(where, project, person, session string, account bool) error {
+	if !(account && project == "") && strings.TrimSpace(project) == "" {
 		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
 	}
 	if project != "" {
@@ -751,8 +764,11 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 			return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
 		}
 	}
-	if strings.TrimSpace(person) == "" {
-		return fmt.Errorf("exchange: %s: the person is required, since every token acts for someone", where)
+	switch {
+	case account && person == "" && project != "":
+		return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either, so no project's write is personless", where)
+	case !(account && person == "") && strings.TrimSpace(person) == "":
+		return fmt.Errorf("exchange: %s: the person is required, since the entry's tokens act for someone", where)
 	}
 	if session != "" && !ValidSession(session) {
 		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
@@ -785,6 +801,12 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 // no Instance and needs no registration, because the name its tokens carry is the
 // configuration's, the same for every pod of the account.
 //
+// An account entry that names no person names no project either (NewSet), and its token acts as
+// the account itself: ProjectScopeNamed with no project and no person, and the account as its
+// Service, which a resource server reads in place of a person and Dispatch records the token's
+// writes under. A request of its pod naming a project is refused as under any entry naming none
+// (ErrProjectsFixed).
+//
 // A read entry always fixes its session, so its pods are answered the same way, with the claims
 // of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
 // person, no project and no Instance. Its token names no person, so a request of its pod naming
@@ -816,6 +838,12 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 		return Claims{}, err
 	}
 	claims := Claims{Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Projects: named, Principal: AccountPrincipal(account)}
+	if entry.Person == "" {
+		// An entry naming no person names no project either (checkGrant), and its token acts as
+		// the account: the account is the service it names in place of a person, and what
+		// Dispatch records its writes under.
+		claims.Service = account
+	}
 	if entry.Session == "" {
 		claims.Instance = uid
 	}

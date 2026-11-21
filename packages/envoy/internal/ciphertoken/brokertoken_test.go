@@ -342,6 +342,44 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 	}
 }
 
+// TestANamedAnswerNamingNoPersonIsItsAccount: an account entry naming no person and no project
+// mints a named token naming no person and no project, whose service is the account it acts as;
+// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike.
+// The same answer naming a project, or naming no service, is no token the exchange mints.
+func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
+	const account = "system:serviceaccount:example-ns:example-public"
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.Person, answer.Service, answer.Projects = "", account, nil
+	const token = "a-personless-account-token"
+	rig.broker.Says(token, answer)
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}
+	for name, decide := range map[string]func() (ciphertoken.Caller, error){
+		"Verify": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		},
+		"Live": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+		},
+		"SessionCaller": func() (ciphertoken.Caller, error) { return ciphertoken.SessionCaller(answer) },
+	} {
+		decided, err := decide()
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+	withProject := answer
+	withProject.Projects = []string{"INFRA"}
+	noService := answer
+	noService.Service = ""
+	for name, refused := range map[string]ciphertoken.Introspection{"naming a project": withProject, "naming no service": noService} {
+		if _, err := ciphertoken.SessionCaller(refused); !errors.Is(err, ciphertoken.ErrNotASession) {
+			t.Errorf("SessionCaller of a named answer naming no person and %s = %v, want ErrNotASession", name, err)
+		}
+	}
+}
+
 // TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person names no
 // project (the exchange refuses a machine's trade naming one), so an answer that does is no token
 // the exchange minted.

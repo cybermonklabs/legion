@@ -170,18 +170,19 @@ type Caller struct {
 	// naming none is ErrNotASession and never reaches one.
 	Session string
 	// Person is the person that session acts for. A Caller names a person or a service, never
-	// both and never neither: an answer that names no person names the service its machine is.
+	// both and never neither: an answer that names no person names the service it is.
 	Person string
 	// Service is the service a caller that names no person is: the fleet the machine presenting
-	// the token belongs to, as the broker's own configuration names it. Whoever mounts this
-	// check decides what such a caller may do; what this package promises is that one of the two
-	// is set.
+	// the token belongs to, as the broker's own configuration names it, the service a read entry
+	// names, or the account of an account entry naming no person, which the token acts as
+	// (system:serviceaccount:<namespace>:<name>). Whoever mounts this check decides what such a
+	// caller may do; what this package promises is that one of the two is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
 	// token's one project, or none for an account entry naming none (the shared public-session
-	// account's), and the projects a ProjectScopePerson token's trade asked for, each one its
-	// person could see then, nil for none. A read-only caller (ReadOnly) names none, since it
-	// writes none. Sorted, each once.
+	// account's, and an account entry naming no person), and the projects a ProjectScopePerson
+	// token's trade asked for, each one its person could see then, nil for none. A read-only
+	// caller (ReadOnly) names none, since it writes none. Sorted, each once.
 	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
@@ -431,15 +432,16 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
 	// here rather than taken as a token that names no project at all (ErrNotASession). A
 	// read-only token passes only a verifier whose service serves one. A named token is an
-	// operator's entry's, which names one project, or none for an account entry that names none,
-	// and always a person: a named answer naming two or more projects, which a reader holding a
-	// write to one project would take as no limit at all, or naming none and no person, is the
-	// same case. A list no exchange mints (oauthwire.ValidProjects) and a service's token naming
-	// a project, which the exchange refuses to mint, are refused for the same reason.
+	// operator's entry's, which names one project, or none for an account entry that names none:
+	// such an entry names a person, or names no person and acts as its account, which is the
+	// token's service. A named answer naming two or more projects, which a reader holding a write
+	// to one project would take as no limit at all, is the same case. A list no exchange mints
+	// (oauthwire.ValidProjects) and a service's token naming a project, which the exchange refuses
+	// to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
-		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) > 1) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
 		return Caller{}, ErrNotASession

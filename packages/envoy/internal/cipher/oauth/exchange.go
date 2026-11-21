@@ -49,10 +49,11 @@ const (
 	ClaimSession = "session"
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
-	// ClaimService is the service a token that names no person is, a machine's fleet or the
-	// service a read entry names, and is empty for every token that names one. It is written
-	// always, for the reason ClaimProjectScope is: a reader of the row never has to take an
-	// absent service as either "no service" or "a claim this build of the broker did not write".
+	// ClaimService is the service a token that names no person is, a machine's fleet, the service
+	// a read entry names, or the account of an account entry naming no person, and is empty for
+	// every token that names one. It is written always, for the reason ClaimProjectScope is: a
+	// reader of the row never has to take an absent service as either "no service" or "a claim
+	// this build of the broker did not write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and

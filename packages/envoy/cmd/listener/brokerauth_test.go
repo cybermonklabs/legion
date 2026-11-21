@@ -286,8 +286,8 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			// change for that: its verifier is built without the read-only switch, so the token
 			// is refused as a build before the switch refuses it. The row "admits a token naming
 			// a service and no person" sends the same request under a token of the same kind — a
-			// session and a service, no person — whose project scope is named, with a project
-			// and no scope read, and it is admitted, so the refusal is the scope's.
+			// session and a service, no person and no project — whose project scope is person
+			// and which holds no scope read, and it is admitted, so the refusal is the scope's.
 			name:       "refuses a token that only reads",
 			configured: true,
 			started:    true,
