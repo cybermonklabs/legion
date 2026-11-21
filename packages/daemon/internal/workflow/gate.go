@@ -833,9 +833,8 @@ func (e *Engine) personHandover(ctx context.Context, tx pgx.Tx, fact intake.Disp
 	return handoverDecision{kind: handoverQueued, root: stored}, nil
 }
 
-// handoverDecision is what an artifact event comes to as a person's handover of its parked root
-// (personHandover): which of the three outcomes it is (kind), and the root's record. The zero
-// value is an event that is no such handover (handoverNone).
+// handoverDecision is personHandover's decision: its outcome (kind) and the root's record. The
+// zero value is handoverNone.
 type handoverDecision struct {
 	kind handoverKind
 	// root is the root's record, nil for a root the daemon does not record and for handoverNone.
@@ -849,8 +848,6 @@ type handoverKind int
 const (
 	// handoverNone is an event that is no person's handover: anything but a person's approval of
 	// a parked labelled root's primary document, or such an approval of a root whose tree is live.
-	// The root's own gate takes it through applyArtifact, and a carried copy takes it when
-	// copyTakes says so (dispatchArtifact).
 	handoverNone handoverKind = iota
 	// handoverQueued is a person's approval of a parked labelled root's primary document, whose
 	// tree is not live, with no change of the root's status after it: the root's own gate takes it

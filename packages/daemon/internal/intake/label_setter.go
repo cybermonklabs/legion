@@ -15,10 +15,8 @@ import (
 // an issue.closed) is passed over and counts for nothing, so a person's comment between a
 // session's label and a person's later unrelated edit leaves the session the setter, and a label
 // removed and set again names whoever set it last. It is "" when no event added the label. The
-// log is read by walkIssueEvents: an event that does not decode as a Dispatch event, or an issue
-// event (an issue.closed too) with no payload field or with a payload that does not decode, is an
-// error naming its position, since a log the daemon cannot read names no setter it can act on. So
-// an issue.created or issue.updated with no payload is an error, not an event without the label.
+// log is read by walkIssueEvents, an issue.closed's payload too: a log it cannot read is an error,
+// since a log the daemon cannot read names no setter it can act on.
 //
 // The daemon reads the log for this because an unrecorded issue has no earlier state in the
 // daemon: the event that reaches it says the label is there, not who put it there (DispatchIssue.

@@ -22,9 +22,9 @@ type issueEvent struct {
 // passes over every other event (a comment, a claim, a review). The issue events are the types
 // the decoder reads an issue from (isIssueEvent), so a type the decoder starts to read an issue
 // from is given here too. An event that does not decode as a Dispatch event, or an issue event
-// with no payload field or with a payload that does not decode, is an error naming its position,
-// and the walk ends there: the live decoder refuses such an event too. A loop that stops early
-// leaves the later events undecoded.
+// whose payload is no JSON object (missing, `null`, or not an object) or whose payload does not
+// decode, is an error naming its position, and the walk ends there: the live decoder refuses such
+// an event too. A loop that stops early leaves the later events undecoded.
 func walkIssueEvents(events []json.RawMessage) iter.Seq2[issueEvent, error] {
 	return func(yield func(issueEvent, error) bool) {
 		for i, raw := range events {
@@ -35,6 +35,10 @@ func walkIssueEvents(events []json.RawMessage) iter.Seq2[issueEvent, error] {
 			}
 			if !isIssueEvent(event.Type) {
 				continue
+			}
+			if !isJSONObject(event.Payload) {
+				yield(issueEvent{}, fmt.Errorf("decode Dispatch issue payload of event %d of %d: the payload is not a JSON object", i+1, len(events)))
+				return
 			}
 			var issue struct {
 				Status string   `json:"status"`

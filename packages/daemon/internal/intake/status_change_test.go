@@ -110,36 +110,14 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 	}
 }
 
-// A log the daemon cannot read cannot say the status stayed: an event that does not decode, or an
-// issue event with no payload, is an error naming its position, so the preparation fails and the
-// approval is delivered again rather than applied as though nothing changed.
+// A log the daemon cannot read cannot say the status stayed: statusChangedAfter returns the walk's
+// error (TestWalkIssueEventsRefusesAnEventItCannotDecode), here for an issue event with no payload,
+// so the preparation fails and the approval is delivered again rather than applied as though
+// nothing changed.
 func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		events []json.RawMessage
-		want   string
-	}{
-		{
-			name:   "an event that is not JSON",
-			events: []json.RawMessage{statusLogEvent(1, "issue.created", "triage", "root"), json.RawMessage(`{not json`)},
-			want:   "decode Dispatch event 2 of 2",
-		},
-		{
-			name:   "an issue event whose payload is not an issue",
-			events: []json.RawMessage{approvalLogEvent(9), logEvent(10, "issue.updated", "user", `"a string"`)},
-			want:   "decode Dispatch issue payload of event 2 of 2",
-		},
-		{
-			name:   "an issue event with no payload",
-			events: []json.RawMessage{approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")},
-			want:   "decode Dispatch issue payload of event 2 of 2",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := statusChangedAfter(tc.events, 9)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("statusChangedAfter error = %v, want one containing %q", err, tc.want)
-			}
-		})
+	const want = "decode Dispatch issue payload of event 2 of 2"
+	_, err := statusChangedAfter([]json.RawMessage{approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")}, 9)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("statusChangedAfter error = %v, want one containing %q", err, want)
 	}
 }

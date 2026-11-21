@@ -6,8 +6,7 @@ import "encoding/json"
 // person's approval that may queue its parked root (MayQueueHandover) and that carries a sequence
 // to place it by in that log (Mark.Seq). A review from a read that carries no sequence cannot be
 // placed, and reads no log. The daemon's preparation reads the log for such a fact and sets what it
-// shows (WithStatusChange), and so does a test that builds a fact as the preparation builds it, so
-// this method is the one rule for which approvals read the log.
+// shows (WithStatusChange), so this method is the one rule for which approvals read the log.
 func (a DispatchArtifact) NeedsEventLog() bool {
 	return a.MayQueueHandover() && a.Mark.Seq > 0
 }
@@ -34,9 +33,8 @@ func (a DispatchArtifact) WithStatusChange(events []json.RawMessage) (DispatchAr
 // last issue event at or before it, and an issue event after seq changes the status when it
 // carries another status than the issue event before it. When no issue event stands at or before
 // seq, the first one after it sets the status the later ones are compared with, and is no change
-// itself. An event that does not decode as a Dispatch event, or an issue event with no payload
-// field or with a payload that does not decode, is an error naming its position, since a log the
-// daemon cannot read cannot say the status stayed.
+// itself. A log walkIssueEvents cannot read is an error, since a log the daemon cannot read cannot
+// say the status stayed.
 //
 // The walk reads the log from sequence 0 because an event carries the status it leaves, not the
 // one it found: no event after seq says what the status was at seq, so only the events at or
