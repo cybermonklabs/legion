@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -36,7 +38,8 @@ const roleLaneInactiveText = "role lane subscription inactive"
 // running over both at roleLaneProbePeriod. The lane server's one user may subscribe to the role
 // lane's subject, in either queue group, under granted, and not under revoked, and the test changes
 // that grant by a reload or a restart. The server traces every protocol line, so the test counts the
-// subscriptions the lane sends and the server's refusals of them.
+// subscriptions the lane sends and the server's refusals of them. busLogs holds what the bus logs
+// through the default logger, the lane's line for a change of queue group among it.
 type roleLaneHealthRig struct {
 	server           *testnats.Server
 	uri, seed        string
@@ -47,6 +50,7 @@ type roleLaneHealthRig struct {
 	caches           []listenerCache
 	received         chan string
 	logs             *lockedBuffer
+	busLogs          *lockedBuffer
 	probes           atomic.Int64
 	terminated       atomic.Bool
 	get              func() (int, map[string]any)
@@ -55,7 +59,8 @@ type roleLaneHealthRig struct {
 
 func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	t.Helper()
-	rig := &roleLaneHealthRig{received: make(chan string, 16), logs: &lockedBuffer{}}
+	rig := &roleLaneHealthRig{received: make(chan string, 16), logs: &lockedBuffer{}, busLogs: &lockedBuffer{}}
+	logtest.SetDefault(t, slog.NewJSONHandler(rig.busLogs, nil))
 	rig.seed, rig.public = testnats.User(t)
 	rig.granted = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>", contracts.RoleTopicPrefix+">")
 	rig.revoked = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>")
@@ -145,6 +150,35 @@ func (r *roleLaneHealthRig) refusals(from int) int {
 	return strings.Count(r.server.Log()[from:], `->> [-ERR Permissions Violation for Subscription to "`+contracts.RoleTopicPrefix+`>"`)
 }
 
+// sentIn counts the subscriptions to the role lane's subject in queue group queue that the server
+// received after from. The server traces each as `<<- [SUB <subject> <queue> <sid>]`.
+func (r *roleLaneHealthRig) sentIn(from int, queue string) int {
+	return strings.Count(r.server.Log()[from:], "<<- [SUB "+contracts.RoleTopicPrefix+"> "+queue+" ")
+}
+
+// restartedFrom is where the trace of the server's last start begins, so every line after it is the
+// running server's: a restart keeps one log, and nats-server opens each start with this line.
+func (r *roleLaneHealthRig) restartedFrom(t *testing.T) int {
+	t.Helper()
+	from := strings.LastIndex(r.server.Log(), "Starting nats-server")
+	if from < 0 {
+		t.Fatal("the server's log holds no start line; the counts after a restart would read nothing")
+	}
+	return from
+}
+
+// queueChanges lists the lane's log lines for a change of queue group
+// (bus.Client.ResendRefusedCore's WARN), each as the JSON record the bus wrote.
+func (r *roleLaneHealthRig) queueChanges() []string {
+	var lines []string
+	for line := range strings.SplitSeq(r.busLogs.String(), "\n") {
+		if strings.Contains(line, "sent again in another queue group") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // revoke reloads the server without the user's grant on the role lane's subject: the server keeps
 // the lane's connection and revokes its subscription.
 func (r *roleLaneHealthRig) revoke(t *testing.T) {
@@ -214,9 +248,12 @@ func (r *roleLaneHealthRig) requireDelivers(t *testing.T) {
 // matches, was never logged. The probe now fails on the lane every period while it is refused, and
 // stops once the lane is back. The hub changes a grant by a reload, which keeps the connection, so
 // the probe sends the refused subscription again each period: a reload that gives the grant back
-// brings the lane back with no reconnect, and so does one that takes away only the shared queue
-// group's grant, which leaves the lane in its machine's group, as a start would. A reconnect, which
-// sends every subscription again, brings it back too.
+// brings the lane back with no reconnect, in the shared queue group it held, and so does one that
+// takes away only the shared queue group's grant, which leaves the lane in its machine's group, as a
+// start would. A reconnect, which sends every subscription again, brings it back too, in the shared
+// group: while no group accepted it, the lane kept the subscription it held, so a refused attempt in
+// the machine's group is not the one the reconnect sends, which would keep the lane in that group
+// and have each listener's lane forward every role message.
 func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t *testing.T) {
 	t.Run("a reload gives the grant back", func(t *testing.T) {
 		rig := newRoleLaneHealthRig(t, "role-lane-health-reload")
@@ -230,6 +267,9 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		rig.requireDelivers(t)
 		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects != 0 {
 			t.Fatalf("the role lane reconnected %d times; this way out must need no reconnect", reconnects)
+		}
+		if changes := rig.queueChanges(); len(changes) != 0 {
+			t.Fatalf("the role lane logged a change of queue group, though it came back in the shared group it held:\n%s", strings.Join(changes, "\n"))
 		}
 		if rig.terminated.Load() {
 			t.Fatal("the monitor terminated the listener over the role lane")
@@ -252,6 +292,10 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects != 0 {
 			t.Fatalf("the role lane reconnected %d times; this way out must need no reconnect", reconnects)
 		}
+		changes := rig.queueChanges()
+		if len(changes) != 1 || !strings.Contains(changes[0], `"queue":"`+machineQueue+`"`) || !strings.Contains(changes[0], `"refused_queue":"`+bus.RoleLaneQueue+`"`) {
+			t.Fatalf("the role lane logged %d changes of queue group; want one, from %s to %s:\n%s", len(changes), bus.RoleLaneQueue, machineQueue, strings.Join(changes, "\n"))
+		}
 		if rig.terminated.Load() {
 			t.Fatal("the monitor terminated the listener over the role lane")
 		}
@@ -269,6 +313,16 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		rig.requireDelivers(t)
 		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects == 0 {
 			t.Fatal("the role lane never reconnected; this row proves nothing about a reconnect")
+		}
+		// What the restarted server received is the subscription the lane held: the shared group's,
+		// once, and none in the machine's group.
+		from := rig.restartedFrom(t)
+		machineQueue := bus.ListenerQueue(roleLaneHealthMachine)
+		if shared, machine := rig.sentIn(from, bus.RoleLaneQueue), rig.sentIn(from, machineQueue); shared != 1 || machine != 0 {
+			t.Fatalf("the restarted server received the role lane's subscription %d times in the shared group %s and %d times in the machine's group %s; want once in the shared group and never in the machine's", shared, bus.RoleLaneQueue, machine, machineQueue)
+		}
+		if changes := rig.queueChanges(); len(changes) != 0 {
+			t.Fatalf("the role lane logged a change of queue group, though it came back in the shared group it held:\n%s", strings.Join(changes, "\n"))
 		}
 		if rig.terminated.Load() {
 			t.Fatal("the monitor terminated the listener over the role lane")

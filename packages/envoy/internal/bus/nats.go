@@ -1298,8 +1298,11 @@ func (c *Client) CoreSubOK() bool {
 // own when the client has none, and waits for the server's answer to each one (sendCore). It
 // stops at the first group the server accepts. The new subscription replaces the refused one,
 // which it then unsubscribes; the server holds no subscription under that sid, so it ignores the
-// UNSUB. Each subscription the server refused before the last group is unsubscribed at once. The
-// mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
+// UNSUB. Each subscription the server refused is unsubscribed at once. When no group accepts it,
+// the refused subscription the client held stays the one it holds, in its own queue group, so a
+// reconnect sends that one again, as nats.go sends every subscription the connection holds: a
+// refused attempt in another group left in its place would move the lane to that group for good.
+// The mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
 // subscription the server refuses. A send whose answer does not come back leaves the refused
 // subscription in place.
 //
@@ -1312,11 +1315,15 @@ func (c *Client) CoreSubOK() bool {
 func (c *Client) ResendRefusedCore() error {
 	c.mu.Lock()
 	conn, js := c.Conn, c.js
+	// The status is read before the reconnect count: nats.go counts a reconnect before it reads
+	// CONNECTED again, so a reconnect between the two reads changes the count and refuses the
+	// send, where the other order could pair the new session's status with the old one's count.
+	connected := conn != nil && conn.Status() == nats.CONNECTED
 	reconnects := reconnectsOf(conn)
 	c.subscriptionsMu.Lock()
 	subscription := &c.subscriptions[coreSubscription]
 	refused := subscription.active
-	send := !c.stopped() && conn != nil && conn.Status() == nats.CONNECTED && subscription.refused &&
+	send := !c.stopped() && connected && subscription.refused &&
 		subscription.binding == nil && refused != nil && refused.IsValid() &&
 		subscription.sentOn == conn && subscription.sentReconnects == reconnects
 	if send {
@@ -1354,7 +1361,16 @@ func (c *Client) ResendRefusedCore() error {
 			break
 		}
 	}
+	if err == nil && !accepted {
+		// No group accepted it: the last refused attempt is dropped like the others, and the
+		// refused subscription the client held stays in place, still marked.
+		_ = sub.Unsubscribe()
+		sub, err = nil, errNoQueueAccepted
+	}
 	if err := c.endBind(subscription, sub, err, false); err != nil {
+		if errors.Is(err, errNoQueueAccepted) {
+			return nil
+		}
 		// A send that failed leaves the refused subscription as the one the client holds, still
 		// marked. A bind that ended after Drain or Close stopped the client leaves both to them.
 		return err
@@ -1366,12 +1382,12 @@ func (c *Client) ResendRefusedCore() error {
 		// A reconnect during the send has cleared the mark (onReconnect), and the new server's
 		// answer to the subscriptions nats.go sent it again is the one that counts.
 		if c.Conn == conn && reconnectsOf(conn) == reconnects {
-			subscription.refused = !accepted
+			subscription.refused = false
 		}
 	}
 	c.subscriptionsMu.Unlock()
 	c.mu.Unlock()
-	if accepted && queue != registration.queue {
+	if queue != registration.queue {
 		slog.Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
 			slog.String("name", c.name),
 			slog.String("subject", registration.subject),
@@ -1386,6 +1402,10 @@ func (c *Client) ResendRefusedCore() error {
 
 // coreSendAnswerWait bounds sendCore's wait for the server's answer to a subscription it sends.
 const coreSendAnswerWait = 2 * time.Second
+
+// errNoQueueAccepted is how ResendRefusedCore ends a bind no queue group accepted: it installs
+// nothing, so the refused subscription the client held stays in place. It never leaves that method.
+var errNoQueueAccepted = errors.New("bus: the server accepted the core subscription in no queue group")
 
 // sendCore binds registration on conn and waits, within coreSendAnswerWait, until the server has
 // read the subscription, and reports whether it accepted it. The server answers a flush only after
