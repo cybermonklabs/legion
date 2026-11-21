@@ -172,7 +172,8 @@ type burstFrame struct {
 
 // burstStandIn answers every relay frame of every session received and done at once on one NATS
 // connection, as many plugins in consumer mode do, and records each. Once its test's cleanup has
-// begun to close its connection (closed), it reports no failure to answer, as sessionStandIn does.
+// begun to close its connection (closed), it reports no answer that close cut short, as
+// sessionStandIn does (closedUnder).
 type burstStandIn struct {
 	frames chan burstFrame
 	closed atomic.Bool
@@ -198,7 +199,7 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 			t.Errorf("a frame on %s carries stream sequence %q: %v", msg.Subject, msg.Header.Get(relayHeaderStreamSeq), err)
 		}
 		for _, reply := range []string{relayReplyReceived, relayReplyDone} {
-			if err := conn.Publish(msg.Reply, []byte(reply)); err != nil && !standIn.closed.Load() {
+			if err := conn.Publish(msg.Reply, []byte(reply)); err != nil && !(standIn.closed.Load() && errors.Is(err, natsgo.ErrConnectionClosed)) {
 				t.Errorf("reply %s to a frame on %s: %v", reply, msg.Subject, err)
 			}
 		}

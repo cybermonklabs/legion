@@ -25,8 +25,12 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 	passed := t.Run("the stand-in's own test", func(t *testing.T) {
 		// Registered before the stand-in's own cleanup, so it runs after it: once the stand-in's
 		// connection is closed, it lets the held answer reply and waits for the frame it answered.
+		// A stand-in that never started has no frame to wait for.
 		t.Cleanup(func() {
 			close(release)
+			if standIn == nil {
+				return
+			}
 			select {
 			case <-standIn.frames:
 			case <-time.After(10 * time.Second):
