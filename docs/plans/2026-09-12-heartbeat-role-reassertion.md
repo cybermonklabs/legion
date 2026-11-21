@@ -1210,12 +1210,14 @@ PR body: the READY format from the legion-worker skill, first line `Dispatch: LE
 ## Part C — Tester runbook
 
 Both smokes run on this host against the production listener at `http://127.0.0.1:9020`. If a
-`curl` to `/v1/*` answers 401, the deployment has `ENVOY_API_TOKEN` set: put that token in
-`ENVOY_TOKEN`, define `envoy_curl` below and use it instead of `curl` for every call to the
-listener. It needs bash or zsh: it gives curl the bearer header on a process substitution
-(`-H @<(printf …)`). `printf` is a shell builtin, so the token is the argument of no process, and
-the header goes to no file, so a call you interrupt leaves nothing behind. The token is never on a
-command line, which any user of this host can read in `/proc/<pid>/cmdline`. Never print a token.
+`curl` to `/v1/*` answers 401, the deployment has `ENVOY_API_TOKEN` set. Type `read -rs ENVOY_TOKEN`
+and paste that token: `read -s` shows nothing, and the token goes into no line of your shell
+history, where `export ENVOY_TOKEN=<token>` typed at a prompt would put it. Then define
+`envoy_curl` below and use it instead of `curl` for every call to the listener. It needs bash or
+zsh: it gives curl the bearer header on a process substitution (`-H @<(printf …)`). `printf` is a
+shell builtin, so the token is the argument of no process, and the header goes to no file, so a
+call you interrupt leaves nothing behind. The token is never on a command line, which any user of
+this host can read in `/proc/<pid>/cmdline`. Never print a token.
 
 ```bash
 envoy_curl() { curl -H @<(printf 'Authorization: Bearer %s' "$ENVOY_TOKEN") "$@"; }
