@@ -2303,8 +2303,10 @@ such a run skips it, and GitHub does not evaluate the name of a job it skips: th
 carries the text of the expression, `github.event_name == 'workflow_dispatch' && … ||
 'pr-title'`, with the conclusion skipped (scratch run 44871030917, check run 136745386648, read
 2026-11-21). Either way it is not named pr-title. A run that skips pr-title because the pull
-request is a draft posts the same text [inference: no draft run was read], so a draft's head
-carries no pr-title pass, and marking the pull request ready starts the run that checks it. The
+request is a draft posts the same text: draft scratch run 44874260916 posted check run
+136755360755, skipped and not required, and its rollup reported no pr-title (read 2026-11-21).
+So a draft's head carries no pr-title pass, and marking the pull request ready starts the run
+that checks it. The
 ci-ok job runs on every event, and GitHub evaluates its name when the job is queued, after its
 needs: on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok.
 The dispatched run still reaches its verdict and shows it on the head under its own
