@@ -220,6 +220,7 @@ func main() {
 	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
+	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
@@ -442,7 +443,10 @@ func main() {
 		// airlock: without a rules file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
-		// The metrics port, bound by the same boot after the other two, on every deployment.
+		// The edge, bound by the same boot and only for a deployment that names one
+		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
+		ListenEdge: edgeListen(cfg),
+		// The metrics port, bound by the same boot after the others, on every deployment.
 		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
 		Catchup:       func(serving context.Context, current *policy.Current) error { return current.Refresh(serving) },
@@ -465,12 +469,16 @@ func main() {
 	// ever sees the stale placeholder. refusePortZeroPublicURLInProduction (the dev-vs-production
 	// gate) already refused this above, right after config.Load — before st.Migrate, any AWS
 	// call, and the boot's bind — so reaching here means it's safe to apply.
-	if u, urlErr := url.Parse(cfg.PublicURL); urlErr == nil && u.Port() == "0" {
+	if publicURLPortZero(cfg.PublicURL) {
 		cfg.PublicURL = "http://" + listener.Addr().String()
 	}
 	slog.Info("broker listening", "addr", listener.Addr().String())
 	if started.AirlockListener != nil {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
+	}
+	if started.EdgeListener != nil {
+		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
+			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -483,6 +491,9 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators, Projects: projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
+	// its approval mints authenticates through this chain as any other does.
+	enr.Chain.EdgeAudience = cfg.EdgeURL
 	// The exchange's listed identities, read here, before the request machine, which reads the
 	// project an operator's entry maps a pod's or a machine's account to from the same entries
 	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
@@ -609,7 +620,7 @@ func main() {
 	}
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		PendingTTL: machineLoginPendingTTL, CredentialLifetime: credentialLifetime,
 		OAuth: provider, Replay: enr.Replay,
 	}
@@ -687,7 +698,7 @@ func main() {
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
+	deps := api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
@@ -710,7 +721,8 @@ func main() {
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
-		}})
+		}}
+	api.Register(mux, deps)
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
 	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
 	// the API's routes, the OAuth provider's library, the approval page and the mux's own 404
@@ -757,6 +769,23 @@ func main() {
 		})
 		airlockProxy.Store(proxyServer)
 	}
+	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
+	// device login's two routes and the health check (api.RegisterEdge), on the same request
+	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
+	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
+	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	var edgeServer *http.Server
+	if started.EdgeListener != nil {
+		edgeMux := http.NewServeMux()
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
+		edgeServer = &http.Server{
+			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
+			ReadHeaderTimeout: srv.ReadHeaderTimeout,
+			ReadTimeout:       srv.ReadTimeout,
+			WriteTimeout:      srv.WriteTimeout,
+			IdleTimeout:       srv.IdleTimeout,
+		}
+	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
 	// timeouts are the API's, since a scraper is a caller like any other to the server.
@@ -793,6 +822,14 @@ func main() {
 		go func() {
 			if err := proxyServer.Serve(started.AirlockListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("broker: airlock proxy serve", "error", err)
+				stopNotify()
+			}
+		}()
+	}
+	if edgeServer != nil {
+		go func() {
+			if err := edgeServer.Serve(started.EdgeListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("broker: edge serve", "error", err)
 				stopNotify()
 			}
 		}()
@@ -835,14 +872,17 @@ func main() {
 		service.Close()
 	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
-	// proxy port to drain".
-	var airlockShutdown func(ctx context.Context) error
+	// proxy port to drain", and the same for the edge.
+	var airlockShutdown, edgeShutdown func(ctx context.Context) error
 	if proxyServer != nil {
 		airlockShutdown = proxyServer.Shutdown
 	}
+	if edgeServer != nil {
+		edgeShutdown = edgeServer.Shutdown
+	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownEdge: edgeShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -969,19 +1009,59 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	return st, awsCfg, nil
 }
 
-// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is literally "0"
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never dialable, so it can only
-// be dev-broker.sh's own "derive my public URL from whatever address I actually bind" convention
-// (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray literal ":0" reaching a real
-// deployment must fail loudly at boot, never silently reinterpret the broker's own public
-// identity as its internal bind address. Extracted from main so a test can drive it directly
-// instead of through fatal, which calls os.Exit.
+// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
+// (publicURLPortZero) unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never
+// dialable, so it can only be dev-broker.sh's own "derive my public URL from whatever address I
+// actually bind" convention (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray
+// ":0" reaching a real deployment, however its zero is written, must fail loudly at boot, never
+// silently reinterpret the broker's own public identity as its internal bind address. Extracted
+// from main so a test can drive it directly instead of through fatal, which calls os.Exit.
 func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) error {
-	u, err := url.Parse(publicURL)
-	if err != nil || u.Port() != "0" || fakeSecretsFile != "" {
+	if !publicURLPortZero(publicURL) || fakeSecretsFile != "" {
 		return nil
 	}
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+}
+
+// refuseHTTPEdgeURLsInProduction refuses a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL whose
+// scheme is not https unless BROKER_FAKE_SECRETS_FILE makes this a local run, as
+// refusePortZeroPublicURLInProduction does. Both are on the path of a person on the internet. Over
+// plain http, anyone on the path could rewrite the edge's device authorization, its
+// verification_uri and user_code among them, or serve a page of their own where
+// BROKER_EDGE_MACHINE_LOGIN_URL sends the person to type the user code while signed in to Dispatch.
+// A setting left empty (a broker with no edge) is refused nothing. Extracted from main so a test
+// can drive it directly instead of through fatal, which calls os.Exit.
+func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile string) error {
+	if fakeSecretsFile != "" {
+		return nil
+	}
+	for _, setting := range []struct{ name, value, what string }{
+		{"BROKER_EDGE_URL", edgeURL, "the edge answers callers on the internet"},
+		{"BROKER_EDGE_MACHINE_LOGIN_URL", machineLoginURL, "the edge sends a person on the internet to this page to type a user code"},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		if u, err := url.Parse(setting.value); err == nil && strings.EqualFold(u.Scheme, "https") {
+			continue
+		}
+		return fmt.Errorf("%s %q: %s, so it must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http", setting.name, redact.URL(setting.value), setting.what)
+	}
+	return nil
+}
+
+// publicURLPortZero reports whether publicURL names port 0, its port read as a number the way
+// the bind reads BROKER_LISTEN_ADDR's (net.LookupPort), so ":00" is port 0 as ":0" is. The
+// production refusal above and main's derive-from-bind rewrite both read it, so the URL one of
+// them takes as port 0 is the one the other does. A URL that does not parse, or names no port
+// (an empty one, as in "http://host:", included), names no port 0.
+func publicURLPortZero(publicURL string) bool {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Port() == "" {
+		return false
+	}
+	port, err := net.LookupPort("tcp", u.Port())
+	return err == nil && port == 0
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
@@ -1096,7 +1176,7 @@ func parseRulesFile(path string) (proxyrules.Rules, error) {
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
 // "LEGION-SLACK-BOT-TOKEN" matches no release at all: the broker would hand the command the real
 // value of the very secret the file was reviewed as holding back. The check is here rather than
-// in proxyrules.Validate because the airlock knows nothing of how a secret is named under the
+// in proxyrules.Validate because that package knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules proxyrules.Rules) error {
 	for i, s := range rules.Secrets {
@@ -1131,7 +1211,7 @@ const maxGuidanceRunes = 2000
 // every secret. Anything else refuses the boot: a path that cannot be read, a file proxyrules.Parse
 // will not read as JSON (whose refusal names the parse position), and a file validateRulesFile
 // refuses (whose refusal names the entry). Each refusal names the variable beside what that
-// reader said about the file, since the airlock package names a rules file no way but by its
+// reader said about the file, since the proxyrules package names a rules file no way but by its
 // contents. Extracted from main so a test can drive it without exiting the test process.
 func readAirlockRules(path string) (proxyrules.Rules, error) {
 	if path == "" {
@@ -1156,6 +1236,15 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
+}
+
+// edgeListen is brokerBoot.ListenEdge in production: the bind on BROKER_EDGE_LISTEN_ADDR, and nil
+// for a deployment that names no edge, which binds nothing for one.
+func edgeListen(cfg config.Config) func() (net.Listener, error) {
+	if cfg.EdgeListenAddr == "" {
+		return nil
+	}
+	return listenTCP(cfg.EdgeListenAddr)
 }
 
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
@@ -1230,7 +1319,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 		PodOperators:        cfg.PodOperators,

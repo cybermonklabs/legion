@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -28,10 +27,7 @@ func TestAPIAuth(t *testing.T) {
 
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	serviceToken := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 
@@ -193,7 +189,7 @@ func TestAPIAuth(t *testing.T) {
 				request.Header.Set("Authorization", tc.authorize)
 			}
 
-			var configured *oidc.Verifier
+			var configured *oidc.LazyVerifier
 			if tc.oidc {
 				configured = verifier
 			}
@@ -347,10 +343,7 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 
 func TestValidateListenerAPIAuth(t *testing.T) {
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 
 	cases := []struct {

@@ -70,7 +70,7 @@ secret "OPENAI": header x-api-key added
 }
 
 // TestAirlockCheckRefusesAFileTheBrokerWouldNotServe covers every way a file is refused: the
-// broker's own airlock package decides, and the line says which entry, or where in the file, so
+// broker's own proxyrules package decides, and the line says which entry, or where in the file, so
 // that the author of the pull request can find it. Each refusal writes nothing on stdout: a
 // report of a file the broker would not serve would be read as a file it had agreed to.
 func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
@@ -287,7 +287,7 @@ func TestAirlockCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
 
 // TestAirlockCheckReportsTheDefaultHeaderTheSwapApplies: the header an entry with no "headers"
 // field reads as, in this report, is the one proxyrules.Rewrite actually swaps in, read from the
-// airlock package itself. The report held a second copy of that default, so a change to it on
+// proxyrules package itself. The report held a second copy of that default, so a change to it on
 // one side would have made the report say a header was added or removed that the swap says
 // nothing about, and no test would have failed.
 func TestAirlockCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {

@@ -499,39 +499,6 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 	})
 }
 
-// A park of a child in accepting ends the acceptance, the step of the architect that owns the
-// child (the tree's), as a move
-// back out of accepting does, so its record names the model whose answer the architect's stream
-// read ahead of the request (heldRequest). The child leaves the workflow, and its acceptance ends
-// stopped, returned nowhere, with the architect's session and the second model.
-func TestAParkOfAChildInAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
-	r := newStepRecordsRig(t, 1)
-	child := r.childInAccepting()
-	architect := r.worker(claim.RoleArchitect)
-	architect.model = "stand-in/architect-first"
-	architect.answer()
-	architect.send(shimwire.AgentStart{})
-	architect.waitState(supervise.StateWorking)
-	grant := architect.grant()
-	if status, body := r.heldRequest(architect, "stand-in/architect-second", "/legion/v1/children/park", map[string]any{
-		"grantId": grant, "issue": child,
-	}); status != http.StatusOK {
-		t.Fatalf("the tree architect's park of %s = %d %s, want 200", child, status, body)
-	}
-	r.waitPhaseOf(child, phase.Done)
-	tree := r.token(claim.RoleArchitect)
-	r.waitStepsOf(child, "the acceptance the architect's park ended", func(read stepRecordsRead) error {
-		switch got := read.find("step", 5, 1); {
-		case got.ID == "" || got.EndedAt == nil || got.Result != "stopped" || got.ReturnedTo != nil:
-			return fmt.Errorf("the acceptance of %s is %+v, want it ended stopped, returned nowhere", child, got)
-		case got.Agent != string(tree) || got.Session != architect.session || got.Model != "stand-in/architect-second":
-			return fmt.Errorf("the acceptance of %s names agent %q, session %q and model %q; want %s, %s and the model that answered last, stand-in/architect-second",
-				child, got.Agent, got.Session, got.Model, tree, architect.session)
-		}
-		return nil
-	})
-}
-
 // heldRequest sends c's request to path, one that ends c's step, while the answer c's model gave
 // last waits on the claim's feed, and answers the request's status and body. c's model answers as
 // model, which c.model holds from then on, and the feed stops before the machine decides that

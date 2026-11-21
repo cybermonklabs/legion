@@ -81,7 +81,12 @@ func (r *durableEvents) count() int {
 // intakeStopBudget, shrunk to stopBudget.
 func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	t.Helper()
-	shrinkIntakeFlowControl(t)
+	// The holder's handler holds the first message until the row releases it or the stop gives it
+	// up, never until a deadline of its own: the second message has to queue behind it. Set before
+	// the intakes start, whose take-overs read it (intakeAckWait).
+	messageTimeout := intakeMessageTimeout
+	intakeMessageTimeout = untilTheBinaryDeadline(t)
+	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
 	budget := intakeStopBudget
 	intakeStopBudget = stopBudget
 	t.Cleanup(func() { intakeStopBudget = budget })
@@ -105,17 +110,26 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	row.conn = holderConn
 
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool { return holder.fetches(inFlight) >= 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
+	row.delivery = subscribedDelivery(holder.intake)
+	// The second message has to be in the holder's hands, queued behind the first, before the stop
+	// begins, or the stop has nothing to hand back. The durable's count of messages outstanding does
+	// not say that: nats-server counts a message delivered (consumer.go, deliverMsg's trackPending)
+	// before its stream's send loop puts it on the wire (stream.go, internalLoop), and a stop whose
+	// drain reaches the server first leaves the message with the durable, never sent to the holder.
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	awaitAckPending(t, publisher, 2)
+	waitFor(t, untilTheBinaryDeadline(t), func() bool { return queuedBehindKeys(row.delivery) == 1 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(row.delivery), consumerState(publisher))
+	})
 
-	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and on a loaded
-	// runner the drain can take longer than callNATS's wait: the stop then withholds its hand-backs,
-	// and the row has no publish to hold. The row gives the stop's calls a 30 s guard, and puts the
-	// wait back as the hand-back's publish begins, so the held write still outlives it.
-	wait := callNATSWait.Swap(int64(30 * time.Second))
+	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and each of the
+	// stop's calls waits for NATS at most callNATSWait: a drain that answers after it has the stop
+	// withhold its hand-backs, and the row has no publish to hold. So the stop's calls wait as long
+	// as the test binary's deadline allows, and the wait is put back as the hand-back's publish
+	// begins, so the held write still outlives it.
+	wait := callNATSWait.Swap(int64(untilTheBinaryDeadline(t)))
 	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
@@ -128,7 +142,6 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 			close(held)
 		})
 	}
-	row.delivery = subscribedDelivery(holder.intake)
 	row.delivery.beforeHandBackPublish.Store(&hook)
 	row.from = row.recorded.count()
 	done := make(chan struct{})
@@ -137,16 +150,26 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 		holder.stop()
 		close(done)
 	}()
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, untilTheBinaryDeadline(t), holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The handler finishes as the stop waits for it; the stop then hands back the message that
-	// was waiting behind it, and the hook holds the write before that publish.
+	// was waiting behind it, and the hook holds the write before that publish. The hook runs on a
+	// goroutine the holder's Run waits for -- the stop's own, or a handler's the stop gave up, whose
+	// deferred answer hands its message back -- so a hand-back reaches the hook before Run returns,
+	// and a Run that returned with held still open made none. held is read again once done is, as
+	// both can be closed by the time the select runs.
 	holder.release()
 	select {
 	case <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the stop's hand-back never reached its publish: the stop withheld it, as it does when its drain has not answered within the row's 30 s guard: " + consumerState(publisher))
+	case <-done:
+		select {
+		case <-held:
+		default:
+			t.Fatal("control: the holder's stop returned with no hand-back having reached its publish: it withheld them: " + consumerState(publisher))
+		}
+	case <-time.After(untilTheBinaryDeadline(t)):
+		t.Fatal("the holder's stop neither published a hand-back nor returned: " + consumerState(publisher))
 	}
 	row.thaw = <-thawed
 	return row
@@ -184,6 +207,31 @@ func (r heldHandBack) handBackPending() bool {
 // stopBudget is the stop's deadline in the rows below (intakeStopBudget).
 const stopBudget = 3 * time.Second
 
+// untilTheBinaryDeadline is how long the rows below wait for an event that ends a wait of their own
+// or of the stop's: what the test binary's deadline leaves less rowDeadlineMargin, so that a row
+// whose event never comes fails by name before go test's own timeout, and none of these waits ends
+// at a span a loaded runner can outlast. A run with no deadline (-timeout 0) waits rowWaitUnbounded.
+func untilTheBinaryDeadline(t *testing.T) time.Duration {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		return rowWaitUnbounded
+	}
+	left := time.Until(deadline)
+	if left <= rowDeadlineMargin {
+		t.Fatalf("the test binary's deadline leaves %s, not more than rowDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), rowDeadlineMargin)
+	}
+	return left - rowDeadlineMargin
+}
+
+const (
+	// rowDeadlineMargin is what untilTheBinaryDeadline leaves of the test binary's deadline for a
+	// failed row's cleanups.
+	rowDeadlineMargin = time.Minute
+	// rowWaitUnbounded is the wait of a run that asked for no deadline.
+	rowWaitUnbounded = time.Hour
+)
+
 // holdLive reports whether the delivery durable's hold still names a holder, live.
 func holdLive(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
@@ -196,8 +244,9 @@ func holdLive(t *testing.T, pool *store.Pool) bool {
 
 // holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
 // a renewal moves it later or the database's clock passes it, and reports whether the renewal came
-// first. A hold left to lapse is past its expiry within the hold's TTL; a 30 s wait past that only
-// guards against a row that neither moves nor lapses.
+// first. A hold left to lapse is past its expiry within the hold's TTL; the wait past that, to the
+// test binary's deadline less its margin (untilTheBinaryDeadline), only guards against a row that
+// neither moves nor lapses.
 func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
 	read := func() (expires, now time.Time) {
@@ -209,7 +258,8 @@ func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 		return expires, now
 	}
 	first, _ := read()
-	guard := time.Now().Add(intakeHoldTTL + 30*time.Second)
+	wait := untilTheBinaryDeadline(t)
+	guard := time.Now().Add(wait)
 	for time.Now().Before(guard) {
 		expires, now := read()
 		switch {
@@ -220,7 +270,7 @@ func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("the delivery durable's hold was neither renewed nor past its expiry %s after it was read", intakeHoldTTL+30*time.Second)
+	t.Fatalf("the delivery durable's hold was neither renewed nor past its expiry %s after it was read", wait.Round(time.Second))
 	return false
 }
 
@@ -229,7 +279,7 @@ func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 // standby's consumer delivered one of the row's messages (sequences) more than once.
 func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
-	waitFor(t, 60*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		events := recorded.since(from)
 		return slices.Contains(events, "-NAK") && slices.Contains(events, durableCreated)
 	}, func() string {
@@ -270,7 +320,7 @@ func handBackAfterCreation(events []string) bool {
 func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 60*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		read, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			return false
@@ -299,7 +349,7 @@ func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequ
 // connection never reaches the server, which is allowed: the message stays with the durable.
 func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
-	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	if events := recorded.since(from); handBackAfterCreation(events) {
@@ -342,14 +392,18 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     durable.
 //
 // No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
-// a 30 s wait only guards against a stop that never returns. The negative controls: a release that
-// does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
-// a publish was left running fails the first's release; a release made at the deadline with a
-// hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
-// pending fails the second's renewal; an untracked finalizer fails the third
-// by returning from its shutdown stop with the hold live; and the holder's -NAK published again
-// while the standby holds the message, with the server holding the creation's advisory until the
-// new consumer has delivered it a second time, fails all three by that second delivery. The count
+// every other wait runs to the test binary's deadline less its margin (untilTheBinaryDeadline) and
+// only guards against an event that never comes. stopWithAHeldHandBack begins the stop only once the
+// second message is queued in the holder, and decides whether the stop's hand-back reached its
+// publish by which comes first, that publish or the holder's Run returning. The negative controls: a
+// stop that withholds its hand-backs fails all three there, as the holder's Run returns; a release
+// that does not wait for the hand-backs fails the first's order;
+// a stop that never releases its hold when a publish was left running fails the first's release; a
+// release made at the deadline with a hand-back pending fails the second's hold; a stop that leaves
+// its hold to lapse with a hand-back pending fails the second's renewal; an untracked finalizer fails
+// the third by returning from its shutdown stop with the hold live; and the holder's -NAK published
+// again while the standby holds the message, with the server holding the creation's advisory until
+// the new consumer has delivered it a second time, fails all three by that second delivery. The count
 // does not fail a stop that gives up the holder's handler at its deadline, whose deferred answer
 // hands the first message back too: the new consumer then starts at that message and delivers both
 // once.
@@ -357,14 +411,14 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
 		row := stopWithAHeldHandBack(t)
-		waitFor(t, 30*time.Second, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
+		waitFor(t, untilTheBinaryDeadline(t), func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
 		row.thaw()
 		select {
 		case <-row.stopped:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the holder's stop did not return within 30 s of the link moving")
+		case <-time.After(untilTheBinaryDeadline(t)):
+			t.Fatal("the holder's stop did not return once the link moved")
 		}
 		if holdLive(t, row.pool) {
 			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
@@ -376,8 +430,8 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		row := stopWithAHeldHandBack(t)
 		select {
 		case <-row.stopped:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the holder's stop did not return within 30 s while its hand-back was held: it waits for the hand-back")
+		case <-time.After(untilTheBinaryDeadline(t)):
+			t.Fatal("the holder's stop did not return while its hand-back was held: it waits for the hand-back")
 		}
 		testnats.RequireLockHeld(t, row.conn)
 		if !row.handBackPending() {
@@ -407,8 +461,8 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		row := stopWithAHeldHandBack(t)
 		select {
 		case <-row.stopped:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the holder's Run did not return within 30 s while its hand-back was held")
+		case <-time.After(untilTheBinaryDeadline(t)):
+			t.Fatal("the holder's Run did not return while its hand-back was held")
 		}
 		if !row.handBackPending() {
 			t.Fatal("control: the hand-back reached NATS before its client closed")
@@ -431,8 +485,8 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		row.thaw()
 		select {
 		case <-finalizing:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the client close did not settle the pending hand-back within 30 s")
+		case <-time.After(untilTheBinaryDeadline(t)):
+			t.Fatal("the client close did not settle the pending hand-back")
 		}
 		select {
 		case <-closed:
@@ -445,8 +499,8 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		close(releaseFinalizer)
 		select {
 		case <-closed:
-		case <-time.After(30 * time.Second):
-			t.Fatal("StartIntakes' stop did not return within 30 s of finalizer release")
+		case <-time.After(untilTheBinaryDeadline(t)):
+			t.Fatal("StartIntakes' stop did not return after its finalizer was released")
 		}
 		if holdLive(t, row.pool) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")

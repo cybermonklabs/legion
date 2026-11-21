@@ -1,17 +1,17 @@
 import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
-  EVENT_FRESH,
   issueAsksQuery,
-  standsFailed,
+  issueCommentsQuery,
+  issueMessagesQuery,
   treeDocumentIds,
   useIssueTree,
 } from "./useIssueTree";
@@ -125,15 +125,14 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
       line: "messages",
       message: STATE_LINES.messages_unreadable,
       query: {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
+        ...issueMessagesQuery(key),
         ...EVENT_FRESH,
       },
     },
