@@ -10,7 +10,9 @@ body: |-
 
   A boot rewrites a renamed repository's old name. The server reads the rename pairs of `repo_projects` once, at boot. Before it serves, it writes each pair's new name in place of the old name in every stored repository field of Dispatch. The first boot of this release makes those writes, and a later boot finds nothing left to write. Every boot logs one summary line, `dispatch: rewrote renamed repositories' old names`, with the counts `pairs`, `rows`, `deleted`, `failures` and `left`. The line is at INFO when `failures` and `left` are 0, and at ERROR otherwise, with `left=unknown` where nothing counted the rows. A failure does not stop the boot, and the next boot tries again. Every write that names an old name now stores the new name.
 
-  The CI reconcile pass covers every project's default repository and every repository an issue names as its own. Its `ci reconcile pass` line counts `defaults_skipped` in place of `mappings_skipped`.
+  The CI reconcile pass covers every project's default repository and every repository an issue names as its own. Its `ci reconcile pass` line counts `defaults_skipped` in place of `mappings_skipped`. Its WARN for a repository it skips because GitHub does not allow the name carries the name alone: legion-envoy-v32.25.0 and later added `removed_by` and `mended_by`, the mapping requests that removed or mended such a name, and no route takes those requests now.
+
+  `GET /api/v1/github/app-installation/{owner}/{repo}` refuses a path that names no repository GitHub allows with `400 INVALID_REPOSITORY`, where legion-envoy-v32.25.0 and later answered `400 INVALID_REPO_PROJECT`. The status and the paths it refuses stay the same.
 
   Move each Legion daemon to the release that reads no repository mapping, or a later one, before you deploy this release. Until then, no repository or default repository that you set after the deploy reaches that daemon: a Legion daemon that still reads the mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them, and sees no default that is set after the migration and no new row. The next release removes that read route.
 

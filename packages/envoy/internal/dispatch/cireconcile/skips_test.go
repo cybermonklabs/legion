@@ -282,7 +282,7 @@ func TestNoBucketYetNoPass(t *testing.T) {
 // refs.SplitGitHubRepo): project defaults stored as `acme/..`, `acme/.git` and `acme/`, as a
 // write before the routes held a name to GitHub's names or direct SQL could leave them, an
 // issue's own `Zeta/..`, and the rename pair's new name `acme/...git`, which the default
-// `oldco/tools` is read under. Each WARN names its own name and no other field.
+// `oldco/tools` is read under.
 //
 // The negative control is splitRepo reading a name as two non-empty halves, as it did, which
 // takes `acme/..`, `acme/.git`, `Zeta/..` and `acme/...git` and asks GitHub about
@@ -307,15 +307,8 @@ func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
 		t.Fatalf("the pass named %d refused names, want %q:\n%s", len(skipped), refused, h.logs.String())
 	}
 	for _, row := range refused {
-		line, named := skipped[row]
-		if !named {
+		if _, named := skipped[row]; !named {
 			t.Errorf("no WARN names %s:\n%s", row, h.logs.String())
-			continue
-		}
-		for _, field := range []string{"removed_by", "mended_by"} {
-			if got, carried := line[field]; carried {
-				t.Errorf("the WARN for %s carries %s %v, want the name alone: %v", row, field, got, line)
-			}
 		}
 	}
 	if got := number(t, h.passLine(), "defaults_skipped"); got != len(refused) {

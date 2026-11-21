@@ -47,12 +47,19 @@ body: |-
   repository in `commit_stands.repo`. The record keeps that repository with the result (column
   `check_results.commit_repo`, migration 20261117093000), and every other result reads as before.
 
-  `GET /api/v1/github/app-installation/{owner}/{repo}` holds the path's repository to the names
-  GitHub allows, which earlier releases read as a reference alone: a path such as `acme/...git`
-  or `acme/.git`, whose name is `..` or empty once `.git` is trimmed, or whose name is longer
-  than 100 characters, is `400 INVALID_REPOSITORY`, where earlier releases answered
-  `400 INVALID_REPO_PROJECT`. Delivery, the CI reconcile, the architecture importer and the
-  results read of a check CI proves each refuse a stored repository name GitHub does not allow,
-  naming it, before they make any GitHub request, so a project's default repository, an issue's
-  own repository or a `renamed_to` stored before this release, and a pull request row stored
-  under one, never reaches GitHub.
+  `PUT /api/v1/settings/repo-projects/{owner}/{repo}` and
+  `GET /api/v1/github/app-installation/{owner}/{repo}` hold the path's repository to the names
+  GitHub allows, and the PUT holds its `renamed_to` to the same rule, which earlier releases read
+  as a reference alone: a path or a `renamed_to` such as `acme/...git` or `acme/.git`, whose name
+  is `..` or empty once `.git` is trimmed, or whose name is longer than 100 characters, is
+  `400 INVALID_REPO_PROJECT`. `DELETE` removes
+  the mapping stored under its path's own spelling, so a mapping stored under such a name is
+  still removed by that name wherever a path spells it, and the CI reconcile's warning names the
+  request that removes it; a mapping stored under an empty name, such as the `acme/` an earlier
+  `PUT` of `acme/.git` stored, is removed by no request, and the warning says to remove it by
+  SQL. Delivery, the CI reconcile, the architecture importer and the results read of a check CI
+  proves each refuse a stored repository name GitHub does not allow, naming it, before they make
+  any GitHub request, so a mapping or a `renamed_to` stored before this release, and a pull
+  request row stored under one, never reaches GitHub. `DISPATCH_REPO_PROJECTS` is held to the
+  same rule: an entry whose repository the rule refuses, such as `acme/.git=KEY`, which reads as
+  `acme/`, or `acme/..=KEY`, stops the boot, naming the entry, where an earlier release seeded it.

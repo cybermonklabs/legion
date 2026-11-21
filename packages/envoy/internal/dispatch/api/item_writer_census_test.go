@@ -219,9 +219,7 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 // (repoRenameLockNamespace), and cmd/dispatch runs it once at boot, before the process serves.
 const repoRenamePassException = "none, and none to take: these build the statements of the boot " +
 	"rename pass (store.RewriteRenamedRepositories), whose tables are those of the stored " +
-	"repository fields repoRenameLines lists - issues, projects, issue_external_links, " +
-	"pull_request_heads, branch_commits, the delivery_* tables (delivery_settings among them), " +
-	"architecture_sources and ci_reconcile_passes - no item row. It runs once at boot, before " +
+	"repository fields repoRenameLines lists, no item row. It runs once at boot, before " +
 	"the process serves (cmd/dispatch's renameRepositories boot task)"
 
 // versionTableException is why the migration runners' writers of their version tables are on the
