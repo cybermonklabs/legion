@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `Priority` and `PriorityRow` carry `description_tree`, the display tree Dispatch reads
+  `description` into, as `CommentWithTrees` carries `body_tree`: present only for a request that
+  sent `Dispatch-Trees: 1` and only for a description that is not empty.

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  One priority description can no longer hold the priorities page of every reader. The dashboard
+  drew a description by parsing its markdown in the reader's browser, whose parser takes time that
+  grows with the square of how deep emphasis nests: a description nested 4,000 deep held the page
+  for about 55 s. Dispatch now reads each description as it reads every other stored text, holding
+  marks nested past 100 as text, and the priorities read and the answers of a priority's create and
+  write carry that reading as `description_tree` beside `description` for a caller that sent
+  `Dispatch-Trees: 1`. The page draws it and parses nothing. Each write stores the tree; a
+  description written before this change has its tree read and stored by its first read.

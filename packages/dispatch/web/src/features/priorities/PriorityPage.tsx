@@ -88,7 +88,7 @@ export function PriorityPage(): ReactNode {
       </div>
     );
 
-  const { description, title } = item.priority;
+  const { description, description_tree: descriptionTree, title } = item.priority;
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
 
   return (
@@ -165,6 +165,7 @@ export function PriorityPage(): ReactNode {
             <PriorityDescription
               canWrite={canWrite}
               description={description}
+              descriptionTree={descriptionTree}
               label={`Description of ${item.order}`}
               onSave={(next) =>
                 patch.mutate({
