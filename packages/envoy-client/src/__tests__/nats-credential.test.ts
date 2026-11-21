@@ -273,8 +273,11 @@ describe("the broker token's authenticator", () => {
     const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
     // Before the token is in hand it presents nothing, and never throws: nats.js closes a
     // connection for good when its authenticator throws.
+    // The trade starts here: an authenticator with no token in hand asks for one.
+    const asked = Date.now();
     expect(credential.authenticator("nonce-0")).toBeUndefined();
     await credential.ready();
+    const answered = Date.now();
     const auth = credential.authenticator("nonce-1") as { auth_token: string; sig: string };
     expect(Object.keys(auth).sort()).toEqual(["auth_token", "sig"]);
     const [minted] = broker.state.minted;
@@ -300,9 +303,13 @@ describe("the broker token's authenticator", () => {
         "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
       );
     }
-    // When the token in hand lapses: the answer's expires_in, read when it arrived.
-    const lapses = credential.expiresAt().getTime();
-    expect(Math.abs(lapses - (minted?.expiresAt ?? 0))).toBeLessThan(2_000);
+    // When the token in hand lapses: the answer's expires_in, read when it arrived. The broker
+    // mints it after the row asked, and the token client reads the answer after that and before
+    // `ready` returns, so the expiry it holds is the broker's, later by at most the time the row
+    // measured around the trade, however long the machine held either side.
+    const late = credential.expiresAt().getTime() - (minted?.expiresAt ?? 0);
+    expect(late).toBeGreaterThanOrEqual(0);
+    expect(late).toBeLessThanOrEqual(answered - asked);
   });
 });
 
