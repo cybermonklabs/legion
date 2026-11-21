@@ -56,7 +56,10 @@ import {
   unknownsCounted,
   workflowInputs,
   workflowRepository,
+  writeIds,
 } from "./outside-agent-tailnet-stand-ins";
+
+const { c1, m1, c2, m2 } = writeIds;
 
 /** The rows each leg prints, in order, after its header: the public leg's P1-P10, its
  *  revocations, its three T5 rows and its verdict; the tailnet leg's own rows, the public leg's
@@ -451,7 +454,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         // The writer's line in its `write <began> <ended> <comment id> <message id> delivered` form.
         expect(pass.get("sweep")?.got).toContain(
-          "the writer's write from 2026-01-01T00:00:04Z to 2026-01-01T00:00:05Z (comment cmt-1, message msg-1) was delivered"
+          `the writer's write from 2026-01-01T00:00:04Z to 2026-01-01T00:00:05Z (comment ${c1}, message ${m1}) was delivered`
         );
         // T3 enrolled through the full member's helper, whose broker is the one T2 asked.
         expect(readFileSync(join(answered.state, "t3-operator"), "utf8")).toBe(`${fullLogin}\n`);
@@ -612,13 +615,13 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           {
             ...passingControls,
             sweep: {
-              writer: "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered",
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} not delivered`,
             },
           },
           // The form before #4608 timed the write's two ends: one time, inside the window.
           {
             ...passingControls,
-            sweep: { writer: "write 2026-01-01T00:00:05Z cmt-1 msg-1 delivered" },
+            sweep: { writer: `write 2026-01-01T00:00:05Z ${c1} ${m1} delivered` },
           },
           { ...passingControls, sweep: { fillsRefused: true } },
           {
@@ -677,11 +680,11 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         // the first test of this suite, a write from :04 to :05, is the control.
         const lines = [
           [
-            "write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z cmt-1 msg-1 delivered",
+            `write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z ${c1} ${m1} delivered`,
             "no write of the writer was delivered inside its live window",
           ],
           [
-            "write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z cmt-1 msg-1 delivered",
+            `write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z ${c1} ${m1} delivered`,
             "no write of the writer was delivered inside its live window",
           ],
           [
@@ -706,19 +709,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "a writer line whose stamps are not of date's form, or that began after it ended, holds the sweep beside a delivered write",
+      "a writer line whose stamps are not of date's form, that began after it ended, or whose ids are not of Dispatch's form, holds the sweep beside a delivered write",
       async () => {
         // Each beside a delivered write from :04 to :05 inside the window, which alone passes (the
         // answered run of the first test of this suite): a line this leg cannot read may hide a
         // dropped write.
-        const good = "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered";
+        const good = `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`;
         const lines = [
-          "write 9999 0000 cmt-2 msg-2 delivered",
+          `write 9999 0000 ${c2} ${m2} delivered`,
           // Stamps of another form that compare as text inside the window and in order: only
           // their form tells them apart.
-          "write 2026-01-01T00:00:04z 2026-01-01T00:00:05z cmt-2 msg-2 delivered",
-          "write 2026-01-01T00:00:10Z 2026-01-01T00:00:05Z cmt-2 msg-2 delivered",
-          "write 2026-01-01T00:00:06Z 2026-01-01T00:00:05Z cmt-2 msg-2 delivered",
+          `write 2026-01-01T00:00:04z 2026-01-01T00:00:05z ${c2} ${m2} delivered`,
+          `write 2026-01-01T00:00:10Z 2026-01-01T00:00:05Z ${c2} ${m2} delivered`,
+          `write 2026-01-01T00:00:06Z 2026-01-01T00:00:05Z ${c2} ${m2} delivered`,
+          // Ids that are not of the form Dispatch gives them, as #4608's join refuses them.
+          "write 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z cmt-1 msg-1 delivered",
         ];
         const runs = await runStandIns(
           ...lines.map((bad) => ({ ...passingControls, sweep: { writer: `${good}\n${bad}` } }))
@@ -735,8 +740,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           expect(rowsOf(run.stdout).get("sweep")?.got).toContain(bad);
         });
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
     );
 
     test(
@@ -746,15 +751,13 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           {
             ...passingControls,
             sweep: {
-              writer:
-                "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered\nwrite 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z cmt-2 msg-2 not delivered",
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered\nwrite 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z ${c2} ${m2} not delivered`,
             },
           },
           {
             ...passingControls,
             sweep: {
-              writer:
-                "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered\nwrite 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered",
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} not delivered\nwrite 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`,
             },
           }
         );
@@ -772,6 +775,40 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The two runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
+      "a dropped write outside the window, across its opening, across its closing or wholly before it, holds the sweep beside a delivered write inside it",
+      async () => {
+        // The window is :00 to :09; each dropped line beside a delivered write from :04 to :05,
+        // which alone passes (the answered run of the first test of this suite).
+        const good = `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`;
+        const dropped = [
+          `write 2025-12-31T23:59:58Z 2026-01-01T00:00:02Z ${c2} ${m2} not delivered`,
+          `write 2026-01-01T00:00:07Z 2026-01-01T00:00:11Z ${c2} ${m2} not delivered`,
+          "write 2025-12-31T23:59:50Z 2025-12-31T23:59:51Z - not written",
+        ];
+        const runs = await runStandIns(
+          ...dropped.map((line) => ({ ...passingControls, sweep: { writer: `${good}\n${line}` } }))
+        );
+        // Each line's sweep row at once, so a failure names every line that read otherwise.
+        const read = dropped.map((line, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          return { line, sweep: rowsOf(run.stdout).get("sweep") };
+        });
+        expect(read).toMatchObject(
+          dropped.map((line) => ({
+            line,
+            sweep: {
+              verdict: "UNKNOWN",
+              got: expect.stringContaining("was not delivered, so the member's feed lost one"),
+            },
+          }))
+        );
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(

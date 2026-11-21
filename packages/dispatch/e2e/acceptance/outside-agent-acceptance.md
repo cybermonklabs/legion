@@ -144,12 +144,14 @@ The tailnet leg does these steps, in this order:
    delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
    `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
    - not written`. A write is inside the runner's live window when it began after the window opened
-   and ended before it closed. One delivered write inside it is the control, and only when every
-   write inside it was delivered: a dropped one beside it reads UNKNOWN, as #4608's own join reads
-   them. A line whose stamps are not of the form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, or that
-   began after it ended, reads UNKNOWN too. No full member's credential goes to the runner: the
+   and ended before it closed. As #4608's own join reads them, every write the writer printed must
+   be delivered, inside the window or not: one not delivered or not written anywhere reads UNKNOWN;
+   then one delivered write inside the window is the control. A line whose stamps are not of the
+   form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, that began after it ended, or that is delivered with
+   ids not of Dispatch's lowercase 8-4-4-4-12 form, reads UNKNOWN too. No full member's credential
+   goes to the runner: the
    fills file holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
-   `1ff6527e4f`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   `ca10a682ba`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
    origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
    and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
    file that lacks a fill,

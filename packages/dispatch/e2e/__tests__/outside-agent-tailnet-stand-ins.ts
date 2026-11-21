@@ -51,6 +51,14 @@ export const workflowInputs = [
   "sweep_fills",
 ];
 export const inviteUrl = "https://dispatch.edge.example/enroll#example-invite-token";
+/** The ids of the stand-in writer's comments (`c1`, `c2`) and direct messages (`m1`, `m2`), in the
+ *  lowercase 8-4-4-4-12 form of the ids Dispatch gives them. */
+export const writeIds = {
+  c1: "3f1c2a9e-8b7d-4c11-9e2a-5d6f7a8b9c0d",
+  m1: "7a2b9c1d-3e4f-4a5b-8c6d-1e2f3a4b5c6d",
+  c2: "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
+  m2: "9e8d7c6b-5a49-4382-9716-05f4e3d2c1b0",
+} as const;
 
 export interface StandIns {
   /** Whether the stand-in Dispatch approves the full member's machine login and serves the GitHub
@@ -473,7 +481,7 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   // quote no shell string may.
   writeFileSync(
     join(state, "writer-line"),
-    `${standIns.sweep?.writer ?? "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered"}\n`
+    `${standIns.sweep?.writer ?? `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${writeIds.c1} ${writeIds.m1} delivered`}\n`
   );
   writeFileSync(
     join(state, "sweep-verdict"),
