@@ -293,8 +293,8 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 // events of another type, each with a payload of about 3 KB, which Postgres stores out of line,
 // each statement, read for the edit, reads fewer buffers than one for each 2 of those events. The
 // present row's statement answers the post's row, which no later event changes; the history's,
-// which counts every event of the owner of the types that change it, answers none, since none
-// does.
+// which counts the owner's events of the types that change it from the post's create, answers
+// none, since none does.
 //
 // That bound is stable, with a wide margin both ways. A buffer count does not depend on time or
 // on what the cache holds (the test sums buffers hit and read), only on how the rows lie on their
@@ -367,24 +367,28 @@ func TestEachKindsWholeBodyStatementsReadNoPayloadTheyNeedNotRead(t *testing.T) 
 			}
 
 			// EXECUTE takes the statements' arguments as presentBody and historyBody pass them
-			// (arguments), as literals Postgres quotes, and each statement is prepared with the
-			// parameter types Postgres infers for it when it is prepared with none, as the fill's
-			// pgx connection prepares it.
+			// (arguments, historyArguments), as literals Postgres quotes, and each statement is
+			// prepared with the parameter types Postgres infers for it when it is prepared with
+			// none, as the fill's pgx connection prepares it. No fill ran, so the history counts
+			// the post's changes from its create's seq, which the batch would give it.
+			created := readLoggedEvents(t, database, written.event)[0]
 			var literals []string
 			if err := database.Pool.QueryRow(ctx,
-				`select array[format('%L', $1::text), format('%L', $2::text), format('%L', $3::text), format('%s', $4::integer), format('%L', $5::text[])]`,
-				read.arguments(e, written.id)...).Scan(&literals); err != nil {
+				`select array[format('%L', $1::text), format('%L', $2::text), format('%L', $3::text), format('%s', $4::integer), format('%L', $5::text[]),
+				              format('%L', $6::text), format('%s', $7::integer)]`,
+				read.historyArguments(e, kind, written.id, created.Seq)...).Scan(&literals); err != nil {
 				t.Fatalf("write the statements' arguments: %v", err)
 			}
 			for _, statement := range []struct {
-				name, sql string
-				rows      float64
+				name, sql  string
+				parameters []string
+				rows       float64
 			}{
-				{"present_body", read.present, 1},
-				{"history_body", read.history, 0},
+				{"present_body", read.present, []string{"text", "text", "uuid", "integer", "text[]"}, 1},
+				{"history_body", read.history, []string{"text", "text", "uuid", "integer", "text[]", "text", "integer"}, 0},
 			} {
 				plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, statement.name, statement.sql,
-					[]string{"text", "text", "uuid", "integer", "text[]"}, literals)
+					statement.parameters, literals[:len(statement.parameters)])
 				root := explaintest.Nodes(t, plan)[0]
 				if root.Rows != statement.rows {
 					t.Fatalf("the %s statement of a %s answered %v rows; want %v, since no later event changes it", statement.name, kind, root.Rows, statement.rows)
@@ -825,7 +829,8 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 }
 
 // decideAndWrite decides the versions of a batch of events and writes them, in one transaction,
-// as the fill's batch does, with the warnings logged to logs.
+// as the fill's batch does, with the warnings logged to logs: an issue row of a document version
+// that holds an insert tree from the version's text as every read gives it (maskPlan).
 func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
@@ -835,7 +840,18 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, b
 		if err != nil {
 			t.Fatalf("decide the versions: %v", err)
 		}
-		if err := insertVersions(ctx, tx, &currentRules, decidedVersions.Versions, false); err != nil {
+		trees, err := readSpecTrees(ctx, tx, decidedVersions.Versions)
+		if err != nil {
+			t.Fatalf("read the versions' insert trees: %v", err)
+		}
+		plan, err := readMaskPlan(ctx, tx, trees)
+		if err != nil {
+			t.Fatalf("read the versions' masked texts: %v", err)
+		}
+		if _, err := plan.lockAndRecheck(ctx, tx); err != nil {
+			t.Fatalf("lock the versions' issues: %v", err)
+		}
+		if err := insertVersions(ctx, tx, decidedVersions.Versions, plan.masked(), false); err != nil {
 			t.Fatalf("write the versions: %v", err)
 		}
 		got = decidedVersions

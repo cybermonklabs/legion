@@ -21,7 +21,7 @@ import (
 // rulesVersion1 stands for the rules of version 1, which the fill of the build before this one
 // ran: versionRules without the types version 2 added (rulesAdded), a comment's present row read
 // past its later edits alone and a message's past no later event, no body history, and no mask of
-// an issue's document version, nor the mask lock. A test runs it on a filler (filler.rules) to
+// an issue's document version, nor any owner lock. A test runs it on a filler (filler.rules) to
 // write the rows a fill of that build wrote during a roll.
 var rulesVersion1 = newRuleSet(1, rulesBefore(2), map[string]postBodyRead{
 	kindComment: postBodyReadOf("comments", "comment_id", "comment.edited"),

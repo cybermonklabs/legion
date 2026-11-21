@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -22,12 +23,14 @@ import (
 
 // The sizes of BenchmarkTheRulesReRead's log, which its environment can set: the events of the
 // log (KEYWORD_REREAD_EVENTS, production's count by default), the posts of each kind that are
-// edited and deleted (KEYWORD_REREAD_POSTS), and the documents holding a deleted comment's
-// pending insert (KEYWORD_REREAD_INSERTS).
+// edited and deleted (KEYWORD_REREAD_POSTS), the documents holding a deleted comment's pending
+// insert (KEYWORD_REREAD_INSERTS), and the pending inserts' comments on one of them a pass may
+// delete while it runs (KEYWORD_REREAD_DELETES).
 const (
 	rereadEventsEnv  = "KEYWORD_REREAD_EVENTS"
 	rereadPostsEnv   = "KEYWORD_REREAD_POSTS"
 	rereadInsertsEnv = "KEYWORD_REREAD_INSERTS"
+	rereadDeletesEnv = "KEYWORD_REREAD_DELETES"
 )
 
 // rereadBenchIssues is how many issues the log's events are spread over.
@@ -43,21 +46,26 @@ const rereadBenchIssues = 1000
 // messages (100 each by default), each created, edited and deleted, one in ten with a body an
 // event cuts (about 35 KB), with their body history, so 400 events of the types version 2 added
 // or that change a post's text and their posts' creates; and KEYWORD_REREAD_INSERTS issues (10 by
-// default) whose primary document's version 2 holds a deleted comment's pending insert. The
-// keyword table holds the rows a fill of rules version 1 wrote of them: the creates and the
-// comments' edits, each cut body read from its deleted post's row, and each version 2's issue row
-// from its stored markdown.
+// default) whose primary document's version 2 holds a deleted comment's pending insert, the
+// first of them with KEYWORD_REREAD_DELETES more pending comments on that insert (200 by
+// default). The keyword table holds the rows a fill of rules version 1 wrote of them: the creates
+// and the comments' edits, each cut body read from its deleted post's row, and each version 2's
+// issue row from its stored markdown.
 //
-// Each iteration puts the table and the cursor row back as the seed left them, untimed, and times
-// the pass. It reports, beside the wall time of a pass (ns/op), the time the database took to
-// answer its statements as the client measured each (db-ms/op), the part of that its reads of the
-// log took (log-read-ms/op), how long its batches held the keyword table's mask lock, from the
-// answer to the statement that took it to the answer to the commit that released it
-// (mask-lock-held-ms/op), its batches (batches/op) and the rows it wrote again (rows/op,
-// redone/op, masked/op). It logs, once, the plan of the re-read's read of the log on the seeded
-// fixture, run with ANALYZE and BUFFERS, which `go test` prints whole with -v alone (it cuts a
-// benchmark's log at ten lines otherwise). Each round of the benchmark seeds its own log, so
-// -benchtime Nx seeds twice, once for its first round of one. Run it in a build Job:
+// Each iteration puts the table, the cursor row and the pending comments back as the seed left
+// them, untimed, and times the pass, while on another connection those comments are deleted one
+// after another as this build's delete does under the lock of their issue's owner, whose rows the
+// pass's last batch rewrites (deletePendingInsert). It reports, beside the wall time of a pass
+// (ns/op), the time the database took to answer its statements as the client measured each
+// (db-ms/op), the part of that its reads of the log took (log-read-ms/op), how long its batches
+// held owner locks, from the answer to the statement that took them to the answer to the commit
+// that released them (owner-lock-held-ms/op), the longest any one delete waited for its owner's
+// lock over every pass (delete-wait-max-ms/op) and the deletes a pass ran beside it (deletes/op),
+// its batches (batches/op) and the rows it wrote again (rows/op, redone/op, masked/op). It logs,
+// once, the plan of the re-read's read of the log on the seeded fixture, run with ANALYZE and
+// BUFFERS, which `go test` prints whole with -v alone (it cuts a benchmark's log at ten lines
+// otherwise). Each round of the benchmark seeds its own log, so -benchtime Nx seeds twice, once
+// for its first round of one. Run it in a build Job:
 //
 //	DISPATCH_TEST_DATABASE_URL=... go test ./internal/dispatch/textversions -run '^$' -bench BenchmarkTheRulesReRead -benchtime 3x -v -timeout 2h
 //
@@ -67,23 +75,32 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 	eventCount := benchSize(b, rereadEventsEnv, 900_000)
 	postCount := benchSize(b, rereadPostsEnv, 100)
 	insertCount := benchSize(b, rereadInsertsEnv, 10)
+	deleteCount := benchSize(b, rereadDeletesEnv, 200)
 	database := storetest.Open(b)
 	textversionstest.SeedProject(b, database)
 	ctx := context.Background()
 	seedStarted := time.Now()
 	newest, wantAgain := seedRereadLog(b, database, eventCount, postCount, insertCount)
-	b.Logf("seeded %d events, %d posts of each kind and %d documents holding a deleted insert in %s",
-		newest, postCount, insertCount, time.Since(seedStarted).Round(time.Millisecond))
+	contended := textversionstest.Project + "-1"
+	var document string
+	var pending []string
+	if insertCount > 0 {
+		document, pending = seedPendingInserts(b, database, contended, deleteCount)
+	}
+	b.Logf("seeded %d events, %d posts of each kind, %d documents holding a deleted insert and %d pending inserts' comments in %s",
+		newest, postCount, insertCount, len(pending), time.Since(seedStarted).Round(time.Millisecond))
 	if _, err := database.Pool.Exec(ctx, `
 		create table keyword_reread_seed as select * from search_text_versions;
-		analyze events; analyze search_text_versions; analyze comments; analyze messages; analyze artifact_versions`); err != nil {
+		analyze events; analyze search_text_versions; analyze comments; analyze messages; analyze artifact_versions;
+		analyze post_body_history`); err != nil {
 		b.Fatalf("keep the seeded keyword rows: %v", err)
 	}
 	rereadPlanLogged.Do(func() { logRereadPlan(b, database) })
 	tracer := &statementTimer{}
 	traced := storetest.TracedStore(b, database, tracer)
 
-	var batches, rows, redone, masked int
+	var batches, rows, redone, masked, deletes int
+	var deleteWait time.Duration
 	b.ResetTimer()
 	for range b.N {
 		b.StopTimer()
@@ -93,7 +110,16 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 			update search_text_versions_fill set rules = 1 where id = 1`); err != nil {
 			b.Fatalf("put the seeded keyword rows back: %v", err)
 		}
+		for _, statement := range []string{
+			`update comments set body = 'Add this word.', deleted_at = null, deleted_by = null where id = any($1::text[]::uuid[])`,
+			`delete from post_body_history where comment_id = any($1::text[]::uuid[])`,
+		} {
+			if _, err := database.Pool.Exec(ctx, statement, pending); err != nil {
+				b.Fatalf("put the pending inserts' comments back: %v", err)
+			}
+		}
 		fill := newFiller(traced.Pool, nil)
+		deleter := startDeleter(database, contended, document, pending)
 		b.StartTimer()
 		for {
 			result, err := fill.batch(ctx, newest)
@@ -110,6 +136,11 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 			}
 		}
 		b.StopTimer()
+		deleted := deleter.finish()
+		if deleted.err != nil {
+			b.Fatalf("a delete beside the pass: %v", deleted.err)
+		}
+		deletes, deleteWait = deletes+deleted.count, max(deleteWait, deleted.maxWait)
 		var stored, again int
 		if err := database.Pool.QueryRow(ctx, `
 			select (select rules from search_text_versions_fill where id = 1),
@@ -128,11 +159,99 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 	statements, logReads, lockHeld := tracer.totals()
 	b.ReportMetric(float64(statements.Milliseconds())/n, "db-ms/op")
 	b.ReportMetric(float64(logReads.Milliseconds())/n, "log-read-ms/op")
-	b.ReportMetric(float64(lockHeld.Milliseconds())/n, "mask-lock-held-ms/op")
+	b.ReportMetric(float64(lockHeld.Milliseconds())/n, "owner-lock-held-ms/op")
+	b.ReportMetric(float64(deleteWait.Microseconds())/1000, "delete-wait-max-ms/op")
+	b.ReportMetric(float64(deletes)/n, "deletes/op")
 	b.ReportMetric(float64(batches)/n, "batches/op")
 	b.ReportMetric(float64(rows)/n, "rows/op")
 	b.ReportMetric(float64(redone)/n, "redone/op")
 	b.ReportMetric(float64(masked)/n, "masked/op")
+}
+
+// pendingDeleter deletes, one after another on its own connection, the pending inserts' comments
+// it was given, until it is finished or has deleted them all (startDeleter).
+type pendingDeleter struct {
+	stop chan struct{}
+	done chan deletesRun
+}
+
+// deletesRun is what a pendingDeleter did: how many comments it deleted, the longest any one of
+// those deletes waited for its owner's lock, and the error that stopped it, if one did.
+type deletesRun struct {
+	count   int
+	maxWait time.Duration
+	err     error
+}
+
+// startDeleter starts deleting comments, pending inserts' comments on issue's primary document,
+// one after another (deletePendingInsert).
+func startDeleter(database *store.Store, issue, document string, comments []string) *pendingDeleter {
+	deleter := &pendingDeleter{stop: make(chan struct{}), done: make(chan deletesRun, 1)}
+	go func() {
+		var run deletesRun
+		defer func() { deleter.done <- run }()
+		for _, comment := range comments {
+			select {
+			case <-deleter.stop:
+				return
+			default:
+			}
+			wait, err := deletePendingInsert(context.Background(), database, issue, document, comment)
+			if err != nil {
+				run.err = err
+				return
+			}
+			run.count, run.maxWait = run.count+1, max(run.maxWait, wait)
+		}
+	}()
+	return deleter
+}
+
+// finish stops the deleter after the delete it is running and answers what it did.
+func (d *pendingDeleter) finish() deletesRun {
+	close(d.stop)
+	return <-d.done
+}
+
+// deletePendingInsert deletes comment, anchored on the insert of issue's primary document, with
+// the locks and the writes of this build's delete (api's deleteComment): in one READ COMMITTED
+// transaction, the lock of the issue's owner (store.LockOwner), then the versions holding the
+// insert's words masked as they read once it commits (docs.MaskedVersionsOnDelete), the body it
+// clears kept in post_body_history, the comment cleared and marked deleted, and the keyword rows
+// of those versions rewritten (store.MaskTextVersions, the statement QueueTextVersionsMask
+// queues). It appends no event: the pass reads the log up to its cursor. It answers how long the
+// lock took.
+func deletePendingInsert(ctx context.Context, database *store.Store, issue, document, comment string) (time.Duration, error) {
+	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin the delete of comment %s: %w", comment, err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	asked := time.Now()
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issue)); err != nil {
+		return 0, fmt.Errorf("lock %s for the delete of comment %s: %w", issue, comment, err)
+	}
+	wait := time.Since(asked)
+	numbers, texts, err := docs.MaskedVersionsOnDelete(ctx, tx, document, insertMark, comment)
+	if err != nil {
+		return 0, err
+	}
+	for _, statement := range []string{
+		`insert into post_body_history (comment_id, body, edited_by)
+		 select id, body, '{"kind":"user","id":"alice"}' from comments where id = $1::uuid`,
+		`update comments set body = '', deleted_at = now(), deleted_by = '{"kind":"user","id":"alice"}' where id = $1::uuid`,
+	} {
+		if _, err := tx.Exec(ctx, statement, comment); err != nil {
+			return 0, fmt.Errorf("delete comment %s: %w", comment, err)
+		}
+	}
+	if _, err := store.MaskTextVersions(ctx, tx, document, numbers, texts); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit the delete of comment %s: %w", comment, err)
+	}
+	return wait, nil
 }
 
 // benchSize reads the size the environment variable name sets, else fallback.
@@ -172,10 +291,10 @@ func logRereadPlan(b *testing.B, database *store.Store) {
 
 // statementTimer sums the time each statement of the pool it traces took, from the client's send
 // to its answer: every statement's, and the re-read's reads of the log's (rereadEventsQuery); and
-// the time from the answer to each statement that took the keyword table's mask lock exclusively
-// (store.LockTextVersionsMask) to the answer to the commit or rollback that ended its
-// transaction, which released it. Only the passes' batches run on that pool; the benchmark's own
-// statements run on another.
+// the time from the answer to each statement that took owner locks (store.OwnerLockStatement,
+// which LockOwners runs) to the answer to the commit or rollback that ended its transaction,
+// which released them. Only the passes' batches run on that pool; the benchmark's own statements
+// and its deletes run on another.
 type statementTimer struct {
 	mu                      sync.Mutex
 	all, readLogs, lockHeld time.Duration
@@ -184,7 +303,7 @@ type statementTimer struct {
 }
 
 // statementStart is a statement in flight on one connection: when it was sent, and whether it is
-// a read of the log, the statement that takes the mask lock, or the end of a transaction.
+// a read of the log, the statement that takes owner locks, or the end of a transaction.
 type statementStart struct {
 	at                  time.Time
 	readLog, lock, ends bool
@@ -200,7 +319,7 @@ func (s *statementTimer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, da
 	s.open[conn] = statementStart{
 		at:      time.Now(),
 		readLog: data.SQL == rereadEventsQuery,
-		lock:    strings.Contains(statement, "pg_advisory_xact_lock(hashtext('search-text-versions-mask')"),
+		lock:    data.SQL == store.OwnerLockStatement,
 		ends:    statement == "commit" || statement == "rollback",
 	}
 	return ctx
@@ -231,7 +350,7 @@ func (s *statementTimer) TraceQueryEnd(_ context.Context, conn *pgx.Conn, _ pgx.
 }
 
 // totals is the time of every statement traced, of the reads of the log among them, and the time
-// the mask lock was held.
+// owner locks were held.
 func (s *statementTimer) totals() (time.Duration, time.Duration, time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -365,8 +484,9 @@ func writeSeedRow(b *testing.B, tx pgx.Tx, kind, id string, event int64, body, f
 }
 
 // seedDeletedInsert gives issue a primary document whose version 2 holds a pending insert's
-// words (insertVersionText), a comment anchored on the insert that is deleted, and the issue row a
-// fill of rules version 1 wrote of version 2, from its stored markdown.
+// words (insertVersionText), a comment anchored on the insert that is deleted, with the body its
+// delete kept in post_body_history, and the issue row a fill of rules version 1 wrote of version
+// 2, from its stored markdown.
 func seedDeletedInsert(b *testing.B, database *store.Store, issue string, appendEvent func(pgx.Tx, string, string, map[string]any) int64) {
 	b.Helper()
 	ctx := context.Background()
@@ -388,9 +508,13 @@ func seedDeletedInsert(b *testing.B, database *store.Store, issue string, append
 		event := appendEvent(tx, issue, "artifact.version",
 			map[string]any{"artifact_id": document, "version": map[string]any{"number": 2, "size": len(markdown)}})
 		if _, err := tx.Exec(ctx, `
-			insert into comments (issue_key, author, body, anchor, deleted_at, deleted_by)
-			values ($1, '{"kind":"user","id":"alice"}', '', jsonb_build_object('artifact_id', $2::text, 'mark_id', $3::text),
-			        now(), '{"kind":"user","id":"alice"}')
+			with deleted as (
+			       insert into comments (issue_key, author, body, anchor, deleted_at, deleted_by)
+			       values ($1, '{"kind":"user","id":"alice"}', '', jsonb_build_object('artifact_id', $2::text, 'mark_id', $3::text),
+			               now(), '{"kind":"user","id":"alice"}')
+			       returning id)
+			insert into post_body_history (comment_id, body, edited_by)
+			select id, 'Add this word.', '{"kind":"user","id":"alice"}' from deleted
 		`, issue, document, insertMark); err != nil {
 			b.Fatalf("insert the deleted suggestion on %s: %v", issue, err)
 		}
@@ -403,4 +527,32 @@ func seedDeletedInsert(b *testing.B, database *store.Store, issue string, append
 			b.Fatalf("write the issue row of %s's version 2: %v", issue, err)
 		}
 	})
+}
+
+// seedPendingInserts writes count pending comments of alice on the insert of issue's primary
+// document (insertMark), which seedDeletedInsert wrote, for the deletes BenchmarkTheRulesReRead
+// runs beside its passes, and answers the document and the comments.
+func seedPendingInserts(b *testing.B, database *store.Store, issue string, count int) (string, []string) {
+	b.Helper()
+	ctx := context.Background()
+	var document string
+	var comments []string
+	textversionstest.Commit(b, database, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `select id::text from artifacts where issue_key = $1 and is_primary`, issue).Scan(&document); err != nil {
+			b.Fatalf("read the primary document of %s: %v", issue, err)
+		}
+		rows, err := tx.Query(ctx, `
+			insert into comments (issue_key, author, body, anchor)
+			select $1, '{"kind":"user","id":"alice"}', 'Add this word.',
+			       jsonb_build_object('artifact_id', $2::text, 'mark_id', $3::text)
+			  from generate_series(1, $4::integer)
+			returning id::text`, issue, document, insertMark, count)
+		if err != nil {
+			b.Fatalf("insert the pending suggestions on %s: %v", issue, err)
+		}
+		if comments, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			b.Fatalf("insert the pending suggestions on %s: %v", issue, err)
+		}
+	})
+	return document, comments
 }

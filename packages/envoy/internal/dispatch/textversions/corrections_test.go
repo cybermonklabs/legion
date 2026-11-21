@@ -78,7 +78,8 @@ func TestAnEditedThenDeletedPostEndsWithAnEmptyVersion(t *testing.T) {
 // an event cut, where the post's present row no longer holds it: the body the first later edit or
 // delete of the post kept, exactly, read before revision 1 of a comment's blocks. Where a later
 // change of the post kept no history, as a build before the history wrote its edits, the history
-// gives no body, rather than the one another change kept.
+// gives no body, rather than the one another change kept. A post's changes are counted from its
+// create, whether an earlier batch wrote the create's row or the batch decides it too.
 func TestACutBodyIsReadWholeFromThePostsBodyHistory(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -131,6 +132,32 @@ func TestACutBodyIsReadWholeFromThePostsBodyHistory(t *testing.T) {
 			t.Fatalf("the older build's edit's version holds %d bytes from %q, want its event's cut text (%q)", len(v.Body), v.BodyFrom, bodyFromCut)
 		}
 	})
+
+	// The history's read counts a post's changes from its create (historyBodyQuery): from its
+	// first row in the table where an earlier batch wrote it, else from its first version in the
+	// batch. A second edit of a message whose event cut its body takes the body its next edit kept
+	// only where the edit before it is counted, in either batch.
+	for _, split := range []bool{false, true} {
+		name := "a second cut edit, decided in the batch of its post's create"
+		if split {
+			name = "a second cut edit, decided in a batch after its post's create"
+		}
+		t.Run(name, func(t *testing.T) {
+			second := "The second plan.\n\n" + long
+			post := writePost(t, database, broker, kindMessage, "Rotate the staging key first.")
+			first := correctPost(t, database, broker, kindMessage, post.id, "Rotate the production key first.", false)
+			edit := correctPost(t, database, broker, kindMessage, post.id, second, false)
+			last := correctPost(t, database, broker, kindMessage, post.id, "The plan moved to the issue's spec.", false)
+			var logs logtest.Buffer
+			batch := readLoggedEvents(t, database, post.event, first, edit, last)
+			if split {
+				decideAndWrite(t, database, &logs, batch[:2])
+				batch = batch[2:]
+			}
+			got := decideAndWrite(t, database, &logs, batch)
+			requireWholeFromHistory(t, database, got, &logs, kindMessage, post.id, edit, second)
+		})
+	}
 }
 
 // requireWholeFromHistory holds the version event starts of post id of kind, whose event cut

@@ -2708,17 +2708,17 @@ At production's counts the table and its indexes take about 2 GB (1.9 GB measure
 So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
 A change to its shape is a new table that the fill writes again.
 The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
-Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, takes a cut post body from the post's body history (`post_body_history`), and makes an issue's vector from its document version's masked text under the mask lock.
+Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, takes a cut post body from the post's body history (`post_body_history`), and makes an issue's vector from its document version's masked text, writing the rows of a version that holds an insert under the lock of the row's issue's owner.
 A version 1 fill that runs beside a version 2 build during a roll passes over the events of those three types, reads a cut body from a post's row after a later edit or delete changed it, and writes an issue's vector from the stored markdown after a delete's rewrite masked it; and it lowers `rules` to 1.
 So a batch of version 2 that finds `rules` below 2 reads again before it writes past the cursor (`textversions`' `rereadBatch`), in batches bounded as the fill's are, each after the pause and before the rest:
 every event of the three types up to the cursor, decided against the row its post held just before it, each version written unless the table holds it;
 each row of a post with a later edit or delete whose body its event cut and that was read from another source than the post's body history, written again as version 2 decides it;
-and the vector of each issue row naming a document version that holds a deleted comment's insert, from the masked text.
+and the vector of each issue row naming a document version that holds a deleted comment's insert, from the masked text, the versions found through the deleted comments' anchors and the rows written last, under their issues' owner locks.
 Its last batch raises `rules` to 2, and only it does: a re-read stopped before then, or a later version 1 batch that lowers `rules` again, has the next version 2 batch read again from the log's first event, which writes nothing twice.
 Only a build with version 2 writes an event of the three types, so every one in the log was written by the roll that brought them or later, and the re-read misses none.
 Its read takes the events of the types that change a post's text through `events_post_text_changes` (below), under a batch's statement time.
 
-Migration `20261121160853_events_post_text_changes` creates `events_post_text_changes` on `events (id)` where the type is `comment.deleted`, `comment.edited`, `message.deleted` or `message.edited`: the events the keyword fill's re-read reads, in id order, which it took from a scan of the whole log before, under the keyword table's mask lock, 7.4 s of an 8.0 s re-read at 900,000 events.
+Migration `20261121160853_events_post_text_changes` creates `events_post_text_changes` on `events (id)` where the type is `comment.deleted`, `comment.edited`, `message.deleted` or `message.edited`: the events the keyword fill's re-read reads, in id order, which it took from a scan of the whole log before, 7.4 s of an 8.0 s re-read at 900,000 events.
 The re-read's statement names the same list as text, not as a bound argument, so a generic plan proves the predicate too (`textversions`' `rereadLogTypes`, held to the migration and to the plan by `TestTheReReadsLogReadUsesItsIndex`).
 It is built `concurrently` and non-transactional, as `20261111002444_events_person_words_with_declines` is, so it holds off no write to `events`; its census answers `0`.
 
@@ -3488,7 +3488,7 @@ An edit of a comment or an issue message starts a version of its new body, and a
 Where an event cut a post's body, the fill reads the whole body from the post's present row, else from its body history (`post_body_history`), the body the next edit or delete kept, else from a comment's first blocks.
 The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
 An issue's vector reads its primary document version's text as every read of that version gives it, without the words of a pending insert suggestion whose comment was deleted.
-The delete of such a comment rewrites the vector of each row the fill already wrote of a version holding those words, and every fill batch and that delete take the advisory lock `search-text-versions-mask`, so neither misses the other's write (`internal/dispatch/store/README.md`).
+The delete of such a comment rewrites the vector of each row the fill already wrote of a version holding those words, under the lock of the comment's owner, and the fill writes a row of such a version under the same lock, after it reads the document's comments again, so neither misses the other's write (`internal/dispatch/store/README.md`).
 The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above); after a fill of an earlier rules version wrote during a roll, it reads again what that version passed over or decided otherwise (Database migrations, above).
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.

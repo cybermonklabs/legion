@@ -202,8 +202,9 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// read once the delete commits (docs.MaskedVersionText), but the keyword table holds, for each
 	// past version of the issue, the vector of its primary document version's stored markdown,
 	// which a read cannot mask. The delete rewrites each such row's vector from the masked text in
-	// its own write phase, after the clear, under the lock the keyword fill's batches take, so a
-	// batch either commits its rows before the rewrite reads them or reads the comment deleted
+	// its own write phase, after the clear, under the lock of the comment's owner it took before it
+	// read the comment, which the keyword fill takes before it writes such rows, so a batch either
+	// commits its rows before the rewrite reads them or reads the comment deleted
 	// (store.QueueTextVersionsMask). An accepted insert's words are document text and stay.
 	if comment.Anchor != nil {
 		artifactID := comment.Anchor.ArtifactID

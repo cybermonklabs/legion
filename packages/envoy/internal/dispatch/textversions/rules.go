@@ -19,7 +19,7 @@ import (
 // replies and edits of comments, the creates and replies of issue messages, and asks; version 2
 // reads, besides, message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523,
 // rulesAdded), takes a post's whole body from its body history (bodyFromHistory), and makes an
-// issue's vector from its document version's masked text (maskedSpecTexts).
+// issue's vector from its document version's masked text (maskPlan).
 //
 // A batch of this build that finds a lower version stored reads again what that version's fill
 // passed over before it writes the events above the cursor (filler.rereadBatch): every event of
@@ -631,9 +631,9 @@ func eventError(e event, err error) error {
 
 // decider is one batch's decision as decideVersions makes it: the rules it decides under, the
 // latest versions the table held of the batch's items, the latest each item has taken in this
-// batch, the primary document versions the batch's rows can name, measured, the versions decided
-// so far, and the warnings of the event being decided, which wait until it is known to be in the
-// batch.
+// batch and the seq of the first, the primary document versions the batch's rows can name,
+// measured, the versions decided so far, and the warnings of the event being decided, which wait
+// until it is known to be in the batch.
 //
 // A re-read batch (decideReread) gives it, in place of the latest versions, the row each event's
 // item held just before the event's own seq (before, by event id), and the event being decided
@@ -646,6 +646,7 @@ type decider struct {
 	before   map[int64]*version
 	event    int64
 	batch    map[item]*version
+	firsts   map[item]int32
 	specs    map[specVersion]specText
 	out      decided
 	warnings []warning
@@ -778,7 +779,26 @@ func (d *decider) keep(v version) {
 		d.out.Cut++
 	}
 	d.out.Versions = append(d.out.Versions, v)
-	d.batch[item{v.Kind, v.ID}] = &v
+	key := item{v.Kind, v.ID}
+	d.batch[key] = &v
+	if _, kept := d.firsts[key]; !kept {
+		if d.firsts == nil {
+			d.firsts = map[item]int32{}
+		}
+		d.firsts[key] = v.EventSeq
+	}
+}
+
+// firstSeq is the seq of the first event of post (kind, id) where the keyword table holds no row
+// of it, which the body history's read counts the post's changes from (historyBodyQuery): the
+// seq of its first version decided in this batch, else seq, that of the event being decided,
+// which is then the post's create. The create of a comment or of an issue's message always
+// starts a version, so a post with no row has its create in the batch.
+func (d *decider) firstSeq(kind, id string, seq int32) int32 {
+	if first, kept := d.firsts[item{kind, id}]; kept {
+		return first
+	}
+	return seq
 }
 
 // warn holds a warning of the event being decided until flush logs it, once the event is known
