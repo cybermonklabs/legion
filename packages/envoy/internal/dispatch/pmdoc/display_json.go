@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
-	"maps"
-	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -167,7 +165,10 @@ const DisplayHighlightMark = "searchHighlight"
 // then has their exact places, where an offset into the markdown would have had to survive both
 // the snippet's reading and the parse. The same reading leaves the ones the query matched in an
 // address or a caption in the attribute they fall in, and the walk takes those out
-// (highlightSnippet).
+// (highlightSnippet). Every sentinel in markdown is one ts_headline wrote: the search replaces the
+// ones an author wrote in a text with U+FFFD before ts_headline reads it (api's
+// searchPageAndTailSQL), so a sentinel the walk takes out is never a character the stored text
+// holds.
 //
 // The snippet is read fresh rather than from the cache: every query cuts its own headline, so a
 // cached snippet would be a tree nothing asks for again, taking the room of a body many readers
@@ -192,7 +193,7 @@ func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
 // headline may start a highlight in one text node and stop it in the next.
 //
 // Only text carries a highlight, so the walk takes the sentinels out of every attribute of every
-// node it passes and of every mark on it (withoutSentinels), and those leave the state where it
+// node it passes and of every mark on it (stripNodeSentinels), and those leave the state where it
 // was. ts_headline marks the words of an address as it marks any other words: a document stores
 // the autolink `<dispatch://CORE-1>` as `[dispatch://CORE-1](dispatch://CORE-1)` (text's
 // referenceEnd), and a search for CORE answers `<b>CORE</b>-1](dispatch://<b>CORE</b>-1)`, which
@@ -207,8 +208,7 @@ func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 	if node == nil {
 		return inside
 	}
-	node.Attrs, _ = withoutSentinels(node.Attrs, start, stop)
-	node.Marks = marksWithoutSentinels(node.Marks, start, stop)
+	stripNodeSentinels(node, start, stop)
 	if node.Type == "text" {
 		return inside
 	}
@@ -222,73 +222,45 @@ func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 			rewritten = append(rewritten, child)
 			continue
 		}
-		child.Attrs, _ = withoutSentinels(child.Attrs, start, stop)
-		child.Marks = marksWithoutSentinels(child.Marks, start, stop)
+		stripNodeSentinels(child, start, stop)
 		rewritten, inside = appendHighlightRuns(rewritten, child, start, stop, inside)
 	}
 	node.Children = rewritten
 	return inside
 }
 
-// withoutSentinels is attrs with start and stop taken out of every string value and every string
-// of a list value, which are the shapes of every attribute the schema carries that text can
-// reach: a link's href and title, an image's src, alt and title, a code block's language, an
-// inline HTML node's value, a footnote's label, and a typed block's string and list attributes.
-// It answers whether it took anything out. The answer is a map of its own where it did and attrs
-// itself where it did not, since one link's attributes are shared by every text node the link
-// spans, so attrs is never written to.
-func withoutSentinels(attrs Attrs, start, stop string) (Attrs, bool) {
-	var cleaned Attrs
-	for name, value := range attrs {
-		var stripped any
-		switch typed := value.(type) {
-		case string:
-			if !holdsSentinel(typed, start, stop) {
-				continue
-			}
-			stripped = stripSentinels(typed, start, stop)
-		case []string:
-			if !slices.ContainsFunc(typed, func(item string) bool { return holdsSentinel(item, start, stop) }) {
-				continue
-			}
-			list := make([]string, len(typed))
-			for index, item := range typed {
-				list[index] = stripSentinels(item, start, stop)
-			}
-			stripped = list
-		default:
-			continue
-		}
-		if cleaned == nil {
-			cleaned = maps.Clone(attrs)
-		}
-		cleaned[name] = stripped
+// stripNodeSentinels takes start and stop out of node's attributes and out of the attributes of
+// every mark on it (stripAttrSentinels).
+func stripNodeSentinels(node *Node, start, stop string) {
+	stripAttrSentinels(node.Attrs, start, stop)
+	for _, mark := range node.Marks {
+		stripAttrSentinels(mark.Attrs, start, stop)
 	}
-	if cleaned == nil {
-		return attrs, false
-	}
-	return cleaned, true
 }
 
-// marksWithoutSentinels is marks with withoutSentinels applied to each mark's attributes, in a
-// slice of its own where any mark changed and marks itself where none did: the runs a text node
-// is cut into share the node's marks, so the slice is never written to.
-func marksWithoutSentinels(marks []Mark, start, stop string) []Mark {
-	var cleaned []Mark
-	for index, mark := range marks {
-		attrs, changed := withoutSentinels(mark.Attrs, start, stop)
-		if !changed {
-			continue
+// stripAttrSentinels takes start and stop out of every string value of attrs and every string of
+// a list value, which are the shapes of every attribute the schema carries that text can reach: a
+// link's href and title, an image's src, alt and title, a code block's language, an inline HTML
+// node's value, a footnote's label, and a typed block's string and list attributes. It writes in
+// place, and only a value that holds a sentinel. The tree is DisplaySnippetJSON's own, read fresh
+// for this one snippet, and the reading makes a link's attributes once for each link, which every
+// text node the link spans then shares: stripping them once strips them for all of those nodes,
+// which is the reading each of them wants.
+func stripAttrSentinels(attrs Attrs, start, stop string) {
+	for name, value := range attrs {
+		switch typed := value.(type) {
+		case string:
+			if holdsSentinel(typed, start, stop) {
+				attrs[name] = stripSentinels(typed, start, stop)
+			}
+		case []string:
+			for index, item := range typed {
+				if holdsSentinel(item, start, stop) {
+					typed[index] = stripSentinels(item, start, stop)
+				}
+			}
 		}
-		if cleaned == nil {
-			cleaned = slices.Clone(marks)
-		}
-		cleaned[index].Attrs = attrs
 	}
-	if cleaned == nil {
-		return marks
-	}
-	return cleaned
 }
 
 // holdsSentinel answers whether value holds start or stop.

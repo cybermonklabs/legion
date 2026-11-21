@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,6 +156,32 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 	}))
 	if next.Key != "TEST-2" {
 		t.Fatalf("issue created after the refusal = %q, want TEST-2", next.Key)
+	}
+}
+
+// A candidate's snippet marks the words of its title the new text shares and nothing else: a
+// sentinel the candidate's author wrote in the title is shown as U+FFFD, where markSnippet would
+// have drawn it as a <mark> around a word nothing matched (duplicateScoreQuery).
+func TestCreateIssueDuplicateSnippetShowsTheSentinelsATitleHoldsAsText(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+	title := "Astrolabe " + markStart + "calibration" + markEnd + " drifts after a reseat"
+	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": title, "spec": duplicateSpecAstrolabe,
+	}))
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": title, "spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != first.Key {
+		t.Fatalf("candidates = %#v, want %s alone", body.Candidates, first.Key)
+	}
+	snippet := body.Candidates[0].Snippet
+	if !strings.Contains(snippet, "<mark>Astrolabe</mark>") {
+		t.Errorf("candidate snippet %q does not mark the shared word Astrolabe", snippet)
+	}
+	shown := html.UnescapeString(strings.NewReplacer("<mark>", "", "</mark>", "").Replace(snippet))
+	if want := strings.NewReplacer(markStart, "\uFFFD", markEnd, "\uFFFD").Replace(first.Title); shown != want {
+		t.Errorf("candidate snippet %q reads %q, want the title %q", snippet, shown, want)
 	}
 }
 

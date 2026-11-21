@@ -1,0 +1,2 @@
+kind: Fixed
+body: A search snippet shows the text that is stored. An author's own U+E000 or U+E001, the private-use characters the search marks its hits with, is shown as U+FFFD, so it can neither change a snippet's link target nor mark a word the search did not match. This holds in the search's snippets and in the duplicate-issue check's titles.

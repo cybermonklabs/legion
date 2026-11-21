@@ -90,9 +90,14 @@ const (
 	// per request or per corpus; a corpus whose true matches cluster lower would need a new floor
 	// chosen the same way.
 	searchMeaningFloor = 0.25
-	markStart          = "\uE000" // private-use sentinels: ts_headline writes them, markSnippet turns them into <mark>
-	markEnd            = "\uE001"
-	headlineOptions    = "StartSel=" + markStart + ", StopSel=" + markEnd + ", MaxWords=24, MinWords=12, MaxFragments=1"
+	// markStart and markEnd are the private-use sentinels ts_headline writes around what a search
+	// matched, which markSnippet turns into <mark> and pmdoc.DisplaySnippetJSON into its highlight.
+	// Every text ts_headline reads has the ones an author wrote replaced by U+FFFD first
+	// (searchPageAndTailSQL's src, duplicateScoreQuery, duplicateEqualLexemesQuery), so every
+	// sentinel in a headline is one ts_headline wrote.
+	markStart       = "\uE000"
+	markEnd         = "\uE001"
+	headlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", MaxWords=24, MinWords=12, MaxFragments=1"
 	// searchWindowCandidates is how many nearest windows one window arm takes before its
 	// `distinct on (id)` keeps the nearest window of each item. Every arm is held to
 	// contracts.SearchKindDepth items afterwards (ranked), but a window is not an item: one
@@ -382,10 +387,19 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- query's first term, or the text's head. It is selected beside the headline as well, so the
   -- scan has the very text ts_headline read and can set the headline back into it
   -- (pmdoc.SearchSnippet).
+  --
+  -- Every U+E000 and U+E001 an author wrote in the window is U+FFFD here, before ts_headline reads
+  -- it, so every markStart and markEnd in a headline is one ts_headline wrote. ts_headline passes
+  -- an author's through as it passes any character, and the scan would read each as a highlight's
+  -- start or stop: markSnippet would draw a <mark> nothing matched, SearchSnippet would take it
+  -- out of the headline and then not find the headline in a text that still holds it, so the hit
+  -- would show its raw markdown, and pmdoc.DisplaySnippetJSON would take it out of an attribute,
+  -- so a link the author wrote to java<U+E000>script: would read as javascript:. The scan reads
+  -- this replaced text too, so the headline is set back into the very text it was cut from.
   left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+    select translate(search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
+             else left(txt.text, 4000) end), E'\uE000\uE001', E'\uFFFD\uFFFD') as text
   ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
