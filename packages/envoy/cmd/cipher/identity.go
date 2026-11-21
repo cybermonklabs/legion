@@ -208,10 +208,12 @@ func enrollWait() (time.Duration, error) {
 }
 
 // awaitEnrollment waits, for wait at most, while dir holds a fresh marker and not yet both
-// key.pem and enrollment. It says on stderr what it waits for before it waits, and again each
-// time that changes (the launcher wrote key.pem and not yet enrollment), so a call held at a
-// box's start says why it is held and how far the launcher got; it names the key dir by its
-// setting (keyDirName), never its path. It reports whether it gave up with the marker still there.
+// key.pem and enrollment. With a wait above 0 it says on stderr what it waits for before it
+// waits, and again each time that changes (the launcher wrote key.pem and not yet enrollment), so
+// a call held at a box's start says why it is held and how far the launcher got; it names the key
+// dir by its setting (keyDirName), never its path. It says so before it reads its deadline, so a
+// call that gives up has always first said what it waited for, however late a loaded machine
+// runs it; a wait of 0 says nothing. It reports whether it gave up with the marker still there.
 func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (gaveUp bool) {
 	deadline := time.Now().Add(wait)
 	said := ""
@@ -220,18 +222,20 @@ func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (gaveUp b
 		if missing == "" {
 			return false
 		}
+		if wait > 0 {
+			switch {
+			case said == "":
+				fmt.Fprintf(stderr, "agent-secrets: the launcher is still enrolling this process (%s holds %s); waiting up to %s for its %s\n",
+					keyDirName(), pendingMarker, wait, missing)
+			case missing != said:
+				fmt.Fprintf(stderr, "agent-secrets: still waiting for the launcher's %s\n", missing)
+			}
+			said = missing
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return true
 		}
-		switch {
-		case said == "":
-			fmt.Fprintf(stderr, "agent-secrets: the launcher is still enrolling this process (%s holds %s); waiting up to %s for its %s\n",
-				keyDirName(), pendingMarker, wait, missing)
-		case missing != said:
-			fmt.Fprintf(stderr, "agent-secrets: still waiting for the launcher's %s\n", missing)
-		}
-		said = missing
 		time.Sleep(min(enrollPollInterval, remaining))
 	}
 	return false

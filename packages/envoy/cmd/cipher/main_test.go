@@ -1289,17 +1289,20 @@ const enrollmentWaitLine = "agent-secrets: still waiting for the launcher's enro
 // waits for that file, so the call is waiting before each file is there however slow the machine
 // is: fixture's key.pem once the call says it waits for key.pem and enrollment, then fixture's
 // enrollment once the call says it still waits for that, and then it removes the marker, as the
-// launcher does. Each file is written whole (writeFileAtomic), as the launcher writes it, so the
-// call never reads one half-written. It fails the test when the call ends before either line, or
-// has ended by the time the launcher is about to write the enrollment. Once the enrollment is
-// written the call may end at any moment, which is what it waited for: a call still running just
-// before that write and exiting 0 afterwards ended after the write, since it cannot sign without
-// the enrollment.
+// launcher does. Before each file it renews the marker (writePendingMarker), as the launcher does
+// before each step of its setup, so a row that a slow machine stretches past the marker's life
+// (pendingMarkerLife) still finds it fresh. Each file is written whole (writeFileAtomic), as the
+// launcher writes it, so the call never reads one half-written. It fails the test when the call
+// ends before either line, or has ended by the time the launcher is about to write the
+// enrollment. Once the enrollment is written the call may end at any moment, which is what it
+// waited for: a call still running just before that write and exiting 0 afterwards ended after
+// the write, since it cannot sign without the enrollment.
 func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string) {
 	t.Helper()
 	marker := filepath.Join(keyDir, pendingMarker)
 	copyFile := func(name string) {
 		t.Helper()
+		writePendingMarker(t, keyDir, 0)
 		data, err := os.ReadFile(filepath.Join(fixture, name))
 		if err == nil {
 			err = writeFileAtomic(filepath.Join(keyDir, name), data, 0o600)
@@ -1326,9 +1329,9 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 // and enrollment to appear instead of failing at once. The row decides by the order of events,
 // never by a span: the launcher writes each file only once the call says it waits for it
 // (playTheLauncher), and the call must exit 0 after the enrollment is there. Its bound is a day,
-// so the bound cannot end the wait within the shared test wait; the marker, fresh for 160 s and
-// removed only after the enrollment is written, cannot either. A call that does not wait for the
-// marker ends before it says so, which fails the row.
+// so the bound cannot end the wait within the shared test wait; the marker, fresh for 160 s from
+// each renewal before a file is written and removed only after the enrollment is written, cannot
+// either. A call that does not wait for the marker ends before it says so, which fails the row.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1347,13 +1350,15 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
 // stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
 // fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
-// present: the call stops there rather than go on to a later source of the chain. The call's
-// "(waited 1s while ...)" says it gave up with the marker there, but it names the configured
-// bound, not the time waited, so the row also requires the call to end no sooner than its bound
-// after a start read before the call starts. Load can only lengthen that span, so the row reads
-// no upper limit, which load could pass. The two things that end a wait earlier are checked
-// absent: the marker is still fresh, and key.pem never came. The shared wait (runExecForm) only
-// guards against a call whose bound never ends its wait.
+// present: the call stops there rather than go on to a later source of the chain. The call says
+// that it waits before it reads its deadline (awaitEnrollment), so the row requires that line
+// however late a loaded machine runs the call. The call's "(waited 1s while ...)" says it gave up
+// with the marker there, but it names the configured bound, not the time waited, so the row also
+// requires the call to end no sooner than its bound after a start read before the call starts.
+// Load can only lengthen that span, so the row reads no upper limit, which load could pass. The
+// two things that end a wait earlier are checked absent: the marker is still fresh, and key.pem
+// never came. The shared wait (runExecForm) only guards against a call whose bound never ends its
+// wait.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
