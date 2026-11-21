@@ -67,6 +67,8 @@ type intakeDelivery struct {
 	// with reading it (admitHandBack), so every hand-back is either counted before the seal, and the
 	// hold's release waits for it, or never published.
 	sealed bool
+	// settled is set once the hold is released with every hand-back confirmed (markSettled).
+	settled bool
 
 	// beforeHandBackPublish, when set, runs before each hand-back is admitted and published, once
 	// the rule has let it through (publishHandBack). It is nil outside tests: a test sets it to take
@@ -109,7 +111,30 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 	d.mu.Lock()
 	d.delivering = delivery
 	d.mu.Unlock()
+	if delivery.hold != nil {
+		go d.watchLoss(delivery, delivery.hold)
+	}
 	return sub, nil
+}
+
+// markSettled records that the hold this delivery delivers under is being released with every
+// hand-back of it confirmed (heldDurable.stop, finalizeHandBacks), so the release, which closes the
+// hold's Lost as a loss does, is not taken for one (heldDurable.watchLoss). A nil delivery is
+// nothing to mark.
+func (d *intakeDelivery) markSettled() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.settled = true
+}
+
+// settledBeforeRelease reports whether markSettled has run.
+func (d *intakeDelivery) settledBeforeRelease() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.settled
 }
 
 // subscribeDurable subscribes deliver to wanted's durable through client.Subscribe at

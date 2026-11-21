@@ -1642,7 +1642,8 @@ It releases only once the hand-back has reached the server and a flush answers, 
 A hold lost meanwhile — its renewals failing, as when the database is out of reach — cannot be kept, so the intake severs its NATS connection instead (`heldDurable.severHandBacks`, `bus.Client.Sever`):
 it resets the connection's sockets without waiting for nats.go's lock, so neither a publish waiting behind a held write nor what the kernel had not sent reaches the server, and the bus client dials a new connection.
 The hold reports itself lost `intakeHoldMargin` (2 s) before its row lapses, so the sever comes before any standby can recreate the durable.
-The run loop does the same when the hold is lost while it still delivers, unless every hand-back it made has landed and a flush of up to 1 s confirms them (`heldDurable.settleHandBacksOnLoss`).
+Every delivery made under a hold has a watcher of that hold of its own (`heldDurable.watchLoss`), which does this on a goroutine nothing else of the intake blocks: at the loss it seals the delivery and severs unless every hand-back it made has landed and a flush answers within 1 s.
+The sever reaches the connection without the bus client's own lock, which a caller holds while it waits for nats.go's, and a socket whose write failed is reset when nats.go closes it, so its unsent bytes are dropped too.
 Dispatch shutdown closes that client, then waits for the finalizer to release the hold through the still-open pool.
 That normally finishes inside the shutdown reserve, but a write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock, then the finalizer can spend up to 5 s releasing the hold.
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:

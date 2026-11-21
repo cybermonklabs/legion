@@ -183,7 +183,7 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     once its hold's loss deadline has passed, and leaves it with the durable rather than
 //     answering for it (intakeDelivery.receive, intakeDelivery.handBack). A hand-back it began
 //     that may still reach the server when the hold is lost has its connection severed, before
-//     any standby can recreate the durable (settleHandBacksOnLoss).
+//     any standby can recreate the durable, by a watcher of the hold of its own (watchLoss).
 //   - When its process stops, it stops delivering and hands back every message it was delivered
 //     and did not handle. Once no hand-back can begin any more (intakeDelivery.seal) and every one
 //     that began reached the server, it releases the hold (stop), so a standby takes over at once
@@ -303,15 +303,10 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			slog.Warn(intakeHoldLost, "name", d.name)
 			// The hold lasts intakeHoldMargin longer on the database's clock, so a handler that
 			// finishes within it finished while the hold still held; the rest are given up,
-			// since another process may take the hold from that moment. A hand-back this intake
-			// began must not land past that moment either, so it is settled first, within the
-			// same margin, which the handlers' budget is counted from.
-			stopBy := time.Now().Add(intakeHoldMargin)
-			d.mu.Lock()
-			delivery := d.delivering
-			d.mu.Unlock()
-			d.settleHandBacksOnLoss(delivery)
-			d.stopDeliveringWithin(time.Until(stopBy))
+			// since another process may take the hold from that moment. The delivery's loss
+			// watcher seals it and settles its hand-backs meanwhile (watchLoss), on a goroutine
+			// of its own, so nothing this loop waits for can delay that.
+			d.stopDeliveringWithin(intakeHoldMargin)
 			d.hold, d.subject = nil, ""
 		}
 	}
@@ -704,13 +699,14 @@ func (d *heldDurable) stop(ctx context.Context) {
 	delivery := d.delivering
 	d.mu.Unlock()
 	if d.handBacksReached(ctx, delivery, hold) {
+		delivery.markSettled()
 		d.releaseHold(hold, lapse)
 		return
 	}
 	select {
 	case <-hold.Lost():
-		// Another holder may act once the row lapses, and there is no hold left to keep.
-		d.severHandBacks()
+		// Another holder may act once the row lapses, and there is no hold left to keep. The
+		// delivery's loss watcher severs what may still reach NATS (watchLoss).
 	default:
 		slog.Warn(intakeHoldFinalizing, "name", d.name)
 		d.finalizers.Add(1)
@@ -739,7 +735,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	select {
 	case <-delivery.handBacksLanded():
 	case <-hold.Lost():
-		d.severHandBacks()
+		// The delivery's loss watcher severs what may still reach NATS (watchLoss).
 		return
 	}
 	retry := time.NewTicker(intakeFlushWait)
@@ -752,13 +748,13 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 			select {
 			case <-hold.Lost():
 			default:
+				delivery.markSettled()
 				d.releaseHold(hold, lapse)
 			}
 			return
 		}
 		select {
 		case <-hold.Lost():
-			d.severHandBacks()
 			return
 		case <-retry.C:
 		}
@@ -790,26 +786,43 @@ func (d *heldDurable) severHandBacks() {
 	d.nats.Sever()
 }
 
-// settleHandBacksOnLoss is severHandBacks for the run's lost hold, which comes while delivery still
-// delivers: it seals delivery first (intakeDelivery.seal), and severs only when a hand-back delivery
-// began may still reach the server -- one NATS has not taken (handBacksLanded), or one a flush
-// within intakeFlushWait, half the hold's margin, does not confirm (flushHandBacks). A delivery that
-// handed nothing back, or whose hand-backs the flush confirms, keeps its connection, so the handlers
-// the stop then waits for still acknowledge their messages through it.
-func (d *heldDurable) settleHandBacksOnLoss(delivery *intakeDelivery) {
-	if delivery == nil {
+// watchLoss is a delivery's loss watcher, which subscribe starts for every delivery made under a
+// hold, and which ends with that hold: it waits for hold.Lost, which a release closes too, and
+// returns at once when the hold was released with every hand-back of delivery confirmed
+// (intakeDelivery.markSettled). Otherwise the hold is lost: it seals delivery, so no hand-back begins
+// any more (intakeDelivery.seal), and severs (severHandBacks) when a hand-back delivery began may
+// still reach the server -- one NATS has not taken (handBacksLanded), or one whose arrival a flush
+// does not confirm within intakeFlushWait, half the hold's margin (handBacksSettled). The wait for
+// that answer is bounded on this goroutine: the flush itself takes the client's lock and nats.go's,
+// which a write to a stalled socket can hold for a minute, and runs on a goroutine of its own, which
+// the sever's reset of that socket ends. Nothing else the intake does -- the run loop's stop, a
+// check of the durable, the finalizer's own flush -- comes between the loss and the sever.
+//
+// A delivery that handed nothing back, or whose hand-backs the flush confirms, keeps its
+// connection, so the handlers the run loop's stop waits for still acknowledge their messages
+// through it.
+func (d *heldDurable) watchLoss(delivery *intakeDelivery, hold *duty.Hold) {
+	<-hold.Lost()
+	if delivery.settledBeforeRelease() {
 		return
 	}
 	delivery.seal()
 	if !delivery.handedBack() {
 		return
 	}
+	confirmed := make(chan bool, 1)
+	go func() {
+		<-delivery.handBacksLanded()
+		confirmed <- d.handBacksSettled()
+	}()
+	wait := time.NewTimer(intakeFlushWait)
+	defer wait.Stop()
 	select {
-	case <-delivery.handBacksLanded():
-		if d.flushHandBacks() {
+	case settled := <-confirmed:
+		if settled {
 			return
 		}
-	default:
+	case <-wait.C:
 	}
 	d.severHandBacks()
 }

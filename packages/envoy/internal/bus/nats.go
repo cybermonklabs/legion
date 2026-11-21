@@ -276,7 +276,10 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
+	Conn *nats.Conn
+	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
+	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
+	severable                   atomic.Pointer[severableConnection]
 	js                          nats.JetStreamContext
 	urls                        []string
 	name                        string
@@ -613,6 +616,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	}
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(js)
+	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -1660,6 +1664,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
+		c.noteSeverable(nc)
 		c.js = c.readsOwnRefusals(js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
