@@ -699,9 +699,14 @@ is made (`400 REQUEST_INVALID`, naming the bound), so the reads one request cost
 broker without `BROKER_PROJECT_ACCESS_URL` reads no reason's projects and takes any reason. A
 request made before that rule, or by a broker without the setting, whose reason names more is
 read whole: each project its keys name is asked, at most 80 in a reason of 400 characters, and a
-private one among them hides it as any other does. While Dispatch cannot answer, a request it must
-ask about is left out of the pending list, and a grant it must ask about out of the grant list of
-everyone but that grant's
+private one among them hides it as any other does. A request's projects are asked 16 at a time,
+and a list asks each project once for each person however many of its requests name it, so a
+reason of 80 projects costs a list five rounds of questions: half a second while Dispatch takes
+100 ms an answer, inside the 5 seconds Dispatch waits for the list. The broker keeps at most
+4,096 answers at once and keeps no new one past that, so many people reading many such requests
+can leave their answers unkept, and each of their lists then asks again. While Dispatch cannot
+answer, a request it must ask about is left out of the pending list, and a grant it must ask
+about out of the grant list of everyone but that grant's
 approver and its session's operator, who still list it and may end it whatever project it
 touches, each with a line in the broker's log naming its record; its page answers
 503 and shows only its record id, and an approval of it decides nothing. Every other request is

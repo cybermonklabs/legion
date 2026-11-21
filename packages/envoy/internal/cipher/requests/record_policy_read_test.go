@@ -1,11 +1,13 @@
 // packages/envoy/internal/cipher/requests/record_policy_read_test.go
 // The post-merge review's second finding on cybermonklabs/legion#4135: the record a person reads
-// is answered on the policy its person rule checked, never on one read after it.
+// is answered on the policy its person rule checked, never on one read after it, and judged on the
+// facts every other route's rule reads.
 package requests
 
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -83,5 +85,36 @@ func TestARecordIsReadOnThePolicyItsPersonRuleChecked(t *testing.T) {
 	shown, err := m.ReadRecordFor(t.Context(), *pending.RecordID, insider)
 	if want := []SecretProject{{Name: "SHARED_KEY", Project: privProject, Private: true}}; err != nil || !slices.Equal(shown.SecretProjects, want) {
 		t.Errorf("ReadRecordFor(%s) once SHARED_KEY is PRIV's = projects %v, %v; want %v", insider, shown.SecretProjects, err, want)
+	}
+}
+
+// TestAPersonsRecordIsJudgedOnTheFactsHideUnseenReads: the record a person reads (readRecord,
+// under ReadRecordFor) hands its person rule the very facts HideUnseen reads of the record
+// (readRowFacts under recordKey), every field, so a fact the rule comes to read is read for the
+// approval page as for every other route. The request is a session's naming TEAM, whose reason
+// names TEAM-1, and whose record names its approver, so every field the facts hold is set.
+func TestAPersonsRecordIsJudgedOnTheFactsHideUnseenReads(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	nameProjects(t, m, enr, teamProject)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, teamProject+"-1: rotate the deploy key", "DEEL_API_KEY"), "", nil)
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want it pending", pending, err)
+	}
+	want, err := m.readRowFacts(t.Context(), recordKey, *pending.RecordID)
+	if err != nil {
+		t.Fatalf("readRowFacts(the record): %v", err)
+	}
+	if want.approver == nil || want.holder.ID != enr || len(want.names) == 0 || len(want.sessionProjects) == 0 || want.reason == "" {
+		t.Fatalf("readRowFacts(the record) = %+v; want its approver, holder, names, projects and reason set, or the comparison below sees nothing", want)
+	}
+	var got rowFacts
+	if _, err := m.readRecord(t.Context(), *pending.RecordID, func(f rowFacts) ([]SecretProject, error) {
+		got = f
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("readRecord(the record): %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("readRecord handed its person rule %+v; want what HideUnseen reads, %+v", got, want)
 	}
 }

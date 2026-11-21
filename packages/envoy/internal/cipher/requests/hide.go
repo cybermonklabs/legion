@@ -6,10 +6,11 @@
 // (HideRequestFromSession, hideGrantFromSession). Each answers a row it hides exactly as an id no
 // row has, pgx.ErrNoRows, and a row Dispatch could not answer for ErrProjectAccessUnavailable,
 // which the route answers 503 having written nothing. What the rule reads of a row comes of one
-// statement (readRowFacts), keyed by the row it starts from, so a column the rule reads is read
-// for every route that judges a row, and for the approve path's decision (decisionFacts) too. The
-// one read of a record for a person (ReadRecordFor) judges the record from the statement that reads
-// what it answers (readRecord), which selects the same columns, so it answers the row it judged.
+// column list (rowFactsColumns, over rowFactsJoins, read by rowFactsRead), keyed by the row it
+// starts from, so a column the rule reads is read for every route that judges a row: by
+// readRowFacts, for the approve path's decision (decisionFacts) too, and by readRecord, the one
+// read of a record for a person (ReadRecordFor), which selects it beside what it answers in one
+// statement, under the key HideUnseen reads (recordKey), so it answers the row it judged.
 package requests
 
 import (
@@ -41,64 +42,84 @@ type rowFacts struct {
 }
 
 // rowKey is which row a read of rowFacts starts from, and how it reaches the rest: from joins the
-// request (r) and its record (cr), approver is the column naming the row's approver, held the
-// column naming the enrollment that holds the row now, where names the row by $1, and released
-// leaves out each name the request was denied.
+// request (aliased request) and its record (cr), approver is the column naming the row's approver,
+// held the column naming the enrollment that holds the row now, where names the row by $1, and
+// released leaves out each name the request was denied.
 type rowKey struct {
-	from, approver, held, where string
-	released                    bool
+	from, request, approver, held, where string
+	released                             bool
 }
 
 var (
-	// recordKey is a credential-request record by its id, as HideUnseen reads it. A machine
-	// login's record has no request, and answers its kind and nothing else of one.
-	recordKey = rowKey{from: `credential_requests cr left join requests r on r.record_id = cr.id`, approver: `cr.approver`, held: `r.enrollment_id`, where: `cr.id = $1`}
+	// recordKey is a credential-request record by its id, as HideUnseen and readRecord read it,
+	// its request aliased req as recordStateSQL reads it. A machine login's record has no
+	// request, and answers its kind and nothing else of one.
+	recordKey = rowKey{from: `credential_requests cr left join requests req on req.record_id = cr.id`, request: `req`, approver: `cr.approver`, held: `req.enrollment_id`, where: `cr.id = $1`}
 	// requestKey is a request by its id, with every name it asked for, as HideRequestFromSession
 	// reads it. A request the policy answered at once has no record, so its only credential is the
 	// one it hangs off, and it names no approver.
-	requestKey = rowKey{from: `requests r left join credential_requests cr on cr.id = r.record_id`, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.id = $1`}
+	requestKey = rowKey{from: `requests r left join credential_requests cr on cr.id = r.record_id`, request: `r`, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.id = $1`}
 	// grantKey is a grant by its id, as GrantsForApprover lists it: its names are the ones it
 	// releases, so a name its request was denied is left out; its approver is the grant's own,
 	// record.AnyoneApprover where the model judge approved it in anyone's stead, as mayRevoke reads
 	// it; and the enrollment that holds it is the one the grants row names.
-	grantKey = rowKey{from: `grants g join requests r on r.id = g.request_id left join credential_requests cr on cr.id = r.record_id`, approver: `g.approver`, held: `g.enrollment_id`, where: `g.id = $1`, released: true}
+	grantKey = rowKey{from: `grants g join requests r on r.id = g.request_id left join credential_requests cr on cr.id = r.record_id`, request: `r`, approver: `g.approver`, held: `g.enrollment_id`, where: `g.id = $1`, released: true}
 	// decisionKey is the request a record id names, as the approve path reads it before its
 	// transaction (applyDecisionAttempt): a record with no request is decided elsewhere, and the
 	// names are the ones a grant of the request would release.
-	decisionKey = rowKey{from: requestKey.from, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.record_id = $1`, released: true}
+	decisionKey = rowKey{from: requestKey.from, request: `r`, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.record_id = $1`, released: true}
 )
 
-// requestNamesSQL is the names a private-project rule reads of the request the alias request
-// names, sorted: every name it asked for, or, released, each it was not denied. readRowFacts and
-// readRecord both select it, so every reader judges a row by the same names.
-func requestNamesSQL(request string, released bool) string {
-	where := `rs.request_id = ` + request + `.id`
-	if released {
-		where += ` and rs.decision <> 'deny'`
+// rowFactsColumns is the select list of everything a private-project rule reads of the row key
+// names, in the order rowFactsRead.dest scans it: the record's kind, the approver, the holder's id,
+// the request's reason, its names (every one it asked for, or, released, each it was not denied,
+// sorted), the credential that asked and the one that holds it, and that one's launcher
+// credential's service. It reads through rowFactsJoins.
+func rowFactsColumns(key rowKey) string {
+	names := `rs.request_id = ` + key.request + `.id`
+	if key.released {
+		names += ` and rs.decision <> 'deny'`
 	}
-	return `coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where ` + where + `), '{}')`
+	return `coalesce(cr.kind, ''), ` + key.approver + `, coalesce(` + key.held + `::text, ''), coalesce(` + key.request + `.reason, ''),
+		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where ` + names + `), '{}'),
+		` + credentialColumns + `, ` + currentCredentialColumns + `, c.service`
+}
+
+// rowFactsJoins are the joins rowFactsColumns reads past key's own tables: the enrollment that
+// asked (enr), the one that holds the row now (cur) and that one's launcher credential (c).
+func rowFactsJoins(key rowKey) string {
+	return `
+		left join enrollments enr on enr.id = cr.enrollment_id
+		left join enrollments cur on cur.id = ` + key.held + `
+		left join launcher_credentials c on c.id = cur.launcher_credential_id`
+}
+
+// rowFactsRead is one statement's read of rowFactsColumns: dest is where the statement scans
+// them, and done the rowFacts they make once the scan has succeeded.
+type rowFactsRead struct {
+	facts rowFacts
+	asked enrollmentRow
+}
+
+func (r *rowFactsRead) dest() []any {
+	f := &r.facts
+	return []any{&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &r.asked.Kind, &r.asked.Operator, &r.asked.Subject, &r.asked.Projects,
+		&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Projects, &f.holder.Service}
+}
+
+func (r *rowFactsRead) done(m *Machine) rowFacts {
+	r.facts.sessionProjects = m.credentialsProjects(r.asked, r.facts.holder)
+	return r.facts
 }
 
 // readRowFacts is the rowFacts of the row key names by id, read on the pool in one statement, or
 // pgx.ErrNoRows when no row has the id.
 func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowFacts, error) {
-	var f rowFacts
-	var asked enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select coalesce(cr.kind, ''), `+key.approver+`, coalesce(`+key.held+`::text, ''), coalesce(r.reason, ''),
-			`+requestNamesSQL("r", key.released)+`,
-			`+credentialColumns+`, `+currentCredentialColumns+`, c.service
-		from `+key.from+`
-		left join enrollments enr on enr.id = cr.enrollment_id
-		left join enrollments cur on cur.id = `+key.held+`
-		left join launcher_credentials c on c.id = cur.launcher_credential_id
-		where `+key.where, id).
-		Scan(&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Projects, &f.holder.Service)
-	if err != nil {
+	var read rowFactsRead
+	if err := m.Store.Pool.QueryRow(ctx, `select `+rowFactsColumns(key)+` from `+key.from+rowFactsJoins(key)+` where `+key.where, id).Scan(read.dest()...); err != nil {
 		return rowFacts{}, err
 	}
-	f.sessionProjects = m.credentialsProjects(asked, f.holder)
-	return f, nil
+	return read.done(m), nil
 }
 
 // HideUnseen is the person rule's answer to a route that names record recordID, which its caller

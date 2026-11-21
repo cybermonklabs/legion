@@ -1587,7 +1587,10 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// each of them is on its responsible person's list wherever that person may see it, which is
 	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
 	// list. A list whose caller went away (an Inbox tab or a page closed) is read by nobody, so the
-	// rows it leaves off then are neither counted nor logged: its clock did not run out.
+	// rows it leaves off then are neither counted nor logged: its clock did not run out. Every
+	// question the list's rows ask is asked once for the list (withAccessMemo), so a project many
+	// rows name, an issue key a stored reason names among them, costs the list one read.
+	ctx = withAccessMemo(ctx)
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
@@ -1798,36 +1801,29 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 }
 
 // readRecord is ReadRecord, and, where shown is not nil, ReadRecordFor: its one statement reads,
-// beside the record, what the person rule reads of it (rowFacts: its kind, every name its request
-// asked for, the projects of both credentials it has had and its request's reason, the columns
-// readRowFacts selects), and hands them to shown before anything else of the record is read or
-// verified. An error shown answers is readRecord's; the projects it answers are the record's
-// SecretProjects, in the order its request names its secrets.
+// beside the record, everything the person rule reads of it, the very column list readRowFacts
+// reads under recordKey for HideUnseen (rowFactsColumns), and hands those facts to shown before
+// anything else of the record is read or verified. An error shown answers is readRecord's; the
+// projects it answers are the record's SecretProjects, in the order its request names its secrets.
 func (m *Machine) readRecord(ctx context.Context, recordID string, shown func(rowFacts) ([]SecretProject, error)) (RecordDetail, error) {
-	var canonical, approver, kind, requestSession, enrollmentSession, state, reason string
-	var names []string
+	var canonical, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
 	var judgeDeciding bool
-	var asked, current enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
+	var read rowFactsRead
+	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.created_at, `+recordDeadlineSQL+`,
 			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
-			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+credentialColumns+`, `+currentCredentialColumns+`,
-			coalesce(req.reason, ''), `+requestNamesSQL("req", false)+`
-		from credential_requests cr
-		left join requests req on req.record_id = cr.id
-		left join enrollments enr on enr.id = cr.enrollment_id
-		left join enrollments cur on cur.id = req.enrollment_id
-		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects, &reason, &names); err != nil {
+			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+rowFactsColumns(recordKey)+`
+		from `+recordKey.from+rowFactsJoins(recordKey)+`
+		where `+recordKey.where, recordID).
+		Scan(append([]any{&canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding}, read.dest()...)...); err != nil {
 		return RecordDetail{}, err
 	}
-	sessionProjects := m.credentialsProjects(asked, current)
+	facts := read.done(m)
+	kind, approver, sessionProjects := facts.kind, deref(facts.approver), facts.sessionProjects
 	var secrets []SecretProject
 	if shown != nil {
 		var err error
-		if secrets, err = shown(rowFacts{kind: kind, names: names, sessionProjects: sessionProjects, reason: reason}); err != nil {
+		if secrets, err = shown(facts); err != nil {
 			return RecordDetail{}, err
 		}
 	}
@@ -2064,7 +2060,9 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	// approver and its operator (operatorOf: none for a person's pod BROKER_POD_OPERATORS no longer
 	// maps), read once the rows are closed so no call to Dispatch holds the pooled connection
 	// (maySeeRecord); a grant Dispatch cannot answer for is left off alone, as PendingForApprover
-	// leaves off a request, and one left off because the caller went away is not logged.
+	// leaves off a request, and one left off because the caller went away is not logged. Each
+	// question is asked once for the list (withAccessMemo), as PendingForApprover's are.
+	ctx = withAccessMemo(ctx)
 	visible := out[:0]
 	for i, g := range out {
 		if named, _ := namedOnGrant(login, &g.Approver, reads[i].operator); named {

@@ -229,6 +229,54 @@ func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testi
 	}
 }
 
+// TestTheDecisionTheRevokeAndTheJudgeReadEveryProjectOfAStoredReason: the readers that act on a
+// row read a stored reason past the cap whole, as the lists and the page do. A pending request of a
+// pod that names no person, whose reason names 16 projects Dispatch does not hold and then PRIV,
+// is decided by no outsider: their approval answers as an id no record has. The fixture session's
+// grant with that reason is revoked by no outsider, answered the same way. The model judge leaves
+// such a request to a person. The same rows with the reason's last project TEAM, which is public,
+// are refused the outsider only as someone who is not the grant's approver, and the judge keeps
+// them: the reason's projects, not its length, decide.
+func TestTheDecisionTheRevokeAndTheJudgeReadEveryProjectOfAStoredReason(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	pod, podKey := everyonesPod(t, m, "pod-over-cap-readers", "")
+	private, public := overTheCapNaming(privProject), overTheCapNaming(teamProject)
+
+	pending := storedBeforeTheCap(t, m, pod, podKey, private, "SHARED_KEY")
+	if pending.RecordID == nil {
+		t.Fatalf("the stored request = %+v; want it pending", pending)
+	}
+	if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, outsider); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("ApplyDecision(a request whose stored reason names PRIV, %s) = %v; want pgx.ErrNoRows", outsider, err)
+	}
+	if state := requestState(t, m, pending.ID); state != "pending" {
+		t.Errorf("the request after %s's approval is %s; want still pending", outsider, state)
+	}
+
+	granted := storedBeforeTheCap(t, m, enr, key, private, "AUTO_TOKEN")
+	if granted.GrantID == nil {
+		t.Fatalf("the stored grant = %+v; want it granted", granted)
+	}
+	if err := m.RevokeByApprover(t.Context(), *granted.GrantID, outsider, record.HumanActor(outsider)); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("RevokeByApprover(a grant whose stored reason names PRIV, %s) = %v; want pgx.ErrNoRows", outsider, err)
+	}
+	second, secondKey := newEnrollment(t, m.Store, "session", "box-over-cap-"+t.Name(), new(fixtureOperator), nil)
+	publicGrant := storedBeforeTheCap(t, m, second, secondKey, public, "AUTO_TOKEN")
+	if publicGrant.GrantID == nil {
+		t.Fatalf("the stored grant = %+v; want it granted", publicGrant)
+	}
+	if err := m.RevokeByApprover(t.Context(), *publicGrant.GrantID, outsider, record.HumanActor(outsider)); err == nil || errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("RevokeByApprover(a grant whose stored reason names TEAM, %s) = %v; want a refusal other than pgx.ErrNoRows", outsider, err)
+	}
+
+	if referred, err := m.JudgeProject(t.Context(), enr, "AUTO_TOKEN", private); err != nil || !referred {
+		t.Errorf("JudgeProject(a reason naming 16 projects and then PRIV) = %v, %v; want true: the judge leaves it to a person", referred, err)
+	}
+	if referred, err := m.JudgeProject(t.Context(), enr, "AUTO_TOKEN", public); err != nil || referred {
+		t.Errorf("JudgeProject(a reason naming 16 projects and then TEAM) = %v, %v; want false", referred, err)
+	}
+}
+
 // TestASessionReadsARequestStoredOverTheCapByEveryProjectItsReasonNames: the session rule a
 // session's own routes read (hideFromSession) joins every project a row's reason names, as the
 // person rule does. A request and a grant stored before the cap, with a reason naming more than

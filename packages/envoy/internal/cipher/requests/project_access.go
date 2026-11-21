@@ -580,34 +580,177 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 //
 // Every project the reason names is asked, however many: a row whose reason names more than a new
 // request may (record.CheckReasonProjects) was stored before that rule, or by a broker that holds
-// no project-access client, and its reason is a private project's text as much as any other's. The
-// reads stay bounded: a reason is at most record.MaxReasonRunes (400) runes, and each issue key
-// takes at least five of them with the rune that parts it from the next ("AB-1 "), so a stored
-// reason names at most 80 projects, each answer kept projectaccess.CacheTTL per project and person.
-// A Dispatch too slow to answer them all within atDecision's bound fails closed, as for any row.
+// no project-access client, and its reason is a private project's text as much as any other's. A
+// reason is at most record.MaxReasonRunes (400) runes, and each issue key takes at least five of
+// them with the rune that parts it from the next ("AB-1 "), so a stored reason names at most 80
+// projects. They are asked maySeeAtOnce at a time, and the first answer that hides the row ends
+// the questions not yet answered, since nothing they answer could show it. Within one list each
+// question is asked once however many rows ask it (withAccessMemo). The answer is deterministic
+// whatever order the questions end in: false when any project hides the row; else
+// ErrProjectAccessUnavailable, with the failure of the first project in sorted order that Dispatch
+// did not answer for, when any did not; else true. So a project Dispatch could not be asked about
+// hides the row it is named by, failing closed, and never shows it.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
 	}
 	asking := slices.Concat(projects, record.ReasonProjects(reason))
 	slices.Sort(asking)
-	var asked time.Time
-	for _, project := range slices.Compact(asking) {
-		answer, err := m.Projects.Access(ctx, project, record.CanonicalLogin(login))
-		var missing *projectaccess.ProjectNotFoundError
-		switch {
-		case errors.As(err, &missing):
-			asked = projectaccess.Oldest(asked, missing.AskedAt)
-		case errors.Is(err, projectaccess.ErrProjectNotFound):
-		case err != nil:
-			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
-		case !answer.Visible:
-			return false, time.Time{}, nil
-		default:
-			asked = projectaccess.Oldest(asked, answer.AskedAt)
+	asking = slices.Compact(asking)
+	person := record.CanonicalLogin(login)
+	type seen struct {
+		answered, hidden bool
+		asked            time.Time
+		err              error
+	}
+	seens := make([]seen, len(asking))
+	ctx, hide := context.WithCancel(ctx)
+	defer hide()
+	slots := make(chan struct{}, maySeeAtOnce)
+	var wg sync.WaitGroup
+ask:
+	for i, project := range asking {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			break ask
 		}
+		if ctx.Err() != nil {
+			<-slots
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			answer, err := m.access(ctx, project, person)
+			var missing *projectaccess.ProjectNotFoundError
+			switch {
+			case errors.As(err, &missing):
+				seens[i] = seen{answered: true, asked: missing.AskedAt}
+			case errors.Is(err, projectaccess.ErrProjectNotFound):
+				seens[i] = seen{answered: true}
+			case err != nil:
+				seens[i] = seen{err: err}
+			case !answer.Visible:
+				seens[i] = seen{answered: true, hidden: true}
+				hide()
+			default:
+				seens[i] = seen{answered: true, asked: answer.AskedAt}
+			}
+		}()
+	}
+	wg.Wait()
+	if slices.ContainsFunc(seens, func(s seen) bool { return s.hidden }) {
+		return false, time.Time{}, nil
+	}
+	var asked time.Time
+	for _, s := range seens {
+		switch {
+		case s.err != nil:
+			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, s.err)
+		case !s.answered:
+			// Never asked: the caller's context ended before its turn.
+			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, ctx.Err())
+		}
+		asked = projectaccess.Oldest(asked, s.asked)
 	}
 	return true, asked, nil
+}
+
+// maySeeAtOnce is how many of one row's projects maySee asks Dispatch about at once:
+// record.MaxReasonProjects (16), the most projects a new request's reason may name on a broker
+// that checks projects. Such a reason is asked in one round, and the densest reason a stored
+// request can carry, 80 projects, in five: half a second while Dispatch takes 100 ms an answer,
+// against the 5 seconds Dispatch's Inbox gives the broker for a whole list, where 80 questions one
+// at a time took 8. It also bounds what one reader's row asks of Dispatch at a time to 16 reads of
+// one project each.
+const maySeeAtOnce = record.MaxReasonProjects
+
+// accessMemoKey marks a context withAccessMemo made.
+type accessMemoKey struct{}
+
+// accessMemo is the answers of Dispatch's one list read was given, by project and person, so the
+// list asks each question once however many of its rows ask it: maySee's project reads alone, the
+// questions a stored reason's 80 projects multiply. The client's own cache
+// (projectaccess.CacheTTL) answers a question asked again too, but keeps no answer once it holds
+// 4,096, which about 50 readers of one row naming 80 projects fill; this holds every answer of
+// the list for the list's own life, and no longer.
+type accessMemo struct {
+	mu      sync.Mutex
+	entries map[accessMemoQuestion]*accessMemoEntry
+}
+
+type accessMemoQuestion struct{ project, person string }
+
+// accessMemoEntry is one question's answer, written once by the read that asks it and read by
+// every other once done is closed. cut is a read whose own context ended before Dispatch
+// answered: its error is that read's, never another row's answer, so the next read asks again.
+type accessMemoEntry struct {
+	done   chan struct{}
+	answer projectaccess.Answer
+	err    error
+	cut    bool
+}
+
+// withAccessMemo is ctx carrying a memo of its own for maySee's questions (access): the pending
+// list and the grant list each read their rows under one.
+func withAccessMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, accessMemoKey{}, &accessMemo{entries: map[accessMemoQuestion]*accessMemoEntry{}})
+}
+
+// access is m.Projects.Access, answered from ctx's memo where it holds the question, and kept
+// there once asked. A question a read is already asking is waited for rather than asked twice. A
+// kept answer older than projectaccess.CacheTTL is asked again, as is one a read's own context cut
+// short, so atDecision's second collection reads afresh exactly what aged; a kept failure stands
+// for the list, so a project Dispatch could not answer for leaves off every row naming it at the
+// cost of one read, and no other row.
+func (m *Machine) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	memo, _ := ctx.Value(accessMemoKey{}).(*accessMemo)
+	if memo == nil {
+		return m.Projects.Access(ctx, project, person)
+	}
+	question := accessMemoQuestion{project: project, person: person}
+	for {
+		memo.mu.Lock()
+		entry, held := memo.entries[question]
+		if !held {
+			entry = &accessMemoEntry{done: make(chan struct{})}
+			memo.entries[question] = entry
+			memo.mu.Unlock()
+			entry.answer, entry.err = m.Projects.Access(ctx, project, person)
+			entry.cut = ctx.Err() != nil
+			close(entry.done)
+			return entry.answer, entry.err
+		}
+		memo.mu.Unlock()
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
+			return projectaccess.Answer{}, ctx.Err()
+		}
+		if !entry.cut && !projectaccess.Stale(m.Projects, answeredAt(entry.answer, entry.err)) {
+			return entry.answer, entry.err
+		}
+		memo.mu.Lock()
+		if memo.entries[question] == entry {
+			delete(memo.entries, question)
+		}
+		memo.mu.Unlock()
+	}
+}
+
+// answeredAt is when the question an access answer or error answers was asked: zero for a failure
+// and for a source that keeps no clock, neither of which ages.
+func answeredAt(answer projectaccess.Answer, err error) time.Time {
+	var missing *projectaccess.ProjectNotFoundError
+	switch {
+	case err == nil:
+		return answer.AskedAt
+	case errors.As(err, &missing):
+		return missing.AskedAt
+	}
+	return time.Time{}
 }
 
 // judgeMayDecide is the model judge's project rule, the one its run checks before the model
