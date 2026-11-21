@@ -90,23 +90,46 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 	s.revokeGrantAs(w, r, id, body.Approver, record.HumanActor(body.Approver))
 }
 
-// revokeGrantAs ends grant id as login, recording actor on every row it writes: login must be the
-// grant's approver or its enrollment's operator (requests.Machine.RevokeByApprover's own mayRevoke
-// check). When the operator revokes a grant the session got without asking, its secrets are
-// withheld from that session, even when the grant had already ended: its other grants that got
-// them without asking end too, and its later requests for them ask their owner.
+// revokeGrantAs ends grant id as login, recording actor on every row it writes
+// (requests.Machine.RevokeByApprover): login must be the grant's approver, the person its
+// enrollment acts for (operatorOf), or, for a grant the model judge approved in anyone's stead,
+// anyone whom the grant's private project, if it has one, lets see it (mayRevoke). The approver
+// and that person end it whatever Dispatch answers. Anyone else whom the project hides the grant
+// from is answered 404 exactly as for an id no grant has, and a grant Dispatch could not answer
+// for is 503 PROJECT_ACCESS_UNAVAILABLE to them; a grant they may see that names them nowhere is
+// 403 NOT_APPROVER, and one that moved to another box each time the revoke read it is 409
+// GRANT_MOVING; each revokes nothing. When the operator
+// revokes a grant the session got without asking, its secrets are withheld from that session, even
+// when the grant had already ended: its other grants that got them without asking end too, and its
+// later requests for them ask their owner.
 func (s *server) revokeGrantAs(w http.ResponseWriter, r *http.Request, id, login, actor string) {
-	err := s.deps.Machine.RevokeByApprover(r.Context(), id, login, actor)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such grant")
-		return
-	case errors.Is(err, requests.ErrNotApprover):
-		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
-		return
-	case err != nil:
-		writeInternal(w, "revoke grant", err)
+	if err := s.deps.Machine.RevokeByApprover(r.Context(), id, login, actor); err != nil {
+		writeRevokeRefusal(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "revoked"})
+}
+
+// grantMoving is the one sentence a 409 GRANT_MOVING answers with.
+const grantMoving = "the grant moved to another box each time this revoke read it, so nothing was revoked; run the same revoke again"
+
+// writeRevokeRefusal answers the error RevokeByApprover refused a revoke with, err not nil.
+func writeRevokeRefusal(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such grant")
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		// Dispatch could not say whether the person may see the grant's project, so nothing was
+		// revoked; the same revoke succeeds once Dispatch answers.
+		writeProjectAccessUnavailable(w, "revoke grant", err)
+	case errors.Is(err, requests.ErrNotApprover):
+		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
+	case errors.Is(err, requests.ErrGrantMoving):
+		// Adoptions kept moving the grant between the person rule and the transaction, so the
+		// revoke decided nothing; it succeeds once the grant stays on one session.
+		slog.Warn("broker: revoke grant: the grant kept moving", "error", err)
+		writeError(w, http.StatusConflict, "GRANT_MOVING", grantMoving)
+	default:
+		writeInternal(w, "revoke grant", err)
+	}
 }

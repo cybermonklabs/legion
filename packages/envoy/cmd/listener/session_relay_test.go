@@ -116,22 +116,26 @@ type relayedFrame struct {
 }
 
 // listener is the reply inbox the frame is to be answered on, which names the listener that relayed
-// it.
+// it: the frame's reply subject without the session id and the token after it
+// (bus.SessionReplySubject).
 func (f relayedFrame) listener() string {
-	return f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	session := f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	return session[:strings.LastIndex(session, ".")]
 }
 
 // sessionStandIn takes a session's relay frames on a NATS connection of its own, as a plugin in
 // consumer mode does, and answers each at once with the replies answer names for it, unless it is
 // silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
 // it is answered done before anything is decoded, as the plugins' shared consumer delivery
-// answers it, unless the stand-in is silent, and counted in probed rather than collected.
+// answers it, unless the stand-in is silent, and counted in probed rather than collected; the last
+// probe's reply subject is kept in probeReply.
 type sessionStandIn struct {
-	t      *testing.T
-	conn   *natsgo.Conn
-	frames chan relayedFrame
-	silent atomic.Bool
-	probed atomic.Int32
+	t          *testing.T
+	conn       *natsgo.Conn
+	frames     chan relayedFrame
+	silent     atomic.Bool
+	probed     atomic.Int32
+	probeReply atomic.Pointer[string]
 }
 
 // answerDone answers a frame received and done at once: the session wrote it.
@@ -150,6 +154,7 @@ func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, an
 	t.Cleanup(standIn.conn.Close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			standIn.probeReply.Store(&msg.Reply)
 			standIn.probed.Add(1)
 			if !standIn.silent.Load() {
 				if err := msg.Respond([]byte(relayReplyDone)); err != nil {
@@ -1215,7 +1220,7 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 		relays.frames[token] = frame
 		run.outstanding[token] = frame
 		relays.framesMu.Unlock()
-		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + token, Data: []byte(relayReplyNak)})
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + run.sessionID + "." + token, Data: []byte(relayReplyNak)})
 		return acker.last()
 	}
 

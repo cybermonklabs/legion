@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -131,7 +132,7 @@ func TestAWaitingRequestIsRefusedWhenItsBudgetIsSpent(t *testing.T) {
 	url := testnats.StartWithCallout(t, keys)
 	stuck, waiting := newSession(t, "ses_stuck", 15*time.Minute), newSession(t, "ses_waiting", 15*time.Minute)
 	deps := Deps{Introspect: introspector(stuck, waiting)}
-	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		if req.Token == stuck.token {
 			time.Sleep(3 * time.Second)
 		}
@@ -174,7 +175,7 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	// The holder keeps the one slot until the waiter's refusal is counted, so the waiter's is the
 	// first refusal, whose detail the reporter's line carries (report).
 	release := make(chan struct{})
-	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		if req.Token == holder.token {
 			<-release
 		}
@@ -216,7 +217,7 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	registry := metrics.New()
 	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}
 	holding, release := make(chan struct{}), make(chan struct{})
-	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		if req.Token == holder.token {
 			close(holding)
 			select {
@@ -384,7 +385,7 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 	probes := sessionsNamed(t, "ses_probe", 20)
 	sessions := sessionsNamed(t, "ses_after", 20)
 	deps := Deps{Introspect: introspector(append(probes, sessions...)...)}
-	slow := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	slow := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		time.Sleep(time.Second)
 		return Decide(ctx, deps, services, req)
 	}
@@ -456,7 +457,7 @@ func TestAReplicaThatReconnectsWhileItDrainsLeavesTheGroup(t *testing.T) {
 	sessions := sessionsNamed(t, "ses_after", 20)
 	deps := Deps{Introspect: introspector(append(append(probes, sessions...), long)...)}
 	deciding := make(chan struct{})
-	closing := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	closing := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		if req.Token == long.token {
 			close(deciding)
 			time.Sleep(5 * time.Second)
@@ -536,7 +537,7 @@ func TestCloseWaitsForTheRequestItWasDeliveringWhenItUnsubscribed(t *testing.T) 
 	held := newSession(t, "ses_held", 15*time.Minute)
 	var started, finished atomic.Int32
 	deps := Deps{Introspect: introspector(held)}
-	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		started.Add(1)
 		defer finished.Add(1)
 		time.Sleep(time.Second)

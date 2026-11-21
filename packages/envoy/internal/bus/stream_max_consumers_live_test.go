@@ -174,7 +174,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 			}
 			t.Cleanup(client.Close)
 
-			heldFor(t, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
+			heldFor(t, []*Client{client}, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
 				return info.Config.MaxConsumers == deployed
 			})
 			// The cap above is unchanged whether the keeper sent nothing or sent a raise this
