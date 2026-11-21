@@ -9,8 +9,9 @@
 // - Only a regular file is read or replaced, and only one of at most 64 KiB is read. A directory
 //   cannot be replaced by a rename, and a read of a named pipe that no process writes to never
 //   returns, so either at the file's path is refused before a code is asked for
-//   (`deviceLoginPlace`). A read checks the directory first, then opens the path once, without
-//   waiting and as no terminal, and checks and reads that one open file (`readDeviceLogin`).
+//   (`deviceLoginPlace`). A read checks the directory first, and where the setting names a link,
+//   the directory of the file it links to, then opens the path once, without waiting and as no
+//   terminal, and checks and reads that one open file (`readDeviceLogin`).
 // - A save writes a new temporary file beside it, syncs it and renames it over the file, under the
 //   login's lock (`device-login-lock.ts`), so the file is always one whole login. A save of a new
 //   login that fails once its copy is whole keeps that copy (`keptCopy`): the broker holds its
@@ -18,8 +19,8 @@
 
 import { createPrivateKey, type KeyObject, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { access, type FileHandle, mkdir, open, rename, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access, type FileHandle, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import {
   DEVICE_LOGIN_MOST_BYTES,
@@ -109,20 +110,24 @@ function checkPrivate(
  * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
  * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
  * `~/.config/legion` that envoy.json lives in: the login's file is 0600 itself, and its name is
- * no secret. Each refusal names the directory by the file's setting and the fix. `absent`, where
- * it is given, is the refusal of a directory that is not there.
+ * no secret. Each refusal names the directory as `what` does, by the file's setting, and the fix.
+ * `absent`, where it is given, is the refusal of a directory that is not there.
  */
-async function checkLoginDirectory(dir: string, absent?: () => Error): Promise<void> {
+async function checkLoginDirectory(
+  dir: string,
+  absent?: () => Error,
+  what = `the directory of ${DEVICE_LOGIN_FILE_NAMED}`
+): Promise<void> {
   let info: Stats;
   try {
     info = await stat(dir);
   } catch (error) {
     if (absent !== undefined && readErrorCode(error) === "ENOENT") throw absent();
-    throw refusedBy(error, `read the directory of ${DEVICE_LOGIN_FILE_NAMED}`);
+    throw refusedBy(error, `read ${what}`);
   }
   checkPrivate(
     info,
-    `the directory of ${DEVICE_LOGIN_FILE_NAMED}`,
+    what,
     0o022,
     "lets others replace the login in it; run chmod 700 on it",
     "keep the login in a directory of this user's own"
@@ -219,7 +224,8 @@ export async function deviceLoginPlace(path: string): Promise<void> {
 
 /** How the login's file is opened to be read: read-only, without waiting (an open of a named pipe
  *  would wait for a writer), and never as this process's controlling terminal (the open of a tty
- *  can make it one). A link is followed: the setting may name one. */
+ *  can make it one). A link is followed: the setting may name one, and the directory of the file
+ *  it links to is checked before the open ({@link readDeviceLogin}). */
 const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY;
 
 /**
@@ -231,12 +237,14 @@ const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTT
  * over {@link DEVICE_LOGIN_MOST_BYTES}, or that is not a whole login (no JSON object, a missing
  * value, a key that is not a P-256 PKCS#8 key, an expiry that is no time) is refused. The
  * directory is checked before the file is opened: in one another user can write to, that user
- * picks what an open would open, and the open of a device can do something. The path is then
- * opened once ({@link LOGIN_READ}), and the checks and the read are of that one open file: a look
- * at the path and a second open could open a named pipe put in its place between the two, and a
- * read of a pipe nobody writes to never returns. Each refusal names the file by its setting
- * ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and access tokens
- * are held (`holdSecret`), so no line this process prints carries them.
+ * picks what an open would open, and the open of a device can do something. Where the setting
+ * names a link, the directory of the file it links to is checked too, before the open, for the
+ * same reason: the file is in that directory. The path is then opened once ({@link LOGIN_READ}),
+ * and the checks and the read are of that one open file: a look at the path and a second open
+ * could open a named pipe put in its place between the two, and a read of a pipe nobody writes to
+ * never returns. Each refusal names the file by its setting ({@link DEVICE_LOGIN_FILE_NAMED}) and
+ * quotes none of its content. The refresh and access tokens are held (`holdSecret`), so no line
+ * this process prints carries them.
  */
 export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const absent = () =>
@@ -246,6 +254,21 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const failed = (error: unknown) =>
     new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   await checkLoginDirectory(dirname(path), absent);
+  let real: string;
+  try {
+    real = await realpath(path);
+  } catch (error) {
+    throw readErrorCode(error) === "ENOENT"
+      ? absent()
+      : refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
+  }
+  if (real !== resolve(path)) {
+    await checkLoginDirectory(
+      dirname(real),
+      absent,
+      `the directory of the file ${DEVICE_LOGIN_FILE_NAMED} links to`
+    );
+  }
   let handle: FileHandle;
   try {
     handle = await open(path, LOGIN_READ);

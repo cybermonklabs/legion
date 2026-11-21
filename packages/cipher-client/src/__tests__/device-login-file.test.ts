@@ -220,6 +220,47 @@ test("a login in a directory others may write is refused before its file is open
   expect(opened).not.toContain(path);
 });
 
+test("a login reached through a link into a directory others may write is refused before it is opened", async () => {
+  // The setting may name a link. The file is then in the directory the link leads into, where
+  // another user who can write picks what the open opens, as in the login's own directory.
+  const stub = broker();
+  const path = loginPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const target = join(makeDirectory(), "shared", "device-login.json");
+  await writeDeviceLoginFile(target, stub.url);
+  await fs.symlink(target, path);
+  const opened: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    // Writable by anyone, and by its group.
+    for (const mode of [0o777, 0o770]) {
+      await chmod(dirname(target), mode);
+      const refused = await readDeviceLogin(path).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message).toContain(`mode ${mode.toString(8).padStart(4, "0")}`);
+      expect(refused?.message).toContain("links to");
+      expect(refused?.message).toContain("chmod 700");
+      expect(refused?.message).not.toContain(dirname(target));
+    }
+    expect(opened).not.toContain(path);
+    // Control: the same link into a directory others may only read and enter is read, and its
+    // open is one these spies see.
+    await chmod(dirname(target), 0o755);
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    expect(opened).toContain(path);
+  } finally {
+    opens.mockRestore();
+  }
+});
+
 test("a login path no open can read is refused in words, not a bare code", async () => {
   // Each is refused by the open itself, before any status is read: a socket (ENXIO), a loop of
   // links (ELOOP), and a path through a file where a directory must be (ENOTDIR).
