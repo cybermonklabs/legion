@@ -181,7 +181,7 @@ attempt:
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
-| A clustered stream refuses the publish because an earlier publish under the same message id is still in process (`bus.ErrDuplicateInProcess`) | The listener publishes again every 50 ms until the stream names the earlier copy, and answers `200` for it (`publishPastInProcess`); a request whose budget ends first gets `503 {"error":"envoy: an earlier attempt of this message is still being stored: <reason>","code":"maybe_stored"}` with `Retry-After: 1`, recorded `earlier_attempt_in_process`, which costs its sender nothing |
+| A clustered stream refuses the publish because an earlier publish under the same message id is still in process (`bus.ErrDuplicateInProcess`) | The listener publishes again every 50 ms until the stream names the earlier copy, and answers `200` for it (`publishPastInProcess`); a request whose budget ends first gets `503 {"error":"envoy: an earlier attempt of this message is still being stored: <reason>","code":"maybe_stored"}` with `Retry-After: 1`, recorded `earlier_attempt_in_process`, which costs its sender nothing unless a send of its own went out unanswered |
 | Any other publish failure | `503` with the prefix `envoy: the message bus did not answer` and `Retry-After: 1`, carrying the bus's own reason |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
@@ -262,7 +262,9 @@ line's reason is `rate_limited`.
 A counted message costs its sender one where the route stores it, may have stored it or reports
 a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
 one once the route reports its wake. A role send's `504` costs one whether or not a forward went
-out, also when the window ended before the first forward (`roleSend.timedOut`). The listener does
+out, also when the window ended before the first forward (`roleSend.timedOut`), and so does its
+`503` for a window that ended with its forward in process (`roleSend.endedInProcess`). A role send
+costs one for a forward the stream confirmed, also one it answered as a duplicate. The listener does
 not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
 the listener sent the message to the stream and the write's acknowledgement did not arrive in time
 costs one too (`bus.ErrUnacknowledged`, `senderCharge.published`), since the stream may hold it.
@@ -324,7 +326,8 @@ role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,
 and `role_unclaimed`, `role_lapsed`,
-`role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish. A role
+`role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish, where a
+role send whose window ends with its forward in process is `earlier_attempt_in_process`. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
 refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two
 refusals carry no such line, because neither reaches a handler: the 401 the API auth wrapper
@@ -410,10 +413,13 @@ and forwards the envelope, which keeps the original role topic, to
 `notifications.agent.<session_id>`, where the stream stores it for that session's own consumer.
 No holder answers a receipt, because a session receives what its consumer delivers and nothing
 else (INFRA-771), so the stream's acknowledgement that it stored the forward is the whole of the
-attempt's outcome. Each attempt waits at most two seconds for that acknowledgement; without one
-the route resolves the holder again and forwards the same envelope 100 ms later (one `event_id`
-and one `Nats-Msg-Id`, so the stream keeps one copy however many attempts there are), until the
-stream acknowledges one or four seconds from the request's arrival have passed. No attempt
+attempt's outcome. Each attempt waits at most two seconds for that acknowledgement; a stream that
+refuses the forward because an earlier forward under its `Nats-Msg-Id` is still in process is sent
+the same forward again every 50 ms inside that attempt, until it acknowledges the earlier copy
+(`startRoleForward`, `publishPastInProcess`). Without an acknowledgement the route resolves the
+holder again and forwards the same envelope 100 ms later (one `event_id` and one `Nats-Msg-Id`, so
+the stream keeps one copy however many attempts there are), until the stream acknowledges one or
+four seconds from the request's arrival have passed. No attempt
 forwards to a holder that is not live. It answers `200` with the `holder` and its `holder_state`
 once the stream stored the forward. It answers `202` when no live session holds the role and the
 listener kept the message for one hour for the role's next live holder. The 202 carries
@@ -435,7 +441,11 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). The route publishes no exception: its sender has the answer.
+`bus.ErrForwardNotStored`). A send whose last attempt ended while the stream still refused its
+forward as in process is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and
+the error `envoy: an earlier attempt of this message is still being stored: <reason>`, recorded
+`earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder
+(`roleSend.endedInProcess`). The route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

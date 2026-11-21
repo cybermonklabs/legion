@@ -41,14 +41,14 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
+	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() (bus.StoredAck, error) { <-release; return bus.StoredAck{}, bus.ErrForwardNotStored }, nil
+			return func() error { <-release; return bus.ErrForwardNotStored }, nil
 		}
-		return func() (bus.StoredAck, error) { settled.Add(1); <-settling; return bus.StoredAck{}, nil }, nil
+		return func() error { settled.Add(1); <-settling; return nil }, nil
 	}
 	forwarder := newRoleForwarder(cfg)
 	closeOnce := func(held chan struct{}) {

@@ -19,11 +19,11 @@ const inProcessPause = 50 * time.Millisecond
 // stream had refused a send of it as still in process under an earlier publish under the same
 // message id (publishPastInProcess): its context ran out, or a later send failed. That earlier
 // publish may still be stored, so the stream may hold the message: writeBusUnavailable answers it
-// 503 with Retry-After under earlierAttemptInProcessPrefix and listenerwire.CodeMaybeStored, the
-// request's record says outcomeEarlierAttemptInProcess, and it costs the sender nothing
-// (senderCharge.published), since the copy is the earlier publish's. A send of the same call that
-// went out unanswered before the refusal may have stored the copy itself, and then the error
-// wraps bus.ErrUnacknowledged beside it, which costs one.
+// 503 with Retry-After under earlierAttemptInProcessPrefix and listenerwire.CodeMaybeStored, and
+// the request's record says outcomeEarlierAttemptInProcess. Where no send of the call went out
+// unanswered, it costs the sender nothing (senderCharge.published), since the copy is the earlier
+// publish's. Where one did, before or after a refusal, the error wraps bus.ErrUnacknowledged
+// beside it and costs one: that send may have stored the copy itself.
 var errEarlierAttemptInProcess = errors.New("the request ended while an earlier publish under its message id was still in process")
 
 // publishPastInProcess makes publish, and makes it again inProcessPause later each time a
@@ -37,17 +37,18 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // answered with that attempt's copy rather than as a bus that did not answer.
 //
 // A call that ends after a refusal, because ctx ended or a later send failed, wraps
-// errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, whatever the
-// send it ended under answered, since a later send under an id the stream holds in process stores
-// no copy of its own, and with the failure itself otherwise.
+// errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, and with the
+// failure itself otherwise.
 //
-// A refused send that went out unanswered first (bus.ErrUnacknowledged) may have stored the copy
-// itself, and the answer after it says so as the bus's own resend does: a duplicate comes back
-// Resent, which may name this call's own copy (bus.StoredAck.Resent), and a failure wraps
-// bus.ErrUnacknowledged (mayHaveStored).
+// A send of the call that went out unanswered (bus.ErrUnacknowledged) may have stored the copy
+// itself, whether it came before a refusal or after one: a stream leader change drops the ids the
+// stream holds in process, and the next send under one is stored as a new copy. So the answer
+// after such a send says so as the bus's own resend does: a duplicate comes back Resent, which may
+// name this call's own copy (bus.StoredAck.Resent), and a failure wraps bus.ErrUnacknowledged
+// (mayHaveStored), also when ctx's end replaces the last send's own error.
 func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, error)) (bus.StoredAck, error) {
 	// refusal is the stream's last refusal of a send of this call as in process, and ownSend
-	// whether a refused send went out unanswered first (the refusal wraps bus.ErrUnacknowledged).
+	// whether a send of this call went out unanswered (its error wraps bus.ErrUnacknowledged).
 	var refusal error
 	ownSend := false
 	for {
@@ -65,9 +66,11 @@ func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, er
 		case err == nil:
 			ack.Resent = ack.Resent || ownSend
 			return ack, nil
-		case ctx.Err() != nil:
+		}
+		ownSend = ownSend || mayHaveStored(err)
+		if ctx.Err() != nil {
 			err = fmt.Errorf("%w: %w (after %w)", errEarlierAttemptInProcess, ctx.Err(), refusal)
-		default:
+		} else {
 			err = fmt.Errorf("%w: %w", errEarlierAttemptInProcess, err)
 		}
 		if ownSend && !mayHaveStored(err) {

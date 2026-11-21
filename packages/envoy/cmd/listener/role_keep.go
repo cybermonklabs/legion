@@ -1261,7 +1261,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		// walks forward it; a takeover's copy carries a dedupe key of its own
 		// (takenFrameDedupeKey), so its forward takes no id an earlier forward took.
 		msgID := handed.msgID(subject)
-		_, forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
+		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next

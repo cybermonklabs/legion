@@ -203,14 +203,14 @@ func (c *senderCharge) forgive() {
 }
 
 // published marks the charge by the stream's answer to the route's publish of the message
-// (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route, the
-// topic publish and a role send's forward share. A publish that may have stored the message
-// (mayHaveStored) costs one whatever the route answers. Any other failure stored nothing and
-// marks nothing: a refusal of the server's, a failure before anything was sent, such as a wait for
-// NATS to reconnect that outlasted the route's deadline, and a request that ended while an earlier
-// publish under its message id was still in process (earlierAttemptInProcess), whose copy is that
-// earlier publish's. A duplicate verdict names a copy the stream already held, which costs
-// nothing, also after a wake report, unless it answers a resend of this request's own
+// (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route and the
+// topic publish share. A publish that may have stored the message (mayHaveStored) costs one
+// whatever the route answers. Any other failure stored nothing and marks nothing: a refusal of the
+// server's, a failure before anything was sent, such as a wait for NATS to reconnect that
+// outlasted the route's deadline, and a request that ended while an earlier publish under its
+// message id was still in process (earlierAttemptInProcess), with no send of its own unanswered,
+// whose copy is that earlier publish's. A duplicate verdict names a copy the stream already held,
+// which costs nothing, also after a wake report, unless it answers a resend of this request's own
 // (bus.StoredAck.Resent), whose first send may have stored that copy. Every other answer stored
 // the message.
 func (c *senderCharge) published(ack bus.StoredAck, err error) {

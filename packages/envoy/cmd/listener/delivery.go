@@ -52,12 +52,11 @@ type listenerDeliveryHandlerConfig struct {
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns the acknowledgement for: the sequence of the copy
-	// the stream holds under msgID, and Duplicate where an earlier forward stored it. The wait's
-	// bus.ErrForwardNotStored means the stream did not acknowledge storing it inside timeout; any
-	// other error — a raw nats.ErrTimeout from the flush included, returned by the publish or the
-	// wait — means the forward is not known to have left this process.
-	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() (bus.StoredAck, error), err error)
+	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
+	// the stream did not acknowledge storing it inside timeout; any other error — a raw
+	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
+	// forward is not known to have left this process.
+	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go

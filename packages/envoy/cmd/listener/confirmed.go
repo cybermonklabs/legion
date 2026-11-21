@@ -99,10 +99,10 @@ func pauseBeforeRetry(ctx context.Context) bool {
 // role lane hands the wait over and reports it later. The outcome is the stream's acknowledgement
 // that it stored the forward, nothing more: the holder answers no receipt and reads the stored
 // copy from its session consumer (startRoleForward).
-func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) (bus.StoredAck, error) {
+func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) error {
 	wait, err := cfg.forwardRole(subject, item, msgID, window)
 	if err != nil {
-		return bus.StoredAck{}, err
+		return err
 	}
 	return wait()
 }
@@ -136,14 +136,11 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // Each answer marks the message's take from its sender's count (record.charge) before it is
 // written: a wake reported, a forward the stream stored, a forward that failed with no refusal,
 // which the stream may have stored for the holder it went to, and a window that ended cost one.
-// A forward the stream answered as a duplicate of a copy an earlier request stored costs nothing
-// (senderCharge.published), and so does a forward whose window ended while an earlier forward
-// under its Nats-Msg-Id was still in process (earlierAttemptInProcess), though the 504 that
-// follows costs one. The mark of a forward that may have been stored stands whatever the send
-// answers next (senderCharge.stored): a forward refused, an echo, a repeat the route's own record
-// or the kept lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels
-// the wake's mark alone, and every other answer marks nothing, so where no forward may have been
-// stored the route's deferred settle gives the take back.
+// The mark of a forward that may have been stored stands whatever the send answers next
+// (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
+// lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
+// mark alone, and every other answer marks nothing, so where no forward may have been stored the
+// route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -329,6 +326,31 @@ func (s *roleSend) timedOut() {
 	s.settle(sendDeliveryFailed)
 }
 
+// endedInProcess answers a send whose window ended after its last forward ended while an earlier
+// forward under the same Nats-Msg-Id was still in process (earlierAttemptInProcess, err): the
+// stream may yet store that earlier forward for the holder, so the send is not told nothing was
+// stored. It is the 503 with Retry-After and listenerwire.CodeMaybeStored the send and publish
+// routes give a request that ends so (writeBusUnavailable), under earlierAttemptInProcessPrefix
+// and recorded earlier_attempt_in_process, where a send whose window ends otherwise is the 504
+// (timedOut). It costs its sender one, as the 504 does: the forward that ended in process marked
+// the charge (sendToRole).
+func (s *roleSend) endedInProcess(err error) {
+	s.record.holder = s.holder
+	s.record.refuseBusUnavailable(s.w, err)
+	s.settle(sendDeliveryFailed)
+}
+
+// windowEnded answers a send whose window ended with no forward the stream stored for its holder:
+// endedInProcess when its last forward ended in process (inProcess, that forward's error), and the
+// 504 (timedOut) otherwise.
+func (s *roleSend) windowEnded(inProcess error) {
+	if inProcess != nil {
+		s.endedInProcess(inProcess)
+		return
+	}
+	s.timedOut()
+}
+
 // settledBeforeForward judges the message to a holder the send has not checked yet, whose session
 // entry is entry, by beforeForward, the rules the role lane applies before it forwards, and reports
 // whether it answered: an echo (the source session holds the role) or a holder this route already
@@ -385,9 +407,11 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
 // consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
-// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value.
+// none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
+// an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
+// (windowEnded). expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go),
+// the request's own dialect; the envelope this send forwards and keeps carries the envelope's own
+// value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -416,6 +440,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded := send.item
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
+	// inProcess is the error of the send's last forward when that forward ended while an earlier
+	// forward under its Nats-Msg-Id was still in process, and nil otherwise (windowEnded).
+	var inProcess error
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
@@ -444,7 +471,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			}
 			window := forwardWindow(ctx)
 			if window <= 0 {
-				send.timedOut()
+				send.windowEnded(inProcess)
 				return
 			}
 			send.attempts++
@@ -452,14 +479,10 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
-			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
+			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
-				// A forward the stream stored costs one, and a duplicate of a copy an earlier
-				// request stored costs nothing, by the rule the other routes share
-				// (senderCharge.published); an earlier attempt of this send that may have stored
-				// it has marked the charge already.
-				send.record.charge.published(ack, nil)
+				send.record.charge.stored()
 				send.delivered(sendDelivered)
 				return
 			}
@@ -468,11 +491,11 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next, unless its window ended
-			// while an earlier forward under its Nats-Msg-Id was still in process, whose copy
-			// that earlier forward's is (earlierAttemptInProcess).
-			if !earlierAttemptInProcess(err) || mayHaveStored(err) {
-				send.record.charge.stored()
+			// costs its sender one whatever this send answers next.
+			send.record.charge.stored()
+			inProcess = nil
+			if earlierAttemptInProcess(err) {
+				inProcess = err
 			}
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
@@ -481,5 +504,5 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			break
 		}
 	}
-	send.timedOut()
+	send.windowEnded(inProcess)
 }

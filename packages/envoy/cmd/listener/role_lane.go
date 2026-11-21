@@ -146,10 +146,7 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() {
-			_, err := wait()
-			f.finish(forward, err)
-		}()
+		go func() { f.finish(forward, wait()) }()
 	}
 }
 
@@ -207,19 +204,20 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 //
 // The wait answers a clustered stream's refusal of the forward as still in process under an
 // earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
-// sends the forward again until the answer names that earlier forward's copy, Duplicate, so every
-// caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal one way.
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+// sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
+// so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
+// one way, as one forward, and none counts it a forward that failed.
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return func() (bus.StoredAck, error) {
+		return func() error {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+			_, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
 					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
@@ -228,10 +226,11 @@ func startRoleForward(client *bus.Client) func(subject string, item contracts.En
 				}
 				// Every forward StartRequestStoredTo returned is waited for, which releases its
 				// reply subscription, and the next send is a forward of its own.
-				ack, err := forward.Wait()
+				err := forward.Wait()
 				forward = nil
-				return ack, err
+				return bus.StoredAck{}, err
 			})
+			return err
 		}, nil
 	}
 }
