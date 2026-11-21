@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,13 +16,14 @@ import (
 	"time"
 )
 
+// cookieValue is the value of the session cookie setCookie sets, under whichever name it sets it.
 func cookieValue(t *testing.T, setCookie string) string {
 	t.Helper()
-	parts := strings.SplitN(setCookie, ";", 2)
-	if !strings.HasPrefix(parts[0], "dsession=") {
-		t.Fatalf("expected dsession= prefix, got %q", parts[0])
+	cookie, err := http.ParseSetCookie(setCookie)
+	if err != nil {
+		t.Fatalf("parse set-cookie %q: %v", setCookie, err)
 	}
-	return strings.TrimPrefix(parts[0], "dsession=")
+	return cookie.Value
 }
 
 func sign256(payload, key string) string {
@@ -39,7 +42,7 @@ var testKeys = SingleSigningKey("signing-key")
 
 func TestIssueAndVerifySessionCookie(t *testing.T) {
 	setCookie := IssueSessionCookie("sami@example.com", 7, testKeys, true)
-	for _, frag := range []string{"dsession=", "HttpOnly", "Path=/", "SameSite=Strict", "Max-Age=2592000", "Secure"} {
+	for _, frag := range []string{"__Host-dsession=", "HttpOnly", "Path=/", "SameSite=Strict", "Max-Age=2592000", "Secure"} {
 		if !strings.Contains(setCookie, frag) {
 			t.Errorf("set-cookie %q missing fragment %q", setCookie, frag)
 		}
@@ -100,6 +103,91 @@ func TestVerifySessionRejectsExpiredCookie(t *testing.T) {
 	expired := signedCookie("sami@example.com", 0, time.Now().Add(-time.Hour).UnixMilli(), "signing-key")
 	if _, ok := VerifySession(expired, testKeys); ok {
 		t.Errorf("expired cookie should not verify")
+	}
+}
+
+// The session cookie is named for its setting. A Secure one is `__Host-dsession`, which a browser
+// takes only from this host itself, Secure, with Path=/ and no Domain, so neither a sibling host
+// nor an answer over plain http can plant a session for Dispatch. Under DISPATCH_INSECURE_COOKIE
+// (plain http, over which a browser refuses a `__Host-` cookie) it is `dsession`, not Secure.
+//
+// Control: issue `__Host-dsession` without Secure, and the secure row fails.
+func TestTheSessionCookieIsNamedForItsSetting(t *testing.T) {
+	for _, tc := range []struct {
+		setting string
+		secure  bool
+		name    string
+	}{
+		{setting: "Secure", secure: true, name: "__Host-dsession"},
+		{setting: "DISPATCH_INSECURE_COOKIE", secure: false, name: "dsession"},
+	} {
+		t.Run(tc.setting, func(t *testing.T) {
+			setCookie := IssueSessionCookie("sami@example.com", 0, testKeys, tc.secure)
+			cookie, err := http.ParseSetCookie(setCookie)
+			if err != nil {
+				t.Fatalf("parse %q: %v", setCookie, err)
+			}
+			if cookie.Name != tc.name || cookie.Secure != tc.secure || cookie.Path != "/" || cookie.Domain != "" || strings.Contains(strings.ToLower(setCookie), "domain=") ||
+				!cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge != 30*24*60*60 {
+				t.Errorf("the issue set %q, want %s=<value>, Secure %t, Path=/, no Domain, HttpOnly, SameSite=Strict, Max-Age=2592000", setCookie, tc.name, tc.secure)
+			}
+		})
+	}
+}
+
+// requestCarrying is a request whose Cookie header carries cookies, in their order.
+func requestCarrying(cookies ...*http.Cookie) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "https://dispatch.example/auth/whoami", nil)
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	return request
+}
+
+// A request is signed in by `__Host-dsession` when it carries one, and otherwise by `dsession`, the
+// name every session issued before the rename carries, so a person signed in then keeps their
+// session. A `__Host-dsession` beside a `dsession` is read alone, whatever either holds: a
+// `dsession` another host planted (login CSRF) never stands in for the browser's own session,
+// valid or not. Both readers read so: SessionFromRequest, and HasSessionCookie, which decides
+// whether a write must come from the server's own origin.
+//
+// Controls: read `dsession` alone, and the rows carrying `__Host-dsession` fail; read
+// `__Host-dsession` and fall back to `dsession` when it does not verify, and the row of a good old
+// cookie beside a bad new one fails.
+func TestTheSessionIsReadFromTheHostCookieAndOtherwiseTheOldName(t *testing.T) {
+	expiry := time.Now().Add(time.Hour).UnixMilli()
+	alice := signedCookie("alice@example.com", 1, expiry, "signing-key")
+	mallory := signedCookie("mallory@example.com", 2, expiry, "signing-key")
+	forged := signedCookie("alice@example.com", 1, expiry, "another-key")
+	host := func(value string) *http.Cookie { return &http.Cookie{Name: "__Host-dsession", Value: value} }
+	plain := func(value string) *http.Cookie { return &http.Cookie{Name: "dsession", Value: value} }
+	for _, tc := range []struct {
+		name    string
+		cookies []*http.Cookie
+		// login is the person the request is signed in as, "" for none.
+		login string
+		// carries is HasSessionCookie's answer.
+		carries bool
+	}{
+		{name: "only __Host-dsession", cookies: []*http.Cookie{host(alice)}, login: "alice@example.com", carries: true},
+		{name: "only dsession, issued before the rename", cookies: []*http.Cookie{plain(alice)}, login: "alice@example.com", carries: true},
+		{name: "two people: dsession first, __Host-dsession is read", cookies: []*http.Cookie{plain(mallory), host(alice)}, login: "alice@example.com", carries: true},
+		{name: "two people: __Host-dsession first, __Host-dsession is read", cookies: []*http.Cookie{host(alice), plain(mallory)}, login: "alice@example.com", carries: true},
+		{name: "a forged dsession beside a good __Host-dsession", cookies: []*http.Cookie{plain(forged), host(alice)}, login: "alice@example.com", carries: true},
+		{name: "a good dsession beside a forged __Host-dsession", cookies: []*http.Cookie{host(forged), plain(alice)}, login: "", carries: true},
+		{name: "only a forged __Host-dsession", cookies: []*http.Cookie{host(forged)}, login: "", carries: true},
+		{name: "neither", cookies: nil, login: "", carries: false},
+		{name: "another cookie only", cookies: []*http.Cookie{{Name: "dsession_other", Value: alice}}, login: "", carries: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, ok := SessionFromRequest(requestCarrying(tc.cookies...), testKeys)
+			if tc.login == "" && ok || tc.login != "" && (!ok || session.Login != tc.login) {
+				t.Errorf("SessionFromRequest(%v) = %#v, %t; want signed in as %q (\"\" for none)", tc.cookies, session, ok, tc.login)
+			}
+			if got := HasSessionCookie(requestCarrying(tc.cookies...)); got != tc.carries {
+				t.Errorf("HasSessionCookie(%v) = %t, want %t", tc.cookies, got, tc.carries)
+			}
+		})
 	}
 }
 

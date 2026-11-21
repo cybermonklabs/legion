@@ -374,14 +374,15 @@ func googleSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, h
 }
 
 // codeFlowSignIn runs a whole sign-in through handler against issuer as the person claims names:
-// start, the issuer's sign-in, and the callback, whose answer it returns.
-func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any) *httptest.ResponseRecorder {
+// start, the issuer's sign-in, and the callback, from a browser carrying cookies beside the state
+// cookie, whose answer it returns.
+func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	issuer.SignInAs(claims)
 	start := startSignIn(t, handler)
 	code, state := issuer.Authorize(t, start.Header().Get("Location"))
 	callback := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
-	for _, cookie := range start.Result().Cookies() {
+	for _, cookie := range append(start.Result().Cookies(), cookies...) {
 		callback.AddCookie(cookie)
 	}
 	response := httptest.NewRecorder()
@@ -393,7 +394,7 @@ func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer,
 func whoamiAfter(handler http.Handler, signIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	for _, cookie := range signIn.Result().Cookies() {
-		if cookie.Name == "dsession" {
+		if cookie.Name == hostSessionCookie {
 			request.AddCookie(cookie)
 		}
 	}
@@ -415,9 +416,10 @@ func ageConfirmation(t *testing.T, people testPeople, email string) {
 	}
 }
 
-// sessionCookieSet reports whether response set Dispatch's session cookie.
+// sessionCookieSet reports whether response set the session cookie of a Secure server,
+// `__Host-dsession`.
 func sessionCookieSet(response *httptest.ResponseRecorder) bool {
-	return slices.ContainsFunc(response.Result().Cookies(), func(cookie *http.Cookie) bool { return cookie.Name == "dsession" && cookie.Value != "" })
+	return slices.ContainsFunc(response.Result().Cookies(), func(cookie *http.Cookie) bool { return cookie.Name == hostSessionCookie && cookie.Value != "" })
 }
 
 // errorCode is the code of a JSON error response.
@@ -1542,7 +1544,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				whoami := func(handler http.Handler, signedIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 					request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 					for _, cookie := range signedIn.Result().Cookies() {
-						if cookie.Name == "dsession" {
+						if cookie.Name == hostSessionCookie {
 							request.AddCookie(cookie)
 						}
 					}

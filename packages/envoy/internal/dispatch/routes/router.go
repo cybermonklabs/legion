@@ -603,8 +603,9 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 }
 
 // issueSession ensures the person's session generation and sets the session cookie a sign-in
-// issues, answering 500 when the generation cannot be recorded. authCallback and authDevSignIn
-// both mint through it, so a local dev sign-in carries exactly the cookie an issuer sign-in does.
+// issues, clearing the cookie's other name (auth.SetSessionCookie), answering 500 when the
+// generation cannot be recorded. authCallback, authDevSignIn and the passkey finishes all mint
+// through it, so every sign-in carries exactly the same cookie, and nothing else writes one.
 //
 // subject is the account a sign-in under SignInRule just recorded, empty for a rule that records
 // none. After the generation is read, SignInRule.ConfirmCookie confirms the address's row still
@@ -636,7 +637,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 			return false
 		}
 	}
-	w.Header().Add("Set-Cookie", auth.IssueSessionCookie(email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie))
+	auth.SetSessionCookie(w.Header(), email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie)
 	return true
 }
 
@@ -655,7 +656,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	if err := r.ctx.People.End(req.Context(), email); err != nil {
 		slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
 	}
-	w.Header().Set("Set-Cookie", auth.ClearSessionCookie(!r.ctx.InsecureCookie))
+	auth.ClearSessionCookies(w.Header(), !r.ctx.InsecureCookie)
 	api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

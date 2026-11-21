@@ -661,13 +661,13 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
-- `cookie` (the default) accepts signed `dsession` cookies, which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
+- `cookie` (the default) accepts the signed session cookie (`__Host-dsession`, or `dsession`: see the session cookie, below), which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
   Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_OUTSIDE=1` and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
   `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
   `DISPATCH_SIGNIN_PASSKEY=1` (below) needs the domain and `DISPATCH_OUTSIDE_ORIGIN`, and refuses the boot beside `DISPATCH_SIGNIN_OUTSIDE=1`, so a deployment signs people from outside in one way, and under `iap` identity and header identity, each naming the setting.
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
-  it issues no `dsession` cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
+  it issues no session cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
   A cookie minted while sign-in was on still verifies for its thirty days, since the key signing it is the deployment's `DISPATCH_SIGNING_KEY` and outlives the configuration, and with no issuer nothing is left to confirm that the person it names may still use Dispatch.
   The agent-token API is served as it always is, and `GET /auth/start` answers `503 SIGNIN_UNCONFIGURED`.
   That is what a sandbox deployment runs (`envoy-infra:gcp:Dispatch` with its tailnet inputs unset, which has no origin an OAuth provider takes).
@@ -908,8 +908,17 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 The people Dispatch has seen, either way, are the assignee picker's options and the only names an issue may be assigned to.
 
-`DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
+The session cookie a sign-in issues is `__Host-dsession`: signed, HttpOnly, `SameSite=Strict`, `Secure`, `Path=/` and no `Domain`, for 30 days (`auth.IssueSessionCookie`).
+The `__Host-` prefix makes a browser take it only from this host itself, so no other host under the domain, and no answer over plain HTTP, can set a session for Dispatch.
+`DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing, and since a browser refuses a `__Host-` cookie without it, the session cookie is then `dsession`, as the passkey ceremony cookie is then `dispatch_passkey_ceremony`.
 Do not use it on an HTTPS deployment.
+Dispatch issued `dsession` under every setting before, so the server reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check):
+`__Host-dsession` when a request carries one, read alone whatever it holds, so a `dsession` another host set beside it signs nobody in;
+and `dsession` otherwise, so a person signed in before the change keeps their session.
+Each sign-in sets the name for its setting and clears the other (`auth.SetSessionCookie`), so that person's next sign-in moves them to the new name, and `POST /auth/logout` clears both (`auth.ClearSessionCookies`).
+Nothing else writes the cookie: no request re-issues or extends a session.
+A later release stops reading `dsession` where the cookie is Secure (under `DISPATCH_INSECURE_COOKIE` it stays the name issued);
+a session issued before this change lasts 30 days, so 30 days after this release no live Secure session carries the old name.
 
 `DISPATCH_DEV_SIGNIN=1` adds a second way to get the cookie on a local instance:
 `GET /auth/_dev/signin?login=<email>` records the lowercased person and issues the session cookie an issuer sign-in does, with no issuer exchange and no group check.
@@ -4617,7 +4626,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/logout` (POST; cookie or trusted header)
 
-  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie under both its names (`__Host-dsession` and `dsession`).
 
 - `/auth/whoami` (GET; cookie or trusted header)
 

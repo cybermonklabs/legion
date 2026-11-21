@@ -58,9 +58,11 @@ func devSignInRequest(t *testing.T, target string) *http.Request {
 	return request
 }
 
+// sessionCookieOf is the session cookie the dev sign-in of a Secure router set,
+// `__Host-dsession`, or nil.
 func sessionCookieOf(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dsession" {
+		if cookie.Name == "__Host-dsession" && cookie.Value != "" {
 			return cookie
 		}
 	}
@@ -104,7 +106,7 @@ func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
 	}
 	cookie := sessionCookieOf(response)
 	if cookie == nil {
-		t.Fatalf("sign-in set no dsession cookie: %v", response.Header().Values("Set-Cookie"))
+		t.Fatalf("sign-in set no __Host-dsession cookie: %v", response.Header().Values("Set-Cookie"))
 	}
 	session, ok := auth.VerifySession(cookie.Value, testSigningKey)
 	if !ok || session.Login != "alice@d.example" || session.Generation != 3 {
@@ -133,7 +135,7 @@ func TestDevSignInMintsTheLowercasedEmail(t *testing.T) {
 	}
 	cookie := sessionCookieOf(response)
 	if cookie == nil {
-		t.Fatal("sign-in as Alice set no dsession cookie")
+		t.Fatal("sign-in as Alice set no __Host-dsession cookie")
 	}
 	whoami := whoamiAs(t, handler, cookie)
 	if whoami.Code != http.StatusOK || strings.TrimSpace(whoami.Body.String()) != `{"event_head":"0","kind":"user","login":"alice@d.example"}` {

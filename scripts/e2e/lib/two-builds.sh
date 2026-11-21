@@ -162,7 +162,7 @@ sign_in() {
   rm -f "$work/person-cookies"
   status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$call_seconds" -c "$work/person-cookies" \
     "$target_url/auth/_dev/signin?login=$1") || status=000
-  if [ "$status" != 302 ] || ! grep -q dsession "$work/person-cookies" 2>/dev/null; then
+  if [ "$status" != 302 ] || ! grep -q $'\tdsession\t' "$work/person-cookies" 2>/dev/null; then
     echo "GET /auth/_dev/signin for $1 answered $status with no session cookie" >&2
     return 1
   fi

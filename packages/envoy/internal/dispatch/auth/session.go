@@ -20,12 +20,23 @@ import (
 
 const (
 	sessionMaxAgeSeconds = 30 * 24 * 60 * 60
-	sessionCookieName    = "dsession"
+	// hostSessionCookie is the session cookie's name when it is Secure. The `__Host-` prefix makes
+	// a browser take it only from this host itself, Secure, with Path=/ and no Domain, so neither
+	// another host under the domain nor an answer over plain http can plant a session for Dispatch.
+	hostSessionCookie = "__Host-dsession"
+	// plainSessionCookie is its name under DISPATCH_INSECURE_COOKIE (plain http, over which a
+	// browser refuses a `__Host-` cookie), and the name every session issued before the rename
+	// carries, Secure or not. A later release stops reading it where the cookie is Secure.
+	plainSessionCookie = "dsession"
 	// sessionFormat leads every signed payload. The person's email is base64url-encoded so its
 	// dots cannot be read as the payload's separators; a cookie of the earlier shape, a bare
 	// GitHub login with three fields after it, has a part count of its own and never verifies.
 	sessionFormat = "2"
 )
+
+// sessionCookieNames are the session cookie's names in the order a request is read by them
+// (sessionCookieValue): the first it carries is the only one read.
+var sessionCookieNames = [...]string{hostSessionCookie, plainSessionCookie}
 
 // fingerprintLabel is the message a key's fingerprint is the HMAC of (SigningKeys.Fingerprints):
 // its one purpose, so a fingerprint equals no MAC the key makes for anything else.
@@ -176,21 +187,56 @@ func purposeMAC(purpose, payload, key string) []byte {
 	return hash.Sum(nil)
 }
 
+// sessionCookieName is the name the session cookie is issued under: hostSessionCookie when it is
+// Secure, plainSessionCookie under DISPATCH_INSECURE_COOKIE.
+func sessionCookieName(secure bool) string {
+	if secure {
+		return hostSessionCookie
+	}
+	return plainSessionCookie
+}
+
 // IssueSessionCookie returns a Set-Cookie header value for a 30-day session of the person named
-// by email, signed with keys' current key, Secure when secure is true (cmd/dispatch:
-// DISPATCH_INSECURE_COOKIE unset). keys must not be empty.
+// by email, signed with keys' current key, under the name for secure (sessionCookieName), Secure
+// when secure is true (cmd/dispatch: DISPATCH_INSECURE_COOKIE unset), host-only at Path=/. A
+// server sets it through SetSessionCookie, which also clears the other name. keys must not be
+// empty.
 func IssueSessionCookie(email string, generation int64, keys SigningKeys, secure bool) string {
 	expiry := time.Now().Add(time.Duration(sessionMaxAgeSeconds) * time.Second).UnixMilli()
 	payload := sessionPayload(base64.RawURLEncoding.EncodeToString([]byte(email)), strconv.FormatInt(generation, 10), strconv.FormatInt(expiry, 10))
 	value := fmt.Sprintf("%s.%s", payload, hex.EncodeToString(mac(payload, keys.keys[0])))
+	return sessionCookie(sessionCookieName(secure), value, sessionMaxAgeSeconds, secure)
+}
+
+// SetSessionCookie adds to header the Set-Cookie of a new session (IssueSessionCookie) and the
+// clearing of the session cookie's other name, so a browser holding a session under that name
+// (one issued before the rename, or under the other setting) keeps only the one it is given.
+func SetSessionCookie(header http.Header, email string, generation int64, keys SigningKeys, secure bool) {
+	header.Add("Set-Cookie", IssueSessionCookie(email, generation, keys, secure))
+	header.Add("Set-Cookie", sessionCookie(sessionCookieName(!secure), "", 0, secure))
+}
+
+// ClearSessionCookies adds to header the clearing of the session cookie under each of its names,
+// for a sign-out.
+func ClearSessionCookies(header http.Header, secure bool) {
+	for _, name := range sessionCookieNames {
+		header.Add("Set-Cookie", sessionCookie(name, "", 0, secure))
+	}
+}
+
+// sessionCookie is the Set-Cookie value of the session cookie name holding value for maxAge
+// seconds, a clearing one (Max-Age=0) when maxAge is 0: HttpOnly, SameSite=Strict, host-only (no
+// Domain) at Path=/, Secure when secure is true and always under the `__Host-` name, which a
+// browser takes no Set-Cookie of without it, a clearing one included.
+func sessionCookie(name, value string, maxAge int, secure bool) string {
 	attrs := []string{
-		fmt.Sprintf("%s=%s", sessionCookieName, value),
+		fmt.Sprintf("%s=%s", name, value),
 		"HttpOnly",
 		"Path=/",
 		"SameSite=Strict",
-		fmt.Sprintf("Max-Age=%d", sessionMaxAgeSeconds),
+		fmt.Sprintf("Max-Age=%d", maxAge),
 	}
-	if secure {
+	if secure || name == hostSessionCookie {
 		attrs = append(attrs, "Secure")
 	}
 	return strings.Join(attrs, "; ")
@@ -200,22 +246,6 @@ func sessionPayload(encodedEmail, generation, expiry string) string {
 	return strings.Join([]string{sessionFormat, encodedEmail, generation, expiry}, ".")
 }
 
-// ClearSessionCookie returns a Set-Cookie header value that immediately
-// invalidates the dsession cookie, Secure when secure is true.
-func ClearSessionCookie(secure bool) string {
-	attrs := []string{
-		fmt.Sprintf("%s=", sessionCookieName),
-		"HttpOnly",
-		"Path=/",
-		"SameSite=Strict",
-		"Max-Age=0",
-	}
-	if secure {
-		attrs = append(attrs, "Secure")
-	}
-	return strings.Join(attrs, "; ")
-}
-
 // Session is the signed browser session identity, the person's email, and its server-revocable
 // generation.
 type Session struct {
@@ -223,7 +253,7 @@ type Session struct {
 	Generation int64
 }
 
-// VerifySession validates the dsession cookie value and returns its signed session generation on
+// VerifySession validates a session cookie's value and returns its signed session generation on
 // success. A cookie signed with any key of keys verifies, so one signed before a rotation stays
 // good until it expires.
 func VerifySession(value string, keys SigningKeys) (Session, bool) {
@@ -251,14 +281,25 @@ func VerifySession(value string, keys SigningKeys) (Session, bool) {
 	return Session{Login: string(email), Generation: generation}, true
 }
 
-// SessionFromRequest returns the valid signed session identity, its cookie signed with any key of
-// keys. Identity implementations verify the generation against their server-side store.
-func SessionFromRequest(r *http.Request, keys SigningKeys) (Session, bool) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil || cookie.Value == "" {
-		return Session{}, false
+// sessionCookieValue is the value of the session cookie r carries under the first of its names
+// (sessionCookieNames) that it carries with a value, "" when it carries none: `__Host-dsession`
+// when present, read alone whatever it holds, so a `dsession` another host planted beside it never
+// stands in for it; otherwise `dsession`, the name under DISPATCH_INSECURE_COOKIE and of every
+// session issued before the rename.
+func sessionCookieValue(r *http.Request) string {
+	for _, name := range sessionCookieNames {
+		if cookie, err := r.Cookie(name); err == nil && cookie.Value != "" {
+			return cookie.Value
+		}
 	}
-	return VerifySession(cookie.Value, keys)
+	return ""
+}
+
+// SessionFromRequest returns the valid signed session identity of r's session cookie
+// (sessionCookieValue), signed with any key of keys. Identity implementations verify the
+// generation against their server-side store.
+func SessionFromRequest(r *http.Request, keys SigningKeys) (Session, bool) {
+	return VerifySession(sessionCookieValue(r), keys)
 }
 
 // SessionStore persists the generation that makes signed browser sessions
@@ -269,8 +310,8 @@ type SessionStore interface {
 	RevokeSessions(ctx context.Context, login string) error
 }
 
-// HasSessionCookie reports whether a request selected cookie authentication.
+// HasSessionCookie reports whether a request selected cookie authentication: it carries a session
+// cookie under either name (sessionCookieValue).
 func HasSessionCookie(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookieName)
-	return err == nil && cookie.Value != ""
+	return sessionCookieValue(r) != ""
 }

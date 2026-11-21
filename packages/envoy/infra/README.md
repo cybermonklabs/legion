@@ -916,9 +916,10 @@ builds the front door and serves Dispatch at its tailnet name, and
 the sign-in group `signInClientId`, `signInClientSecret` and `signInDomain`, which runs people's
 browser sign-in. With the tailnet group unset the component is the sandbox (below); with the
 sign-in group unset Dispatch takes agent tokens alone and nobody signs in through a browser: no
-`DISPATCH_SIGNIN_*` variable is rendered, and the app refuses every `dsession` cookie, one minted
-while sign-in was on included, since the deployment's own `DISPATCH_SIGNING_KEY` goes on verifying
-such a cookie for its thirty days and nobody is left to confirm the person is still a member. A
+`DISPATCH_SIGNIN_*` variable is rendered, and the app refuses every session cookie
+(`__Host-dsession`, or `dsession`), one minted while sign-in was on included, since the
+deployment's own `DISPATCH_SIGNING_KEY` goes on verifying such a cookie for its thirty days and
+nobody is left to confirm the person is still a member. A
 personal agent token a person minted in Settings while sign-in was on keeps acting for that
 person, and with no sign-in nobody can sign in to revoke it, so revoke those tokens before a stack
 drops its sign-in inputs. Such a stack also pins an `envoyImage` built from a cybermonklabs/legion
@@ -1006,9 +1007,9 @@ own ClusterIP Service, which terminates no TLS, so Dispatch is reached inside it
 alone, by the pods of the namespaces `allowedNamespaces` names and of the apps `allowedApps` names,
 with the agent tokens its API takes. Its app gets no `DISPATCH_SIGNIN_*` setting, so nobody signs
 in through a browser and every request that needs a person answers `401 NO_IDENTITY`, one carrying
-a `dsession` cookie minted while a stack ran sign-in included: the deployment's own
-`DISPATCH_SIGNING_KEY` still verifies that cookie for its thirty days, and no membership check is
-left behind it. A sandbox stack pins an
+a session cookie (`__Host-dsession`, or `dsession`) minted while a stack ran sign-in included: the
+deployment's own `DISPATCH_SIGNING_KEY` still verifies that cookie for its thirty days, and no
+membership check is left behind it. A sandbox stack pins an
 `envoyImage` built from a cybermonklabs/legion `main` commit at or after this change: `envoy-dispatch` in
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
@@ -2347,8 +2348,8 @@ resources:
 Its `url` output is `http://example-dispatch.dispatch.svc.cluster.local:8766`, and the pods of the
 namespace `example-agents` are the only readers the app's NetworkPolicy admits. They read it with
 agent tokens: its app has no `DISPATCH_SIGNIN_*` setting, so nobody signs in through a browser and
-every request that needs a person answers `401 NO_IDENTITY`, one carrying a `dsession` cookie from
-a stack that ran sign-in before included.
+every request that needs a person answers `401 NO_IDENTITY`, one carrying a session cookie
+(`__Host-dsession`, or `dsession`) from a stack that ran sign-in before included.
 
 A stack behind the IAP door sets no tailnet input and no Google client, and sets `publicOrigin`,
 the origin its own load balancer serves, `iapAudience`, the audience of that load balancer's

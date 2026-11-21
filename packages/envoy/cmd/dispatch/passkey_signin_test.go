@@ -46,7 +46,7 @@ func newPasskeyRig(t *testing.T, overrides map[string]string) *passkeyRig {
 	signedIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{
 		"sub": "google-alice", "email": privOwner, "email_verified": true, "hd": "example.com",
 	})
-	r.alice = sessionCookieOf(t, "alice's Google sign-in", signedIn)
+	r.alice = sessionCookieNamed(t, "alice's Google sign-in", signedIn, sessionCookieNameFor(r.boot.InsecureCookie))
 	if _, err := r.database.Pool.Exec(context.Background(), `update projects set owner = $1 where key = 'PRIV'`, privOwner); err != nil {
 		t.Fatalf("give PRIV to alice: %v", err)
 	}
@@ -67,15 +67,23 @@ func (r *passkeyRig) serverWith(t *testing.T, overrides map[string]string) (http
 	return r.router(t, boot), boot
 }
 
-// sessionCookieOf is the session cookie response set, failing the test naming what when it set none.
+// sessionCookieOf is the session cookie a Secure server's response set, `__Host-dsession`, failing
+// the test naming what when it set none.
 func sessionCookieOf(t *testing.T, what string, response *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
+	return sessionCookieNamed(t, what, response, hostSessionCookie)
+}
+
+// sessionCookieNamed is the session cookie response set under name, failing the test naming what
+// when it set none.
+func sessionCookieNamed(t *testing.T, what string, response *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dsession" && cookie.Value != "" && cookie.MaxAge >= 0 {
+		if cookie.Name == name && cookie.Value != "" && cookie.MaxAge >= 0 {
 			return cookie
 		}
 	}
-	t.Fatalf("%s answered %d %s and set no session cookie", what, response.Code, response.Body.String())
+	t.Fatalf("%s answered %d %s and set no %s cookie", what, response.Code, response.Body.String(), name)
 	return nil
 }
 

@@ -1893,7 +1893,7 @@ func explainMigrateError(err error) error {
 // (devSignInSharedSigningKey), otherwise one generated for this process. Outside it, it is
 // DISPATCH_SIGNING_KEY's keys when that is set (a deployment's, from its secrets manager),
 // otherwise the data dir's signing-key file, created on first start (a local run's). Outside dev
-// sign-in the keys must stay the same across deploys, or every dsession cookie is invalidated
+// sign-in the keys must stay the same across deploys, or every session cookie is invalidated
 // whenever a container rolls; a rotation adds the new key second first. An empty signing-key file
 // is refused by name: the empty set signs nothing, and the people store would refuse it only by
 // panicking.
