@@ -125,11 +125,16 @@ assert_each_refused host "names a private internal host" hosts
 echo "case: a reserved example host passes, the vendored NATS client's property in its own file, and" \
   "Lean and OCaml names"
 root=$(fixture public-host)
-printf 'https://listener.%s.%s\n' "$internal" "$example_host_suffix" > "$root/docs/notes.md"
-printf 'nats://nats.%s.%s.com:4222\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
-printf 'Point it at api.%s.%s.\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
-printf 'listener.%s.%s at the start of a line\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
-printf 'now https://ENVOY.%s.%s\n' "${internal^^}" "${example_host_suffix^^}" >> "$root/docs/notes.md"
+{
+  printf 'https://listener.%s.%s\n' "$internal" "$example_host_suffix"
+  printf 'nats://nats.%s.%s.com:4222\n' "$internal" "$example_host_suffix"
+  printf 'Point it at api.%s.%s.\n' "$internal" "$example_host_suffix"
+  printf 'listener.%s.%s at the start of a line\n' "$internal" "$example_host_suffix"
+  printf 'now https://ENVOY.%s.%s\n' "${internal^^}" "${example_host_suffix^^}"
+  # A host that ends in `.internal` passes a run over the tree: only a pull request's own text
+  # is read for that ending (the case of it below).
+  printf 'Point it at wobble.%s:4000, https://wobble.%s/x or wobble.%s\n' "$internal" "$internal" "$internal"
+} > "$root/docs/notes.md"
 mkdir -p "$root/$(dirname "$vendored_nats")"
 printf '        this.%s.push(sv);\n' "$internal" > "$root/$vendored_nats"
 git -C "$root" add "$vendored_nats"
@@ -584,6 +589,78 @@ check "a review comment naming a private host fails" "$(is "$status" 1)"
 check "names the review comment by its id and line" "$(contains "$out" 'review-comment:302:3: names a private internal host')"
 check "does not print the host" "$(is "$(contains "$out" "$private_host_suffix")" false)"
 check "says how to take a review comment down" "$(contains "$out" 'delete each comment and review comment')"
+
+echo "case: a pull request's own text refuses a host that ends in .internal, which the tree passes"
+# Each form of the ending in the body, one a line: a port, a path, a blank, a quote, a bracket, a
+# sentence's full stop, and the end of the line; and one in the title, a commit message, a comment,
+# a review and a review comment.
+bare="wobble.$internal"
+bare_forms=(
+  "Point it at $bare:4000 now."
+  "See https://$bare/x for it."
+  "Reach $bare over the VPN."
+  "The host is \"$bare\" today."
+  "(or $bare)"
+  "Reach it at $bare. Then go."
+  "It answers at $bare"
+)
+write_pr_text "fix(dispatch): reach $bare:4000" "$(printf '%s\n' "${bare_forms[@]}")" \
+  "fix: keep the order at https://$bare/x"
+items 801 "Seen at $bare:4000." > "$work/comments.1"
+items 802 "Blocking: $bare/x answers." > "$work/reviews.1"
+items 803 "Nit: ($bare)" > "$work/review-comments.1"
+run_pr_text
+check "fails" "$(is "$status" 1)"
+for index in "${!bare_forms[@]}"; do
+  check "body form $index is named at its line" "$(contains "$out" "body:$((index + 1)): names a private internal host")"
+done
+check "names the title" "$(contains "$out" 'title:1: names a private internal host')"
+check "names the commit message" "$(contains "$out" 'commits:1: names a private internal host')"
+check "names the comment" "$(contains "$out" 'comment:801:1: names a private internal host')"
+check "names the review" "$(contains "$out" 'review:802:1: names a private internal host')"
+check "names the review comment" "$(contains "$out" 'review-comment:803:1: names a private internal host')"
+check "counts the twelve" "$(contains "$out" '^check-private-names: 12 finding(s)')"
+# The two well-known names of that shape pass, and so does the reserved example host; a longer
+# name holding one of the two, and a label glued to the ending, are refused.
+write_pr_text "fix(dispatch): keep the inbox order" \
+  "$(printf 'http://metadata.google.%s/computeMetadata/v1/\nhost.docker.%s:8080\nwobble.%s.%s:4000\nwobble.%sx is one word\n' \
+    "$internal" "$internal" "$internal" "$example_host_suffix" "$internal")" "fix: keep the order"
+run_pr_text
+check "the two well-known names, the example host and a longer word pass" "$(is "$status" 0)"
+write_pr_text "fix(dispatch): keep the inbox order" \
+  "$(printf 'x-metadata.google.%s/\na.host.docker.%s:8080\n' "$internal" "$internal")" "fix: keep the order"
+run_pr_text
+check "a longer name that holds one of them fails" "$(is "$status" 1)"
+check "names both lines" \
+  "$(is "$(contains "$out" 'body:1: names a private')$(contains "$out" 'body:2: names a private')" truetrue)"
+# A label starts with a letter or a digit, and a `_` ends a host only with no letter or digit after
+# it: a shell default that names the metadata server, and an identifier that runs on past the
+# ending, pass; a host behind a `_` or a `-`, or followed by one, is refused, and so is a namespace
+# segment with no full stop after it, while one with a full stop passes.
+dollar='$'
+write_pr_text "fix(dispatch): keep the inbox order" \
+  "$(printf '%s\n' "${dollar}{GCE_METADATA_HOST:-metadata.google.$internal}" "set nats.${internal}_url first" \
+    "import Std.${internal^}.UV.System" "it ends with Std.${internal^}." "see -metadata.google.$internal:80")" \
+  "fix: keep the order"
+run_pr_text
+check "a shell default and a lone hyphen before the metadata server, an identifier and two namespaces pass" \
+  "$(is "$status" 0)"
+bare_edges=(
+  "see _${bare}_ there"
+  "see -$bare:80 there"
+  "vm-1.c.$bare--then"
+  "see Std.${internal^} here"
+)
+write_pr_text "fix(dispatch): keep the inbox order" "$(printf '%s\n' "${bare_edges[@]}")" "fix: keep the order"
+run_pr_text
+check "the edge forms fail" "$(is "$status" 1)"
+for index in "${!bare_edges[@]}"; do
+  check "edge form $index is named at its line" "$(contains "$out" "body:$((index + 1)): names a private internal host")"
+done
+root=$(fixture bare-host-value)
+PRIVATE_NAME_BARE_HOSTS=maybe run_check "$root"
+check "a PRIVATE_NAME_BARE_HOSTS that is neither yes nor no exits 2" "$(is "$status" 2)"
+check "and says so" "$(contains "$out" '^check-private-names: PRIVATE_NAME_BARE_HOSTS must be yes or no')"
 
 clean_pr
 printf 'A NUL here:\0 the %s repository\n' "$repo" > "$work/comment-body"

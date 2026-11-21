@@ -130,7 +130,6 @@ var (
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
@@ -145,6 +144,21 @@ var (
 	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
 	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
+
+// secretKeyChars are the characters of a key of a Secret's data.
+var secretKeyChars = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+
+// secretKeyRule says what a key of a Secret's data may be, as Kubernetes holds it
+// (k8s.io/apimachinery's validation.IsConfigMapKey, which validates a Secret's keys too).
+const secretKeyRule = `a Secret's key: letters, digits, "-", "_" and ".", at most 253 characters, and neither "." nor ".." nor ` +
+	`one that begins with ".."`
+
+// isSecretKey reports whether key can be a key of a Secret's data (secretKeyRule). The API server
+// refuses a Secret with any other key, so a secretKeyRef to one names a key no Secret holds, and
+// the pod that reads it never starts.
+func isSecretKey(key string) bool {
+	return len(key) <= 253 && secretKeyChars.MatchString(key) && key != "." && key != ".." && !strings.HasPrefix(key, "..")
+}
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
@@ -1778,7 +1792,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsSubdomain(args.AppPrivateKeySecretName) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretName", "appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
 		}
-		if !secretKeyRule.MatchString(args.AppPrivateKeySecretKey) {
+		if !isSecretKey(args.AppPrivateKeySecretKey) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
 		}
 	}

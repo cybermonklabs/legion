@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -94,7 +95,11 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 // and every member holds it current. The stream's first leader answers the create as it takes
 // over (processStreamLeaderChange), and the other members are current only once its entries have
 // reached them over the routes, round trips later. An answer later still would reach the creating
-// client once it reconnects, and the create would end after one send, which the drop row fails.
+// client once it reconnects, and the create would end after one send, which the drop row fails. A
+// member that runs JetStream with no cluster, as a lone server (Start) does, has no stream leader
+// to report (nats-server v2.15.1 JetStreamIsStreamLeader is false there, and
+// JetStreamIsStreamCurrent true for any name), so it leads stream once its account holds it
+// (holdsStream).
 func streamAnswered(cluster *Cluster, stream string) bool {
 	led := false
 	for _, member := range cluster.Servers {
@@ -102,9 +107,26 @@ func streamAnswered(cluster *Cluster, stream string) bool {
 		if srv == nil || !srv.JetStreamIsStreamCurrent(natsserver.DEFAULT_GLOBAL_ACCOUNT, stream) {
 			return false
 		}
-		led = led || srv.JetStreamIsStreamLeader(natsserver.DEFAULT_GLOBAL_ACCOUNT, stream)
+		led = led || srv.JetStreamIsStreamLeader(natsserver.DEFAULT_GLOBAL_ACCOUNT, stream) || (!srv.JetStreamIsClustered() && holdsStream(srv, stream))
 	}
 	return led
+}
+
+// holdsStream reports whether srv's global account holds stream, read from the server's own state
+// (Jsz) with no connection to it.
+func holdsStream(srv *natsserver.Server, stream string) bool {
+	info, err := srv.Jsz(&natsserver.JSzOptions{Account: natsserver.DEFAULT_GLOBAL_ACCOUNT, Streams: true})
+	if err != nil {
+		return false
+	}
+	for _, account := range info.AccountDetails {
+		for _, held := range account.Streams {
+			if held.Name == stream {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // A create whose answer the cluster never delivers, because the connection it was sent on dropped
@@ -203,30 +225,76 @@ func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStream
 
 // A create whose connection's first dials draw no handshake, as a member too loaded to answer
 // within dialTimeout leaves them, waits for the connection, which retries its dial, and is
-// answered once the member answers.
+// answered once the member answers. The server stays frozen until its relay has joined two dials
+// of the create's connection (dialsSince): the second comes only once the first handshake has run
+// out of time and the connection has dialled again, and the create must still be waiting then. No
+// span of time decides when the server thaws. A create whose goroutine ran late dials late, and
+// nats.go starts its handshake's deadline only after the TCP dial the relay sees (v1.55.0
+// nats.go:2539 and :2944), so a thaw a fixed span after the create's start or after its first dial
+// could come before the first handshake ran out, and the create would then connect with no dial
+// retried. The row reads the stream the create made from the server's own state (streamAnswered),
+// not over a connection, whose read would wait on the relay as a request bounded by jetStreamWait.
 func TestACreateWhoseFirstDialsDrawNoHandshakeWaitsForTheConnection(t *testing.T) {
 	server, _ := Start(t)
 	cluster := &Cluster{Servers: []*Server{server}}
 	thaw := server.Freeze(t)
 	t.Cleanup(thaw)
+	dials := dialsSince(server)
 	recorder := &fatalRecorder{TB: t}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		cluster.CreateStream(recorder, natsgo.StreamConfig{Name: "LATE", Subjects: []string{"late.>"}, Storage: natsgo.FileStorage})
 	}()
+	// The reading is how many dials the relay has joined; the wait ends at the second, or at the
+	// create's end.
+	testwait.Until(t, "the create's connection to dial the frozen server twice, or the create to end", func() (int, bool) {
+		select {
+		case <-done:
+			return dials(), true
+		default:
+			n := dials()
+			return n, n >= 2
+		}
+	})
 	select {
 	case <-done:
-		t.Fatalf("the create ended while the server could not answer a dial: %q", recorder.message)
-	case <-time.After(3 * dialTimeout):
+		t.Fatalf("the create ended while the server could answer no dial, with %d of its connection's dials joined, want 2: %q", dials(), recorder.message)
+	default:
 	}
 	thaw()
 	<-done
 	if recorder.message != "" {
 		t.Fatalf("the create failed once the server answered: %s", recorder.message)
 	}
-	if _, err := cluster.JetStream(t).StreamInfo("LATE"); err != nil {
-		t.Fatalf("read stream LATE the create made: %v", err)
+	testwait.Until(t, "the server to hold stream LATE, which the create made", func() (bool, bool) {
+		held := streamAnswered(cluster, "LATE")
+		return held, held
+	})
+}
+
+// dialsSince returns a func counting the connections server's relay has joined to the server
+// since dialsSince was called: each a client's dial of the server's URL, which the relay accepts
+// and joins while it is frozen too. A frozen relay moves none of a connection's bytes, so the
+// server's INFO never reaches the client, and it notices neither side's close: each connection
+// stays joined until the thaw, so while the relay is frozen the count only grows, and a dial is
+// counted however late the func is asked. In the dial row every dial it counts is the create
+// connection's: Start leaves no connection to the server, and the row makes no other.
+func dialsSince(server *Server) func() int {
+	r := server.relay
+	r.mu.Lock()
+	before := maps.Clone(r.joins)
+	r.mu.Unlock()
+	return func() int {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		n := 0
+		for j := range r.joins {
+			if _, held := before[j]; !held {
+				n++
+			}
+		}
+		return n
 	}
 }
 

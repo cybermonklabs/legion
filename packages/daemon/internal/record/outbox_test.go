@@ -32,7 +32,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
@@ -170,7 +170,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 	built := map[StatusRowKind]StatusWrite{
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}

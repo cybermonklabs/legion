@@ -2979,7 +2979,47 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 207: dispatch://INFRA-3531 and dispatch://INFRA-4567, two changes that reach main together as
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+//
+// 217: dispatch://INFRA-3531 and dispatch://INFRA-4567, two changes that reach main together as
 // cybermonklabs/legion#4273, into whose branch #4485 merged, so they take one number. First,
 // dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
 // which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
@@ -3063,14 +3103,15 @@ package api
 // with the projected token mounted under the roles directory, at
 // /var/run/legion/roles/workload-identity, as an issue pod's is.
 //
-// Contract 207 is served with no code of its own in shaping.go (the serving rule at the head of
+// Contract 217 is served with no code of its own in shaping.go (the serving rule at the head of
 // this file). The one key either change adds to an answer a plugin parses is
 // `settings.runtime.kubernetes.memory_guard.controller_pod` on the state, with its five members,
 // and no reader at any contract types a nested key of `settings` (answers.go's typedSettings,
 // 193's entry), so it owes no band of stateNarrowings. Neither change adds a value to an
 // enumerated field (answers.go's EnumeratedFields): `memory-guard-kill` is a kind of controller
-// notice, which no answer a plugin parses carries. So a caller at 207 is served what one at 202,
-// #4493's entry above, is, and 207's records are 202's under its own number.
+// notice, which no answer a plugin parses carries. So a caller at 217 is served what one at 202,
+// #4493's entry above, is, and 217's answer records are 202's under its own number; its request
+// records are 205's, which hold no `POST /legion/v1/children/park` (205's entry).
 //
 // The skew is safe in both directions. A single-role launcher of an earlier image refuses the
 // metadata flags (its validateMetadata needed `--roles-dir`), one built before 151 refuses
@@ -3133,6 +3174,8 @@ package api
 // pull requests of this repository, made between 2026-11-21T03:34:11Z and 03:44:21Z, gave above
 // main's 202: 203 (#2230, #3993, #4065, #4175, #4553, #4592, #4596 and #4661), 204 (#3831 and
 // #4030), 205 (#4573) and 206 (#4540), so 207 was the lowest number above main's 202 that no open
-// pull request declared at that reading. That is a reading and never the rule: read main's own
-// number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 207
+// pull request declared at that reading. It took 217 at the merge of main at 787c324fd0 (main at
+// 205; a read of 414 open heads found 206 to 216 declared, 207 by seven other pull requests). That
+// is a reading and never the rule: read main's own number and every open head again at the next
+// forward merge rather than from this line.)
+const DaemonAPIVersion = 217
