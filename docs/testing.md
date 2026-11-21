@@ -649,6 +649,16 @@ pods, a write blocked for a third of a second completed the moment the page sent
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
 
+## A fake HTTP server whose client gives up on requests
+
+A fake `httptest` server whose handler fails the test on a request body it cannot read stops with `Shutdown` before `Close` when its client sends requests the test does not wait for, as the Cloud SQL connector does when it gives up on a refresh (`stopServing` in `packages/daemon/internal/sessionproxy/connector_test.go`).
+`httptest.Server.Close` closes each connection that is new or idle, the idle ones through net/http's `closeIdleConns` and the new ones in a loop of its own, and net/http marks a connection active only after it has read a request's headers, so a connection on which it has read them but not yet started the request's handler can still be new or idle: the handler then runs on the closed connection, reads the body as `use of closed network connection`, and fails the test for nothing the code under test did, as `TestTheWriterTokenFileIsReadAgainAtEachExchange` failed in CI's daemon-go (job 136636895793).
+`Shutdown` marks the server as shutting down first, and net/http checks that mark after it marks a connection active and before it starts the handler, so no handler starts on a connection the stop closes.
+Given a context that has already ended, `Shutdown` closes the idle connections once and returns without waiting for active requests.
+`Close` then closes the new and idle connections left and waits for the active handlers, whose connections it leaves open, so their clients must finish or cancel those requests for the cleanup to return.
+`TestStopServingRunsNoHandlerOnAConnectionItCloses` holds a request at that point, on a new connection and on an idle one, and fails with `Close` alone.
+A fake whose handler fails the test on every request keeps `Close` alone, so a request that reaches it even as its test ends still fails the test.
+
 ## A test that starts jj or git names a working directory
 
 jj searches upward from the directory it runs in for the closest `.jj` and opens that repository, and it has no ceiling option.
