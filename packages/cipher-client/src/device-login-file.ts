@@ -19,8 +19,18 @@
 
 import { createPrivateKey, type KeyObject, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { access, type FileHandle, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import {
+  access,
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  readlink,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import {
   DEVICE_LOGIN_MOST_BYTES,
@@ -228,6 +238,45 @@ export async function deviceLoginPlace(path: string): Promise<void> {
  *  it links to is checked before the open ({@link readDeviceLogin}). */
 const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY;
 
+/** The most links a read follows from the login's path to its file: Linux's own bound
+ *  (MAXSYMLINKS), past which an open refuses the path as a loop of links. */
+const LINKS_FOLLOWED_AT_MOST = 40;
+
+/**
+ * The path a link at `path` leads to, or null where `path` is no link. Each link is followed by
+ * its `lstat` and `readlink` alone, up to the first path that is no link or that is not there, so
+ * no file a link names is opened before its directory is checked ({@link readDeviceLogin}), and a
+ * path that is no link, as a save leaves it, costs one `lstat`. A relative target is taken from
+ * the link's own directory, joined and not normalized, so the system resolves a `..` in it as an
+ * open does. More than {@link LINKS_FOLLOWED_AT_MOST} links is refused as a loop of links.
+ */
+async function linkTarget(path: string): Promise<string | null> {
+  let at = path;
+  for (let followed = 0; ; followed += 1) {
+    const end = followed === 0 ? null : at;
+    let info: Stats;
+    try {
+      info = await lstat(at);
+    } catch (error) {
+      if (readErrorCode(error) === "ENOENT") return end;
+      throw refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
+    }
+    if (!info.isSymbolicLink()) return end;
+    if (followed === LINKS_FOLLOWED_AT_MOST) throw notARegularFile("a loop of links");
+    let target: string;
+    try {
+      target = await readlink(at);
+    } catch (error) {
+      // The link was replaced since its lstat (EINVAL: a save's rename) or removed: what is there
+      // now is the end.
+      const code = readErrorCode(error);
+      if (code === "EINVAL" || code === "ENOENT") return end;
+      throw refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
+    }
+    at = isAbsolute(target) ? target : `${dirname(at)}/${target}`;
+  }
+}
+
 /**
  * The device login at `path`. A file that is not there is refused naming
  * {@link DEVICE_LOGIN_COMMAND}; a path that is not a regular file is refused ({@link
@@ -238,13 +287,13 @@ const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTT
  * value, a key that is not a P-256 PKCS#8 key, an expiry that is no time) is refused. The
  * directory is checked before the file is opened: in one another user can write to, that user
  * picks what an open would open, and the open of a device can do something. Where the setting
- * names a link, the directory of the file it links to is checked too, before the open, for the
- * same reason: the file is in that directory. The path is then opened once ({@link LOGIN_READ}),
- * and the checks and the read are of that one open file: a look at the path and a second open
- * could open a named pipe put in its place between the two, and a read of a pipe nobody writes to
- * never returns. Each refusal names the file by its setting ({@link DEVICE_LOGIN_FILE_NAMED}) and
- * quotes none of its content. The refresh and access tokens are held (`holdSecret`), so no line
- * this process prints carries them.
+ * names a link, the directory of the file it links to is checked too ({@link linkTarget}), before
+ * the open, for the same reason: the file is in that directory. The path is then opened once
+ * ({@link LOGIN_READ}), and the checks and the read are of that one open file: a look at the path
+ * and a second open could open a named pipe put in its place between the two, and a read of a pipe
+ * nobody writes to never returns. Each refusal names the file by its setting
+ * ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and access tokens
+ * are held (`holdSecret`), so no line this process prints carries them.
  */
 export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const absent = () =>
@@ -254,17 +303,10 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const failed = (error: unknown) =>
     new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   await checkLoginDirectory(dirname(path), absent);
-  let real: string;
-  try {
-    real = await realpath(path);
-  } catch (error) {
-    throw readErrorCode(error) === "ENOENT"
-      ? absent()
-      : refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
-  }
-  if (real !== resolve(path)) {
+  const linked = await linkTarget(path);
+  if (linked !== null) {
     await checkLoginDirectory(
-      dirname(real),
+      dirname(linked),
       absent,
       `the directory of the file ${DEVICE_LOGIN_FILE_NAMED} links to`
     );

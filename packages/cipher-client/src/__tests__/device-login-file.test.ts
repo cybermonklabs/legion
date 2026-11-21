@@ -256,10 +256,90 @@ test("a login reached through a link into a directory others may write is refuse
     await chmod(dirname(target), 0o755);
     expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
     expect(opened).toContain(path);
+    // Through a chain of links, the first one relative to its own directory, the directory of the
+    // file the last one names is the one checked.
+    const hop = join(dirname(dirname(path)), "hop");
+    await mkdir(hop, { mode: 0o700 });
+    await fs.symlink(target, join(hop, "next.json"));
+    await fs.rm(path);
+    await fs.symlink(join("..", "hop", "next.json"), path);
+    await chmod(dirname(target), 0o777);
+    const chained = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(chained?.message).toContain("mode 0777");
+    expect(chained?.message).toContain("links to");
+    await chmod(dirname(target), 0o755);
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
   } finally {
     opens.mockRestore();
   }
 });
+
+test("a lookup of the login's path that fails as missing does not make a regular login missing", async () => {
+  // Bun's realpath opens the path and then reads where that open went, so it answers ENOENT where
+  // a save renames a new file over the path between the two. A regular file needs no lookup.
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const lookups = spyOn(fs, "realpath").mockImplementation((async () => {
+    throw Object.assign(new Error("not there"), { code: "ENOENT" });
+  }) as unknown as typeof fs.realpath);
+  try {
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  } finally {
+    lookups.mockRestore();
+  }
+});
+
+/** Run by another process: saves the login at `SAVED_LOGIN` over and over, as a save does, by a
+ *  rename of a whole new file over it, once it has said so on its standard output. */
+const SAVER = `
+const { readFileSync, renameSync, writeFileSync, writeSync } = require("node:fs");
+const path = process.env.SAVED_LOGIN;
+const login = readFileSync(path);
+writeSync(1, "saving\\n");
+for (;;) {
+  writeFileSync(path + ".saving", login, { mode: 0o600 });
+  renameSync(path + ".saving", path);
+}
+`;
+
+test("a login read while another process saves it over and over is never refused", async () => {
+  // Each read finds the file before the rename or the one after it, never no file.
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const saver = Bun.spawn([process.execPath, "-e", SAVER], {
+    env: { ...process.env, SAVED_LOGIN: path },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const refusals: string[] = [];
+  const inodes = new Set<number>();
+  try {
+    const said = saver.stdout.getReader();
+    let heard = "";
+    while (!heard.includes("saving")) {
+      const { value, done } = await said.read();
+      if (done) throw new Error(`the saver ended before it saved: ${heard}`);
+      heard += new TextDecoder().decode(value);
+    }
+    for (let read = 0; read < 5_000; read += 1) {
+      await readDeviceLogin(path).catch((error: unknown) => {
+        refusals.push(error instanceof Error ? error.message : String(error));
+      });
+      inodes.add((await stat(path)).ino);
+    }
+  } finally {
+    saver.kill();
+    await saver.exited;
+  }
+  // Control: the reads saw the saver's renames.
+  expect(inodes.size).toBeGreaterThan(1);
+  expect(refusals).toEqual([]);
+}, 120_000);
 
 test("a login path no open can read is refused in words, not a bare code", async () => {
   // Each is refused by the open itself, before any status is read: a socket (ENXIO), a loop of
