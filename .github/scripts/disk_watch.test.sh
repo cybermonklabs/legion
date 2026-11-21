@@ -30,17 +30,31 @@ source "$script_dir/test-lib.sh"
 
 # Every process this script starts runs in a PID namespace whose first process is this script, so
 # no sampler that `start` detaches can outlive it: when the first process of a PID namespace exits,
-# by any path and a SIGKILL included, the kernel kills every other process in it. unshare's
-# --kill-child sends that first process a SIGKILL when unshare itself dies, so a SIGKILL of the
-# process the caller started ends them too; the trap below runs on neither. --mount-proc gives the
-# namespace its own /proc, so the pids `start` writes, the ones `report` signals and the ones this
-# script reads in /proc are one numbering. Where the kernel refuses an unprivileged namespace, a
-# run by hand goes on without one and says so, and CI, whose job allows them first
-# (ci-job-test.yaml), fails instead.
-if [ -z "${DISK_WATCH_TEST_NAMESPACE:-}" ]; then
-  if namespace_out=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1); then
-    DISK_WATCH_TEST_NAMESPACE=1 exec unshare --user --map-root-user --mount --pid --fork --kill-child \
-      --mount-proc "$BASH" "${BASH_SOURCE[0]}" "$@"
+# by any path and a SIGKILL included, the kernel kills every other process in it. --mount-proc
+# gives the namespace its own /proc, so the pids `start` writes, the ones `report` signals and the
+# ones this script reads in /proc are one numbering. Inside, the script is that first process, so
+# `$$` is 1 there and nowhere else.
+# The process the caller started stays this bash, waiting on the unshare it started: unshare
+# --fork blocks SIGTERM and SIGINT in its waiting parent and passes neither on, so a caller that
+# signals the pid it started (kill <pid>, a runtime's cancel) would otherwise not stop the test.
+# This bash turns a SIGTERM, SIGINT or SIGHUP into a SIGKILL of that unshare. unshare's
+# --kill-child then sends the first process a SIGKILL, and setpriv's --pdeathsig does the same to
+# the unshare when this bash itself is SIGKILLed, so every way to stop the started pid ends the
+# namespace and the samplers in it. Where the kernel refuses an unprivileged namespace, a run by
+# hand goes on without one and says so, and CI, whose job allows them first (ci-job-test.yaml),
+# fails instead.
+if [ "$$" -ne 1 ]; then
+  namespace=(setpriv --pdeathsig KILL unshare --user --map-root-user --mount --pid --fork --kill-child --mount-proc)
+  if namespace_out=$("${namespace[@]}" true 2>&1); then
+    "${namespace[@]}" "$BASH" "${BASH_SOURCE[0]}" "$@" &
+    namespace_pid=$!
+    # `|| true`: errexit applies inside a trap, and the wait on the unshare just killed returns 137.
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 143' TERM
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 130' INT
+    trap 'kill -KILL "$namespace_pid" 2>/dev/null || true; wait "$namespace_pid" 2>/dev/null || true; exit 129' HUP
+    namespace_status=0
+    wait "$namespace_pid" || namespace_status=$?
+    exit "$namespace_status"
   elif [ "${GITHUB_ACTIONS:-}" = true ]; then
     check "the kernel granted this script a PID namespace, which the job's step before this one allows: ${namespace_out%%$'\n'*}" false
     summary "disk_watch.py"
@@ -217,32 +231,36 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-pro
   # watch that reads the disk once and repeats that reading fails the fall below whatever the
   # timing. Without the wait, a first reading that came after the write - one held 0.6 s did - let
   # such a watch pass. No wait in this case has a clock of its own, since a loaded machine can take
-  # any time to start the sampler or to run it: the inner one ends on the first series line or on
+  # any time to start the sampler or to run it: the inner one ends on the first series line, on
   # the sampler leaving the process table (status 93; it is an orphan, so its exit code cannot be
-  # read), read in the namespace's own /proc; the outer one ends on the status file or on the
-  # namespace ending; below, the fall is read until it shows or three passes have followed the
-  # write, and the close waits for the namespace to end. Each wait out here has one bound, a hang
-  # guard of 300 s that only a hung mount, start or sampler reaches, and reaching it fails the case
-  # by name.
+  # read), or on the pipe closing (status 94), each read in the namespace's own /proc; the outer
+  # one ends on the status file or on the namespace ending; below, the fall is read until it shows
+  # or three passes have followed the write, and the close waits for the namespace to end. Each
+  # wait out here has one bound, a hang guard of 300 s by the clock ($SECONDS), that only a hung
+  # mount, start or sampler reaches, and reaching it fails the case by name. The pipe is read from
+  # the shell's first line by a `cat` of its own, so whichever step the shell is in, closing the
+  # pipe ends it.
   exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c '
-    exec >"$7" 2>&1
+    exec >"$7" 2>&1 3<&0
+    cat <&3 >/dev/null &
+    reader=$!
+    gone() { st=""; read -r st 2>/dev/null <"/proc/$1/stat" || return 0; st=${st##*) }; [ "${st%% *}" = Z ]; }
     mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
     env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || { echo 91 >"$6"; exit; }
     sp=$(sed -n "s/.*\"sampler_pid\": *\([0-9][0-9]*\).*/\1/p" "$5")
     until [ -s "$5.series" ]; do
-      st=""
-      [ -z "$sp" ] || read -r st 2>/dev/null <"/proc/$sp/stat" || st=""
-      st=${st##*) }
-      case ${st%% *} in "" | Z | X) echo "the sampler (pid ${sp:-unknown}) left before its first sample"; echo 93 >"$6"; exit ;; esac
+      if [ -z "$sp" ] || gone "$sp"; then echo "the sampler (pid ${sp:-unknown}) left before its first sample"; echo 93 >"$6"; exit; fi
+      if gone "$reader"; then echo "the pipe closed before the sampler'"'"'s first sample"; echo 94 >"$6"; exit; fi
       sleep 0.05
     done
     dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
     echo 0 >"$6"
-    cat >/dev/null
+    wait "$reader"
   ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready" "$private_log")
   private_ns=$!
   private_guard=""
-  for _ in $(seq 1500); do
+  deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     [ -s "$private_ready" ] && break
     ended "$private_ns" && break
     sleep 0.2
@@ -259,7 +277,8 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-pro
     # the write. A sampler that stops passing meets the 300 s hang guard instead.
     private_lines=$(grep -c '' "$private_state.series" || true)
     fell=0
-    for _ in $(seq 1500); do
+    deadline=$((SECONDS + 300))
+    while [ "$SECONDS" -lt "$deadline" ]; do
       grown=$(($(grep -c '' "$private_state.series" || true) - private_lines))
       fell=$((private_before - $(field "$private_state" least_kb)))
       if [ "$fell" -ge 65536 ] || [ "$grown" -ge 3 ]; then break; fi
@@ -273,14 +292,15 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-pro
     check "the sampler runs in the namespaces, seen by its command line" \
       "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
   else
-    printf '    setup status %s%s (90: mount, 91: start, 92: dd, 93: the sampler left before its first sample, none: the namespace ended without a status); its output:\n' \
+    printf '    setup status %s%s (90: mount, 91: start, 92: dd, 93: the sampler left before its first sample, 94: the pipe closed before it, none: the namespace ended without a status); its output:\n' \
       "${private_status:-none}" "$private_guard" >&2
     sed 's/^/    /' "$private_log" >&2 || true
   fi
   exec {private_hold}>&-
   # Once its unshare has ended, the namespaces' first process has, and the kernel has taken every
   # other process in them with it, so the sampler is looked for once, after that.
-  for _ in $(seq 1500); do
+  deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     ended "$private_ns" && break
     sleep 0.2
   done
