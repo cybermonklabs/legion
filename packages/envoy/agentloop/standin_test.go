@@ -14,12 +14,21 @@ import (
 )
 
 // standIn is a provider endpoint that records every request it gets and answers each with the next
-// of its replies.
+// of its replies, or, where every is set, with that one reply however many requests come.
 type standIn struct {
 	server  *httptest.Server
 	mu      sync.Mutex
 	replies []reply
-	got     []recorded
+	// every is the reply to each request, where the endpoint answers every request alike, as
+	// one that redirects does, rather than a script of calls in turn: a run may ask it more than
+	// once, through its transport's one retry, and a client that is not the run's may reach its
+	// port, and neither takes the reply away from a later request.
+	every *reply
+	// drops is how many of the first requests have their connection closed with no answer, once
+	// the stand-in has recorded each and taken the reply it would have answered with, as when a
+	// call reaches the endpoint and its connection breaks before the answer.
+	drops int
+	got   []recorded
 }
 
 // reply is one response a stand-in gives: an SSE stream, or an error status with a body, after a
@@ -43,9 +52,27 @@ type recorded struct {
 
 func newStandIn(t *testing.T, replies ...reply) *standIn {
 	t.Helper()
-	s := &standIn{replies: replies}
+	return serveStandIn(t, &standIn{replies: replies})
+}
+
+// newStandInAnsweringEvery is a stand-in that answers every request with r.
+func newStandInAnsweringEvery(t *testing.T, r reply) *standIn {
+	t.Helper()
+	return serveStandIn(t, &standIn{every: &r})
+}
+
+func serveStandIn(t *testing.T, s *standIn) *standIn {
+	t.Helper()
 	s.server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.server.Close)
+	return s
+}
+
+// dropping makes the stand-in close the connection of its first n requests with no answer.
+func (s *standIn) dropping(n int) *standIn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.drops = n
 	return s
 }
 
@@ -53,14 +80,26 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.got = append(s.got, recorded{path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: body})
-	if len(s.replies) == 0 {
+	drop := len(s.got) <= s.drops
+	var next reply
+	switch {
+	case s.every != nil:
+		next = *s.every
+	case len(s.replies) > 0:
+		next = s.replies[0]
+		s.replies = s.replies[1:]
+	case !drop:
 		s.mu.Unlock()
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"the stand-in has no more replies"}}`, http.StatusBadRequest)
 		return
 	}
-	next := s.replies[0]
-	s.replies = s.replies[1:]
 	s.mu.Unlock()
+	if drop {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
 	if next.delay > 0 {
 		select {
 		case <-time.After(next.delay):

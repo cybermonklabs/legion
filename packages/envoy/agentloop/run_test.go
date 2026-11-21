@@ -647,7 +647,12 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 // on a cross-domain redirect before a transport runs, so following one would hand the token to
 // whatever server the Location names. The client's redirect check fails the call instead, with
 // a detail naming the host the redirect points at, and the server the redirect points at hears
-// nothing at all.
+// nothing at all. That holds for the transport's one retry too: a call that loses its connection
+// before the redirect answers is asked again a second later, meets the redirect, and follows it
+// no further. The redirecting endpoint redirects every request it gets, as a real one does: a
+// stand-in that answered once would answer that retry, or the run's call after a request from a
+// client that is not the run's, with "the stand-in has no more replies", and the detail would
+// name no redirect at all.
 func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -657,6 +662,9 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 		// fault it ended on and what that fault says.
 		answer reply
 		call   func(*testing.T, *standIn) (Fault, string)
+		// drops is how many of the first calls lose their connection before the
+		// redirect answers them, each retried once by the transport.
+		drops int
 	}{
 		{
 			name:   "a run",
@@ -668,6 +676,26 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 				}
 				if result.Text != "" {
 					t.Errorf("the run answered %q, want no answer from the redirect's target", result.Text)
+				}
+				return result.Fault, result.Detail
+			},
+		},
+		{
+			// The transport's one retry meets the redirect, and follows it no more than
+			// the first call would have.
+			name:   "a run whose first call loses its connection",
+			answer: anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The target answered.")),
+			drops:  1,
+			call: func(t *testing.T, s *standIn) (Fault, string) {
+				result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Text != "" {
+					t.Errorf("the run answered %q, want no answer from the redirect's target", result.Text)
+				}
+				if n := len(s.requests()); n < 2 {
+					t.Errorf("the redirecting endpoint got %d requests, want the call and its retry", n)
 				}
 				return result.Fault, result.Detail
 			},
@@ -690,10 +718,10 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			target := newStandIn(t, c.answer)
-			redirecting := newStandIn(t, reply{
+			redirecting := newStandInAnsweringEvery(t, reply{
 				status:  http.StatusTemporaryRedirect,
 				headers: map[string]string{"Location": target.server.URL + "/elsewhere"},
-			})
+			}).dropping(c.drops)
 			fault, detail := c.call(t, redirecting)
 			if fault != FaultProviderError {
 				t.Errorf("fault %q, want %q: a redirect is the provider failing the call: %s", fault, FaultProviderError, detail)
