@@ -112,10 +112,11 @@ export function renderS10Analysis(analysis: S10Analysis): string[] {
       `deviations, the analysis found ${countsText(tally.deviations.foundByAnalysis)}: ` +
       "transcript, answers and sandbox, a file of the request's kept evidence (a transcript, the " +
       "answers, the bundles, calls, sandbox record or started.json) lost or changed; answer, his " +
-      "first qualifying answer not his own or not given; verdict, a recorded verdict unlike point " +
-      "2's rule recomputed from the five answers the stage kept; documents, his answer's " +
-      "(document, version) pairs unlike the judged ones. started is a request a run started and " +
-      "never finished; unjudged one no run reached.",
+      "own first qualifying answer of which the build holds no case (an answer not his own, or " +
+      "none, is on a line the inputs stage made a deviation, and keeps its inputs deviation); " +
+      "verdict, a recorded verdict unlike point 2's rule recomputed from the five answers the " +
+      "stage kept; documents, his answer's (document, version) pairs unlike the judged ones. " +
+      "started is a request a run started and never finished; unjudged one no run reached.",
     "",
     "## Item 8's measure, penalized (points 10 and 12)",
     "",

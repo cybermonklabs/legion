@@ -1,7 +1,6 @@
-import type { CaseVerdict } from "./build-corpus";
-import { CorpusError } from "./corpus-io";
-import type { BuildChain, FinalTestTree } from "./draw-io";
-import type { AnalysisInput, Placed } from "./s10-analysis-io";
+import type { CaseRow, CaseVerdict } from "./build-corpus";
+import { CorpusError, recordOf, stringOf } from "./corpus-io";
+import type { BuildChain, ClaimDraw, FinalTestTree } from "./draw-io";
 import {
   type CandidateCounts,
   DROP_SEEN,
@@ -23,7 +22,6 @@ import {
   type RuleVersion,
   recordedAnswersOf,
   reportedOutcomesOf,
-  ruleVerdictOf,
   SANDBOX_DIRECTORY,
   type ToolCallDeviation,
   UNJUDGED,
@@ -74,13 +72,17 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * `artifact.changes_requested` on that document at the version the ask names. The rule is the
  * inputs stage's own (`AnswerLog`), over the one walk of the log through the pin both stages make
  * (`walkThroughPin`). Where the inputs stage placed his own answer, its inventory line records
- * the judged moment, the statement that stood then; this walk must place his own answer after
- * that same statement, since two walks of one log place one answer, and a line it does not is
- * refused. A settlement's verdict is its kind and its pair the one document at that version; an
- * `ask.answered`'s verdict is read from the option he chose and its pairs from that event's
- * approval, both as the build's corpus records that event. An answer that is not his own, or that
- * no event or case gives, is a deviation (`answer`); an outcome whose judged documents
- * (`judgement.documents`) are not his answered pairs is a deviation (`documents`).
+ * the judged moment, the statement that stood then; this walk must place his own answer at that
+ * statement itself, by its event id, type and time. Where it placed no answer of his, an answer
+ * not his own, or none after a statement, the line records no moment, and this walk must place
+ * the same. Two walks of one log place one answer at one moment, so a line either way it does
+ * not is refused. A settlement's verdict is its kind and its pair the one document at that
+ * version; an `ask.answered`'s verdict is read from the option he chose and its pairs from that
+ * event's approval, both as the build's corpus records that event. A request whose answer is not
+ * his own, or is none, is on a line the inputs stage made a deviation, whose `inputs` deviation
+ * (or `unjudged`) it keeps; his own answer that the build holds no case of is a deviation
+ * (`answer`); an outcome whose judged documents (`judgement.documents`) are not his answered
+ * pairs is a deviation (`documents`).
  *
  * **The kept evidence (point 6).** Before an outcome counts, every file the judged record names
  * must be there with the sha256 it names (`judgedStageOf`), and a verdict's record must name each
@@ -142,6 +144,12 @@ const SETTLEMENT_VERDICTS: Readonly<Record<Settlement["type"], CaseVerdict>> = {
   "artifact.approved": "approve",
   "artifact.changes_requested": "request_changes",
 };
+
+/** How many of the five name a kind before the verdict is that never-decide (point 2's rule). */
+const NAMED_TO_HOLD_BACK = 3;
+
+/** The `never_decide` of an answer that names no kind. */
+const NO_KIND = "none";
 
 /**
  * Point 4's statement, which the record and the text carry beside the count of candidates dropped
@@ -357,6 +365,32 @@ export interface S10Analysis {
   requests: RequestReading[];
 }
 
+/** One request of the inventory, its line, and his first answer as the walk of the log placed it. */
+export interface Placed {
+  request: InventoryRequest;
+  line: InventoryLine;
+  answer: FirstAnswer | null;
+}
+
+/**
+ * What the analysis is computed from (`s10-analysis-io.ts` reads it): every stage read and held
+ * to the chain, nothing more.
+ */
+export interface AnalysisInput {
+  claimRun: BuildChain;
+  reference: string;
+  runDigest: string;
+  build: string;
+  draw: ClaimDraw;
+  inputs: { directory: string; stageSha256: string; inventorySha256: string };
+  judged: { directory: string; stage: JudgedStage };
+  byCaseId: ReadonlyMap<string, CaseRow>;
+  /** Each request with its inventory line and his first answer, in the inventory's order. */
+  placed: readonly Placed[];
+  /** The log his answers were placed in. */
+  log: { throughEventId: number; eventsRead: number };
+}
+
 /** A pair as a key two lists of pairs are compared by. */
 function pairKey(pair: DocumentPair): string {
   return JSON.stringify([pair.artifactId, pair.version]);
@@ -365,9 +399,11 @@ function pairKey(pair: DocumentPair): string {
 /**
  * His answer to one request (point 7), from the first answer `AnswerLog` placed (`placed`, its
  * event, whether it is his own, and the settlement it is): a settlement's verdict is its kind and
- * its pair the one it settled; his own `ask.answered`'s are its case's in the corpus. An answer the
- * log does not give, one that is not his own, and one the build holds no case of are each a
- * problem, which makes the request a deviation (`answer`).
+ * its pair the one it settled; his own `ask.answered`'s are its case's in the corpus. Where the
+ * log gives no answer of his, or one not his own, there is a problem, but the request is on a line
+ * the inputs stage made a deviation, whose `inputs` deviation (or `unjudged`) it keeps; his own
+ * answer that the build holds no case of is the problem that makes a request a deviation
+ * (`answer`).
  */
 function answerOf(request: InventoryRequest, placed: FirstAnswer | null): HisAnswer {
   const ordered = [...request.rows].sort((one, other) => one.eventId - other.eventId);
@@ -471,6 +507,41 @@ function lostEvidenceOf(
   }
   unnamed(`${SANDBOX_DIRECTORY}/${RESULTS_FILE}`, "answers");
   return lost;
+}
+
+/**
+ * Point 2's verdict over five answers, as `s10_transcripts.py`'s `rule_verdict` states it, with
+ * the share of the five behind it; or why the answers are not five the rule reads.
+ */
+export function ruleVerdictOf(
+  answers: readonly unknown[]
+): { verdict: string; share: number } | { problem: string } {
+  if (answers.length !== JUDGES) return { problem: `${answers.length} answers, not ${JUDGES}` };
+  const named = new Map<string, number>();
+  const votes = new Map<string, number>();
+  for (const [at, answer] of answers.entries()) {
+    const record = recordOf(answer);
+    const kind = stringOf(record?.never_decide);
+    const verdict = record?.verdict;
+    if (kind === null || (verdict !== "approve" && verdict !== "request_changes")) {
+      return { problem: `answer ${at + 1} names no never_decide or no verdict the rule reads` };
+    }
+    if (kind !== NO_KIND) named.set(kind, (named.get(kind) ?? 0) + 1);
+    votes.set(verdict, (votes.get(verdict) ?? 0) + 1);
+  }
+  let namedTotal = 0;
+  for (const times of named.values()) namedTotal += times;
+  if (namedTotal >= NAMED_TO_HOLD_BACK) {
+    const top = Math.max(...named.values());
+    const kinds = [...named].filter(([, times]) => times === top).map(([kind]) => kind);
+    return { verdict: `never_decide:${kinds.sort().join("+")}`, share: top / JUDGES };
+  }
+  let chosen = "";
+  let most = 0;
+  for (const [verdict, times] of votes) {
+    if (times > most) [chosen, most] = [verdict, times];
+  }
+  return { verdict: chosen, share: most / JUDGES };
 }
 
 /**

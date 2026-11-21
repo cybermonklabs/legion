@@ -81,6 +81,14 @@ export interface JudgedMoment {
   createdAt: string;
 }
 
+/**
+ * The judged moment an event is, as the inputs stage records it on a request and its inventory
+ * line, and as the analysis holds that record to its own walk of the log.
+ */
+export function judgedMomentOf(event: DispatchEvent): JudgedMoment {
+  return { eventId: event.id, type: event.type, createdAt: event.created_at };
+}
+
 /** What a request's candidates came to. */
 export interface CandidateCounts {
   /** Ask hits over both queries, a hit both answered counted twice. */
@@ -368,7 +376,7 @@ export class AnswerLog {
     const own = event.type.startsWith("ask.") ? stringOf(event.payload.id) : null;
     if (own !== null) this.noteStatement(own, event);
     if (event.type === "artifact.approved" || event.type === "artifact.changes_requested") {
-      this.noteSettlement(event);
+      this.noteSettlement(event, event.type);
     }
   }
 
@@ -402,13 +410,11 @@ export class AnswerLog {
    * that names that one document at that version and first opened before it: one document as
    * `ask_docs` reads them (`askDocsOf`), so a list `ask_docs` cannot read names none.
    */
-  private noteSettlement(event: DispatchEvent): void {
+  private noteSettlement(event: DispatchEvent, type: Settlement["type"]): void {
     if (event.actor?.id !== this.person) return;
     const artifactId = stringOf(event.payload.artifact_id);
     const version = numberOf(event.payload.version);
     if (artifactId === null || version === null) return;
-    const type: Settlement["type"] =
-      event.type === "artifact.approved" ? "artifact.approved" : "artifact.changes_requested";
     for (const judging of this.judging.values()) {
       if (judging.answer !== null || judging.firstOpened === null) continue;
       if (event.id <= judging.firstOpened) continue;

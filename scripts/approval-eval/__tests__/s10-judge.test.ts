@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
+import { ruleVerdictOf } from "../s10-analysis";
 import {
   INPUTS_VERSION,
   type InventoryLine,
@@ -22,7 +23,6 @@ import {
   RULE_VERSIONS,
   recordedAnswersOf,
   reportedOutcomesOf,
-  ruleVerdictOf,
   STARTED_FILE,
   STARTED_REASON,
   UNJUDGED,

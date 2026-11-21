@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { CaseRow } from "./build-corpus";
 import {
   type ClaimStartOptions,
   claimRunDigestOf,
@@ -9,19 +8,12 @@ import {
   walkThroughPin,
 } from "./claim-start";
 import { CannotRunError, type Corpus, outDirectory } from "./corpus-io";
-import {
-  BUILD_CHAIN_NAMES,
-  type BuildChain,
-  type ClaimDraw,
-  chainRefusal,
-  DRAW_CHAIN_NAMES,
-} from "./draw-io";
+import { BUILD_CHAIN_NAMES, chainRefusal, DRAW_CHAIN_NAMES } from "./draw-io";
 import { REPOSITORY_ROOT } from "./reserve";
-import { s10AnalysisOf } from "./s10-analysis";
+import { type AnalysisInput, type Placed, s10AnalysisOf } from "./s10-analysis";
 import { renderS10Analysis } from "./s10-analysis-text";
 import {
   AnswerLog,
-  type FirstAnswer,
   INVENTORY_FILE,
   type InventoryLine,
   type InventoryRequest,
@@ -29,10 +21,11 @@ import {
   inventoryOf,
   type JudgedMoment,
   type Judging,
+  judgedMomentOf,
   STAGE_FILE,
   stageRecordOf,
 } from "./s10-inputs-io";
-import { JUDGED_FILE, type JudgedStage, judgedStageOf } from "./s10-judged-io";
+import { JUDGED_FILE, judgedStageOf } from "./s10-judged-io";
 
 /**
  * The reading and the writing of the claim's analysis (`analyze.ts --claim-s10`): the stages of
@@ -60,29 +53,6 @@ export interface ClaimS10Flags {
   format: "text" | "json";
 }
 
-/** One request of the inventory, its line, and his first answer as the walk of the log placed it. */
-export interface Placed {
-  request: InventoryRequest;
-  line: InventoryLine;
-  answer: FirstAnswer | null;
-}
-
-/** What the analysis is computed from: every stage read and held to the chain, nothing more. */
-export interface AnalysisInput {
-  claimRun: BuildChain;
-  reference: string;
-  runDigest: string;
-  build: string;
-  draw: ClaimDraw;
-  inputs: { directory: string; stageSha256: string; inventorySha256: string };
-  judged: { directory: string; stage: JudgedStage };
-  byCaseId: ReadonlyMap<string, CaseRow>;
-  /** Each request with its inventory line and his first answer, in the inventory's order. */
-  placed: readonly Placed[];
-  /** The log his answers were placed in. */
-  log: { throughEventId: number; eventsRead: number };
-}
-
 function sha256Of(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -96,37 +66,40 @@ async function stageBytesOf(path: string, what: string): Promise<Buffer> {
   }
 }
 
-/** A judged moment as a refusal names it. */
-function momentText(moment: JudgedMoment): string {
-  return `event ${moment.eventId} (${moment.type}, ${moment.createdAt})`;
+/** A judged moment as a refusal names it, or none. */
+function momentText(moment: JudgedMoment | null): string {
+  return moment === null
+    ? "no moment"
+    : `event ${moment.eventId} (${moment.type}, ${moment.createdAt})`;
 }
 
 /**
- * Refuses a request whose inventory line records a judged moment unless the walk places his own
- * answer after that same statement. The inputs stage records a moment only where its own walk
- * placed his own answer, at the statement that stood then; a walk of the same log places the same.
+ * Refuses a request whose inventory line records a judged moment other than the one the inputs
+ * stage would record from this walk (`judgedMomentOf`): the statement that stood when his own
+ * answer came, that statement itself, by its event id, type and time; and no moment where the
+ * walk places no answer of his, an answer not his own, or no statement before it. Those are the
+ * only lines the inputs stage writes with no moment; every later deviation keeps its moment. Two
+ * walks of one log place one answer at one moment, so a line this walk does not give is of
+ * another log.
  */
-function heldToItsMoment(
-  line: InventoryLine,
-  recorded: JudgedMoment,
-  judging: Judging | undefined,
-  path: string
-): void {
+function heldToItsMoment(line: InventoryLine, judging: Judging | undefined, path: string): void {
   const answer = judging?.answer ?? null;
   const statement = judging?.judged ?? null;
-  const moment =
-    statement === null
-      ? null
-      : { eventId: statement.id, type: statement.type, createdAt: statement.created_at };
-  if (answer?.own === true && moment !== null && momentText(moment) === momentText(recorded)) {
-    return;
-  }
+  const moment = answer?.own === true && statement !== null ? judgedMomentOf(statement) : null;
+  const recorded = line.judged;
+  const same =
+    moment === null || recorded === null
+      ? moment === recorded
+      : moment.eventId === recorded.eventId &&
+        moment.type === recorded.type &&
+        moment.createdAt === recorded.createdAt;
+  if (same) return;
   const placed =
     answer === null
       ? "places no answer of his"
       : `places his answer, event ${answer.eventId} ` +
         `(${answer.settlement?.type ?? "ask.answered"}${answer.own ? "" : ", not his own"}), ` +
-        `after ${moment === null ? "no statement" : momentText(moment)}`;
+        `after ${statement === null ? "no statement" : momentText(judgedMomentOf(statement))}`;
   throw new S10AnalysisError(
     `${path} records the judged moment of ${line.askId} as ${momentText(recorded)}, and the log ` +
       `through the build's pin ${placed}: it is not the log the inputs stage read`
@@ -136,7 +109,7 @@ function heldToItsMoment(
 /**
  * His first answer to each request (point 7), placed by the inputs stage's own rule (`AnswerLog`)
  * over the one walk of the log both stages make (`walkThroughPin`), and held to the judged moment
- * each inventory line records (`heldToItsMoment`).
+ * each inventory line records, or to its having none (`heldToItsMoment`).
  */
 async function answersOf(
   corpus: Corpus,
@@ -150,7 +123,7 @@ async function answersOf(
   const eventsRead = await walkThroughPin(corpus, (event) => log.note(event));
   const placed = lines.map(({ request, line }) => {
     const judging = log.judgingOf(request.askId);
-    if (line.judged !== null) heldToItsMoment(line, line.judged, judging, path);
+    heldToItsMoment(line, judging, path);
     return { request, line, answer: judging?.answer ?? null };
   });
   return { placed, log: { throughEventId: corpus.snapshot.throughEventId, eventsRead } };

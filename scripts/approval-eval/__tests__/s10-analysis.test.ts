@@ -9,7 +9,7 @@ import type { CaseRow } from "../build-corpus";
 import type { DispatchEvent } from "../dispatch-read";
 import type { FinalTestTree } from "../draw-io";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
-import { RANKS_STATEMENT, type S10Analysis } from "../s10-analysis";
+import { RANKS_STATEMENT, ruleVerdictOf, type S10Analysis } from "../s10-analysis";
 import { ANALYSIS_FILE } from "../s10-analysis-io";
 import { INPUTS_VERSION, inventoryLinesOf } from "../s10-inputs-io";
 import {
@@ -19,7 +19,6 @@ import {
   RULE_VERSIONS,
   type RuleVersion,
   reportedOutcomesOf,
-  ruleVerdictOf,
 } from "../s10-judged-io";
 import { clopperPearsonUpper } from "../stats";
 
@@ -597,19 +596,25 @@ async function writeClaim(
   await writeAll(claim.draw, { "draw.json": drawText, "slices.json": slicesText });
   const ordered = [...specs].sort((one, other) => (ask(one.tail) < ask(other.tail) ? -1 : 1));
   const lines = ordered.map((spec) => {
-    // The inputs stage makes a request whose first answer is not his own a deviation of no moment.
-    const ready =
-      spec.deviation !== "inputs" && spec.lineDeviation !== true && spec.notOwnFirst !== true;
+    // The inputs stage makes a request whose first answer is not his own a deviation of no moment,
+    // and one whose inputs the log cannot give as of its moment a deviation that keeps the moment.
+    const notOwn = spec.notOwnFirst === true;
+    const ready = spec.deviation !== "inputs" && spec.lineDeviation !== true && !notOwn;
     // The inputs stage counts the candidates of a request it searched for: none of a fact hold's.
     const searched = ready && spec.outcome !== "hold";
+    const moment = moments.get(ask(spec.tail));
     return {
       askId: ask(spec.tail),
       issueKey: `ACME-${spec.tail}`,
       group: spec.tree,
       cases: casesOf.get(ask(spec.tail)),
-      judged: ready ? (moments.get(ask(spec.tail)) ?? null) : null,
+      judged: notOwn ? null : (moment ?? null),
       state: ready ? "ready" : "deviation",
-      reason: ready ? null : "the log gives no title as of the moment",
+      reason: ready
+        ? null
+        : notOwn
+          ? "the person's first answer event on the ask carries no answer of the person's own"
+          : `ACME-${spec.tail} has no title as of event ${moment?.eventId} for S10 to search`,
       requestSha256: ready ? sha256(`request ${spec.tail}`) : null,
       counts: searched
         ? {
@@ -1439,7 +1444,7 @@ describe("his answer, by the first qualifying event (point 7)", () => {
     });
   });
 
-  test("refuses a line whose judged moment is not the statement before his own answer the log places", async () => {
+  test("refuses a line whose judged moment is not the statement before his own answer the log places, or that records none where it places one", async () => {
     const settled = eventOf("artifact.changes_requested", "d1");
     const edit = eventOf("ask.edited", "d1");
     const opened = eventOf("ask.opened", "d1");
@@ -1510,6 +1515,32 @@ describe("his answer, by the first qualifying event (point 7)", () => {
       `places his answer, event ${eventOf("ask.answered", "d3")?.id} (ask.answered, not his ` +
         `own), after ${moment(d3Opened)}: it is not the log the inputs stage read`
     );
+    // d1's line recorded with no moment, as the inputs stage records an answer not his own or
+    // none, where the log places his own settlement after the edit.
+    const unplaced = await writeClaim(SPECS, [], {
+      lines: (lines) =>
+        lines.map((line) =>
+          line.askId === ask("d1")
+            ? {
+                ...line,
+                judged: null,
+                state: "deviation",
+                reason: "the log through the pin holds no answer of the build's person to the ask",
+                requestSha256: null,
+                counts: null,
+                dropScanThrough: null,
+              }
+            : line
+        ),
+    });
+    const noMoment = await run(argsOf(unplaced));
+    expect(noMoment.status).toBe(2);
+    expect(noMoment.errors).toContain(
+      `records the judged moment of ${ask("d1")} as no moment, and the log through the build's ` +
+        `pin places his answer, event ${settled?.id} (artifact.changes_requested), after ` +
+        `${moment(edit)}: it is not the log the inputs stage read`
+    );
+    expect(existsSync(join(unplaced.directory, "analysis"))).toBe(false);
   });
 
   test("refuses a log that is not the one the build read", async () => {

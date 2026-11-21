@@ -41,6 +41,7 @@ import {
   type IssueField,
   inventoryOf,
   type JudgedMoment,
+  judgedMomentOf,
   noCounts,
   type QueryHit,
   type RequestDocument,
@@ -669,7 +670,7 @@ function planOf(request: InventoryRequest, log: InputsLog): Ready | Deviation {
   if (event === null) {
     return deviation("no ask.opened or ask.edited of the ask comes before the person's answer");
   }
-  const judged = { eventId: event.id, type: event.type, createdAt: event.created_at };
+  const judged = judgedMomentOf(event);
   const judgedAt = microsecondsOf(event.created_at);
   if (judgedAt === null) return deviation("the judged event's time is no time", judged);
   const payload = event.payload;

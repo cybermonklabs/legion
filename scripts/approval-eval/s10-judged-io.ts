@@ -9,7 +9,6 @@ import {
   parsed,
   recordOf,
   sha256At,
-  stringOf,
   textAt,
 } from "./corpus-io";
 import type { InventoryLine } from "./s10-inputs-io";
@@ -76,12 +75,6 @@ export const HOLD_VERDICT = "never_decide:waiting-legion-root";
 
 /** The judges of one request (point 2). */
 export const JUDGES = 5;
-
-/** How many of the five name a kind before the verdict is that never-decide (point 2's rule). */
-const NAMED_TO_HOLD_BACK = 3;
-
-/** The `never_decide` of an answer that names no kind. */
-const NO_KIND = "none";
 
 /** One request's deviation: its kind, the reason, and every problem found. */
 export interface Deviation {
@@ -338,18 +331,16 @@ function deviationKindAt(value: unknown, where: string): DeviationKind {
 }
 
 /**
- * An outcome's verdict and deviation held to its kind of outcome, typed by it: a hold's verdict is
- * the fact check's and a verdict's is the rule's, with no deviation; a deviation has a kind and no
- * verdict.
+ * An outcome's verdict and deviation held to its kind of outcome, as the one `RuleOutcome` it is:
+ * a hold's verdict is the fact check's and a verdict's is the rule's, with no deviation; a
+ * deviation has a kind and no verdict.
  */
-function heldToKind<D>(
+function heldToKind(
   outcome: JudgedOutcome["outcome"],
   verdict: string | null,
-  deviation: D | null,
+  deviation: DeviationKind | typeof UNJUDGED | null,
   where: string
-):
-  | { outcome: "hold" | "verdict"; verdict: string; deviation: null }
-  | { outcome: "deviation"; verdict: null; deviation: D } {
+): RuleOutcome {
   if (outcome === "deviation") {
     if (verdict === null && deviation !== null) return { outcome, verdict, deviation };
   } else if (
@@ -423,7 +414,7 @@ function eachRule<T>(make: (version: RuleVersion) => T): Record<RuleVersion, T> 
 function byRuleOf<T extends RuleOutcome>(
   value: unknown,
   where: string,
-  counted: { outcome: string; verdict: string | null; deviation: string | null },
+  counted: RuleOutcome,
   read: (one: unknown, at: string) => T
 ): Record<RuleVersion, T> {
   const record = objectOrNull(value, where, "byRule");
@@ -668,14 +659,9 @@ export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
       problems: listOf(found.problems).map((one) => textAt(one, path, "deviation problem")),
     };
   }
-  heldToKind(outcome, verdict, deviation, path);
+  const counted = heldToKind(outcome, verdict, deviation?.kind ?? null, path);
   if (!Array.isArray(record.judges)) throw new CorpusError(`${path} holds judges that are no list`);
-  const byRule = byRuleOf(
-    record.byRule,
-    path,
-    { outcome, verdict, deviation: deviation?.kind ?? null },
-    judgedRuleOf
-  );
+  const byRule = byRuleOf(record.byRule, path, counted, judgedRuleOf);
   return {
     askId: textAt(record.askId, path, "askId"),
     issueKey: textOrNull(record.issueKey, path, "issueKey"),
@@ -702,7 +688,7 @@ export function outcomeLinesOf(text: string, path: string): OutcomeLine[] {
     const outcome = outcomeKindAt(record.outcome, where);
     const verdict = textOrNull(record.verdict, where, "verdict");
     const deviation = record.deviation === null ? null : deviationKindAt(record.deviation, where);
-    heldToKind(outcome, verdict, deviation, where);
+    const counted = heldToKind(outcome, verdict, deviation, where);
     return {
       askId: textAt(record.askId, where, "askId"),
       issueKey: textOrNull(record.issueKey, where, "issueKey"),
@@ -711,7 +697,7 @@ export function outcomeLinesOf(text: string, path: string): OutcomeLine[] {
       outcome,
       verdict,
       deviation,
-      byRule: byRuleOf(record.byRule, where, { outcome, verdict, deviation }, ruleOutcomeOf),
+      byRule: byRuleOf(record.byRule, where, counted, ruleOutcomeOf),
       outcomeSha256: sha256At(record.outcomeSha256, where, "outcomeSha256"),
     };
   });
@@ -911,41 +897,6 @@ export function reportedOutcomesOf(
       ),
     };
   });
-}
-
-/**
- * Point 2's verdict over five answers, as `s10_transcripts.py`'s `rule_verdict` states it, with
- * the share of the five behind it; or why the answers are not five the rule reads.
- */
-export function ruleVerdictOf(
-  answers: readonly unknown[]
-): { verdict: string; share: number } | { problem: string } {
-  if (answers.length !== JUDGES) return { problem: `${answers.length} answers, not ${JUDGES}` };
-  const named = new Map<string, number>();
-  const votes = new Map<string, number>();
-  for (const [at, answer] of answers.entries()) {
-    const record = recordOf(answer);
-    const kind = stringOf(record?.never_decide);
-    const verdict = record?.verdict;
-    if (kind === null || (verdict !== "approve" && verdict !== "request_changes")) {
-      return { problem: `answer ${at + 1} names no never_decide or no verdict the rule reads` };
-    }
-    if (kind !== NO_KIND) named.set(kind, (named.get(kind) ?? 0) + 1);
-    votes.set(verdict, (votes.get(verdict) ?? 0) + 1);
-  }
-  let namedTotal = 0;
-  for (const times of named.values()) namedTotal += times;
-  if (namedTotal >= NAMED_TO_HOLD_BACK) {
-    const top = Math.max(...named.values());
-    const kinds = [...named].filter(([, times]) => times === top).map(([kind]) => kind);
-    return { verdict: `never_decide:${kinds.sort().join("+")}`, share: top / JUDGES };
-  }
-  let chosen = "";
-  let most = 0;
-  for (const [verdict, times] of votes) {
-    if (times > most) [chosen, most] = [verdict, times];
-  }
-  return { verdict: chosen, share: most / JUDGES };
 }
 
 /**
