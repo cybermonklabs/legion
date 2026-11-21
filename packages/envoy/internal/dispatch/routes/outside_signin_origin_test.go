@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,6 +145,60 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 	}
 	if status, body := whoamiAt(t, ""); status != http.StatusOK || body != `{"event_head":"0","kind":"user","login":"alice@example.com"}` {
 		t.Errorf("whoami with no outside origin = %d %s, want today's three keys and no origins", status, body)
+	}
+}
+
+// The outside origin's pages - the enrollment page an owner's link opens, the passkey sign-in at
+// its root - say no page may frame them, in both headers a browser reads that from, and that they
+// load no plugin object and take no <base>. The policy is written out here rather than read from
+// the constant, so a change to it fails this row. The canonical origin's same pages carry neither
+// header, as before: the control that the reading tells the two origins apart.
+func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
+	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
+	webDist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
+		t.Fatalf("write dashboard index: %v", err)
+	}
+	rig.ctx.WebDistDir = webDist
+	for _, path := range []string{"/enroll", "/", "/projects/PRIV"} {
+		for origin, want := range map[string]struct{ policy, frameOptions string }{
+			outsideOrigin:   {policy: "frame-ancestors 'none'; object-src 'none'; base-uri 'none'", frameOptions: "DENY"},
+			canonicalOrigin: {},
+		} {
+			response := httptest.NewRecorder()
+			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+path, nil))
+			policy, frameOptions := response.Header().Get("Content-Security-Policy"), response.Header().Get("X-Frame-Options")
+			if response.Code != http.StatusOK || policy != want.policy || frameOptions != want.frameOptions {
+				t.Errorf("GET %s%s = %d, Content-Security-Policy %q, X-Frame-Options %q; want 200, %q, %q",
+					origin, path, response.Code, policy, frameOptions, want.policy, want.frameOptions)
+			}
+		}
+	}
+}
+
+// A signed-out GET /auth/whoami at the outside origin names the passkey sign-in wherever that
+// origin serves no Google sign-in (googleSignInHere's condition), so its page offers no Google
+// link that answers 404 there: under the domain rule it names "passkey". Under the outside rule
+// (DISPATCH_SIGNIN_OUTSIDE=1), which serves Google there, it names none, and the page offers that
+// Google sign-in. The canonical origin's 401 names none under either rule.
+func TestTheOutsideOriginsWhoamiNamesTheSignInItServes(t *testing.T) {
+	const plain = `{"code":"NO_IDENTITY","error":"unauthorized"}`
+	for _, test := range []struct {
+		name    string
+		rule    identity.SignInRule
+		outside string
+	}{
+		{"the outside rule", outsideRuleListingEveryone(), plain},
+		{"the domain rule", identity.DomainRule{Domain: rigDomain}, `{"code":"NO_IDENTITY","error":"unauthorized","sign_in":"passkey"}`},
+	} {
+		rig := newOriginRig(t, test.rule, outsideOrigin)
+		for origin, want := range map[string]string{outsideOrigin: test.outside, canonicalOrigin: plain} {
+			response := httptest.NewRecorder()
+			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+"/auth/whoami", nil))
+			if body := strings.TrimSpace(response.Body.String()); response.Code != http.StatusUnauthorized || body != want {
+				t.Errorf("GET %s/auth/whoami signed out under %s = %d %s, want 401 %s", origin, test.name, response.Code, body, want)
+			}
+		}
 	}
 }
 

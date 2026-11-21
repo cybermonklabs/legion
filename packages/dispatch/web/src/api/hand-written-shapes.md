@@ -95,7 +95,10 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   carries), `DispatchServiceErrorShape`, `ArtifactVersionBlob`/`ArtifactVersionContent` (the byte
   arm of a version download is a transport value, not a wire shape), `IssueRead`,
   `CreateArtifactInput` (it carries a `Blob`), `AuthenticatedUser`
-  (`GET /auth/whoami` is outside `/api/v1`).
+  (`GET /auth/whoami` is outside `/api/v1`), and the passkey ceremonies'
+  `PasskeyEnrollmentOptions`, `PasskeyCreationOptions`, `PasskeyInvitation`,
+  `PasskeyRequestOptions`, `PasskeyRegistration`, `PasskeyAssertion`, `PasskeyEnrollmentStart`
+  and `PasskeySignedIn` (`POST /auth/passkey/*` is outside `/api/v1` too).
 - **The Inbox row's two narrowings** — `MyReplyThreadRow`, `MyReplyAgentRow` and the
   `inboxThreadRow` that tells them apart. `GET /api/v1/me/replies` answers both kinds of row
   under one Go struct, so the generated `MyReplyRow` carries each kind's fields as optional and

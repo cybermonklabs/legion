@@ -79,6 +79,15 @@ const tables = [
   // the issue key the next row's issue takes again.
   "workflow_tuples",
   "workflow_nodes",
+  // The passkeys people from outside enrolled and the ceremonies a begin left open (migration
+  // 20261120165538_outside_passkeys). Neither carries a foreign key the closure follows - a
+  // passkey names its person by email, and a ceremony names nobody - so the closure does not
+  // reach them: a passkey one row enrolled would stand on the next row's Access tab and sign in
+  // there. The owner's links of the same migration (outside_invitations) carry a key into
+  // projects, which the closure follows. `outside-passkey.e2e.ts`'s reset row fails when either
+  // table keeps a row across a reset.
+  "passkeys",
+  "passkey_ceremonies",
   "user_sessions",
 ];
 

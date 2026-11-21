@@ -111,18 +111,25 @@ func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // whoamiSignIn is what GET /auth/whoami's 401 names as the way req's origin signs a person in:
-// "passkey" at the outside origin where passkey sign-in is on, and nothing elsewhere, so the answer
-// at the canonical origin is what it always was.
+// "passkey" at the outside origin wherever that origin serves no Google sign-in, which is
+// googleSignInHere's own condition, whatever the passkey setting; and nothing elsewhere, so the
+// answer at the canonical origin is what it always was. The outside origin's sign-in page then
+// offers the passkey alone and never a Google sign-in that answers 404 there; with passkey sign-in
+// off the passkey's ceremonies answer 404 too, and the page says so when the passkey is pressed.
+// The exception is a rule that serves Google there (GoogleAtOutsideOrigin: identity.OutsideRule,
+// DISPATCH_SIGNIN_OUTSIDE=1): its 401 names no sign-in, so the page offers that Google sign-in.
+// Once OutsideRule is gone the condition is r.atOutside(req) alone.
 func (r *router) whoamiSignIn(req *http.Request) string {
-	if r.ctx.Passkeys != nil && r.atOutside(req) {
+	if (r.ctx.SignInRule == nil || !r.ctx.SignInRule.GoogleAtOutsideOrigin()) && r.atOutside(req) {
 		return passkeySignIn
 	}
 	return ""
 }
 
 // passkeyRegisterBegin is POST /auth/passkey/register/begin, body {"token"}: the link's fragment.
-// It answers the creation options (protocol.CredentialCreation) and sets the ceremony cookie; it
-// uses no link and writes nothing: the ceremony rides in the signed cookie.
+// It answers the creation options (protocol.CredentialCreation) with the link's invitation, the
+// project it is for and the owner who made it (identity.EnrollmentOptions), and sets the ceremony
+// cookie; it uses no link and writes nothing: the ceremony rides in the signed cookie.
 func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -131,7 +138,7 @@ func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) 
 		writeCodeError(w, http.StatusBadRequest, "the body is {\"token\": the link's fragment}", "PASSKEY_REFUSED")
 		return
 	}
-	creation, ceremony, err := r.ctx.Passkeys.BeginEnrollment(req.Context(), strings.TrimSpace(body.Token))
+	options, ceremony, err := r.ctx.Passkeys.BeginEnrollment(req.Context(), strings.TrimSpace(body.Token))
 	if err != nil {
 		writePasskeyRefusal(w, err, true)
 		return
@@ -139,7 +146,7 @@ func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) 
 	if !r.setPasskeyCeremony(w, ceremony) {
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, creation)
+	api.WriteJSON(w, http.StatusOK, options)
 }
 
 // passkeyRegisterFinish is POST /auth/passkey/register/finish, body the PublicKeyCredential

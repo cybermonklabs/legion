@@ -37,14 +37,16 @@ import { Timestamp } from "../refs/Timestamp";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
+import { AccessPersonRow, confirmReset } from "./AccessPersonRow";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, made public or private, one person or group named on its access list or taken off it,
- *  or the Slack channels its credentials may post to. */
+ *  a person from outside reset (their passkeys deleted, their sign-in ended), or the Slack
+ *  channels its credentials may post to. */
 type AccessChange =
   | { readonly kind: "owner"; readonly owner: string }
   | { readonly kind: "visibility"; readonly visibility: ProjectAccess["visibility"] }
-  | { readonly kind: "add-person" | "remove-person"; readonly email: string }
+  | { readonly kind: "add-person" | "remove-person" | "reset-person"; readonly email: string }
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
 
@@ -115,6 +117,16 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
         unconfirmed: `the removal of ${change.email}`,
         made: "made",
       };
+    case "reset-person":
+      return {
+        write: (bounds) => api.resetProjectAccessPerson(project, change.email, bounds),
+        method: "POST",
+        label: `Reset ${change.email} on ${project}`,
+        part: "people",
+        refusal: `Couldn't reset ${change.email}.`,
+        unconfirmed: `the reset of ${change.email}`,
+        made: "made",
+      };
     case "add-group":
       return {
         write: (bounds) => api.putProjectAccessGroup(project, change.name, bounds),
@@ -148,6 +160,18 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
       };
   }
 }
+
+/** The refusals of a person's save that no second try can change, so the panel shows Dispatch's
+ *  words for them and no Retry: a passkey another owner's link enrolled, which holds until that
+ *  owner resets the person (`PASSKEY_OF_ANOTHER_OWNER`, a sentence that names no other owner); a
+ *  project of another owner naming the person (`LISTED_BY_ANOTHER_OWNER`); a full member
+ *  (`FULL_MEMBER`); and an address of the company's Workspace (`WORKSPACE_ADDRESS`). */
+const FINAL_REFUSALS: Partial<Record<string, true>> = {
+  FULL_MEMBER: true,
+  LISTED_BY_ANOTHER_OWNER: true,
+  PASSKEY_OF_ANOTHER_OWNER: true,
+  WORKSPACE_ADDRESS: true,
+};
 
 /** What the owner who pressed the Private switch reads when Dispatch refuses it, by the refusal's
  *  code. Dispatch's own words for these refusals are written for the deployment's operator (a
@@ -291,10 +315,15 @@ function useAccessWrite(
       }
       // A press this mount made and the reader stopped is made again as that press, under its key
       // where its method sends one; a refusal Dispatch decided, or a press of a mount made before
-      // this one, is retried as a new save.
-      if (!mutation.again(press)) {
-        mutation.mutate(press.variables);
+      // this one, is retried as a new save. A new save of a Reset is a new Reset, so it asks the
+      // owner first, as the row's Reset does.
+      if (mutation.again(press)) {
+        return;
       }
+      if (press.variables.kind === "reset-person" && !confirmReset(press.variables.email)) {
+        return;
+      }
+      mutation.mutate(press.variables);
     },
     save: (change) => mutation.mutate(change),
   };
@@ -326,6 +355,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const [personDraft, setPersonDraft] = useState("");
   const [groupDraft, setGroupDraft] = useState("");
   const [channelsDraft, setChannelsDraft] = useState<string | null>(null);
+  // How many Resets of each person landed while this panel is open: a row lets go of the link it
+  // shows when one does, since that Reset deleted it (`AccessPersonRow`).
+  const [resetsLanded, setResetsLanded] = useState<ReadonlyMap<string, number>>(() => new Map());
   const access = useQuery(projectAccessQuery(project));
   // The groups are only the owner's to add, and the list is the deployment's, which Dispatch
   // refuses a restricted member (`useRestrictedMember`); an owner is a full member, so such a
@@ -353,13 +385,20 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           ? null
           : draft
       );
+    } else if (change.kind === "reset-person") {
+      setResetsLanded((landed) =>
+        new Map(landed).set(change.email, (landed.get(change.email) ?? 0) + 1)
+      );
     }
   });
 
   if (access.isPending) {
     return <p className={`mt-4 ${textMutedOnCanvas}`}>Loading who may see this project…</p>;
   }
-  if (access.isError) {
+  // Only a first read that failed replaces the panel. A later read that fails (a focus read, or
+  // the poll a row runs while it shows a link) keeps the list it already read, so no row unmounts
+  // and no link Dispatch showed once is lost with its row.
+  if (access.isLoadingError) {
     return (
       <div className="mt-4">
         <QueryError
@@ -375,6 +414,11 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const { owner } = access.data;
   const people = access.data.people ?? [];
   const notSignedIn = new Set(access.data.not_signed_in ?? []);
+  // The owner's alone, and only where passkey sign-in is on: absent, no row shows a passkey
+  // control.
+  const passkeys = access.data.passkeys;
+  const invitable = new Set(access.data.invitable ?? []);
+  const listedByAnotherOwner = new Set(access.data.listed_by_another_owner ?? []);
   const listedGroups = access.data.groups ?? [];
   const isPrivate = access.data.visibility === "private";
   const channelsText = (access.data.slack_channels ?? []).join(" ");
@@ -400,8 +444,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     if (operation.part !== part) {
       return null;
     }
-    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a request
-    // Dispatch did not answer, a save the reader stopped, and every other part's refusal keep the
+    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a refusal no
+    // second try can change (`FINAL_REFUSALS`) keeps Dispatch's words and shows no Retry; a request
+    // Dispatch did not answer, a save the reader stopped, and every other refusal keep the
     // operation's line and its Retry.
     const shown =
       refused.change.kind === "visibility" && refused.error instanceof ApiError
@@ -428,7 +473,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
                         }
                   )
                 : apiErrorMessage(refused.error, operation.refusal),
-            retry: true,
+            retry: !(
+              refused.error instanceof ApiError && FINAL_REFUSALS[refused.error.code ?? ""] === true
+            ),
           };
     return (
       <div className="mt-3">
@@ -622,27 +669,26 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         ) : (
           <ul aria-label="People" className={listClass}>
             {people.map((email) => (
-              <li className={rowClass} key={email}>
-                <span className={`min-w-0 break-all text-sm ${textPrimaryOnSurface}`}>
-                  {email}
-                  {notSignedIn.has(email) ? (
-                    <span className={`ml-2 ${textSecondaryOnCanvas}`}>not signed in yet</span>
-                  ) : null}
-                </span>
-                <RefusableButton
-                  busy={
-                    pendingOf((change) => change.kind === "remove-person" && change.email === email)
-                      ? "Removing…"
-                      : undefined
-                  }
-                  look="secondary-compact"
-                  onPress={() => write.save({ email, kind: "remove-person" })}
-                  refusal={refusal}
-                  refusalShownBy={refusal === null ? undefined : noteId}
-                >
-                  Remove<span className="sr-only"> {email}</span>
-                </RefusableButton>
-              </li>
+              <AccessPersonRow
+                email={email}
+                invitable={invitable.has(email)}
+                key={email}
+                listedByAnotherOwner={listedByAnotherOwner.has(email)}
+                notSignedIn={notSignedIn.has(email)}
+                onRemove={() => write.save({ email, kind: "remove-person" })}
+                onReset={() => write.save({ email, kind: "reset-person" })}
+                passkeys={passkeys?.filter((passkey) => passkey.email === email)}
+                project={project}
+                refusal={refusal}
+                refusalShownBy={refusal === null ? undefined : noteId}
+                removing={pendingOf(
+                  (change) => change.kind === "remove-person" && change.email === email
+                )}
+                resetsLanded={resetsLanded.get(email) ?? 0}
+                resetting={pendingOf(
+                  (change) => change.kind === "reset-person" && change.email === email
+                )}
+              />
             ))}
           </ul>
         )}

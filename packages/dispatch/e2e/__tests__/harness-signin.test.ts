@@ -196,7 +196,7 @@ describe("DISPATCH_E2E_SIGNIN", () => {
 
   // The dev control and the three google readings: four runs of run-server.sh.
   test(
-    "run-server.sh hands a google server Google's domain, outside sign-in and a second origin on its own port",
+    "run-server.sh hands a google server Google's domain, passkey sign-in and a second origin on its own port",
     async () => {
       // The control: under dev sign-in the same reading sees dev sign-in and no second origin, so
       // the reading below can tell the two apart.
@@ -211,7 +211,7 @@ describe("DISPATCH_E2E_SIGNIN", () => {
         DISPATCH_SIGNIN_CLIENT_SECRET: "secret",
         DISPATCH_SIGNIN_DOMAIN: "example.com",
         DISPATCH_SIGNIN_ISSUER: "http://127.0.0.1:9035",
-        DISPATCH_SIGNIN_OUTSIDE: "1",
+        DISPATCH_SIGNIN_PASSKEY: "1",
         DISPATCH_SIGNING_KEY: "signing-key",
         DISPATCH_TEST_HOOKS: "1",
         DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER: "1",
@@ -219,10 +219,13 @@ describe("DISPATCH_E2E_SIGNIN", () => {
       const read = async (env: Record<string, string>) => {
         const given = await serverEnvironment({ ...googleServerInputs, ...env });
         expect(given).toMatchObject(signIn);
+        // Boot refuses outside Google sign-in beside passkey sign-in, so the reading fails if
+        // run-server.sh hands the server both.
         for (const absent of [
           "DISPATCH_DEV_SIGNIN",
           "DISPATCH_DEV_SIGNIN_SHARED_KEY",
           "DISPATCH_SIGNIN_GROUP",
+          "DISPATCH_SIGNIN_OUTSIDE",
         ]) {
           expect(given).not.toHaveProperty(absent);
         }

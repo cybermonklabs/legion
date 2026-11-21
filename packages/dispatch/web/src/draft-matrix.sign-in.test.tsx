@@ -48,12 +48,13 @@
  * (`app.tsx`): which person's shell is drawn (`shellFor`, once the stores were told), the rows
  * above; the check not yet answered (`whoAmI.isPending`), before which no shell, and so no
  * composer, is drawn, which the first row's check still out makes; and the page signed out
- * (`signedOut`), which reason 3 answers.
+ * (`signedOut`), which reason 3 answers. Above `AuthGate`, `App`'s enrollment page at `/enroll`,
+ * which takes the whole shell away, is reason 6.
  *
  * The numbered reasons - the first row's two clients, the cell another file makes, the page
- * signed out, and the forms of the layout the composer census found that the rows above do not
- * make - are `REASONS` in `draft-matrix.sign-in.coverage.ts`, which holds each census item this
- * file answers for to a test above or to one of them.
+ * signed out, the forms of the layout the composer census found that the rows above do not
+ * make, and the enrollment page - are `REASONS` in `draft-matrix.sign-in.coverage.ts`, which
+ * holds each census item this file answers for to a test above or to one of them.
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient } from "@tanstack/react-query";

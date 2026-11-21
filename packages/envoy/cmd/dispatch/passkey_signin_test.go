@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -120,19 +122,21 @@ func (r *passkeyRig) invite(t *testing.T, email string) string {
 }
 
 // linkToken is the token of the link response answers, failing the test naming what for any
-// answer but 201 {url, expires_at} with a url of the outside origin's enrollment page.
+// answer but 201 {url, made_at, expires_at} with a url of the outside origin's enrollment page and
+// an expires_at InvitationLifetime after its made_at.
 func linkToken(t *testing.T, what string, response *httptest.ResponseRecorder) string {
 	t.Helper()
 	var answer struct {
-		URL       string `json:"url"`
-		ExpiresAt string `json:"expires_at"`
+		URL       string    `json:"url"`
+		MadeAt    time.Time `json:"made_at"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
-		t.Fatalf("%s answered %d %s, want 201 {url, expires_at}", what, response.Code, response.Body.String())
+		t.Fatalf("%s answered %d %s, want 201 {url, made_at, expires_at}", what, response.Code, response.Body.String())
 	}
 	page, token, ok := strings.Cut(answer.URL, "#")
-	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.ExpiresAt == "" {
-		t.Fatalf("%s is %+v, want %s/enroll#<43 characters> and when it lapses", what, answer, passkeyOrigin)
+	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.MadeAt.IsZero() || !answer.ExpiresAt.Equal(answer.MadeAt.Add(store.InvitationLifetime)) {
+		t.Fatalf("%s is %+v, want %s/enroll#<43 characters>, when it was made, and when it lapses 24 hours on", what, answer, passkeyOrigin)
 	}
 	return token
 }
@@ -271,6 +275,38 @@ func TestPasskeyEnrollsOnlyAListedOutsideAddress(t *testing.T) {
 	wantCode(t, "the enrollment of a link whose email PRIV's list no longer names", r.beginEnrollment(r.handler, token), http.StatusForbidden, "INVITATION_NOT_LISTED")
 	if n := r.passkeysOf(t, later); n != 0 {
 		t.Fatalf("%s holds %d passkeys, want none", later, n)
+	}
+}
+
+// TestTheEnrollmentBeginNamesTheProjectAndItsOwner (R5): the enrollment's begin answers, beside the
+// options navigator.credentials.create takes, the project the link is for and the owner who made
+// it, so the enrollment page names both before the person makes a passkey.
+//
+// Control: leave MadeBy out of the invitation BeginEnrollment answers, and the begin answers an
+// empty made_by and the row fails naming it.
+func TestTheEnrollmentBeginNamesTheProjectAndItsOwner(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail))
+	var answer struct {
+		PublicKey struct {
+			Challenge string `json:"challenge"`
+			User      struct {
+				Name string `json:"name"`
+			} `json:"user"`
+		} `json:"publicKey"`
+		Invitation struct {
+			Project string `json:"project"`
+			MadeBy  string `json:"made_by"`
+		} `json:"invitation"`
+	}
+	if begun.Code != http.StatusOK || json.Unmarshal(begun.Body.Bytes(), &answer) != nil {
+		t.Fatalf("the enrollment's begin answered %d %s, want 200 with the options and the invitation", begun.Code, begun.Body.String())
+	}
+	if answer.PublicKey.Challenge == "" || answer.PublicKey.User.Name != outsiderEmail {
+		t.Fatalf("the begin's options are %+v, want a challenge and the user %s at the top level's publicKey", answer.PublicKey, outsiderEmail)
+	}
+	if answer.Invitation.Project != "PRIV" || answer.Invitation.MadeBy != privOwner {
+		t.Fatalf("the begin's invitation is %+v, want project PRIV made by %s", answer.Invitation, privOwner)
 	}
 }
 
@@ -474,17 +510,24 @@ func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:
-// only DISPATCH_SIGNIN_OUTSIDE=1 signs anyone in with Google there. The canonical origin still
-// sends the browser to Google.
+// only DISPATCH_SIGNIN_OUTSIDE=1 signs anyone in with Google there. Its GET /auth/whoami's 401
+// still names the passkey sign-in, so its page offers no Google link that answers that 404. The
+// canonical origin still sends the browser to Google, and its 401 names no sign-in.
 //
 // Control: refuse Google at the outside origin only while passkey sign-in is on (googleSignInHere
-// reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails.
+// reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails; name the
+// passkey sign-in only while it is on (whoamiSignIn reading Passkeys), and the outside origin's 401
+// names none and the row fails.
 func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
 	for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
 		wantCode(t, "GET "+path+" at the outside origin with passkeys off", call(off, passkeyOrigin, http.MethodGet, path, nil), http.StatusNotFound, "NOT_FOUND")
 	}
+	if outside := whoamiOutside(off, nil); outside.Code != http.StatusUnauthorized || !strings.Contains(outside.Body.String(), `"sign_in":"passkey"`) {
+		t.Fatalf("whoami at the outside origin with passkeys off and no cookie: %d %s, want 401 naming the passkey sign-in", outside.Code, outside.Body.String())
+	}
+	requirePlainNoIdentity(t, "whoami at the canonical origin with passkeys off and no cookie", call(off, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
 	if started := call(off, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
 		t.Fatalf("GET /auth/start at the canonical origin with passkeys off answered %d %s, want 302 to Google", started.Code, started.Body.String())
 	}

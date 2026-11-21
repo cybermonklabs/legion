@@ -1,4 +1,8 @@
-import { awaitsDecision, type DismissResponse } from "@legion/contracts";
+import {
+  awaitsDecision,
+  type DismissResponse,
+  type LauncherCredentialsResponse,
+} from "@legion/contracts";
 import type {
   ApproverGrantResp,
   ApproverGrantsResponse,
@@ -6,7 +10,6 @@ import type {
   CredentialPendingRow,
   DecisionResponse,
   LauncherCredentialResp,
-  LauncherCredentialsResponse,
   PersonSignInResp,
   PersonSignInsResponse,
   RecordResponse,
@@ -24,10 +27,14 @@ import { harnessPorts } from "./harness-ports";
 // `POST /v1/credential-requests/{id}/approve|deny` (that login's decision, carrying the code
 // again); `POST /v1/credential-requests/{id}/dismiss`, which the Inbox's Dismiss of an expired
 // request drives; `POST /v1/person-signins/{id}/revoke`, which the Settings page's Sign-ins
-// section drives; and the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
-// document Dispatch reads to learn whether this broker still serves the device grant. The server
-// reaches this through
-// DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness switch is left unset
+// section drives; `GET /v1/launcher-credentials?approver=`, the machine logins a person approved,
+// which Dispatch reads to revoke them after a Reset or the last removal from an access list, and
+// which this broker answers with none; `POST /v1/person-subjects/revoke`, which Dispatch sends
+// after a Reset gives the person a new passkey account, and which this broker answers revoked with
+// nothing ended; and the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
+// document Dispatch reads to learn whether this broker still serves the device grant.
+// The server reaches this through DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness
+// switch is left unset
 // (e2e/harness-broker.ts), and it lists nothing until a test seeds a request through
 // /__fixture/pending, a grant through /__fixture/grants, a machine login a typed code selects
 // through /__fixture/machine-logins, a live machine login through
@@ -391,6 +398,56 @@ const server = Bun.serve({
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {
       state = emptyState();
       return Response.json({ ok: true });
+    }
+    // `GET /v1/launcher-credentials?approver=`, the machine logins a person approved, which
+    // Dispatch's revocation of a restricted member's machine logins reads after a Reset or the last
+    // removal from a list (internal/dispatch/api/machine_login_revocations.go). This broker holds no
+    // machine login a person approved, so the list is empty, which settles that revocation on its
+    // first pass with no revoke to make.
+    if (request.method === "GET" && url.pathname === "/v1/launcher-credentials") {
+      if ((url.searchParams.get("approver") ?? "") === "") {
+        return brokerError(400, "APPROVER_REQUIRED", "approver is required");
+      }
+      return Response.json({ credentials: [] } satisfies LauncherCredentialsResponse);
+    }
+    // `POST /v1/person-subjects/revoke`, which ends what a replaced account holds under an
+    // address: Dispatch calls it after a Reset gives the person a new passkey account
+    // (internal/dispatch/agentsecrets/revoke_subject.go), and keeps calling it every 30 s until
+    // the broker answers it. Each field is required, in the order and with the codes
+    // internal/broker/api/handlers_ui_personsubject.go refuses them. This broker holds no
+    // credential of anyone's, so the revoke ends nothing and answers zero counts, as a repeat does
+    // on the real broker.
+    if (request.method === "POST" && url.pathname === "/v1/person-subjects/revoke") {
+      const body = (await request.json()) as {
+        person?: string;
+        issuer?: string;
+        subject?: string;
+        holder_subject?: string;
+        session_generation?: number;
+      };
+      for (const [field, code] of [
+        ["person", "PERSON_REQUIRED"],
+        ["issuer", "ISSUER_REQUIRED"],
+        ["subject", "SUBJECT_REQUIRED"],
+        ["holder_subject", "HOLDER_SUBJECT_REQUIRED"],
+      ] as const) {
+        if ((body[field] ?? "").trim() === "") {
+          return brokerError(400, code, `${field} is required`);
+        }
+      }
+      if (body.subject === body.holder_subject) {
+        return brokerError(400, "SUBJECT_IS_HOLDER", "subject and holder_subject name one account");
+      }
+      if (body.session_generation === undefined) {
+        return brokerError(400, "SESSION_GENERATION_REQUIRED", "session_generation is required");
+      }
+      return Response.json({
+        approval_sessions: 0,
+        machine_logins: 0,
+        signins: 0,
+        state: "revoked",
+        tokens_ended: 0,
+      });
     }
     if (url.pathname === "/healthz") return Response.json({ ok: true });
     return brokerError(404, "NOT_FOUND", "not found");
