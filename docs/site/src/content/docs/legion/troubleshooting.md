@@ -1868,6 +1868,44 @@ replay of a record a replay closed and a discard of a closed record (`409 GIVE_U
 how and when it closed), an id that a running replay holds (`409 GIVE_UP_BEING_REPLAYED`), and
 every call to a daemon that runs no intake (`503 NO_INTAKE`).
 
+## An issue whose Dispatch event log cannot be read
+
+The daemon logs the error line `workflow: the listing leaves out of admission an issue whose
+Dispatch event log cannot be read` with four fields:
+
+- `issue`: the issue's key.
+- `event`: the place of the event that the daemon cannot decode in the issue's Dispatch event
+  log, counted from 1.
+- `seq`: the Dispatch sequence of that event where the event itself decoded, and 0 where it did
+  not.
+- `error`: the error, which names the event's place and what did not decode.
+
+The boot's listing of Dispatch's issues, or the listing of a repository recovery
+([Running Legion](/legion/legion/running-legion/#the-projects-repositories)), found a root in
+`triage` that carries the `legion` label and that the daemon does not record. For such a root,
+the daemon reads the issue's whole Dispatch event log to learn who set the label: the daemon moves
+the root to `todo` itself only for a label a person set. This log holds an event that the daemon
+cannot decode. It is an event that does not decode as a Dispatch event, or an `issue.created`,
+`issue.updated` or `issue.closed` event whose payload is no JSON object, whose `status` is not a
+string or whose `labels` is not a list of strings (a `null` reads as absent).
+
+So the daemon cannot tell who set the label. It leaves the root out of admission: it records
+nothing, queues nothing and writes nothing to Dispatch. The rest of the listing applies. The line
+comes back, naming the same event, at every boot and at every recovery of the root's repository,
+because the daemon reads the whole log from its start and Dispatch never rewrites a log.
+
+While the daemon does not record the root, a live event that still shows the root labelled and in
+`triage` reads the log too. Its preparation fails the same way, with the warning `prepare the
+issue's repository`, and the intake gives the message up at its bound
+([A message the intake gave up](#a-message-the-intake-gave-up)). A replay of that give-up fails
+the same way while the daemon does not record the root, so discard a give-up whose root stays
+unrecorded, with the reason.
+
+A person ends the line. Either the person moves the issue to `todo`, which admission takes
+without reading the log, or the person takes the `legion` label off. Any other move out of
+`triage` ends the line too. A read of the log that fails while Dispatch is unreachable is not this
+line: it fails the whole listing, and the boot or the recovery reads the listing again.
+
 ## An architect is told `pull-request-missing`
 
 The notice's reason names the issue, the repository, the branch and the handoff commit: `<KEY>'s

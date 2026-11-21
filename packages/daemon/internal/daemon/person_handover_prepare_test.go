@@ -308,8 +308,9 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 }
 
 // A labelled triage root the daemon does not record whose Dispatch event log the daemon cannot
-// read (here its last event, a person's edit, carries a `null` payload) is left out of the boot
-// listing's decision, with one ERROR line naming the issue and the event, and the boot goes on:
+// read (here its third and last event, a person's edit at Dispatch sequence 9, carries a `null`
+// payload) is left out of the boot listing's decision, with one ERROR line naming the issue, the
+// event's place in the log (3) and its sequence (9), and the boot goes on:
 // the rest of the listing is decided as ever, so another such root a person labelled is queued as
 // that person's handover and an unrecorded labelled todo root is recorded. The root left out has
 // no record and no outbox row, and its row in the copy of Dispatch's issues is still written.
@@ -322,14 +323,14 @@ func TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead(t *testing.T
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
 	records := record.NewStore()
-	nullEdit := json.RawMessage(fmt.Sprintf(`{"id":3,"issue_key":%q,"seq":3,"type":"issue.updated","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":null}`, unreadable))
+	nullEdit := json.RawMessage(fmt.Sprintf(`{"id":3,"issue_key":%q,"seq":9,"type":"issue.updated","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":null}`, unreadable))
 	client := &eventLogDispatch{logs: map[string][]json.RawMessage{
 		readable:   labelledBy(readable, "user"),
 		unreadable: append(labelledBy(unreadable, "user"), nullEdit),
 	}}
 	client.listed = []dispatch.IssueSummary{
 		{Key: readable, ResolvedRepo: "acme/widgets", Title: readable, Status: "triage", Rank: "A", HandedOver: true, LastSeq: 2},
-		{Key: unreadable, ResolvedRepo: "acme/widgets", Title: unreadable, Status: "triage", Rank: "B", HandedOver: true, LastSeq: 3},
+		{Key: unreadable, ResolvedRepo: "acme/widgets", Title: unreadable, Status: "triage", Rank: "B", HandedOver: true, LastSeq: 9},
 		{Key: todo, ResolvedRepo: "acme/widgets", Title: todo, Status: "todo", Rank: "C", HandedOver: true, LastSeq: 1},
 	}
 	// acme/widgets is read already, so the boot records the todo root on it without reading GitHub.
@@ -375,8 +376,8 @@ func TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead(t *testing.T
 		t.Fatalf("the boot logged %d lines %q, want one:\n%s", len(lines), leftOut, logs.String())
 	}
 	line := lines[0]
-	if line["level"] != "ERROR" || line["issue"] != unreadable || line["event"] != 3.0 || line["seq"] != 3.0 ||
+	if line["level"] != "ERROR" || line["issue"] != unreadable || line["event"] != 3.0 || line["seq"] != 9.0 ||
 		!strings.Contains(fmt.Sprint(line["error"]), "decode Dispatch issue payload of event 3 of 3: the payload is not a JSON object") {
-		t.Fatalf("the line leaving %s out = %v, want ERROR naming %s, event 3, seq 3 and the decode error", unreadable, line, unreadable)
+		t.Fatalf("the line leaving %s out = %v, want ERROR naming %s, event 3 (its place in the log), seq 9 (its Dispatch sequence) and the decode error of event 3 of 3", unreadable, line, unreadable)
 	}
 }

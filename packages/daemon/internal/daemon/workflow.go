@@ -1364,8 +1364,12 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			// not read. A failed read of the log fails the listing, so the listing is read again.
 			// A log the daemon read and cannot decode (intake.UnreadableEventLog) leaves the issue
 			// out of admission's decision, so one such issue does not stop the listing: no record,
-			// no queue, no handover. The issue's next event reads the log again, and its
-			// preparation fails while the log stays unreadable.
+			// no queue, no handover. The log is read from sequence 0, and Dispatch never rewrites
+			// a log, so every boot, and every pass of a repository recovery whose scope holds the
+			// root, leaves the same root out with a line naming the same event until a person moves
+			// it out of triage or takes the label off. An event that still shows it an unrecorded
+			// labelled triage root reads the log again, and its preparation fails the same way. A
+			// move to todo reads no log, and admission takes the root.
 			var unreadable *intake.UnreadableEventLog
 			fact.LabelSetter, err = w.labelSetter(ctx, summary.Key)
 			if errors.As(err, &unreadable) {
