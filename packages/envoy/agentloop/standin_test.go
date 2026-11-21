@@ -19,9 +19,11 @@ import (
 // connection dropped or its client gone before the stand-in wrote it, puts its reply back at the
 // head of the script, so the transport's one retry of a call whose connection broke is answered as
 // the call would have been (transport.go, RoundTrip; doc.go, "The retry"). That retry can arrive
-// before the lost call's handler runs again, so a reply's fate is settled before anything a later
-// request takes depends on it: a dropped call's reply goes back before its connection closes, and
-// a request that comes while a reply taken before it is unsettled waits for it to settle.
+// before the lost call's handler runs again, so every answer's fate is settled before anything a
+// later request gets depends on it: a dropped call is marked lost and its reply put back before
+// its connection closes, and a request that comes while an earlier request's answer is unsettled
+// waits for it to settle, so the earlier one is marked lost, and its reply back, before the later
+// one is answered.
 type standIn struct {
 	server  *httptest.Server
 	mu      sync.Mutex
@@ -38,8 +40,9 @@ type standIn struct {
 	// after it closed the connection and before it returns, as a handler the scheduler set aside
 	// there would be: the client's retry then comes while that handler has not run again.
 	held chan struct{}
-	// unsettled is open while a reply taken off the script has not yet been settled: kept by an
-	// answer written whole, or put back by one that was lost. It is nil when no reply is.
+	// unsettled is open while the answer to the request in hand has not settled: written whole,
+	// or lost, with the request marked lost and any reply it took put back. It is nil when no
+	// answer is unsettled.
 	unsettled chan struct{}
 	// got is every request the stand-in got, in order, a lost one and its retry each counted.
 	got []recorded
@@ -52,6 +55,13 @@ type reply struct {
 	body    []byte
 	headers map[string]string
 	delay   time.Duration
+}
+
+// noMoreReplies is a stand-in's answer to a request that finds its script spent: a 400, which the
+// run reads as a request error and does not retry, naming the stand-in.
+var noMoreReplies = reply{
+	status: http.StatusBadRequest,
+	body:   []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"the stand-in has no more replies"}}`),
 }
 
 // recorded is a request a stand-in got.
@@ -109,9 +119,10 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	at := len(s.got) - 1
 	drop := len(s.got) <= s.drops
 	held := s.held
-	// A reply an earlier request took and has not settled may yet come back to the head of the
-	// script, so this request takes nothing until it has: an answer whose write failed is lost to
-	// the client, which may already be retrying, before its handler learns of it.
+	// An earlier request's answer that has not settled may yet be lost, which marks that request
+	// lost and puts back any reply it took, so this request is answered only once it has settled:
+	// an answer whose write failed is lost to the client, which may already be retrying, before
+	// its handler learns of it.
 	for s.unsettled != nil {
 		unsettled := s.unsettled
 		s.mu.Unlock()
@@ -133,16 +144,15 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	case len(s.replies) > 0:
 		next, taken = s.replies[0], true
 		s.replies = s.replies[1:]
-		s.unsettled = make(chan struct{})
 	case !drop:
-		s.mu.Unlock()
-		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"the stand-in has no more replies"}}`, http.StatusBadRequest)
-		return
+		next = noMoreReplies
 	}
+	turn := make(chan struct{})
+	s.unsettled = turn
 	s.mu.Unlock()
-	// settle ends this request's hold on the reply it took, once: an answer written whole keeps
-	// it, and a lost one marks the request lost and puts the reply back at the head of the
-	// script. Every way out of the handler but an answer written whole is a loss.
+	// settle ends this request's turn, once: an answer written whole keeps any reply it took, and
+	// a lost one marks the request lost and puts that reply back at the head of the script. Every
+	// way out of the handler but an answer written whole is a loss.
 	settled := false
 	settle := func(answered bool) {
 		if settled {
@@ -157,10 +167,8 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 				s.replies = append([]reply{next}, s.replies...)
 			}
 		}
-		if taken {
-			close(s.unsettled)
-			s.unsettled = nil
-		}
+		close(turn)
+		s.unsettled = nil
 	}
 	defer settle(false)
 	if drop {
