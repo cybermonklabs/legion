@@ -380,6 +380,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 			return
 		}
 	}
+	s.writingCheck(r, actor, input)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -576,6 +577,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	s.writingCheck(r, actor, input)
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -672,6 +674,9 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if settled {
+		// Nothing here commits, the request's summary included, so its 200 records no row of the
+		// writing check.
+		dropWritingCheck(r)
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
 		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `DISPATCH_GENERATED_TEXT_HEADER` (`Dispatch-Generated-Text`), `DISPATCH_PERSON_TYPED_HEADER`
+  (`Dispatch-Person-Typed`) and `DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`
+  (`Dispatch-Accepts-Kept-Write`) name three request headers. A plugin puts the first on a reply that
+  holds text it generated, not text the agent wrote. The `dispatch` command puts the second on each
+  write of a command a person typed. `DispatchClient` puts the third on every write: it reads the
+  `202 {id, held}` of a write Dispatch keeps beside a text its reviewer holds, and Dispatch keeps
+  such a write only for a request that carries it. `bun run gen:go` writes all three into the Go
+  package as `contracts.GeneratedTextHeader`, `contracts.PersonTypedHeader` and
+  `contracts.AcceptsKeptWriteHeader`.

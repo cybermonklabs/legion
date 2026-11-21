@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The plugin's own replies to a Dispatch delivery now carry `Dispatch-Generated-Text: 1`: a slash
+  command's output, a pick's confirmation, the waiting reply, its error for a message it could not
+  run or a delivery it could not read, and its error for a BTW it could not answer. Dispatch posts
+  them at once, and its writing check does not read them. A BTW fork's answer is the agent's words
+  and goes out unmarked.

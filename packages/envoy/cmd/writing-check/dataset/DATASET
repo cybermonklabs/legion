@@ -1,0 +1,31 @@
+# The dataset of INFRA-3231's R1. Its files are artifacts of INFRA-3231, never files of this
+# repository. From packages/envoy, `go run ./cmd/writing-check dataset build --from <bundle> --out <dir>`
+# prints snapshot_sha256, verdicts_sha256, end and owner_sha256 below, of the inputs it reads, and
+# cases_sha256, documents_sha256 and sessions_sha256, of the files it writes; it does not read
+# this file. owner_sha256 is the SHA-256 of the owner's login as the snapshot's header holds it
+# (lower case, no blank around it), so this file names no address: a reader who holds it checks it
+# with `printf %s <login> | sha256sum`. The build refuses a snapshot that holds an event created
+# after its end, and a confirmed.json that is not the confirmed_draw below, of 50 cases in its
+# order; a refused build writes none of its files. README.md, "dataset", says how.
+end: 2026-11-15T03:27:14Z
+owner_sha256: 8169ce6a3de25cec74d3a16a206656b57cf57dbf0592476da330a5e4eb5da4d6
+seed: 20261115
+classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused)
+select_prompt_sha256: 696fd463e734ff1b0cc6cf0cb35796751c9ad1e9998cc34b575d0aed0e27315d
+snapshot_sha256: e8f9a0d09f99e9178c9d4538261fe60d90392f6a314e2ac4774062c7f3f843a7
+verdicts_sha256: 0f4578413da6a6798089b48232abdbd2b820951be63114894758e3d59d916733
+confirmed_seed: 3231051
+confirmed_draw: python3 random.Random(3231051).sample(sorted question cases by id, 50)
+confirmed_reader: ConfirmQuestionsV2
+confirmed_result_sha256: 4072c4614c23962e06bb453ad4a7fec276a5569743e0659b7c772f0b30f1bd6d
+confirmed: 37 of 50
+bundle_sha256: 8a175e4cfb2f5006caa7c4171f69ae465ae31f3d610acbcb8ee89cbe9eeba3c2
+cases_sha256: 9b07fc2c3f35e85cc1b7d03bdfff223cdd770ed4d154f33ddda20320d6b53d30
+documents_sha256: 7790379e0ea1f6388447ca42a58b0df18c122f8a2ea6d4897438ad6120a08798
+sessions_sha256: 15363e86f1662f6557311e9184f5f09a2554d069aca647ad981d3faa336d8bdc
+to_development_list_sha256: 3baca74d8955b0586da7b93fbe18879dc8193120aff8ead8db4f13d92f62b624
+to_development_cases_sha256: 0f09b64c4a5edac40146f5a1efe739dc0503416a0a3afee971c5927641725555
+to_development: The build with `--to-development` and the list of the artifact infra-3231-to-development of INFRA-3231, which every run from 2026-11-19 reads. The list names the 10 split groups whose explanations two change-1 runs of the pair check read while they were held out; their 219 cases (question 64, answer 141, phrase 1, plain 13) are development data, and no other case changes part or any other field. documents_sha256 and sessions_sha256 are the same. The held-out share of the question cases goes from 41.0% to 32.2%, of the answer cases from 40.0% to 32.9%. The build without the flag still writes cases_sha256 above.
+cases_names: Each record names its issue's primary document spec.md, as Dispatch does. An earlier build (cases_sha256 893f727ea898bddb6fa8b3cec4743d2254ef126c9741994e8be726a64308f087) left that name empty in 248 cases, where the snapshot holds no later version of the document. No other field of a case changed and no case changed part. The inputs, documents_sha256 and sessions_sha256 are the same.
+cases_broadcasts: Each copy of a broadcast opens its own recipient's thread, and a record in that thread holds it. The build before this one (cases_sha256 e0af41fb7c4c5515b901f488b6d960efdc2f2b662b8db6c72d96262c6e8a75f0) kept each broadcast's first copy alone, so 44 records (15 development, 29 held out) lacked the owner's message their thread answers; each now holds that copy as its thread's first text. A broadcast is still one text of the owner, with its first copy's verdict, so every count of counts.json is the same. No other field of a case changed, and no case changed part or split group. The inputs, documents_sha256 and sessions_sha256 are the same.
+sessions_read: Every writer session of the dataset, and none is left out, by the owner's answer (dispatch://INFRA-3231/ask/5cfc36a0-1965-46b1-a60e-104869be6c62); export-sessions.sh runs with an empty --exclude. Session text reaches Claude models only (R2). Every text value is masked for secrets before the export (manifest schema infra-3231-session-export/2).

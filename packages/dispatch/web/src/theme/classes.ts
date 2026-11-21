@@ -153,6 +153,10 @@ export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
+/** `focusVisibleRing` drawn on a mark inside its control (a `group`): the rewrite badge's pill,
+ *  whose button is a larger tap target around it. */
+export const groupFocusVisibleRing =
+  "group-focus-visible:ring-2 group-focus-visible:ring-sky-600 dark:group-focus-visible:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
  * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
  * keyboard focus. */
@@ -296,6 +300,12 @@ export const successQuoteAccentBorder = "border-emerald-400";
  * it verbatim for their anchor blockquotes). */
 export const QUOTE_BODY_TEXT = pair(P.SLATE_600, P.SLATE_400);
 export const quoteBodyText = "text-slate-600 dark:text-slate-400";
+/** An ask's question as the card draws it: its first paragraph, which is the decision, in the
+ *  card's question type, and every paragraph after it - the facts and the recommendation a
+ *  question that stands alone carries - a step down, in body type and `TEXT_SECONDARY`, so the
+ *  decision reads first. */
+export const askQuestionProse =
+  "[&_p]:my-0 [&_p+p]:mt-2 [&_p:not(:first-child)]:text-sm [&_p:not(:first-child)]:leading-6 [&_p:not(:first-child)]:font-normal [&_p:not(:first-child)]:text-slate-700 dark:[&_p:not(:first-child)]:text-slate-300";
 /** A selected/active card's accent border and background — `CALLOUT_INFO_BG`'s shades reused
  * for the fill, with a slightly bolder sky-500/400 border than `FOCUS_ACCENT` uses for a focus
  * ring (this is a resting selected state, not a focus indicator). */
@@ -465,6 +475,13 @@ export const badgePrimary = {
   bg: "bg-sky-100 dark:bg-sky-950",
   text: "text-sky-800 dark:text-sky-300",
 };
+/** The ask card's rewrite badge is a control (it shows the original wording, or tries a failed
+ *  rewrite again), so each tone it wears darkens one step under the pointer. Decorative fills
+ *  behind the badge's own registered text pairs; the hover shades keep the same text. */
+export const badgePrimaryHoverBg = "hover:bg-sky-200 dark:hover:bg-sky-900";
+export const badgeBlockingHoverBg = "hover:bg-rose-200 dark:hover:bg-rose-900";
+registerText("primary badge text on its hover", BADGE_PRIMARY_TEXT, pair(P.SKY_200, P.SKY_900));
+registerText("blocking badge text on its hover", BADGE_BLOCKING_TEXT, pair(P.ROSE_200, P.ROSE_900));
 
 /** Priority is the only badge that uses a geometric tag rather than a pill. P2 and P3 stay
  * neutral so only genuinely urgent work competes with an ask's urgency accent. */
@@ -664,6 +681,70 @@ export const secondaryButtonHoverBorder =
   "not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400";
 /** A secondary button that cannot be pressed, `disabled` or refused (`refused:`, `styles.css`). */
 export const secondaryButtonDisabledText = "refused:text-slate-400 dark:refused:text-slate-600";
+
+/** The split button (`features/inbox/AskSplitButton.tsx`): one control in two halves, its
+ *  action and the chevron that opens the card's other actions, with a thin rule between them.
+ *  While the action can be pressed the control is the primary fill with a light rule; while it
+ *  cannot (no option picked yet) the control is an outline, the action in the disabled shade
+ *  and the chevron in secondary text, live, since the menu's actions wait on no answer. The
+ *  frame's border is drawn in both states, the fill's own colour while live, so the control
+ *  keeps its size. The rules are 1 px decorative lines, so no contrast check applies. */
+export const splitButtonLiveFrame = "border-sky-700";
+export const splitButtonRefusedFrame =
+  "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900";
+export const splitButtonRule = "bg-white/35";
+export const splitButtonRuleRefused = "bg-slate-300 dark:bg-slate-700";
+/** The action half while it is disabled: the disabled shade, which WCAG does not hold to a
+ *  contrast ratio (SC 1.4.3 exempts an inactive control), so it is written under `disabled:`. */
+export const splitButtonRefusedAction =
+  "disabled:cursor-not-allowed disabled:text-slate-400 dark:disabled:text-slate-500";
+export const splitButtonRefusedLive =
+  "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800";
+registerText("split button chevron while the action is refused", TEXT_SECONDARY, SURFACE);
+registerText(
+  "split button chevron on its hover while the action is refused",
+  TEXT_SECONDARY,
+  SURFACE_MUTED
+);
+/** The rewrite badge while it shows the original wording: the Rewritten badge's own blue as an
+ *  outline, so it reads as the same control pressed rather than as a busy state. */
+export const badgePrimaryOutline =
+  "border border-sky-300 text-sky-800 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950";
+registerText("primary outline badge text on surface", BADGE_PRIMARY_TEXT, SURFACE);
+/** The Rewritten badge's own edge: a 1 px rule a step darker than its fill, so the badge keeps
+ *  its shape on a tinted surface (a selected comment, a decision block) where the fill alone is
+ *  almost the tint. Decorative; the badge's text pair is registered above. */
+export const badgePrimaryEdge = "border-sky-200 dark:border-sky-800";
+
+/** A menu item's fill while the pointer or the focus is on it, and the rule between a menu's
+ *  groups (the card's actions menu). A refused item (`aria-disabled`, so it keeps the focus and
+ *  its tooltip says why) takes the disabled shade and lights under neither. */
+export const menuItemActiveBg =
+  "not-refused:hover:bg-slate-100 focus-visible:bg-slate-100 dark:not-refused:hover:bg-slate-800 dark:focus-visible:bg-slate-800";
+export const menuItemRefusedText =
+  "refused:cursor-default refused:text-slate-400 dark:refused:text-slate-600";
+export const menuRule = "bg-slate-200 dark:bg-slate-800";
+
+/** The bar over words a reader selected in an ask, a comment or a message
+ *  (`features/threads/SelectionBar.tsx`): the document editor's own selection bar
+ *  (`.dispatch-action-bar`, `@legion/proof-editor`'s `lib.css`, `#1f1f1f` under `#f5f5f5`) drawn
+ *  again in the palette's nearest shades, the same neutral charcoal pill in either scheme, with
+ *  each action's key in a faint chip beside its name, as the card's menu draws its keys. The
+ *  chip's fill is a white tint over the pill, so its text is measured against the pill. */
+export const selectionBarBg = "border-white/12 bg-neutral-900 shadow-[0_6px_18px_rgba(0,0,0,0.2)]";
+export const selectionBarText = "text-neutral-100";
+export const selectionBarKey = "bg-white/12 text-neutral-300";
+export const selectionBarButtonHoverBg = "hover:bg-white/12";
+registerText(
+  "selection bar action",
+  pair(P.NEUTRAL_100, P.NEUTRAL_100),
+  pair(P.NEUTRAL_900, P.NEUTRAL_900)
+);
+registerText(
+  "selection bar key",
+  pair(P.NEUTRAL_300, P.NEUTRAL_300),
+  pair(P.NEUTRAL_900, P.NEUTRAL_900)
+);
 
 /** An input/select/textarea's resting border and background, plus its focus border. Pass
  * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to

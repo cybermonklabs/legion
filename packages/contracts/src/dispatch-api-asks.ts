@@ -18,7 +18,7 @@ import {
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
 import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
 import { ASK_TURNS } from "./dispatch-api-limits";
-import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
+import { personTypedFields, referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
 import { ASK_URGENCIES } from "./dispatch-tools";
 
 /**
@@ -44,6 +44,40 @@ export const askOptionFields = {
 export const AskOptionSchema = z.strictObject(askOptionFields).readonly();
 
 export type AskOption = z.output<typeof AskOptionSchema>;
+
+/** A text's wording in its kind's fields: an issue's `title` and spec (`body`), an ask's question
+ *  (`body`), `options` and choice (`multiple`), and any other kind's `body`. */
+export const textWordingFields = {
+  title: z.string().optional(),
+  body: z.string(),
+  options: z.array(AskOptionSchema).optional(),
+  multiple: z.boolean().optional(),
+};
+
+export const TextWordingSchema = z.strictObject(textWordingFields).readonly();
+
+/** The states of a rewrite: a person's Rewrite that runs, a text whose wording is a rewrite, and
+ *  a person's Rewrite that failed or was not applied, which left the text as it was. */
+export const TEXT_REWRITE_STATES = ["rewriting", "rewritten", "failed"] as const;
+
+/** Whose rewrite it is: a person's Rewrite, or the reviewer's (INFRA-3231's R5). */
+export const TEXT_REWRITE_BY = ["person", "reviewer"] as const;
+
+/** The `rewrite` every read of an ask, a comment, a message and an issue carries where a rewrite
+ *  of it runs, was written or failed (INFRA-3231's Decision 23): its `state`, whose rewrite it is
+ *  (`by`), when it started, was written or failed (`at`), the wording before it (`original`), and
+ *  why: the reviewer's findings for its rewrite, and why a failed one failed (`reason`, which the
+ *  card shows only as the badge's tooltip). Absent where no rewrite touched the text, and on every
+ *  event payload. */
+export const textRewriteFields = {
+  state: z.enum(TEXT_REWRITE_STATES),
+  by: z.enum(TEXT_REWRITE_BY),
+  at: z.string(),
+  original: TextWordingSchema,
+  reason: z.string().optional(),
+};
+
+export const TextRewriteSchema = z.strictObject(textRewriteFields).readonly();
 
 export const askAnswerFields = {
   /** The part the ask's current answer is stored as, read as an option's `id` is and never
@@ -224,6 +258,12 @@ export const askFields = {
    *  `block_artifact`: its current slug and primary flag, not a snapshot from when the request
    *  opened. Present only alongside `approval`. */
   approval_artifact: AskAnchorArtifactSchema.optional(),
+  /** The ask's rewrite where one runs, was written or failed (`TextRewriteSchema`): from its
+   *  newest `ask.edited` where that edit is a rewrite, from the reviewer's held rewrite it posted,
+   *  or from a person's Rewrite that runs or failed. Present on ask reads (inbox rows, ask lists,
+   *  the ask detail, the issue detail's `open_asks`) alone; absent on `ask.*` event payloads,
+   *  where `ask.edited`'s own `rewrite` is the record of the edit instead. */
+  rewrite: TextRewriteSchema.optional(),
 };
 
 export const AskSchema = z.strictObject(askFields).readonly();
@@ -281,6 +321,7 @@ export const askEventPayloadFields = {
   ...askFields,
   ...referenceChangesFields,
   ...threadLoginsFields,
+  ...personTypedFields,
   restored: z.boolean().optional(),
 };
 
@@ -311,15 +352,65 @@ export const WrittenAskEditEventPayloadSchema = z
      *  `requested_version` moves with the version. A version a route writes (a named version, an
      *  upload, an edit) moves the request to its agent whatever text it stores. A quiet move
      *  changes only the version the request names, so its event, like a human's unnamed
-     *  `artifact.version`, carries `notify: false` and reaches no follower. Absent on every other
-     *  edit, the first move after an opening or a hand-back included, even when a thread reply
-     *  left the request waiting on its agent, unless that move keeps the request waiting on the
-     *  human. */
+     *  `artifact.version`, carries `notify: false` and reaches no follower. Every rewrite's edit is
+     *  quiet too, so a rewrite starts no turn of any agent. Absent on every other edit, the first
+     *  move after an opening or a hand-back included, even when a thread reply left the request
+     *  waiting on its agent, unless that move keeps the request waiting on the human. */
     quiet: z.literal(true).optional(),
+    /** On the `ask.edited` of a rewrite (INFRA-3231's Decision 23): whose rewrite it is (`by`: a
+     *  person's Rewrite or the reviewer's), who asked for it and why, whether it read the asking
+     *  session's answer to Dispatch's side question (`agent_answer`), and the message that keeps
+     *  that question and its answer on the session's own conversation (`question_message`, absent
+     *  where none was sent). `previous` holds the original wording; the edit is Dispatch's own.
+     *  Absent on every other edit. This key replaces the read-only `rewrite` of the ask row,
+     *  which no payload carries. */
+    rewrite: z
+      .strictObject({
+        by: z.enum(TEXT_REWRITE_BY),
+        asked_by: ActorSchema,
+        reason: z.string(),
+        agent_answer: z.boolean().optional(),
+        question_message: z.string().optional(),
+      })
+      .optional(),
   })
   .readonly();
 
 export type AskEditEventPayload = z.output<typeof WrittenAskEditEventPayloadSchema>;
+
+/** The payload of `ask.rewriting` (a person's Rewrite started) and `ask.rewrite_failed` (it
+ *  failed or was not applied): the ask, its owner, and its `rewrite` as a read now carries it.
+ *  Both are quiet: no session gets them as a card, and an open page follows the rewrite on them.
+ *  A rewrite that is applied ends with the ask's quiet `ask.edited` instead. */
+export const askRewriteEventPayloadFields = {
+  id: z.string(),
+  issue_key: z.string().nullable(),
+  artifact_id: z.string().nullable(),
+  rewrite: TextRewriteSchema,
+};
+
+export const WrittenAskRewriteEventPayloadSchema = z
+  .strictObject(askRewriteEventPayloadFields)
+  .readonly();
+
+export type AskRewriteEventPayload = z.output<typeof WrittenAskRewriteEventPayloadSchema>;
+
+/** What a reader of the bus makes of an `ask.rewriting` or `ask.rewrite_failed` payload: the ask
+ *  and its rewrite's state, each optional, with `state` and `by` open strings, so a state a later
+ *  release adds costs an older reader nothing but that state. */
+export const AskRewriteEventPayloadSchema = z.object({
+  id: askRewriteEventPayloadFields.id.optional(),
+  issue_key: askRewriteEventPayloadFields.issue_key.optional(),
+  artifact_id: askRewriteEventPayloadFields.artifact_id.optional(),
+  rewrite: z
+    .object({
+      state: z.string().optional(),
+      by: z.string().optional(),
+      at: textRewriteFields.at.optional(),
+      reason: textRewriteFields.reason,
+    })
+    .optional(),
+});
 
 /**
  * The fields a reader of the bus makes of an `ask.*` payload: the ones Dispatch clients render,

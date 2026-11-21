@@ -169,6 +169,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.writingCheck(r, actor, input)
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return

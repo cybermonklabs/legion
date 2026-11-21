@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { InboxDrawer } from "./InboxDrawer";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -239,6 +240,136 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
     expect(document.querySelector("[data-inbox-selected]")).toBeNull();
     // The address under the drawer is still the page's own.
     expect(screen.getByTestId("location").textContent).toBe("");
+  } finally {
+    view.unmount();
+    window_.happyDOM.setViewport({ width: was });
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+/** Whether the binding `id` of `scope` applies now, as `?` reads it. */
+function bindingApplies(scope: string, id: string): boolean {
+  return appKeymap
+    .describe()
+    .some((entry) => entry.scope === scope && entry.id === id && entry.enabled);
+}
+
+// In the drawer the dialog scope is the only one consulted, so the card's keys and the list's
+// Escape share it with the drawer's own Close; in each scope no two bindings of one key can act
+// at once (INFRA-3231's R7, after INFRA-3552's R6), and Escape acts in its order: a card asking
+// back returns to answering, and the reader stays in the card.
+test("on a phone, the drawer holds no two bindings of a key that act at once, and Escape leaves Ask back in the card", async () => {
+  const user = userEvent.setup();
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width: 390 });
+  const ask = issueAsk({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask]);
+  const getAsk = mockAskReads([ask]);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const card = await within(dialog).findByTestId("ask-ask-a");
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("the card is drawn in no row");
+    const ship = await within(card).findByRole("radio", { name: "Ship" });
+
+    // From the row: the card's keys reach its card.
+    act(() => row.focus());
+    expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "rewrite")).toBe(true);
+
+    // From inside the card: its keys still act on it, and the list's way back to the row too.
+    act(() => ship.focus());
+    expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "rewrite")).toBe(true);
+    expect(bindingApplies(DIALOG_SCOPE, "back")).toBe(true);
+
+    // `b` asks back, from the card: the box takes the focus and the action reads Ask back.
+    await user.keyboard("b");
+    const box = within(card).getByLabelText("Your answer");
+    await waitFor(() => expect(box).toHaveFocus());
+    expect(within(card).getByRole("button", { name: "Ask back" })).toBeTruthy();
+    expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "back")).toBe(false);
+
+    // Escape in the box returns it to answering and leaves the reader in it, the drawer open.
+    await user.keyboard("{Escape}");
+    expect(within(card).getByRole("button", { name: "Answer" })).toBeTruthy();
+    expect(box).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+
+    // Asking back again, with the focus back on an option: Escape, the keymap's own there, stops
+    // asking back first, before the list's way to the row and the drawer's Close.
+    act(() => ship.focus());
+    await user.keyboard("b");
+    await waitFor(() => expect(box).toHaveFocus());
+    act(() => ship.focus());
+    expect(appKeymap.conflicts()).toEqual([]);
+    await user.keyboard("{Escape}");
+    expect(within(card).getByRole("button", { name: "Answer" })).toBeTruthy();
+    expect(ship).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+
+    // Not asking back, Escape from the card is the list's: back to the row.
+    await user.keyboard("{Escape}");
+    expect(row).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
+    window_.happyDOM.setViewport({ width: was });
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// A card's Decline to answer is a dialog inside the drawer's row. As the innermost dialog it owns
+// the keyboard: the list's keys, the drawer's way back to the row among them, stand down while
+// it is open, so Escape closes it, and the drawer and the question stay where they were.
+test("in the drawer, a card's Decline dialog takes Escape before the list's way back to the row", async () => {
+  const user = userEvent.setup();
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width: 390 });
+  const ask = issueAsk({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask]);
+  const getAsk = mockAskReads([ask]);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const drawer = await screen.findByRole("dialog", { name: "Inbox" });
+    const card = await within(drawer).findByTestId("ask-ask-a");
+    const ship = await within(card).findByRole("radio", { name: "Ship" });
+
+    // `n`, from the card, opens its Decline dialog, whose note takes the focus.
+    act(() => ship.focus());
+    await user.keyboard("n");
+    const decline = await screen.findByRole("dialog", { name: "Decline to answer" });
+    const note = within(decline).getByLabelText("Note (optional)");
+    await waitFor(() => expect(note).toHaveFocus());
+    expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "back")).toBe(false);
+    expect(bindingApplies(DIALOG_SCOPE, "rewrite")).toBe(false);
+
+    // From a control of the dialog that takes no text, the list's single keys stand down too.
+    act(() => within(decline).getByRole("button", { name: "Cancel" }).focus());
+    expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "next")).toBe(false);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Decline to answer" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(drawer);
+    expect(within(drawer).getByTestId("ask-ask-a")).toBeTruthy();
   } finally {
     view.unmount();
     window_.happyDOM.setViewport({ width: was });

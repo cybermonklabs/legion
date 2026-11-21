@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -138,6 +140,36 @@ type ownerLastSeqPayload interface {
 	WithOwnerLastSeq(seq int) any
 }
 
+// personTypedPayload is the payload of a text write's event, which carries the mark that a person
+// typed the write in a session (Decision 26 of INFRA-3231's plan): the comment, message, ask,
+// issue and review payloads (model.CommentEventPayload and the others), each of which
+// WithPersonTyped hands back marked, of its own type, so the records job
+// (internal/dispatch/wordrecords) reads its text as the person's though a session is its actor.
+type personTypedPayload interface {
+	WithPersonTyped() any
+}
+
+// personTypedDocumentEvents are the events of a document's text, whose payload is a map
+// (docs.ArtifactVersionEventPayload and the api package's artifactCreatedEventPayload) that takes
+// the mark as a key.
+var personTypedDocumentEvents = []string{"artifact.created", "artifact.version"}
+
+// markedPersonTyped is payload, an event of eventType's, marked as a person's typed write's: by
+// its own method (personTypedPayload), or with the key for a document's event; any other payload
+// as it came.
+func markedPersonTyped(eventType string, payload any) any {
+	if marked, ok := payload.(personTypedPayload); ok {
+		return marked.WithPersonTyped()
+	}
+	if values, ok := payload.(map[string]any); ok && slices.Contains(personTypedDocumentEvents, eventType) {
+		marked := make(map[string]any, len(values)+1)
+		maps.Copy(marked, values)
+		marked["person_typed"] = true
+		return marked
+	}
+	return payload
+}
+
 // QueueAppend queues e's append on a write phase's batch: its owner's lock and row
 // (lockEventOwner), which take the transaction's id, and the insert, which takes the next sequence
 // from the owner row as it stands when the insert runs and advances the row's last_seq (and an
@@ -171,6 +203,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 		if _, err := withThreadLogins(e.Payload, nil); err != nil {
 			return err
 		}
+	}
+	// A write a person typed in a session marks the text events it appends as theirs
+	// (store.WithPersonTyped), which the batch carries (store.WriteBatch.PersonTyped).
+	if batch.PersonTyped() {
+		e.Payload = markedPersonTyped(e.Type, e.Payload)
 	}
 	e.Notify = b.Notify(e)
 	actor, err := json.Marshal(e.Actor)
@@ -422,6 +459,15 @@ func Quiet(e model.Event) bool {
 	case "comment.anchor_refreshed", "ask.anchor_refreshed":
 		// Refresh is a document mutation side effect, not a human addressing its
 		// author. Retain it for every stream consumer without waking anyone.
+		return true
+	case "ask.reviewed":
+		// The end of the reviewer's hold of a decision block (INFRA-3231's R5): an open page
+		// refetches its Inbox and counts on it, and no session is told of it as a card.
+		return true
+	case "ask.rewriting", "ask.rewrite_failed":
+		// A person's Rewrite of an ask that runs, and one that failed or was not applied
+		// (INFRA-3552's R3): an open page follows the rewrite on them, and no session is told
+		// of either as a card. Its ask.edited is quiet by its payload (quietAskEdit).
 		return true
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",

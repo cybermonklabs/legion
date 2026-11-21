@@ -406,7 +406,7 @@ def at_docs(step):
 BROWSER_JOB = "dispatch-browser"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
-BROWSER_EMBEDDER = "embedder"
+BROWSER_EMBEDDER, BROWSER_ASK_CARD = "embedder", "ask-card"
 BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
@@ -528,10 +528,10 @@ REFGEN_API = envoy_import_closure(f"{ENVOY}/internal/cipher/api", f"{ENVOY}/inte
 REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/cipher/{d}" for d in ("api", "approval", "proxy"))
 MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
-                             "the tests that ask it for the module's sources: lock_level_test.go:89, "
-                             "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
+                             "the tests that ask it for the module's sources: lock_level_test.go:122, "
+                             "event_insert_guard_test.go:49, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
-                             "issue_route_writer_guard_test.go:105; issue_route_writer_guard_test.go:124 "
+                             "issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 "
                              "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
@@ -953,6 +953,10 @@ RULES = {
          "testlimits.ServerConnections plus Postgres's default superuser reserve")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
+    f"{ENVOY}/internal/dispatch/wordrecords/prompt_test.go": reads(
+        (f"{ENVOY}/cmd/writing-check/dataset/DATASET", "internal/dispatch/wordrecords/prompt_test.go:19 os.ReadFile ../../../cmd/writing-check/dataset/DATASET")),
+    f"{ENVOY}/internal/dispatch/writingcheck/plainwords/plainwords_test.go": reads(
+        ("skills/plain-words/**", "internal/dispatch/writingcheck/plainwords/plainwords_test.go:14 skillDirectory ../../../../../../skills/plain-words")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
@@ -1911,13 +1915,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The eleven static checks of internal/dispatch/api, keyed by their path in this repository: the
+# ten source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-one of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# twenty-second such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1949,6 +1953,12 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/writing_check_form_guard_test.go": {
+        "TestEveryFormValueTheUploadReadsIsMarked"},
+    f"{ENVOY}/internal/dispatch/api/writing_check_route_guard_test.go": {
+        "TestEveryRouteThatTakesProseReachesTheWritingCheck",
+        "TestTheRegistryRoutesThatCarryProse",
+        "TestTheWritingCheckGuardFailsAnUncheckedProseRoute"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -2134,12 +2144,12 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the twenty-one tests of the Dispatch API's
+# eleven static checks - its ten source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-one out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2187,14 +2197,15 @@ CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
-# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
-# two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
-# check finds a step by name across the workflow. Pinned whole, since `go run` is not a form the
-# simple form reduces.
+# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder,
+# ask-card and two-build jobs' own, outside their browser steps' budgets. One script; a name per
+# job, since the check finds a step by name across the workflow. Pinned whole, since `go run` is
+# not a form the simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
 BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
 BROWSER_MP_CONNECTIONS_STEP = "Read the connections the multiprocess stack's Postgres must allow"
 BROWSER_EMBEDDER_CONNECTIONS_STEP = "Read the connections the embedder stack's Postgres must allow"
+BROWSER_ASK_CARD_CONNECTIONS_STEP = "Read the connections the ask-card stack's Postgres must allow"
 TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
@@ -2207,6 +2218,8 @@ BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
+BROWSER_ASK_CARD_SPECS = "Browser-test the ask card against the stand-in model"
+BROWSER_ASK_CARD_BUILD = "Build the Dispatch server for the ask-card lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
@@ -2228,13 +2241,14 @@ BROWSER_RECORD_STEP = "What the run left behind"
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The visual job's second browser step: the same rows in reverse order (e2e/visual-order.ts).
 BROWSER_VISUAL_REVERSE_SPECS = "Browser-test dispatch dashboard against its baselines, rows in reverse order"
-# The seven steps that run the browser suite, named together wherever a Run or a read cites the
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the seven names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_ASK_CARD_SPECS, BROWSER_ASK_CARD)}, "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} and "
     f"{at_browser(BROWSER_VISUAL_REVERSE_SPECS, BROWSER_VISUAL)}"
 )
@@ -3018,7 +3032,7 @@ GATES = [
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
-        (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:380-381"),
+        (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:387-388"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
@@ -3080,8 +3094,8 @@ GATES = [
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host for the shard and alone jobs, whose
-        # containers have no Go, and in the visual, multiprocess and embedder jobs before their
-        # timed browser steps.
+        # containers have no Go, and in the visual, multiprocess, embedder and ask-card jobs
+        # before their timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
@@ -3090,7 +3104,8 @@ GATES = [
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
                             (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP),
                             (BROWSER_MP, BROWSER_MP_CONNECTIONS_STEP),
-                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
+                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP),
+                            (BROWSER_ASK_CARD, BROWSER_ASK_CARD_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
@@ -3102,6 +3117,11 @@ GATES = [
         # The embedder job builds it once for the same reason, and names its step for its own
         # lane because this check looks a step up by name across the workflow.
         pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        # The ask-card job builds it once for the same reason, for the stack's server and the
+        # reviewer's, and names its step for its own lane as the embedder job does.
+        pinned_step(BROWSER_ASK_CARD, BROWSER_ASK_CARD_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
@@ -3438,12 +3458,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The seventeen static tests by name: a -run is outside the simple form, so the step is
+        # The twenty-one static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's twenty-one source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
@@ -3654,8 +3674,8 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :120"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :122"),
         # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
         # COPY packages/envoy ./), and the held-port image's build copies it whole with the
         # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30

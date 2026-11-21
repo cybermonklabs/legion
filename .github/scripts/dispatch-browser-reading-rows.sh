@@ -64,8 +64,8 @@ downloaded=$1
 # This run's attempt's jobs, read once here and read again by reading three below.
 # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
 # that both readings take. The jobs API lists the caller's jobs too, so the script
-# holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
-# embedder, visual and merge; a called workflow's job is named
+# holds the name to this workflow's eight - binaries, shard, alone, multiprocess,
+# embedder, ask-card, visual and merge; a called workflow's job is named
 # `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.

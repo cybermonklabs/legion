@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  AskGate now asks that a pointer say in plain words what it points at. A write that points at an
+  issue, a pull request, a comment, an ask or a document says what that thing delivers or says, and
+  its link stands beside those words, never in their place. AskGate refuses a key or a link that
+  stands for those words, such as "see" and an issue key, and a pointer with neither words nor a
+  link, such as "as agreed". It accepts a pointer named in words with its link beside them. A
+  pointer the person cannot follow from where the text is shown still needs its link. The fixes
+  AskGate gives for a claim about the person's words, and for a claim about what the team runs
+  today, ask for the same words beside the link.

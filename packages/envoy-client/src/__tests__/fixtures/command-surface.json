@@ -1,5 +1,5 @@
 {
-  "commands": 37,
+  "commands": 40,
   "refusals": 29,
   "runs": [
     {
@@ -35,7 +35,8 @@
           "path": "/api/v1/projects/CORE/architecture-sources/acme/infra/sync",
           "headers": {
             "Accept": "application/json",
-            "Authorization": "Bearer secret"
+            "Authorization": "Bearer secret",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": null
         }
@@ -69,7 +70,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "markdown": "# Design\n"
@@ -81,7 +83,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -166,7 +169,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -213,7 +217,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -368,7 +373,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -473,7 +479,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -639,7 +646,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -710,7 +718,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -770,7 +779,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -790,6 +800,123 @@
       "outcome": "result",
       "text": [
         "Recorded the implement handoff of DSP-1, version 1 (id 01234567-0000-4000-8000-000000000001)"
+      ]
+    },
+    {
+      "tool": "dispatch_held",
+      "call": "valid",
+      "args": {
+        "held": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/held/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Held comment 01234567-0000-4000-8000-000000000001: awaiting_writer.",
+        "",
+        "The text:",
+        "The test fails on its first call.",
+        "",
+        "The reviewer's findings:",
+        "1. \"This names the problem.\" (phrases): It states no fact. Fix: Say what fails.",
+        "",
+        "The reviewer's rewrite:",
+        "The test fails on its first call."
+      ]
+    },
+    {
+      "tool": "dispatch_held_edit",
+      "call": "valid",
+      "args": {
+        "body": "The test fails on its first call.",
+        "held": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/held/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "The test fails on its first call."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Edited held comment 01234567-0000-4000-8000-000000000001; the reviewer reads it again.",
+        "",
+        "Held comment 01234567-0000-4000-8000-000000000001: reviewing.",
+        "",
+        "The text:",
+        "The test fails on its first call.",
+        "",
+        "The reviewer's findings:",
+        "1. \"This names the problem.\" (phrases): It states no fact. Fix: Say what fails.",
+        "",
+        "The reviewer's rewrite:",
+        "The test fails on its first call."
+      ]
+    },
+    {
+      "tool": "dispatch_held_post",
+      "call": "valid",
+      "args": {
+        "held": "<id>",
+        "reason": "The reader asked for the status line in these words."
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/held/01234567-0000-4000-8000-000000000001/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "reason": "The reader asked for the status line in these words.",
+            "state": "posted"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Posted comment 01234567-0000-4000-8000-000000000001 as written."
       ]
     },
     {
@@ -861,7 +988,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -919,7 +1047,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1063,7 +1192,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1138,7 +1268,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1225,7 +1356,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1472,7 +1604,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "title": "Retry failed webhook deliveries"
@@ -1507,7 +1640,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1561,7 +1695,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1627,7 +1762,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1665,7 +1801,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1744,7 +1881,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "state": "approved"
@@ -1793,7 +1931,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "body": "DSP-1: the rota is nowhere written down. Please write it up.",
@@ -1872,7 +2011,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {

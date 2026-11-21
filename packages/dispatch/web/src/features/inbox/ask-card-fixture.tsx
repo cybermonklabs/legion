@@ -8,10 +8,10 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Ask, AskAnswer, AskRead } from "../../api/types";
 
-// The card `AskCard.test.tsx` and `AskCard.stopped-writes.test.tsx` both render, and the reads
-// every render of it answers.
+// The card `AskCard.test.tsx`, `AskCard.stopped-writes.test.tsx` and `AskCard.r7.test.tsx`
+// render, and the reads every render of it answers.
 
-/** Installs the mocks both files' cards read through: call once at module scope. */
+/** Installs the mocks each file's cards read through: call once at module scope. */
 export function installAskCardApiMocks() {
   let whoAmI: Mock<typeof api.whoAmI>;
   let getReferences: Mock<typeof api.getReferences>;

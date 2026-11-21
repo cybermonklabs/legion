@@ -38,6 +38,12 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname } = new URL(request.url);
+    // A Dispatch whose written rules are off, so it refuses no write to show them
+    // (writing-rules.ts): AskGate's behaviour is this file's subject, and the rules are not. The
+    // rules are read before AskGate's marker, so every gated call reads them.
+    if (pathname === "/api/v1/settings/writing-rules") {
+      return Response.json({ refusal: "off", extra: [] });
+    }
     const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
     const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
     const record = (sent?: unknown) =>
@@ -216,7 +222,7 @@ const MESSAGE = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."]
 const REFUSAL = "dispatch message was not called: AskGate is on for this session";
 
 describe("AskGate at the dispatch CLI", () => {
-  test("a gated write with a live record and no marker is refused before any request, and logged", async () => {
+  test("a gated write with a live record and no marker is refused before any write, and logged", async () => {
     writeRecord();
     const { code, stdout } = await run(MESSAGE);
     expect(code).toBe(1);
@@ -778,7 +784,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
   }, 30_000);
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
-  // the session, finds the live record and no marker, and is refused before any request. With no
+  // the session, finds the live record and no marker, and is refused before any write. With no
   // record the same form posts: the check is inert outside a gated Oh My Pi session.
   //
   // The 240 s limit is a hang guard, not a budget, and sits above the suite's 30 s default. The row

@@ -2,12 +2,13 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
-// What every file that proves a clause of a document write's advice over the whole path it is
-// printed through works out of: the real `dispatch` CLI of this checkout, run as a child process
-// against a real Dispatch server of this checkout, and the writes over the server's own routes
-// that make what a row writes about. The files are design-gate-advice.live.test.ts and
-// moved-approval-advice.live.test.ts; each keeps the constants, the writes and the sentences that
-// are its own, and reads the harness the two share from here.
+// What every file that proves a clause over the whole path a write is printed through works out
+// of: the real `dispatch` CLI of this checkout, run as a child process against a real Dispatch
+// server of this checkout, and the writes over the server's own routes that make what a row writes
+// about. The files are design-gate-advice.live.test.ts and moved-approval-advice.live.test.ts,
+// which prove clauses of a document write's advice, and held-ask.live.test.ts, which proves an ask
+// the reviewer holds; each keeps the constants, the writes and the sentences that are its own, and
+// reads the harness they share from here.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
@@ -96,6 +97,12 @@ export interface DispatchCliLive {
    * standard error, fails the row that called it.
    */
   read(issue: string, artifact: string): Promise<string>;
+  /**
+   * One question asked on the issue, run through the real CLI entry as `docEdit` is
+   * (`dispatch ask --issue <issue> --question <question>`), and the output it printed. A refusal,
+   * or anything on standard error, fails the row that called it.
+   */
+  ask(issue: string, question: string): Promise<string>;
 }
 
 /**
@@ -193,5 +200,8 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
   const read = (issue: string, artifact: string): Promise<string> =>
     cli("read", issue, ["--artifact", artifact]);
 
-  return { asPerson, asMachine, createIssue, upload, docEdit, read };
+  const ask = (issue: string, question: string): Promise<string> =>
+    cli("ask", issue, ["--question", question]);
+
+  return { asPerson, asMachine, createIssue, upload, docEdit, read, ask };
 }

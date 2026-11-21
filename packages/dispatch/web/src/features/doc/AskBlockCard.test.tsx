@@ -224,9 +224,14 @@ function renderCard({
     user,
     /** The compact card's free-text disclosure: opens the composer and returns its field. */
     async openComposer() {
-      await user.click(
-        scoped.getByRole("button", { name: "Add a note or answer in your own words" })
-      );
+      await user.click(scoped.getByRole("button", { name: "Add a note" }));
+      return scoped.getByLabelText("Your answer") as HTMLTextAreaElement;
+    },
+    /** The card's Ask back, from its split button's menu: it opens the answer box, whose text
+     *  the action - now reading Ask back - sends. Returns the box. */
+    async chooseAskBack() {
+      await user.click(scoped.getByRole("button", { name: "More actions" }));
+      await user.click(await within(document.body).findByRole("menuitem", { name: "Ask back" }));
       return scoped.getByLabelText("Your answer") as HTMLTextAreaElement;
     },
     recordRows() {
@@ -259,7 +264,9 @@ test.each([
     expect(hosted.dataset.testid).toBe("ask-ask-1");
     // The asker's button holds its name, its attribution follows, and its live link sits beside
     // the button rather than inside it.
-    const asker = within(hosted).getByRole("button", { name: "Architect for CORE-1" });
+    // The card draws its provenance line - who asked, when, the rewrite's badge and the
+    // reference - in the block's own header, above the document's text.
+    const asker = await card.header.findByRole("button", { name: "Architect for CORE-1" });
     const agent = asker.closest<HTMLElement>("[data-agent-name]");
     expect(agent?.textContent).toContain("Architect for CORE-1 (for sjawhar)");
     const live = within(agent as HTMLElement).getByRole("link", {
@@ -267,13 +274,13 @@ test.each([
     });
     expect(asker.contains(live)).toBe(false);
     await waitFor(() =>
-      expect(within(hosted).getByText("3 minutes ago", { exact: false })).toBeDefined()
+      expect(card.header.getByText("3 minutes ago", { exact: false })).toBeDefined()
     );
     // The editor's content is the question; the card does not repeat it.
     expect(within(hosted).queryByText("Should we ship?")).not.toBeInTheDocument();
-    // The reference copy control lives in the card's metadata line, once.
+    // The reference copy control lives in that line, once.
     expect(card.section.querySelectorAll('[aria-label^="Copy reference"]')).toHaveLength(1);
-    expect(within(hosted).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
+    expect(card.header.getByRole("button", { name: /^Copy reference/ })).toBeDefined();
   } finally {
     card.unmount();
   }
@@ -463,8 +470,8 @@ test("the hosted card offers the options as the shared choice rows, plus Other, 
     })) as HTMLInputElement;
     expect(card.footer.getByRole("radio", { name: "Hold" })).toBeDefined();
     expect(card.footer.getByRole("radio", { name: "Other" })).toBeDefined();
-    // Nothing chosen: nothing to submit yet.
-    expect(card.footer.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    // Nothing chosen: nothing to submit yet, though the split button and its menu are drawn.
+    expect(card.footer.getByRole("button", { name: "Answer" })).toBeDisabled();
     await card.user.click(ship);
     expect(ship.checked).toBe(true);
     const submit = card.footer.getByRole("button", { name: "Answer" });
@@ -594,7 +601,7 @@ test("Ask back on an issue document's decision posts a clarification on the issu
   try {
     // No exchange yet: nothing to disclose.
     expect(card.footer.queryByRole("button", { name: /repl/ })).not.toBeInTheDocument();
-    const field = await card.openComposer();
+    const field = await card.chooseAskBack();
     const askBack = card.footer.getByRole("button", { name: "Ask back" });
     // Nothing to send yet.
     expect((askBack as HTMLButtonElement).disabled).toBe(true);
@@ -639,7 +646,7 @@ test("Ask back on a project document's decision posts the clarification on the d
     owner: { project: "CORE", slug: "design" },
   });
   try {
-    await card.user.click(await card.openComposer());
+    await card.user.click(await card.chooseAskBack());
     await card.user.paste("Before or after the freeze?");
     await card.user.click(card.footer.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(createArtifactComment).toHaveBeenCalledTimes(1));
@@ -731,8 +738,8 @@ test("a hosted block whose ask has no recorded author says when it was asked, wi
     node: askNode({ urgency: "high" }),
   });
   try {
-    const hosted = card.footer.getByRole("article", { name: "Urgency: High" });
-    const meta = within(hosted).getByText("asked").parentElement as HTMLElement;
+    // The card's provenance line stands in the block's header.
+    const meta = (await card.header.findByText("asked")).parentElement as HTMLElement;
     await waitFor(() => expect(meta).toHaveTextContent("3 minutes ago"));
     expect(meta.textContent?.startsWith("asked")).toBe(true);
   } finally {

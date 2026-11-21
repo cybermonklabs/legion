@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -114,8 +115,30 @@ type Deps struct {
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
 	// capability route says no model is configured.
 	Answerer Answerer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// WritingCheck is the writing check every route whose request carries prose runs before it
+	// writes (INFRA-3231, writing_check.go); nil is the check turned off. cmd/dispatch builds it
+	// on, with the bundle's structure rules and no detector, on every server.
+	WritingCheck *WritingCheck
+	// WritingRules is the refusal of the written rules as the deployment set it
+	// (writing_rules.go; cmd/dispatch: DISPATCH_WRITING_RULES_REFUSAL and
+	// DISPATCH_WRITING_RULES_EXTRA). Its zero value refuses nothing and shows no rule set beside
+	// the written rules.
+	WritingRules WritingRulesConfig
+	// Reviewer is the reviewer of agents' texts to people (INFRA-3231's R5, reviewer.go); nil is a
+	// deployment that sets no reviewer's model group (cmd/dispatch: DISPATCH_REVIEWER_MODEL_*),
+	// which reviews nothing and answers the draft route 503.
+	Reviewer *Reviewer
+	// RewriteDefine is a person's Rewrite and Define (INFRA-3231's R7, rewrite_define.go); nil is
+	// a deployment that sets no model group for them (cmd/dispatch:
+	// DISPATCH_REWRITE_DEFINE_MODEL_*), whose Rewrite and Define routes answer 503.
+	RewriteDefine *RewriteDefine
+	// TestModels are the models a request may name in its Dispatch-Test-Model header in place of
+	// the reviewer's, Rewrite's and Define's own model (test_model.go; cmd/dispatch:
+	// DISPATCH_TEST_MODELS), each with its share of its deployment's pacer. Only a server with
+	// TestHooksEnabled reads the header; nil names none.
+	TestModels map[string]reviewer.Model
+	Envoy      *envoy.Client
+	Events     *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -253,7 +276,17 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	Events   *events.Broker
+	// WritingCheck is the writing check; nil turns it off. See Deps.WritingCheck.
+	WritingCheck *WritingCheck
+	// WritingRules is the refusal of the written rules; see Deps.WritingRules.
+	WritingRules WritingRulesConfig
+	// Reviewer is the reviewer; nil is none. See Deps.Reviewer.
+	Reviewer *Reviewer
+	// RewriteDefine is Rewrite and Define; nil is none. See Deps.RewriteDefine.
+	RewriteDefine *RewriteDefine
+	// TestModels are the models the Dispatch-Test-Model header may name; see Deps.TestModels.
+	TestModels map[string]reviewer.Model
+	Events     *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -374,6 +407,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
+		WritingCheck:           input.WritingCheck,
+		WritingRules:           input.WritingRules,
+		Reviewer:               input.Reviewer,
+		RewriteDefine:          input.RewriteDefine,
+		TestModels:             input.TestModels,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -448,6 +486,9 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// mux is the mux register mounted this server's routes on, which a held text's post runs a
+	// write kept whole through (held_replay.go); nil on a server a test builds directly.
+	mux RouteMux
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
@@ -637,8 +678,11 @@ type queryer interface {
 // RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
 // package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
 // reads every route the router mounts from the mounting itself rather than from a list kept beside
-// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+// it, and finds a write mounted beside the table, which runs outside keyedWrites. It serves the
+// routes it mounts too, because a held text's post runs the write it kept through them
+// (held_replay.go); the routes test's mux embeds an http.ServeMux, which serves them.
 type RouteMux interface {
+	http.Handler
 	Handle(pattern string, handler http.Handler)
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
@@ -682,7 +726,10 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{
+		Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		SweepHeld: s.sweepHeld,
+	}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -704,6 +751,11 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// SweepHeld is one pass of the reviewer's sweep of held texts (sweepHeld): a text left in
+	// review by a stopped process is reviewed again, one whose writer did not act in time or has
+	// gone posts as DISPATCH_REVIEWER_UNEDITED says, and every decided text whose turn came posts.
+	// cmd/dispatch runs it under its lease every ReviewerSweepInterval.
+	SweepHeld func(context.Context)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
@@ -789,6 +841,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	s.mux = mux
+	// The document service tells the reviewer of each decision block a settlement opens or
+	// rewords, in the settlement's own transaction (decision_blocks.go).
+	if service, ok := deps.Docs.(interface{ SetAskBlockReviewer(docs.AskBlockReviewer) }); ok {
+		service.SetAskBlockReviewer(decisionBlockReviewer{s: s})
+	}
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -868,6 +926,17 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // (keyedReplays), nil for a row that has none.
 func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
 	handler := route.Handler
+	if route.Method != http.MethodGet {
+		// Innermost, so the answer it reads is the handler's own: the writing check's rows of a
+		// write are recorded once its handler answered it 2xx, and a refused write records none.
+		handler = s.recordTakenWrites(handler)
+	}
+	// A session's read by id of a held text answers 409 HELD_TEXT with the held id.
+	handler = s.answerHeldRead(route, handler)
+	// Inside the keyed layer, so a write kept beside a held text it names answers a repeat under
+	// its key with the same 202 rather than keeping it twice (awaitHeldTarget): an upload to a
+	// held issue as much as any other write, which refuseUploadToAClosedIssue lets through to it.
+	handler = s.awaitHeldTarget(route, handler)
 	if keyedMethod(route.Method) {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
 	}
@@ -889,6 +958,9 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
+		// Outermost of the write layers, so every layer below and the handler see a write a
+		// person typed in a session as one, and every event it appends is marked theirs.
+		handler = markPersonTyped(handler)
 	}
 	// Outside the two scope checks and outside the GET test, so it runs before them and
 	// before every handler, on a read as on a write: the whole id it resolves a path
@@ -1291,9 +1363,11 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // to one session — decides it instead, so such a caller need not name itself at all. A body
 // actor is then only an agreement: one that names the same session is taken, for its Origin,
 // which nothing else carries; one that names any other writer is 403 ACTOR_SESSION_MISMATCH,
-// naming the session the credential proved, rather than silently recording the write as a
-// session the caller merely asked for. Every credential that proves no session — a cookie, a
-// personal token, a Kubernetes service-account token — keeps the rule above exactly.
+// rather than silently recording the write as a session the caller merely asked for. The refusal
+// names no session, so no error this resolution returns carries an actor's id to a handler's log
+// line; GET /api/v1/whoami answers the caller the session its credential proved. Every credential
+// that proves no session — a cookie, a personal token, a Kubernetes service-account token — keeps
+// the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
 	if authenticated.Kind == "session" && authenticated.ID != "" {
 		// A body that names no writer at all leaves the session to the credential; one that names
@@ -1301,7 +1375,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
-				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
+				"this request's credential proves a session, and its actor names another writer: leave actor out, or name that session (GET /api/v1/whoami answers it)")
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
@@ -1328,6 +1402,17 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
 		// Not Proven: the body named this session and the credential proved none.
 	}, nil
+}
+
+// unloggedResolution is r on a context that names nobody on its access-log line
+// (accesslog.Detached), for a layer that resolves the caller again after the request's own
+// resolution named it, to read the credential the request presented rather than to admit it: the
+// writing check's personal token (writingCheckTokenID) and a kept write's caller (captureCaller,
+// where the handler resolved its actor first). The request's own resolution notes a bearer's
+// credential and then the session its body names (bearerSessionActor), and the last note wins, so
+// such a second resolution would put the bare credential back on the line in the session's place.
+func unloggedResolution(r *http.Request) *http.Request {
+	return r.WithContext(accesslog.Detached(r.Context()))
 }
 
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
@@ -1518,8 +1603,8 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		session := credential.Session
 		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
 			if session != "" && named != session {
-				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
-					"this request's credential acts for session %s; its session parameter names another session", session))
+				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden,
+					"this request's credential proves a session, and its session parameter names another: leave session out, or name that session (GET /api/v1/whoami answers it)")
 				return model.Actor{}, false
 			}
 			session = named
@@ -1565,8 +1650,8 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 		return actor, true
 	}
 	if actor.Act.Session != "" && actor.Act.Session != named {
-		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
-			"this request acts for session %s; its actor names another session", actor.Act.Session))
+		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden,
+			"this request acts for a session, and its actor names another: leave actor out, or name the session the request acts for")
 		return model.Actor{}, false
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.

@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  Every caller of one model deployment in a Dispatch process now shares one token limiter: the
+  answerer and each model group. `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` (`name=tokens_per_minute,…`)
+  sets a deployment's quota. A deployment it names no quota for is paced at
+  `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` where it is the answerer's, and else at the largest
+  `_TOKENS_PER_MINUTE` of its callers, so the caller with that ceiling can take the whole rate.
+  Each caller's own tokens per minute is a ceiling on its share.
+  Each call reserves its prompt's estimated tokens and its whole reply bound before it is sent:
+  32,768 tokens for the reviewer and for Rewrite and Define, and 1,024 for the records job; the
+  answerer, whose request names no reply bound, reserves its request's tokens alone. A quota not
+  more than the reply bound and the shortest system prompt of the calls a group sends could serve
+  no call. So the server refuses to start when a set group's `_TOKENS_PER_MINUTE`, or the quota
+  that paces its deployment, is not more than that, and the refusal names the setting, its value,
+  the group's calls and the least one of them is charged. With the reviewer's default rule sets the
+  system prompt adds about 5,100 tokens to the reviewer's reviews and about 4,700 to Rewrite and
+  Define's rewrites and definitions.

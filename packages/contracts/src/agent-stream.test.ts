@@ -43,3 +43,23 @@ test("a turn's text is the report of the `!` message whose body it carries", () 
   expect(isShellCommandReport("!ls\t\n\nThe command printed nothing.", "!ls\t")).toBe(true);
   expect(isShellCommandReport("!ls\n\nThe command printed nothing.", "!ls\t")).toBe(false);
 });
+
+// A plugin build that fenced the person's line wrote reports that open with it in a code fence;
+// the page reads those as reports too, by the same rule.
+test("a report that opens with the person's line fenced still reads", () => {
+  expect(isShellCommandReport("```\n!printf hi\n```\n\n```\nhi\n```", "!printf hi")).toBe(true);
+  expect(isShellCommandReport("```\n! ls\n```\n\nThe command printed nothing.", "! ls")).toBe(true);
+  // A line holding a run of backticks had a longer fence, so the run stayed inside it.
+  expect(
+    isShellCommandReport(
+      "````\n!echo ```x```\n````\n\nThe command printed nothing.",
+      "!echo ```x```"
+    )
+  ).toBe(true);
+  // The fence holds the line as the person sent it, so another line's fence is not this one's.
+  expect(isShellCommandReport("```\n!ls\n```\n\nThe command printed nothing.", "! ls")).toBe(false);
+  // The fenced line alone, with nothing after it, is no report, and one line break is not the
+  // separator.
+  expect(isShellCommandReport("```\n!printf hi\n```", "!printf hi")).toBe(false);
+  expect(isShellCommandReport("```\n!printf hi\n```\nhi", "!printf hi")).toBe(false);
+});

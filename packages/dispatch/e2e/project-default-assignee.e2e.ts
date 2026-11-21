@@ -167,22 +167,26 @@ test("issue and document pages follow a default move: a question's Asked-of badg
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   try {
-    // 1. Alice reads the issue's page and the document's page, two tabs of one context, and
-    // each names her as the person its question is asked of.
+    // 1. Alice reads the issue's page and the document's page, two tabs of one context. Each
+    // question waits on her, so neither card names whose turn it is: a card names the turn only
+    // where it is not the reader's own (INFRA-3231's R7).
     const issuePage = await alice.newPage();
     const issueCard = await conversationCard(issuePage, issue.key, issueAsk.id);
     const docPage = await alice.newPage();
     await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
     const docCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
-    await expect(issueCard).toContainText("Asked of alice");
-    await expect(docCard).toContainText("Asked of alice");
+    await expect(issueCard).toBeVisible();
+    await expect(docCard).toBeVisible();
+    await expect(issueCard.getByTestId(`turn-${issueAsk.id}`)).toHaveCount(0);
+    await expect(docCard.getByTestId(`turn-${docAsk.id}`)).toHaveCount(0);
 
     // 2. Bob names himself CORE's default from the Settings page, in a page of his own.
     await nameDefaultFromSettings(await bob.newPage(), "alice", "bob");
 
-    // 3. Without a reload, each page names bob: the issue page first, then the document page.
-    await expect(issueCard).toContainText("Asked of bob");
-    await expect(docCard).toContainText("Asked of bob");
+    // 3. Without a reload, each page names bob as the person it now waits on: the issue page
+    // first, then the document page.
+    await expect(issueCard.getByTestId(`turn-${issueAsk.id}`)).toContainText("Waiting on bob");
+    await expect(docCard.getByTestId(`turn-${docAsk.id}`)).toContainText("Waiting on bob");
     for (const [name, page] of [
       ["issue", issuePage],
       ["document", docPage],

@@ -7,9 +7,9 @@
  *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names: a
  *    developer's path on a machine with Docker and no Postgres binaries, and the path of every
  *    CI job that runs the suite on the runner rather than in the browser image - the `visual`,
- *    `multiprocess` and `embedder` jobs of `.github/workflows/dispatch-browser.yaml` and the
- *    browser half of `.github/workflows/ci-job-dispatch-two-builds.yaml` - since the binaries of
- *    an image a job does not run in are no route for it.
+ *    `multiprocess`, `embedder` and `ask-card` jobs of `.github/workflows/dispatch-browser.yaml`
+ *    and the browser half of `.github/workflows/ci-job-dispatch-two-builds.yaml` - since the
+ *    binaries of an image a job does not run in are no route for it.
  *  - `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is the `shard`
  *    and `alone` jobs' path and an issue pod's: those two jobs of that workflow run in a
  *    container that carries PostgreSQL 18 with `vector`, where there are Postgres binaries and
@@ -76,11 +76,11 @@ const superuserReserved = 3;
  *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every CI job that starts stacks here
  *  sets it from a step that runs `connectionsArgs` before its browser step: the `shard` and
  *  `alone` jobs of `.github/workflows/dispatch-browser.yaml` run in a container with no Go, so
- *  their `binaries` job runs it, and the `visual`, `multiprocess` and `embedder` jobs of that
- *  file and the `dispatch-two-builds` job of `.github/workflows/ci-job-dispatch-two-builds.yaml`
- *  each run it in a step of their own, outside their browser steps' budgets. Unset, which is a
- *  developer's or an issue pod's run, where Go is installed, the harness runs `go` with
- *  `connectionsArgs` itself. */
+ *  their `binaries` job runs it, and the `visual`, `multiprocess`, `embedder` and `ask-card` jobs
+ *  of that file and the `dispatch-two-builds` job of
+ *  `.github/workflows/ci-job-dispatch-two-builds.yaml` each run it in a step of their own,
+ *  outside their browser steps' budgets. Unset, which is a developer's or an issue pod's run,
+ *  where Go is installed, the harness runs `go` with `connectionsArgs` itself. */
 let maxConnections: Promise<number> | undefined;
 async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   const given = env[pgConnectionsVariable];

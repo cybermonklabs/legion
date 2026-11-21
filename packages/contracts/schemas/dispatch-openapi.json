@@ -1297,6 +1297,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -1589,6 +1592,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -2562,6 +2568,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2617,6 +2643,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskWithTrees"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -2681,6 +2727,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2739,6 +2805,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskWithTrees"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -2848,8 +2934,28 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2904,8 +3010,28 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2964,9 +3090,80 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/asks/{id}/rewrites": {
+      "post": {
+        "description": "Rewrite an open question for its reader (INFRA-3231's R7): answers 202 at once with {ask_id, started, rewrite} and rewrites in the background. rewrite is {state, by, at, original, reason?} as every ask read carries it: rewriting while the rewrite runs. One rewrite of an ask runs at a time: a request while one runs starts none (started false) and gets that run's result. The rewrite reads Dispatch's record and, where the session that asked it is running or unresponsive and its host advertises btw, its answer to one side question Dispatch sends it as a message on its own conversation, waited for at most 60 s. A rewrite that changes an option's label, their number or order, the choice, a short first line, a `Ref: ` line, a picture line, a link or a decision block's option line is not applied, nor one written over a wording the asking agent changed meanwhile; the ask then stays as it was, and ask.rewrite_failed carries why. An applied rewrite keeps each option's id, and is a quiet ask.edited from Dispatch holding the old wording, who asked, and whether the agent's answer was read; ask.rewriting, ask.edited and ask.rewrite_failed reach no session as a card. Each request is recorded rewrite_requested. A question that is not open is 409 ASK_NOT_OPEN, an approval request 409 ASK_KIND_FIXED; it needs the person scope, and with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 REWRITE_NO_MODEL.",
+        "operationId": "postApiV1AsksByIdRewrites",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskRewriteAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
         "x-write-scope": "project"
       }
     },
@@ -3308,6 +3505,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3365,6 +3582,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AcceptSuggestionResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -3533,6 +3770,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3584,6 +3841,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3595,7 +3872,7 @@
     },
     "/api/v1/comments/{id}/reply": {
       "post": {
-        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal.",
+        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal. A plugin marks text it generated, not text the agent wrote, with Dispatch-Generated-Text: 1: the writing check does not read it and records it as exempt_generated.",
         "operationId": "postApiV1CommentsByIdReply",
         "parameters": [
           {
@@ -3658,7 +3935,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommentWriteResponse"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/CommentWriteResponse"
+                    },
+                    {
+                      "properties": {
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             }
@@ -3716,6 +4005,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommentWithTrees"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -4188,6 +4497,109 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/definitions": {
+      "post": {
+        "description": "Define words a person selected (INFRA-3231's Decision 24) {ask_id?, document?, words}: the words are in the ask ask_id names, a decision block's included, or in the document document names, of an issue or a project, read at its latest version; name one of the two (400 DEFINITION_INPUT for neither, both, a file or an image or an agent conversation's upload, or words that name no words; at most 20 selections of 500 characters each). Answers 201 at once with the definition read from Dispatch's record: {id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}, definitions each {words, meaning, links} and failure why the model gave none. Words in an ask also send the session that asked it one side question, what it means by those words, when Envoy reads that session live and its host advertises btw: a frame from Dispatch whose message id is the definition's id, with no message row and no event; its answer comes within 60 s to POST /api/v1/messages/{id}/reply and GET /api/v1/definitions/{id} reads it in agent {state: none, waiting, answered or unanswered, session?, question?, answer?, answered_at?, until?}. The definition changes nothing in the record, appends no event, is kept for the caller alone, and is recorded as the caller's question about those words (GET /api/v1/readers/{login}/words). It needs the person scope; with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 DEFINE_NO_MODEL.",
+        "operationId": "postApiV1Definitions",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefineInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/definitions/{id}": {
+      "get": {
+        "description": "One of the caller's own definitions (POST /api/v1/definitions), the asking session's answer with it once it came. Another person's, or none, is 404 DEFINITION_NOT_FOUND. It needs the person scope.",
+        "operationId": "getApiV1DefinitionsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
       }
     },
     "/api/v1/delivery/measures": {
@@ -4871,7 +5283,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write a row of the graph, of the forty tool specs agents operate Dispatch with (the three held-text tools read, change or post the caller's own held text), each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -5046,6 +5458,167 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/held/{id}": {
+      "get": {
+        "description": "One text the reviewer holds (INFRA-3231's R5): an ask, a new issue, a comment or a message an agent wrote to a person while DISPATCH_REVIEWER_\u003cKIND\u003e is hold, which no person sees until it posts. Answers {id, kind, state, route, writer, reader, issue_key?, wording, original, findings, rewrite, not_applied?, revision, deadline, outcome?, reason?, detail?, waits_on?, written_at, posted_at}: id is the id its write answered (an issue's key, else a uuid), state reviewing, awaiting_writer, posting, posted or failed; wording is the text as it posts now and original as first written, each {title?, body, options?, multiple?}; findings the last review's, each {rule_set, quote, why, fix}; rewrite the reviewer's rewrite or null, and not_applied why it cannot post; deadline when the writer's time to act ends, null while none runs; outcome what posts or posted (passed, posted_as_written, rewrite_posted, posted_unreviewed, not_reviewed); waits_on the held text it posts after. Any agent's token reads it; a person signed in at a browser is 403 HELD_FORBIDDEN. An id no held text has is 404 HELD_NOT_FOUND.",
+        "operationId": "getApiV1HeldById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "patch": {
+        "description": "Edit a held text before it posts {question?, options?, title?, spec?, body?}: an ask takes its question and its options ({label, description?}, up to 8), an issue its title and its spec, a comment or a message its body; a field the kind does not hold is 400 HELD_EDIT_INPUT, and each is checked as the kind's own create checks it. The edit is recorded edited and the reviewer reads the text again, so it answers the held text in review. Only the session that wrote it edits it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED.",
+        "operationId": "patchApiV1HeldById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeldEditInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/held/{id}/state": {
+      "put": {
+        "description": "Post a held text as written, over what the reviewer found {state, reason}: state is posted, the one state a writer moves its held text to (400 HELD_STATE_INPUT for any other), and reason (required, 400 HELD_POST_INPUT when blank) says why the text is right for its reader, and is recorded with the outcome posted_as_written. The text posts through its kind's own create path before the answer, which is the held text as it then stands. Only the session that wrote it posts it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED, but for the request that decided it sent again, with the same reason, which writes nothing and answers the held text as it then stands.",
+        "operationId": "putApiV1HeldByIdState",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeldStateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
       }
     },
     "/api/v1/inbox": {
@@ -5329,6 +5902,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -5508,6 +6084,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -5654,6 +6250,26 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -5849,6 +6465,16 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Conflict",
             "content": {
@@ -5863,6 +6489,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
                     }
                   ]
                 }
@@ -5993,6 +6622,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -6195,6 +6844,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -6262,12 +6914,29 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Conflict",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
+                    }
+                  ]
                 }
               }
             }
@@ -6328,12 +6997,29 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Conflict",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
+                    }
+                  ]
                 }
               }
             }
@@ -6501,6 +7187,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -6658,6 +7347,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IssueDesignGates"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -6862,6 +7571,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "bearer",
@@ -7027,6 +7756,9 @@
                       "properties": {
                         "advice": {
                           "$ref": "#/components/schemas/WriteAdvice"
+                        },
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
                         }
                       },
                       "type": "object"
@@ -7153,6 +7885,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlanRecord"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -7323,6 +8075,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -7484,6 +8256,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -7597,6 +8389,26 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -7660,6 +8472,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StepRecord"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -7763,8 +8595,28 @@
               }
             }
           },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8550,6 +9402,62 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/definitions": {
+      "get": {
+        "description": "The caller's own definitions (POST /api/v1/definitions), one page of them, the newest first: {items, total, limit, offset}, items ?limit= definitions (1 to 200, default 50) from ?offset=, and total how many the caller has; no other person's. A limit or an offset out of its bounds is 400 INVALID_QUERY. It needs the person scope.",
+        "operationId": "getApiV1MeDefinitions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefinitionsPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/documents/{id}/read": {
       "get": {
         "description": "The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none.",
@@ -9288,7 +10196,7 @@
     },
     "/api/v1/messages/{id}/reply": {
       "post": {
-        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT.",
+        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT. A plugin marks text it generated, not text the agent wrote, with Dispatch-Generated-Text: 1: the writing check does not read it and records it as exempt_generated.",
         "operationId": "postApiV1MessagesByIdReply",
         "parameters": [
           {
@@ -9358,7 +10266,36 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MessageReplyResult"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/MessageReplyResult"
+                    },
+                    {
+                      "properties": {
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/HeldRead"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DefinitionAnswerRead"
+                    }
+                  ]
                 }
               }
             }
@@ -11430,6 +12367,74 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/readers/{login}/words": {
+      "get": {
+        "description": "The words one person asked about (INFRA-3231's R8), one page of them: {items, total, limit, offset}, items ?limit= words (1 to 200, default 50) from ?offset=, the most recently asked first, and total how many words the person asked about. Each word is {word, times, last}, listed once as the person last wrote it, however its case differs, with how many of their records name it and when they last asked. A record is a text of theirs in which the records job found them asking what a word means, saying they cannot understand a text or complaining about its words, or a Define use. ?before= (RFC 3339) keeps the records written before it alone; any other value, and a limit or an offset out of its bounds, is 400 INVALID_QUERY. Any agent's token reads any reader's words, and a person signed in at a browser their own: another person's are 403 READER_WORDS_FORBIDDEN.",
+        "operationId": "getApiV1ReadersByLoginWords",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReaderWordsResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/reference-targets": {
       "get": {
         "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
@@ -11731,6 +12736,56 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/reviewer-drafts": {
+      "post": {
+        "description": "The reviewer's review of a draft {kind, text, title?, options?, multiple?, issue?, reader?}, which writes nothing: kind is ask, issue, comment, message, document or decision_block (400 REVIEWER_DRAFT_INPUT for any other, or a blank text); text an ask's question, an issue's spec or any other kind's body; issue the issue the draft would be on, whose record it reads; reader the person it is for, else the issue's assignee or its project's default. The review reads the words the reader asked about before only where the caller may read them, as GET /api/v1/readers/{login}/words serves them: a person signed in at a browser whose draft another person would read gets the review without that person's words, and an agent's token gets any reader's. Answers {reader, findings, dropped?, rewrite, not_applied?, calls}: findings each {rule_set, quote, why, fix}, dropped each finding the review left out because its quote is not in the text, as {rule_set, quote} with the quote as the model wrote it, rewrite {title?, body, options?, multiple?} or null, not_applied why the rewrite would not post, and calls each model call {purpose, deployment, attempts?, served, fault?}, attempts being its tries where it asked again after a reply that was not the object its schema names, served being the model id the provider says answered. It answers whenever the reviewer's model group is set, whatever DISPATCH_REVIEWER_\u003cKIND\u003e say; with none set it is 503 REVIEWER_NO_MODEL, and a model call that gives no answer is 502 REVIEWER_MODEL_FAILED.",
+        "operationId": "postApiV1ReviewerDrafts",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewerDraftInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewerDraftAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
       }
     },
     "/api/v1/schema/blocks": {
@@ -12411,6 +13466,45 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/settings/writing-rules": {
+      "get": {
+        "description": "The refusal of the written rules as this deployment set it (DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA): {refusal, extra}. refusal is \"on\" when the dispatch command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction, to show the written rules (POST /api/v1/writing-rules); it is \"off\" when the command refuses no write. extra is the rule sets the refusal shows after the written rules, reader_words and ask_parts, [] for none.",
+        "operationId": "getApiV1SettingsWritingRules",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingRulesSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/signins": {
       "get": {
         "description": "List the caller's own sign-ins on their machines (`agent-secrets login`), one per box key they have not revoked, each naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session.",
@@ -12643,6 +13737,162 @@
         "x-test-hook": true,
         "x-write-scope": "deployment"
       }
+    },
+    "/api/v1/writing-check": {
+      "get": {
+        "description": "The writing check as this process runs it: {enabled, rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, the check's own phrase detector, which is off, reason saying why: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it.",
+        "operationId": "getApiV1WritingCheck",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckState"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/writing-check/counts": {
+      "get": {
+        "description": "The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, items, total, limit, offset}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by \"\u003cmethod\u003e \u003croute\u003e\". items is one page of the rows of each day, project and person that has a count, in day, project and person order: ?limit= rows (1 to 200, default 50) from ?offset=, and total counts every row. A row is {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding, each text once though the writing check and the reviewer both record a finding of it, on one day whichever range is asked. project is \"\" for a text on no project or one whose project was not recorded, and person \"\" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last, a range of more than 366 days, and a limit or an offset out of its bounds are 400 INVALID_QUERY. A daily sweep deletes a decision the rows count once it is older than 366 days and any other once it is older than 90 days, so a range that ends today counts its rows whole, while the days entry of a day older than 90 days counts only the outcomes the rows read. Any signed-in caller reads it.",
+        "operationId": "getApiV1WritingCheckCounts",
+        "parameters": [
+          {
+            "name": "first",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "last",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckCounts"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/writing-rules": {
+      "post": {
+        "description": "The written rules for one write that the caller did not send yet {route, body}: route is \"\u003cmethod\u003e \u003cpath\u003e\" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and \"\" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the five phrases to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). A person signed in at a browser gets the reader's words only where the reader is that person, as GET /api/v1/readers/{login}/words serves them; an agent's token gets any reader's. The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY.",
+        "operationId": "postApiV1WritingRules",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WritingRulesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingRulesResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
+      }
     }
   },
   "components": {
@@ -12779,6 +14029,9 @@
                 "type": "null"
               }
             ]
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "suggestion": {
             "anyOf": [
@@ -15154,6 +16407,25 @@
         ],
         "type": "object"
       },
+      "AskRewriteAnswer": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ask_id",
+          "started",
+          "rewrite"
+        ],
+        "type": "object"
+      },
       "AskSnooze": {
         "properties": {
           "snoozed_until": {
@@ -15396,6 +16668,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -16688,6 +17963,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -17014,6 +18292,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -17183,6 +18464,9 @@
                 "type": "null"
               }
             ]
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "suggestion": {
             "anyOf": [
@@ -18280,6 +19564,214 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "DefineInput": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          },
+          "words": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "words"
+        ],
+        "type": "object"
+      },
+      "Definition": {
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/DefinitionAgent"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerCall"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/DefinitionMeaning"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "person": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "words": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "person",
+          "ask_id",
+          "artifact_id",
+          "version",
+          "words",
+          "inputs",
+          "definitions",
+          "agent",
+          "calls",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "DefinitionAgent": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "DefinitionAnswerRead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "DefinitionMeaning": {
+        "properties": {
+          "links": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "words",
+          "meaning",
+          "links"
+        ],
+        "type": "object"
+      },
+      "DefinitionsPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Definition"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
         "type": "object"
       },
       "DeliveryComponent": {
@@ -20032,6 +21524,21 @@
         ],
         "type": "object"
       },
+      "DroppedFinding": {
+        "properties": {
+          "quote": {
+            "type": "string"
+          },
+          "rule_set": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_set",
+          "quote"
+        ],
+        "type": "object"
+      },
       "DuplicateCandidate": {
         "properties": {
           "href": {
@@ -21043,6 +22550,255 @@
         ],
         "type": "object"
       },
+      "HeldDeferred": {
+        "properties": {
+          "held": {
+            "$ref": "#/components/schemas/HeldState"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "held"
+        ],
+        "type": "object"
+      },
+      "HeldEditInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/HeldOption"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "question": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "spec": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "HeldOption": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "HeldRead": {
+        "properties": {
+          "deadline": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewFinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "not_applied": {
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/TextWording"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "posted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reader": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "rewrite": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextWording"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "route": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "waits_on": {
+            "type": "string"
+          },
+          "wording": {
+            "$ref": "#/components/schemas/TextWording"
+          },
+          "writer": {
+            "type": "string"
+          },
+          "written_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "route",
+          "writer",
+          "reader",
+          "wording",
+          "original",
+          "findings",
+          "rewrite",
+          "revision",
+          "deadline",
+          "written_at",
+          "posted_at"
+        ],
+        "type": "object"
+      },
+      "HeldState": {
+        "properties": {
+          "deadline": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "waits_on": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "deadline"
+        ],
+        "type": "object"
+      },
+      "HeldStateInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "posted"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "HeldTextError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "held_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code",
+          "held_id"
+        ],
+        "type": "object"
+      },
       "HoldPersistenceInput": {
         "properties": {
           "duration": {
@@ -21399,6 +23155,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "snoozed_until": {
             "type": [
@@ -21790,6 +23549,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -22520,6 +24282,9 @@
               "string"
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "route": {
             "type": [
               "null",
@@ -22779,6 +24544,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -24043,6 +25811,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "target": {
             "type": [
               "null",
@@ -24128,6 +25899,9 @@
                 "type": "null"
               }
             ]
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "target": {
             "type": [
@@ -25840,6 +27614,55 @@
         ],
         "type": "object"
       },
+      "ReaderWord": {
+        "properties": {
+          "last": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "times": {
+            "type": "integer"
+          },
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "word",
+          "times",
+          "last"
+        ],
+        "type": "object"
+      },
+      "ReaderWordsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderWord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "RebuildArtifactInput": {
         "properties": {
           "markdown": {
@@ -26609,6 +28432,157 @@
         },
         "required": [
           "answer"
+        ],
+        "type": "object"
+      },
+      "ReviewFinding": {
+        "properties": {
+          "fix": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "rule_set": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_set",
+          "quote",
+          "why",
+          "fix"
+        ],
+        "type": "object"
+      },
+      "ReviewerCall": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "deployment": {
+            "type": "string"
+          },
+          "fault": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "served": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "purpose",
+          "deployment",
+          "served",
+          "input_tokens",
+          "output_tokens",
+          "cache_write_tokens",
+          "cache_read_tokens"
+        ],
+        "type": "object"
+      },
+      "ReviewerDraftAnswer": {
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerCall"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "dropped": {
+            "items": {
+              "$ref": "#/components/schemas/DroppedFinding"
+            },
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewFinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "not_applied": {
+            "type": "string"
+          },
+          "reader": {
+            "type": "string"
+          },
+          "rewrite": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextWording"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reader",
+          "findings",
+          "rewrite",
+          "calls"
+        ],
+        "type": "object"
+      },
+      "ReviewerDraftInput": {
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/HeldOption"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reader": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
         ],
         "type": "object"
       },
@@ -27849,6 +29823,56 @@
         ],
         "type": "object"
       },
+      "TextRewrite": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/TextWording"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "by",
+          "at",
+          "original"
+        ],
+        "type": "object"
+      },
+      "TextWording": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOption"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
       "ThreadReadInput": {
         "properties": {
           "read_through": {
@@ -28600,6 +30624,277 @@
           "id",
           "snippet",
           "href"
+        ],
+        "type": "object"
+      },
+      "WritingCheckCounts": {
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckDay"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "first": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "last": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "first",
+          "last",
+          "days",
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "WritingCheckDay": {
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "outcomes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "routes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "total",
+          "outcomes",
+          "routes"
+        ],
+        "type": "object"
+      },
+      "WritingCheckDetector": {
+        "properties": {
+          "on": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "on",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WritingCheckRow": {
+        "properties": {
+          "asks_answered": {
+            "type": "integer"
+          },
+          "asks_replied_before_answer": {
+            "type": "integer"
+          },
+          "day": {
+            "type": "string"
+          },
+          "define_uses": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "posted_over_finding": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "reviewer_held": {
+            "type": "integer"
+          },
+          "reviewer_passed": {
+            "type": "integer"
+          },
+          "reviewer_posted_unreviewed": {
+            "type": "integer"
+          },
+          "reviewer_rewrote": {
+            "type": "integer"
+          },
+          "rewrite_uses": {
+            "type": "integer"
+          },
+          "texts": {
+            "type": "integer"
+          },
+          "texts_unread": {
+            "type": "integer"
+          },
+          "word_questions": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "project",
+          "person",
+          "word_questions",
+          "texts",
+          "texts_unread",
+          "asks_answered",
+          "asks_replied_before_answer",
+          "rewrite_uses",
+          "define_uses",
+          "reviewer_held",
+          "reviewer_rewrote",
+          "reviewer_passed",
+          "reviewer_posted_unreviewed",
+          "posted_over_finding"
+        ],
+        "type": "object"
+      },
+      "WritingCheckRuleLeftOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WritingCheckState": {
+        "properties": {
+          "bundle_model_id": {
+            "type": "string"
+          },
+          "detector": {
+            "$ref": "#/components/schemas/WritingCheckDetector"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "rules_left_out": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckRuleLeftOut"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "rules",
+          "rules_left_out",
+          "detector",
+          "bundle_model_id"
+        ],
+        "type": "object"
+      },
+      "WritingRulesInput": {
+        "properties": {
+          "body": {
+            "additionalProperties": {},
+            "description": "the JSON body of the write that route takes, as the write would send it",
+            "type": "object"
+          },
+          "route": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "route",
+          "body"
+        ],
+        "type": "object"
+      },
+      "WritingRulesResponse": {
+        "properties": {
+          "reader": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reader",
+          "text"
+        ],
+        "type": "object"
+      },
+      "WritingRulesSettings": {
+        "properties": {
+          "extra": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "refusal": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refusal",
+          "extra"
         ],
         "type": "object"
       }

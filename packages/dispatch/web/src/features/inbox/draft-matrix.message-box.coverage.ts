@@ -51,7 +51,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    'MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "message", ...(target === null || target === undefined ? {} : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }), }}',
+    'MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "message", ...(target === null || target === undefined ? {} : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target }, }), }}',
     cells(`${HOST} · Escape in the field`),
     { row: `${HOST} · Cancel reply · cannot make: a standing box draws no Cancel reply` },
     { reason: REASONS[2] },

@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command gains `dispatch held`, `dispatch held-edit` and
+  `dispatch held-post`, which read, change and post a text that Dispatch's reviewer holds. The
+  reviewer's findings reach the session as a turn of their own that names the last two.

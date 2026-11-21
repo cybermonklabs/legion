@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { MessageWithTrees } from "./dispatch-api.generated";
+import { TextRewriteSchema } from "./dispatch-api-asks";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import {
   DELIVERY_ATTEMPT_STATES,
@@ -8,6 +9,7 @@ import {
 } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
+  personTypedFields,
   type ReplyBlock,
   ReplyBlockSchema,
   referenceChangesFields,
@@ -83,6 +85,10 @@ export const messageFields = {
   /** The block of the message this reply answers (`in_reply_to_block`); null on every other
    *  message, and absent from a Dispatch older than the field. */
   reply_block: WrittenReplyBlockSchema.nullable().optional(),
+  /** The reviewer's rewrite of the message where it held the message and posted it rewritten
+   *  (`TextRewriteSchema`): `original` holds the body as the agent wrote it. Present on message
+   *  reads alone, absent on every event payload. */
+  rewrite: TextRewriteSchema.optional(),
 };
 
 export const MessageSchema = z.strictObject(messageFields).readonly();
@@ -112,6 +118,7 @@ export const messageEventPayloadFields = {
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
+  ...personTypedFields,
 };
 
 export const WrittenMessageEventPayloadSchema = z

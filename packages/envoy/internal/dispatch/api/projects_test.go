@@ -104,12 +104,16 @@ func TestEveryProjectNamesAPerson(t *testing.T) {
 	// The person a credential acts for is held to the check a named login is: a broker-issued
 	// token's owner comes from the broker rather than from the people table, so a derived login
 	// nobody has signed in with is refused, never stored as the default. A personal token owned
-	// by somebody who has never signed in stands in for it here.
+	// by somebody who has never signed in stands in for it here. That refusal names nobody, since
+	// the login is the credential's and the route's error path carries the refusal.
 	unseen := agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": "UNSEEN", "name": "Acts for mallory", "actor": sessionActor(),
 	}, personalTokenOwnedBy(t, database, "mallory"))
 	if unseen.Code != http.StatusBadRequest || !strings.Contains(unseen.Body.String(), `"code":"ASSIGNEE_NOT_ALLOWED"`) {
 		t.Fatalf("a session acting for a person nobody has signed in as: status=%d body=%s, want 400 ASSIGNEE_NOT_ALLOWED", unseen.Code, unseen.Body.String())
+	}
+	if strings.Contains(unseen.Body.String(), "mallory") {
+		t.Fatalf("the refusal of the person the credential acts for names them: %s", unseen.Body.String())
 	}
 
 	var refused int

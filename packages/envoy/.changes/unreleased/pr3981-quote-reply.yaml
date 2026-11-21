@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  **Quote reply** puts the words a person selected into the box that answers them. Select words of
+  an ask, a comment, a reply or a message, then press **Quote reply** on the selection bar, or `q`.
+  The words go into that thread's box as a Markdown quote, with the cursor on the line under it.
+  It works in the Inbox, on the Conversation tab, in a document's margin and on the Agents page,
+  and on a phone.
+  The checks of a box read only the person's own lines, never the quoted ones: a box that holds
+  only a quote holds no answer, and a quoted question does not make the answer read as a question.

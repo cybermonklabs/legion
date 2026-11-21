@@ -218,6 +218,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.writingCheck(r, actor, input)
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -361,6 +362,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	s.writingCheck(r, actor, input)
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
@@ -439,6 +441,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "note", length, contracts.DispatchEventBodyMax)
 		return
 	}
+	s.writingCheck(r, actor, input)
 	// The resolve route refuses a reason opening with docs.SettlementRetractionReason because
 	// such a reason marks a retraction settlement itself wrote, which returning the block undoes
 	// (docs.settlementRetraction, which reads that prefix on a retraction alone). A decline is

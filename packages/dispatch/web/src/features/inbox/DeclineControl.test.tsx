@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -165,13 +165,47 @@ function backdrop(container: HTMLElement): Element {
   return found;
 }
 
-test("an open question offers Decline to answer, whoever holds the turn", async () => {
+/** The card's Decline to answer, from its split button's menu, which opens the dialog: the card
+ *  draws no button of its own for it (INFRA-3231's R7). */
+async function chooseDecline(user: UserEvent, container: HTMLElement): Promise<void> {
+  await user.click(await within(container).findByRole("button", { name: "More actions" }));
+  await user.click(
+    await within(document.body).findByRole("menuitem", { name: "Decline to answer" })
+  );
+}
+
+/** The names of the items the card's menu lists, in their order. */
+async function menuItems(user: UserEvent, container: HTMLElement): Promise<string[]> {
+  await user.click(await within(container).findByRole("button", { name: "More actions" }));
+  const items = await within(document.body).findAllByRole("menuitem");
+  return items.map((item) => item.firstElementChild?.textContent ?? "");
+}
+
+/** Whether the card offers Decline to answer anywhere: a button of its own, as `main`'s card
+ *  drew, or the item its split button's menu lists, which is where the card offers it now
+ *  (INFRA-3231's R7). A card that draws no split button, as a closed question's does, has no menu
+ *  to list it. It opens the menu to read it (`menuItems`), and closes it again. */
+async function offersDecline(user: UserEvent, container: HTMLElement): Promise<boolean> {
+  if (within(container).queryByRole("button", { name: "Decline to answer" }) !== null) return true;
+  const more = within(container).queryByRole("button", { name: "More actions" });
+  if (more === null) return false;
+  const offered = (await menuItems(user, container)).includes("Decline to answer");
+  await user.click(more);
+  await waitFor(() =>
+    expect(within(document.body).queryByRole("menu", { name: "More actions" })).toBeNull()
+  );
+  return offered;
+}
+
+test("an open question offers Decline to answer in its menu, whoever holds the turn, and no button of its own", async () => {
   for (const turn of ["human", "agent"]) {
+    const user = userEvent.setup();
     const ask = openAsk({ waiting_on: turn });
     const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
     const card = within(view.container);
     try {
-      expect(await card.findByRole("button", { name: "Decline to answer" })).toBeTruthy();
+      expect(await menuItems(user, view.container)).toContain("Decline to answer");
+      expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
     } finally {
       view.unmount();
     }
@@ -184,25 +218,28 @@ test("an approval request offers no decline, which the server refuses", async ()
   const card = within(view.container);
   try {
     await card.findByRole("radio", { name: "Approve" });
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(await menuItems(user, view.container)).not.toContain("Decline to answer");
   } finally {
     view.unmount();
   }
 });
 
 test("an answered ask offers no decline", async () => {
+  const user = userEvent.setup();
   const ask = answeredAsk();
   const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
   const card = within(view.container);
   try {
     await waitFor(() => expect(card.getByText(/Answered by/)).toBeTruthy());
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    expect(await offersDecline(user, view.container)).toBe(false);
   } finally {
     view.unmount();
   }
 });
 
 test("a declined ask shows Declined and the person's note, and offers no decline", async () => {
+  const user = userEvent.setup();
   const note = "Ask the release owner instead.";
   const ask = declinedAsk(note);
   const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
@@ -215,7 +252,7 @@ test("a declined ask shows Declined and the person's note, and offers no decline
     await waitFor(() => expect(record.textContent).toContain(note));
     // Dispatch's own words are the asking agent's to read, never the browser's.
     expect(record.textContent).not.toContain("The person chose not to answer");
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    expect(await offersDecline(user, view.container)).toBe(false);
   } finally {
     view.unmount();
   }
@@ -240,7 +277,7 @@ test("a decline sends the person's note and closes the question", async () => {
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByLabelText("Note (optional)"));
     await user.paste(note);
@@ -275,7 +312,7 @@ test("the decline dialog counts what is left to write, and sends no note when em
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     const field = within(dialog).getByLabelText("Note (optional)");
     expect(field).toHaveAttribute("maxlength", String(DISPATCH_EVENT_BODY_MAX));
@@ -318,7 +355,7 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
   );
   const card = within(view.container);
   try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Declining…" })));
@@ -370,14 +407,14 @@ test("a read of the thread asked before a decline answered does not put back the
   const card = within(view.container);
   const badge = () => card.queryByTestId("ask-resolution-badge")?.textContent;
   try {
-    const decline = await card.findByRole("button", { name: "Decline to answer" });
+    await card.findByRole("button", { name: "More actions" });
     let asked = Promise.resolve();
     await act(async () => {
       asked = queryClient.refetchQueries({ queryKey: ["ask-thread", open.id] });
     });
     expect(reads).toHaveLength(1);
 
-    await user.click(decline);
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(badge()).toBe("Declined"));
@@ -390,7 +427,7 @@ test("a read of the thread asked before a decline answered does not put back the
     // The decline's answer gave that read up and asked for the thread again, after the decline.
     await waitFor(() => expect(reads).toHaveLength(2));
     expect(badge()).toBe("Declined");
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    expect(await offersDecline(user, view.container)).toBe(false);
 
     // It answers the ask declined. The decline's own refresh of the thread waited behind it, and
     // asks once it is in: Dispatch still holds the decline then.
@@ -403,7 +440,7 @@ test("a read of the thread asked before a decline answered does not put back the
     });
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(badge()).toBe("Declined");
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
+    expect(await offersDecline(user, view.container)).toBe(false);
   } finally {
     view.unmount();
   }
@@ -451,7 +488,7 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
   try {
     await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
     expect(getInbox).toHaveBeenCalledTimes(1);
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(listed()).toBe("ask-2"));
@@ -527,7 +564,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
   };
   try {
     await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(listed()).toBe("ask-2"));
@@ -593,10 +630,10 @@ test("a decline the reader stopped says it may have been made, not that it faile
   const card = within(view.container);
   try {
     // The who-am-I read settles here, in a wait that moves the held clock inside `act`. The
-    // button below is found at once, and the wait for it ends before the read's answer lands,
-    // which would then update the card outside `act`.
+    // menu's control below is found at once, and the wait for it ends before the read's answer
+    // lands, which would then update the card outside `act`.
     await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("success"));
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    await chooseDecline(user, view.container);
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await stopTheLateWrite(queryClient);

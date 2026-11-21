@@ -37,6 +37,7 @@ import { reachable, routeOf, unreachable } from "./reachability";
 import type {
   ArtifactVersionContent,
   ArtifactVersionText,
+  AskRewriteAnswer,
   AuthenticatedUser,
   CreateArtifactInput,
   DispatchEvent,
@@ -1351,6 +1352,36 @@ export class DispatchApiClient {
     return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
+  /** `POST /api/v1/asks/{id}/rewrites`: rewrite an open question so its reader can answer it
+   *  without the asking agent's conversation (INFRA-3231's R7). It answers at once, with the
+   *  rewrite running (`rewrite.state` `rewriting`), and rewrites in the background: the rewrite
+   *  ends with the ask's quiet `ask.edited`, or with `ask.rewrite_failed` and its reason, both of
+   *  which an open page follows on the live socket. One rewrite of an ask runs at a time, so a
+   *  press while one runs starts none (`started: false`) and is answered with that one. Needs the
+   *  `person` scope; an approval request is refused `409 ASK_KIND_FIXED`, a closed question
+   *  `409 ASK_NOT_OPEN`. The route's one success is its `202`, which `Answer` (a `200` or a
+   *  `201`) does not name, so this write names what it is answered with. */
+  rewriteAsk(id: string, bounds: WriteBounds): Promise<AskRewriteAnswer> {
+    const { method, path } = writeRequest("post", "/api/v1/asks/{id}/rewrites", { id });
+    return this.send<AskRewriteAnswer>({ method, path }, bounds);
+  }
+
+  /** `POST /api/v1/definitions`: what the words a person selected mean where they stand - in an
+   *  ask (`ask_id`, a decision block's included) or in a document of an issue or a project
+   *  (`document`, its id) - read from Dispatch's record and answered at once. Words in an ask
+   *  also put one side question to the session that asked it, whose answer `getDefinition` reads
+   *  once it comes, within 60 s. A definition changes nothing in the record and is kept for the
+   *  caller alone. Needs the `person` scope. */
+  defineWords(input: Body<"/api/v1/definitions", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/definitions", {}, input, bounds);
+  }
+
+  /** `GET /api/v1/definitions/{id}`: one of the caller's own definitions, with the asking
+   *  session's answer once it came (`agent`). */
+  getDefinition(id: string) {
+    return this.read("/api/v1/definitions/{id}", { id });
+  }
+
   getAsk(id: string) {
     return this.read("/api/v1/asks/{id}", { id });
   }
@@ -1580,6 +1611,18 @@ export class DispatchApiClient {
 
   getArtifactText(id: string) {
     return this.read("/api/v1/artifacts/{id}/text", { id });
+  }
+
+  /** An issue document's text with its blocks, by the issue's key and the document's slug: what
+   *  Define reads to name a block it cites (`citationLabel`). */
+  getIssueArtifactTextWithBlocks(key: string, slug: string) {
+    return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key, slug }, { blocks: true });
+  }
+
+  /** A document's text with its blocks, by its id: what Define reads to name a block of an
+   *  issue's spec it cites (`citationLabel`). */
+  getArtifactTextWithBlocks(id: string) {
+    return this.read("/api/v1/artifacts/{id}/text", { id }, { blocks: true });
   }
 
   /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the

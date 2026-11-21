@@ -419,6 +419,75 @@ jobs:
           name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # why: .github/ci-notes/dispatch-browser.md#the-ask-card-job-the-lane-it-runs-on-and-its-budgets
+  # 4 + 5 + 2 min plus 170 s and 120 s = 15 min 50 s -> 16 min.
+  ask-card:
+    if: inputs.lane == 'pull-request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only, as the embedder job restores it and for the same reason.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/,
+        # through Playwright's own Node resolution (the shard job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server for the ask-card lane
+        # why: .github/ci-notes/dispatch-browser.md#why-the-ask-card-jobs-server-build-carries-the-lane-in-its-name
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # Browsers only, no apt: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
+        # says why that list is not needed and what the 4 minutes are.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Pull the ask-card stack's Postgres image
+        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      - name: Read the connections the ask-card stack's Postgres must allow
+        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+      - name: Browser-test the ask card against the stand-in model
+        # 255 s x 1.15 = 293 s -> 5 min.
+        timeout-minutes: 5
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu ask-card-quote
+        working-directory: packages/dispatch
+      # `if: failure()`, as the embedder job's upload is, for the reason it gives. The folder
+      # holds the reviewer's server log too (e2e/reviewer-server.ts writes it there).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-browser-ask-card-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
   # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
   visual:
@@ -506,7 +575,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#what-the-merge-job-reports-and-why-it-is-never-skipped
   merge:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-needs-the-binaries-job
-    needs: [binaries, shard, alone, multiprocess, embedder, visual]
+    needs: [binaries, shard, alone, multiprocess, embedder, ask-card, visual]
     if: ${{ !cancelled() }}
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm

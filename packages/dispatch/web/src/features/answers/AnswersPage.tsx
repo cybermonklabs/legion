@@ -22,7 +22,9 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { useKeymapScope } from "../shell/keymap";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useSelectionBarKeys } from "../threads/quote-reply";
 
 const PAGE_SIZE = 50;
 
@@ -137,6 +139,10 @@ function AnswerRow({
  *  causes, which puts the new answer at the top and marks the old row "Changed since". */
 export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
+  // The selection bar's keys over the card a Change answer opens, which offers Quote reply and
+  // Define on its question (`threads/quote-reply.ts`) wherever the focus is.
+  useKeymapScope("answers");
+  useSelectionBarKeys("answers");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
     getNextPageParam: (last: MyAnswersResponse) =>

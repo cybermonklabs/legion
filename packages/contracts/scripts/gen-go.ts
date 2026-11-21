@@ -5,8 +5,11 @@ import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_ACCEPTS_KEPT_WRITE_HEADER,
+  DISPATCH_GENERATED_TEXT_HEADER,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
@@ -634,6 +637,27 @@ const LiveSocketMaxSubscriptions = ${LIVE_SOCKET_MAX_SUBSCRIPTIONS}
 // dashboard and the agents' client name them once.
 const IdempotencyKeyHeader = ${JSON.stringify(IDEMPOTENCY_KEY_HEADER)}
 const IdempotencyReplayedHeader = ${JSON.stringify(IDEMPOTENCY_REPLAYED_HEADER)}
+
+// GeneratedTextHeader is the request header (1) a plugin puts on a reply holding text it generated
+// rather than text the agent wrote. The server reads it on the two delivery reply routes alone.
+// Generated from DISPATCH_GENERATED_TEXT_HEADER in packages/contracts so the server and the
+// plugins name it once.
+const GeneratedTextHeader = ${JSON.stringify(DISPATCH_GENERATED_TEXT_HEADER)}
+
+// PersonTypedHeader is the request header (1) the dispatch command puts on every write of a
+// command a person typed in a session. The server reads it on every write route: the write posts
+// at once with no review, is recorded exempt_person_typed, and its event carries person_typed.
+// Generated from DISPATCH_PERSON_TYPED_HEADER in packages/contracts so the server and the command
+// name it once.
+const PersonTypedHeader = ${JSON.stringify(DISPATCH_PERSON_TYPED_HEADER)}
+
+// AcceptsKeptWriteHeader is the request header (1) the agents' DispatchClient puts on every write:
+// it reads the 202 {id, held} of a write the server keeps beside a held text. The server keeps a
+// session's write so only where its request carries the header, and answers a session's request
+// without it 409 HELD_TEXT; a person's write at a browser is the route's own, which finds no held
+// text. Generated from DISPATCH_ACCEPTS_KEPT_WRITE_HEADER in packages/contracts so the server and
+// the client name it once.
+const AcceptsKeptWriteHeader = ${JSON.stringify(DISPATCH_ACCEPTS_KEPT_WRITE_HEADER)}
 
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and

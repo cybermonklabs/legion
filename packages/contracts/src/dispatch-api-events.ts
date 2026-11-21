@@ -5,6 +5,7 @@ import type {
   AskEditEventPayload,
   AskEventPayload,
   AskFollowerEventPayload,
+  AskRewriteEventPayload,
 } from "./dispatch-api-asks";
 import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
 import type {
@@ -221,6 +222,27 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "ask.asked_of";
       readonly payload: AskEventPayload;
+    })
+  /** The reviewer's hold of a decision block ended (INFRA-3231's R5): the ask, as it now stands,
+   *  reaches its reader's Inbox and the open-ask counts. It is quiet: no session gets it as a
+   *  card, and an open page refetches its Inbox and counts on it. A rewrite the review applied
+   *  comes first as its own `ask.edited`. */
+  | (DispatchEventBase & {
+      readonly type: "ask.reviewed";
+      readonly payload: AskEventPayload;
+    })
+  /** A person's Rewrite of an ask started (INFRA-3231's R7): the ask's `rewrite` reads
+   *  `rewriting`. Quiet: no session gets it as a card, and an open page follows the rewrite on it.
+   *  The rewrite ends with the ask's quiet `ask.edited`, or with `ask.rewrite_failed`. */
+  | (DispatchEventBase & {
+      readonly type: "ask.rewriting";
+      readonly payload: AskRewriteEventPayload;
+    })
+  /** A person's Rewrite failed or was not applied: the ask stays as it was, and its `rewrite`
+   *  reads `failed` with the reason. Quiet, as `ask.rewriting` is. */
+  | (DispatchEventBase & {
+      readonly type: "ask.rewrite_failed";
+      readonly payload: AskRewriteEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "ask.answered";

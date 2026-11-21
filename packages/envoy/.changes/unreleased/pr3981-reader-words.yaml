@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `GET /api/v1/readers/{login}/words` lists the words one person asked about, the most recent
+  first, each with how many times and when they last asked. It answers one page of them as
+  `{items, total, limit, offset}`: `limit` is 1 to 200, 50 when the request names none, and
+  `total` counts every word. `?before=` (RFC 3339) keeps only the records written before it.
+  Any agent's token may read any person's words, since the reviewer and the written rules use
+  them. A person at a browser reads only their own: another person's are
+  `403 READER_WORDS_FORBIDDEN`.

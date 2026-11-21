@@ -877,6 +877,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	for _, event := range st.published {
 		s.events.Publish(event)
 	}
+	// The reviews of the decision blocks this settlement opened or reworded start now that their
+	// rows, and any hold on them, are committed (AskBlockReviewer).
+	for _, after := range st.reconciliation.afterCommit {
+		after()
+	}
 	st.reconciliation.logCopiedBlocks(room)
 	// A copy of an ask this settlement retracted opens its own ask at its next settlement, which
 	// its pending row (reconcileAskBlocks, owedCopiesOf) also leaves to the resumption should this

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
 
 const (
@@ -45,11 +46,13 @@ type answererConfig struct {
 // resolveAnswerer reads DISPATCH_ANSWERER and the settings of the place it names, and refuses,
 // naming the setting, every shape the answerer could not be built from or would silently ignore:
 // a place other than azure or endpoint; a setting of the group the chosen place does not read;
-// the shared Azure sign-in with neither model service on Azure; and, under each place, a setting
-// that is missing or malformed. embedderPlace is where meaning search embeds, since the embedder
-// and the answerer share that sign-in: a deployment may embed on Bedrock and answer on Azure, and
-// then the answerer is what reads the three. It calls nothing and reads no file, so a model
-// service that is down, or a token file that is not written yet, never refuses boot.
+// the shared Azure sign-in with no reader of it; and, under each place, a setting that is missing
+// or malformed. The shared sign-in has three kinds of reader: the embedder when embedderPlace is
+// azure, the answerer when it is azure, and each model group whose kind is azure
+// (modelGroupsReadSignIn). A deployment may embed on Bedrock and answer on Azure, or run only a
+// model group on Azure, and the three are then read by whichever reads them. It calls nothing and
+// reads no file, so a model service that is down, or a token file that is not written yet, never
+// refuses boot.
 func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, error) {
 	place := strings.TrimSpace(env.get("DISPATCH_ANSWERER"))
 	switch place {
@@ -65,9 +68,9 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 		if set := settingsSet(env, azureChatSettingPrefix); len(set) > 0 {
 			return answererConfig{}, fmt.Errorf("%s set, but %s: the DISPATCH_AZURE_CHAT_* settings are read only with DISPATCH_ANSWERER=azure", strings.Join(set, ", "), chosen)
 		}
-		if embedderPlace != embed.PlaceAzure {
+		if embedderPlace != embed.PlaceAzure && !modelGroupsReadSignIn(env) {
 			if set := readAzureSignIn(env).set; len(set) > 0 {
-				return answererConfig{}, fmt.Errorf("%s set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure: the shared Azure sign-in is read by whichever of them is azure", strings.Join(set, ", "))
+				return answererConfig{}, fmt.Errorf("%s set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure and no model group's kind is azure: the shared Azure sign-in is read by the embedder or the answerer that is azure, and by each azure model group", strings.Join(set, ", "))
 			}
 		}
 	}
@@ -160,9 +163,12 @@ func resolveEndpointAnswerer(env settingValues) (answererConfig, error) {
 // question asked of it is recorded and its stream carries that. It is built from settings
 // resolveAnswerer has already checked, so an error here is a shape that check missed; it calls
 // nothing and reads no token file, so a model service or a sign-in being down fails an answer
-// later, never the boot. The one line it logs names the place and the model that answers, never
-// a credential, as the embedder's does.
-func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
+// later, never the boot. The answerer's calls are charged to its share of its deployment on
+// pacer, the process's one pacer (modelpace), with DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE its
+// ceiling and the deployment's quota where DISPATCH_MODEL_DEPLOYMENT_QUOTAS names none. The one
+// line it logs names the place and the model that answers, never a credential, as the embedder's
+// does.
+func newAnswerer(cfg answererConfig, pacer *modelpace.Pacer) (*going.Answerer, error) {
 	if cfg.Place == "" {
 		slog.Warn("dispatch: no text model configured, so this server cannot answer questions", "setting", "DISPATCH_ANSWERER")
 		return nil, nil
@@ -198,7 +204,11 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 	if err != nil {
 		return nil, err
 	}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client, TokensPerMinute: cfg.TokensPerMinute})
+	share, err := cfg.share()
+	if err != nil {
+		return nil, err
+	}
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client, Pace: pacer.Join(share)})
 	if err != nil {
 		return nil, err
 	}
@@ -206,4 +216,30 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 	// pacing an answerer wraps a client in says nothing about which model answers.
 	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", client.Identity())
 	return answerer, nil
+}
+
+// share is what the answerer asks of its deployment on the pacer, which newAnswerer joins the
+// pacer with: the deployment as the pacer keys it (pacedDeployment), and
+// DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE as the ceiling on its share and as the quota it states
+// for that deployment. The endpoint form names no quota, so its share states none. The boot
+// weighs this same share against the least a call of a model group on the answerer's deployment
+// is charged (refuseQuotaNoCallFits).
+func (cfg answererConfig) share() (modelpace.Share, error) {
+	deployment, err := pacedDeployment(cfg.Place, cfg.Endpoint, cfg.Model)
+	if err != nil {
+		return modelpace.Share{}, fmt.Errorf("the answerer's endpoint %q is not a URL", cfg.Endpoint)
+	}
+	return modelpace.Share{Deployment: deployment, TokensPerMinute: cfg.TokensPerMinute, StatesQuota: true}, nil
+}
+
+// pacedDeployment is a caller's deployment as the pacer keys it: the caller's kind, the host of
+// its endpoint and the deployment's name or the model's id. The answerer and every model group
+// build their key here (answererConfig.share, modelGroup.share), so two callers share one
+// limiter, and the quota one of them states, exactly where their keys are equal.
+func pacedDeployment(kind, endpoint, name string) (modelpace.Deployment, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return modelpace.Deployment{}, err
+	}
+	return modelpace.Deployment{Kind: kind, Host: parsed.Host, Name: name}, nil
 }

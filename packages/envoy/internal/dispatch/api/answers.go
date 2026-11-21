@@ -3,49 +3,25 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-const (
-	myAnswersDefaultLimit = 50
-	myAnswersMaxLimit     = 200
-)
-
-// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers always returns.
-func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
-	query := r.URL.Query()
-	limit = myAnswersDefaultLimit
-	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
-		if !valid {
-			return 0, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
-		}
-		limit = value
-	}
-	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
-		if !valid {
-			return 0, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
-		}
-		offset = value
-	}
-	return limit, offset, nil
-}
-
 // listMyAnswers returns the caller's real answer transitions (answerEventsQuery) and their replies
-// on asks, newest first.
+// on asks, newest first: the complete offset page parseListPage reads.
 func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	limit, offset, err := parseMyAnswersPage(r)
+	page, err := parseListPage(r.URL.Query())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	limit, offset := page.limit, page.offset
 
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		with answered as (

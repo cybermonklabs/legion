@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `isShellCommandReport` also reads a `!command` report that opens with the person's line in a
+  code fence, longer than any run of backticks the line holds, as well as one that opens with the
+  bare line, which is how the plugin writes it.

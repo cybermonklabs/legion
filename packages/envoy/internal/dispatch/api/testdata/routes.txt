@@ -40,6 +40,7 @@ GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
 POST /api/v1/asks/{id}/resolve any
+POST /api/v1/asks/{id}/rewrites any
 GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
@@ -63,6 +64,8 @@ POST /api/v1/credential-requests/{id}/deny any
 POST /api/v1/credential-requests/{id}/dismiss any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
+POST /api/v1/definitions any
+GET /api/v1/definitions/{id} any
 GET /api/v1/delivery/measures any
 GET /api/v1/delivery/pipeline any
 GET /api/v1/delivery/runs/{id} any
@@ -77,6 +80,9 @@ GET /api/v1/going/catalogue any
 POST /api/v1/going/requests any
 GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
+GET /api/v1/held/{id} any
+PATCH /api/v1/held/{id} any
+PUT /api/v1/held/{id}/state any
 GET /api/v1/inbox any
 GET /api/v1/issues any
 POST /api/v1/issues any
@@ -134,6 +140,7 @@ PUT /api/v1/me/agents/{session_id}/state any
 GET /api/v1/me/answers any
 DELETE /api/v1/me/asks/{id}/snooze any
 PUT /api/v1/me/asks/{id}/snooze any
+GET /api/v1/me/definitions any
 GET /api/v1/me/documents/{id}/read any
 PUT /api/v1/me/documents/{id}/read any
 POST /api/v1/me/inbox/dismiss any
@@ -182,11 +189,13 @@ PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/plans any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/readers/{login}/words any
 GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
 POST /api/v1/results/{id}/retract any
+POST /api/v1/reviewer-drafts any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any
@@ -199,7 +208,11 @@ GET /api/v1/settings/project-default-assignees any
 GET /api/v1/settings/repo-projects any
 DELETE /api/v1/settings/repo-projects/{owner}/{repo} any
 PUT /api/v1/settings/repo-projects/{owner}/{repo} any
+GET /api/v1/settings/writing-rules any
 GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any
 GET /api/v1/whoami any
+GET /api/v1/writing-check any
+GET /api/v1/writing-check/counts any
+POST /api/v1/writing-rules any

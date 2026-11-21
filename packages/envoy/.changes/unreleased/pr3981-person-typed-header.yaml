@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  A write that carries the request header `Dispatch-Person-Typed: 1` is a command a person typed in
+  an agent session, such as a `!dispatch …` line sent from the live view. Dispatch reads the header
+  on every write route.
+  Such a write posts at once. The reviewer neither holds nor reviews it, whatever its settings say,
+  and the write is recorded `exempt_person_typed` with its session.
+  Each event the write appends carries `person_typed: true`, so the records job counts its text as
+  the person's.

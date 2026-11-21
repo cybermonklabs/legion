@@ -33,11 +33,12 @@ const followAsk = `
 `
 
 // Follow records that sessionID follows askID and reports whether that is new;
-// following twice changes nothing.
+// following twice changes nothing. Its error names the ask and not the session, which a handler
+// that logs the error has from its request.
 func Follow(ctx context.Context, db Execer, askID, sessionID string) (bool, error) {
 	tag, err := db.Exec(ctx, followAsk, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
+		return false, fmt.Errorf("follow ask %q: %w", askID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
@@ -52,37 +53,39 @@ func FollowAuthor(ctx context.Context, db Execer, askID string, author model.Act
 	return err
 }
 
-// QueueFollowAuthor is FollowAuthor queued on a write phase's batch.
+// QueueFollowAuthor is FollowAuthor queued on a write phase's batch. Its failure names the ask and
+// not the session, as Follow's does.
 func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor) {
 	if author.Kind != "session" || author.ID == "" {
 		return
 	}
-	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, author.ID), followAsk, askID, author.ID)
+	b.Queue(fmt.Sprintf("follow ask %q as its author", askID), followAsk, askID, author.ID)
 }
 
 // Follows reports whether sessionID already follows askID: the read a route that queues its follow
 // (QueueFollowAuthor) makes in its read phase, since no statement's result is read before the
-// write phase sends the next.
+// write phase sends the next. Its error names the ask and not the session, as Follow's does.
 func Follows(ctx context.Context, db Queryer, askID, sessionID string) (bool, error) {
 	rows, err := db.Query(ctx, `select 1 from ask_followers where ask_id = $1 and session_id = $2`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether a session follows ask %q: %w", askID, err)
 	}
 	defer rows.Close()
 	follows := rows.Next()
 	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether a session follows ask %q: %w", askID, err)
 	}
 	return follows, nil
 }
 
-// Unfollow removes sessionID from askID's followers and reports whether a row went.
+// Unfollow removes sessionID from askID's followers and reports whether a row went. Its error
+// names the ask and not the session, as Follow's does.
 func Unfollow(ctx context.Context, db Execer, askID, sessionID string) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		delete from ask_followers where ask_id = $1 and session_id = $2
 	`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("unfollow ask %q as %q: %w", askID, sessionID, err)
+		return false, fmt.Errorf("unfollow ask %q: %w", askID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

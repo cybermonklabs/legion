@@ -21,6 +21,7 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useSelectionBarKeys } from "../threads/quote-reply";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
@@ -106,6 +107,9 @@ export function DocumentPage(): ReactNode {
     }
   }, []);
   const artifact = useProjectArtifact(documentRoute);
+  // Quote reply and Define on words of a comment or an ask in the document's margin
+  // (`threads/quote-reply.ts`).
+  useSelectionBarKeys("document");
   const query = new URLSearchParams(location.search);
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
   const project = documentRoute?.project;

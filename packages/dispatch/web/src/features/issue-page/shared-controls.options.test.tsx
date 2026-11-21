@@ -94,10 +94,13 @@ import {
   CLAIMED_AT,
   classOf,
   DECISIONS_ID,
+  definePopover,
+  definitionOf,
   doc,
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  HandOnPickerOpen,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -107,6 +110,7 @@ import {
   openAsk,
   priorities,
   proofDocument,
+  rewriteBadges,
   SPEC_ID,
   STALLED_SESSION,
   type Surface,
@@ -184,6 +188,7 @@ interface Stubs {
   readonly getArtifact: Mock<typeof api.getArtifact>;
   readonly getArtifactBlocks: Mock<typeof api.getArtifactBlocks>;
   readonly getArtifactText: Mock<typeof api.getArtifactText>;
+  readonly getArtifactTextWithBlocks: Mock<typeof api.getArtifactTextWithBlocks>;
   readonly getDocumentRead: Mock<typeof api.getDocumentRead>;
   readonly getIssueDecisions: Mock<typeof api.getIssueDecisions>;
   readonly getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
@@ -217,6 +222,14 @@ beforeEach(() => {
       },
     ]),
     getArtifactText: spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "The live document",
+      token: "sha256:spec-text",
+      version: null,
+    }),
+    // An open decision's card reads its block's document for the question's marks
+    // (`useBlockQuestion`); the spec holds no such block, so the card shows the ask's own question.
+    getArtifactTextWithBlocks: spyOn(api, "getArtifactTextWithBlocks").mockResolvedValue({
+      blocks: [],
       markdown: "The live document",
       token: "sha256:spec-text",
       version: null,
@@ -1923,7 +1936,8 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
 // At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
 // its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
 // control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
+// class. The exception is what INFRA-3231 changed or added, which each such entry's comment
+// names: there the string is the class it draws at its defaults now, outside `NoTooltips`.
 test("the default shapes keep main's class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
@@ -2187,54 +2201,50 @@ test("the default shapes keep main's class strings", async () => {
     "ProofDocument rebuild failure": "text-rose-700 dark:text-rose-400",
     "ProofDocument load failure": "text-rose-700 dark:text-rose-400",
 
+    // The ask card as INFRA-3231 draws it at its defaults (its R7), not as `main` does: no urgency
+    // label, one line naming who asked above the question, the split button's action and its
+    // menu's Ask back in place of Answer and Ask back, and the disclosure of a compact card's own
+    // words.
     "AskCard card":
-      "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
-    "AskCard urgency notch":
-      "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
+      "relative rounded-xl border-l-4 shadow-sm px-4 pt-4 pb-4 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard question":
-      "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
+      "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100 [&_p]:my-0 [&_p+p]:mt-2 [&_p:not(:first-child)]:text-sm [&_p:not(:first-child)]:leading-6 [&_p:not(:first-child)]:font-normal [&_p:not(:first-child)]:text-slate-700 dark:[&_p:not(:first-child)]:text-slate-300",
     "AskCard asker line":
-      "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
-    "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
-    "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+      "mb-1.5 flex items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
+    // features/inbox/AskCard.tsx: the group of the turn, who handed the question on, and the
+    // asker.
+    "AskCard turn and asker": "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap",
+    // features/inbox/AskCard.tsx: the turn an agent holds.
+    "AskCard turn, an agent's": "min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
     // `AGENT_SPAN_CLASS` (features/refs/AgentName.tsx).
     "AskCard asker's name":
       "min-w-0 [overflow-wrap:anywhere] flex min-w-0 items-center whitespace-pre",
-    "AskCard hand-on line":
-      "mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500 dark:text-slate-400",
-    "AskCard hand-on badge":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the span that says who handed the question on, which
-    // has no class.
-    "AskCard handed on": null,
+    // features/inbox/AskCard.tsx: the span of the asker's line that says who handed the question
+    // on.
+    "AskCard handed on": "shrink-0",
     "AskCard answer label": "sr-only",
     "AskCard answer box":
-      "block w-full rounded-lg px-3 py-2 font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+      "block w-full rounded-lg border px-3 py-2 text-base font-normal outline-none sm:text-sm border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+    // features/inbox/AskSplitButton.tsx: the split button's action while nothing is picked, and
+    // the Ask back item of the menu its chevron opens.
     "AskCard Answer":
-      "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "min-h-[42px] rounded-l-[7px] pr-3.5 pl-4 text-sm font-semibold disabled:cursor-not-allowed disabled:text-slate-400 dark:disabled:text-slate-500",
     "AskCard Ask back":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "group flex min-h-11 w-full items-center justify-between gap-6 rounded-md px-2.5 text-left text-sm outline-none sm:min-h-9 text-slate-700 dark:text-slate-300 not-refused:hover:bg-slate-100 focus-visible:bg-slate-100 dark:not-refused:hover:bg-slate-800 dark:focus-visible:bg-slate-800 refused:cursor-default refused:text-slate-400 dark:refused:text-slate-600",
     "AskCard Ask back instead":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
     "AskCard Answer with it anyway":
       "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
     "AskCard compact card":
-      "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
-    "AskCard compact urgency notch":
-      "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300",
-    "AskCard approval requested":
-      "text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400",
+      "relative rounded-xl border-l-4 shadow-sm px-3 pt-3 pb-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
     "AskCard approval document":
-      "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
+      "mb-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+    // features/inbox/AskCard.tsx: a compact card's Add a note.
+    "AskCard own words":
+      "min-h-11 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
@@ -2255,6 +2265,38 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard question changed": "mt-3 text-sm font-medium text-amber-800 dark:text-amber-300",
     "AskCard Cancel, changing an answer":
       "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+    // The ask card's children a press draws, which `main` does not have, as each draws today:
+    // features/inbox/RewriteBadge.tsx's pill in each state, and the button around a pressable
+    // one; features/inbox/AskHandOnPicker.tsx's panel, box and people; and
+    // features/inbox/DefinePopover.tsx's popover, meaning, link and the asking agent's answer.
+    "RewriteBadge Rewriting":
+      "inline-flex shrink-0 items-center rounded-full border px-2 py-px text-xs leading-4 font-medium whitespace-nowrap animate-pulse border-transparent bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    "RewriteBadge Rewritten":
+      "inline-flex shrink-0 items-center rounded-full border px-2 py-px text-xs leading-4 font-medium whitespace-nowrap group-focus-visible:ring-2 group-focus-visible:ring-sky-600 dark:group-focus-visible:ring-sky-400 border-sky-200 dark:border-sky-800 bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900",
+    "RewriteBadge Original":
+      "inline-flex shrink-0 items-center rounded-full border px-2 py-px text-xs leading-4 font-medium whitespace-nowrap group-focus-visible:ring-2 group-focus-visible:ring-sky-600 dark:group-focus-visible:ring-sky-400 border border-sky-300 text-sky-800 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950",
+    "RewriteBadge Rewrite failed":
+      "inline-flex shrink-0 items-center rounded-full border px-2 py-px text-xs leading-4 font-medium whitespace-nowrap group-focus-visible:ring-2 group-focus-visible:ring-sky-600 dark:group-focus-visible:ring-sky-400 border-transparent bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 hover:bg-rose-200 dark:hover:bg-rose-900",
+    "RewriteBadge button": "group inline-flex shrink-0 items-center justify-center outline-none",
+    "AskHandOnPicker panel":
+      "z-50 w-64 rounded-lg border p-1 shadow-lg outline-none border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800",
+    "AskHandOnPicker box":
+      "mb-1 block min-h-9 w-full rounded-md border px-2.5 text-sm outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+    "AskHandOnPicker person":
+      "flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-2.5 text-left text-sm outline-none sm:min-h-9 text-slate-700 dark:text-slate-300 not-refused:hover:bg-slate-100 focus-visible:bg-slate-100 dark:not-refused:hover:bg-slate-800 dark:focus-visible:bg-slate-800",
+    "AskHandOnPicker login": "min-w-0 truncate",
+    "AskHandOnPicker assignee": "text-slate-500 dark:text-slate-400",
+    "AskHandOnPicker asked of now": "font-semibold text-sky-700 dark:text-sky-400",
+    "DefinePopover popover":
+      "fixed z-50 rounded-xl border p-3 shadow-lg border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800",
+    "DefinePopover meaning": "text-[13px] leading-5 text-slate-700 dark:text-slate-300",
+    "DefinePopover link":
+      "mt-1.5 mr-3 inline-block text-xs font-medium text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+    "DefinePopover agent": "mt-2.5 border-t pt-2.5 border-slate-200 dark:border-slate-800",
+    "DefinePopover agent's name":
+      "flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400",
+    "DefinePopover agent's dot":
+      "size-1.5 shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400",
   };
 
   const read: Record<string, string | null> = {};
@@ -3082,8 +3124,10 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unloaded);
   }
 
-  // The card's own elements: a blocking question in full, who handed it on, its answer box and
-  // its actions, and the actions a question-shaped answer offers.
+  // The card's own elements: a blocking question in full, who handed it on, its answer box, its
+  // split button and the Ask back of the menu its chevron opens, and the actions a
+  // question-shaped answer offers. The card draws no urgency label, names no turn that is the
+  // reader's own, and hands the question on from its menu, with no picker of its own on the card.
   const question = openAsk({ asked_of_at: "2026-10-09T00:00:00Z", asked_of_by: "bob@example.com" });
   const questionCard = draw(
     <AskCard
@@ -3098,27 +3142,22 @@ test("the default shapes keep main's class strings", async () => {
     const card = within(questionCard.container);
     const article = card.getByRole("article");
     classAt("AskCard card", article);
-    classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
     classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
-    const turn = card.getByTestId("turn-ask-1");
-    classAt("AskCard turn", turn);
-    classAt("AskCard asker line", turn.parentElement?.parentElement);
-    classAt("AskCard turn and asker", turn.parentElement);
     const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
+    // The asker's group of the line, which holds the turn where the card names one.
+    const askerGroup = asker.closest("[data-agent-name]")?.parentElement?.parentElement;
+    classAt("AskCard asker line", askerGroup?.parentElement);
+    classAt("AskCard turn and asker", askerGroup);
     classAt("AskCard asker", asker);
     classAt("AskCard asker's name", asker.closest("[data-agent-name]"));
-    const handOn = card.getByRole("combobox", { name: "Hand this question to" });
-    classAt("AskCard hand-on line", handOn.parentElement?.parentElement);
-    classAt(
-      "AskCard hand-on badge",
-      handOn.parentElement?.querySelector("span[aria-hidden='true']")
-    );
     classAt("AskCard handed on", card.getByText(/^handed on by bob@example\.com/));
     const answerBox = card.getByRole("textbox", { name: "Your answer" });
     classAt("AskCard answer label", answerBox.previousElementSibling);
     classAt("AskCard answer box", answerBox);
     classAt("AskCard Answer", card.getByRole("button", { name: "Answer" }));
-    classAt("AskCard Ask back", card.getByRole("button", { name: "Ask back" }));
+    await user.click(card.getByRole("button", { name: "More actions" }));
+    classAt("AskCard Ask back", within(document.body).getByRole("menuitem", { name: "Ask back" }));
+    await user.keyboard("{Escape}");
     await user.type(answerBox, "Which one?");
     await user.click(card.getByRole("button", { name: "Answer" }));
     classAt(
@@ -3191,8 +3230,9 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unsentReply);
   }
 
-  // A compact approval request: its label, its document, the disclosure of the reader's own
-  // words, and the reason Request changes asks for.
+  // A compact approval request: its document, the disclosure of the reader's own words, and the
+  // reason Request changes asks for. The card draws no urgency label, and no label that it asks
+  // for an approval, which the question under the document's link begins with.
   const approval = openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -3222,16 +3262,8 @@ test("the default shapes keep main's class strings", async () => {
     const card = within(approvalCard.container);
     const article = card.getByRole("article");
     classAt("AskCard compact card", article);
-    classAt(
-      "AskCard compact urgency notch",
-      article.querySelector(":scope > span[aria-hidden='true']")
-    );
-    classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
-    classAt(
-      "AskCard own words",
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    classAt("AskCard own words", card.getByRole("button", { name: "Add a note" }));
     await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
@@ -3299,6 +3331,76 @@ test("the default shapes keep main's class strings", async () => {
     );
   } finally {
     undraw(otherCards);
+  }
+
+  // The ask card's children a press draws: its rewrite's badge in each state, its hand-on
+  // picker, open under its anchor, and Define, with a meaning, its link and the asking agent's
+  // answer. The picker and Define are drawn in the page's body.
+  const badges = draw(rewriteBadges(), "outside");
+  try {
+    const scope = within(badges.container);
+    classAt("RewriteBadge Rewriting", scope.getByRole("status"));
+    classAt("RewriteBadge Rewritten", scope.getByText("Rewritten"));
+    classAt("RewriteBadge Original", scope.getByText("Original"));
+    classAt("RewriteBadge Rewrite failed", scope.getByText("Rewrite failed"));
+    classAt("RewriteBadge button", scope.getByRole("button", { name: "Rewritten" }));
+  } finally {
+    undraw(badges);
+  }
+
+  const picker = draw(
+    <HandOnPickerOpen assignee="bob@example.com" waitingOn="alice@example.com" />,
+    "outside"
+  );
+  try {
+    await settleReads();
+    const scope = within(picker.baseElement);
+    classAt("AskHandOnPicker panel", scope.getByRole("dialog", { name: "Hand this question to" }));
+    classAt("AskHandOnPicker box", scope.getByRole("textbox", { name: "Hand this question to" }));
+    const assignee = scope.getByRole("button", { name: /^bob@example\.com/ });
+    classAt("AskHandOnPicker person", assignee);
+    classAt("AskHandOnPicker login", assignee.firstElementChild);
+    classAt("AskHandOnPicker assignee", scope.getByText("· assignee"));
+    classAt("AskHandOnPicker asked of now", scope.getByRole("img", { name: "Asked of now" }));
+  } finally {
+    undraw(picker);
+  }
+
+  const defineWords = spyOn(api, "defineWords").mockImplementation(async () =>
+    definitionOf("release path", {
+      agent: {
+        answer: "The path that ships on Thursday.",
+        session: LIVE_SESSION,
+        state: "answered",
+      },
+      definitions: [
+        {
+          links: ["https://example.com/notes"],
+          meaning: "The way a change reaches production.",
+          words: "release path",
+        },
+      ],
+    })
+  );
+  const defined = draw(definePopover("release path"), "outside");
+  try {
+    await settleReads();
+    const popover = within(defined.baseElement).getByRole("dialog", {
+      name: "What “release path” means",
+    });
+    classAt("DefinePopover popover", popover);
+    classAt(
+      "DefinePopover meaning",
+      within(popover).getByText("The way a change reaches production.")
+    );
+    classAt("DefinePopover link", within(popover).getByRole("link", { name: /example\.com/ }));
+    const agent = popover.querySelector("[data-define-agent]");
+    classAt("DefinePopover agent", agent);
+    classAt("DefinePopover agent's name", agent?.firstElementChild);
+    classAt("DefinePopover agent's dot", agent?.firstElementChild?.firstElementChild);
+  } finally {
+    undraw(defined);
+    defineWords.mockRestore();
   }
 
   expect(read).toEqual(want);
@@ -6351,6 +6453,15 @@ async function radioOf(scope: CardScope, name: string): Promise<HTMLInputElement
   return (await scope.findByRole("radio", { name })) as HTMLInputElement;
 }
 
+/** The card's Ask back: the item of the menu its split button's chevron opens, which the menu
+ *  draws in a panel of the page's body, out of the card's scope. Pressing it turns the split
+ *  button's action into Ask back, which sends the question back; answers that action. */
+async function askBackOf(scope: CardScope, user: UserEvent): Promise<HTMLElement> {
+  await user.click(scope.getByRole("button", { name: "More actions" }));
+  await user.click(within(document.body).getByRole("menuitem", { name: "Ask back" }));
+  return scope.getByRole("button", { name: "Ask back" });
+}
+
 /** Types a question-shaped answer and sends it from the box, which offers to ask it back
  *  instead; answers the choice's two actions once drawn. */
 async function offerToAskBack(
@@ -6450,7 +6561,7 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
     name: "Ask back",
     press: async (scope, user) => {
       await user.type(answerBoxOf(scope), "Stage it before the release");
-      const askBack = scope.getByRole("button", { name: "Ask back" });
+      const askBack = await askBackOf(scope, user);
       askBack.focus();
       await user.keyboard("{Enter}");
       return askBack;
@@ -6820,7 +6931,7 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
       const row = scope.getByTestId("ask-row");
       await settleReads();
       await user.type(answerBoxOf(scope), "Stage it before the release");
-      const askBack = scope.getByRole("button", { name: "Ask back" });
+      const askBack = await askBackOf(scope, user);
       askBack.focus();
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
@@ -6952,7 +7063,7 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
       await settleReads();
       await user.click(await radioOf(scope, "Ship"));
       await user.type(answerBoxOf(scope), "Stage it before the release");
-      await user.click(scope.getByRole("button", { name: "Ask back" }));
+      await user.click(await askBackOf(scope, user));
       await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
       await settleReads();
 

@@ -2,9 +2,12 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
 import {
+  askCardPicturesProject,
+  askCardPicturesVariable,
   clockFileOnCommandLine,
   clockProjectNames,
   clockSpecPattern,
+  projectsOnCommandLine,
   stubProjectNames,
   tagged,
 } from "./configurations";
@@ -170,6 +173,14 @@ if (clockFile !== undefined) {
   );
 }
 
+// The ask card's pictures run only where the command line names their project
+// (`askCardPicturesProject`, e2e/configurations.ts). This evaluation is the runner's, which reads
+// the command line; a worker re-evaluates this file with Playwright's own argv, so the answer
+// travels to the workers in the variable, which a worker's evaluation never clears.
+if (projectsOnCommandLine(process.argv).includes(askCardPicturesProject)) {
+  process.env[askCardPicturesVariable] = "1";
+}
+
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
 // when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
 // the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
@@ -291,6 +302,11 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
+// The one spec of the ask card's pictures (`ask-card-pictures.e2e.ts`), which runs in the
+// `ask-card-pictures` project at the end of this list and in no project above it, for the reason
+// `visualSpecs` gives above.
+const picturesSpecs = /ask-card-pictures\.e2e\.ts$/;
+
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
@@ -298,13 +314,27 @@ const parallelProjects = [
   // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      visualSpecs,
+      picturesSpecs,
+      stubSpecs,
+    ],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      visualSpecs,
+      picturesSpecs,
+      stubSpecs,
+    ],
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -356,7 +386,14 @@ const parallelProjects = [
   // that name it.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      visualSpecs,
+      picturesSpecs,
+      stubSpecs,
+    ],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -423,7 +460,14 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      visualSpecs,
+      picturesSpecs,
+      stubSpecs,
+    ],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -618,6 +662,26 @@ const visualProjects = [
 ] satisfies Project[];
 
 /**
+ * The ask card's 29 pictures (INFRA-3231's check b5ee93c7): one row, which seeds the demo's
+ * fixtures into the real stack and takes each picture the design names at the demo's own sizes,
+ * 1440x900 here and 390x844 for the two phone pictures, and lays each beside the demo's.
+ *
+ * The row runs only where the command names this project (`askCardPicturesVariable` above), so a
+ * run that does not reaches it and skips it, as `visual`'s rows skip outside their container.
+ * `workers: 1` and `retries: 0` for the reasons `visualProjects` gives: a picture is a rendering,
+ * and one that differs and then matches is a page that is not settled.
+ */
+const picturesProjects = [
+  {
+    name: askCardPicturesProject,
+    testMatch: picturesSpecs,
+    use: { ...devices["Desktop Chrome"], viewport: { height: 900, width: 1440 } },
+    workers: 1,
+    retries: 0,
+  },
+] satisfies Project[];
+
+/**
  * The stubbed layer: a real browser against a recording of the API (e2e/stub/).
  *
  * It is declared unconditionally, like `visualProjects` above and for the same reason: the guard
@@ -795,6 +859,7 @@ export default defineConfig({
           // The phone project first in a reverse run, so the whole run is the other way round
           // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
           ...inVisualOrder(visualProjects, visualOrder()),
+          ...picturesProjects,
           ...(stub.declared ? stubProjects : []),
         ],
 });

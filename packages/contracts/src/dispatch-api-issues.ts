@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
-import { referenceChangesFields } from "./dispatch-api-refs";
+import { personTypedFields, referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
 
 /**
@@ -231,7 +231,12 @@ export type IssueEventChanges = z.output<typeof IssueEventChangesSchema>;
 /** Every `issue.*` event payload is the issue row, flat, plus what the write moved in the
  *  reference graph: a new issue's spec text is indexed in the creating transaction. */
 export const WrittenIssueEventPayloadSchema = z
-  .strictObject({ ...issueFields, ...referenceChangesFields, ...issueEventChangesFields })
+  .strictObject({
+    ...issueFields,
+    ...referenceChangesFields,
+    ...issueEventChangesFields,
+    ...personTypedFields,
+  })
   .readonly();
 
 export type IssueEventPayload = z.output<typeof WrittenIssueEventPayloadSchema>;

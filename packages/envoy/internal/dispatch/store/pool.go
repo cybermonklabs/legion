@@ -403,15 +403,16 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // daemon (legion.RunSampler, one pass a minute, one process at a time), one per delivery durable
 // for the intake's take-over (delivery.consumerLease, a name each for delivery-events and
 // delivery-jobs) and the server process registry's prune (processes.RunPrune), the embeddings
-// project_key fill (api.RunEmbeddingProjectKeyFill) and the display tree fill
-// (texttreefill.fillLease) - one caller each, since each intake
-// takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
-// at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
-// to two hours, holds its connection for the whole of it, tries for its lease again every five
-// minutes while another process makes that pass, and gives the connection back for good once
-// the rows stored before migration 20261109120000 are labelled, so it is counted here like any
-// other caller. The suggestion outcome sweep is not among them: it takes no lease, since the cursor row
-// each of its pages holds for update serialises two processes by itself
+// project_key fill (api.RunEmbeddingProjectKeyFill), the display tree fill
+// (texttreefill.fillLease), the records job of the words people ask about (wordrecords.Lease) and
+// the reviewer's sweep of held texts (api.ReviewerSweepLease) - one caller each, since each
+// intake takes its own durable's name from its own goroutine, so each of them can be inside
+// Exclusive at once. The project_key fill is the one that is no loop of a cadence: it labels in a
+// single pass of one to two hours, holds its connection for the whole of it, tries for its lease
+// again every five minutes while another process makes that pass, and gives the connection back
+// for good once the rows stored before migration 20261109120000 are labelled, so it is counted
+// here like any other caller. The suggestion outcome sweep is not among them: it takes no lease,
+// since the cursor row each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
 // Each of the two intakes also holds its durable's hold, whose every statement is one statement
@@ -431,10 +432,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, and one connection is what it costs the instance: a
-// serving process opens at most 113 rather than the 112 it would without it
+// serving process opens at most 115 rather than the 114 it would without it
 // (ConnectionsPerProcess), and the default tier's 500 connections less PostgreSQL's 3 reserved
-// slots still admit four app pods holding connections at once (452 of 497) and still refuse five
-// (565), exactly as they do at 112 (448 and 560), so it moves no replica boundary. A deployment on
+// slots still admit four app pods holding connections at once (460 of 497) and still refuse five
+// (575), exactly as they do at 114 (456 and 570), so it moves no replica boundary. A deployment on
 // another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
@@ -449,7 +450,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 22
+const LeasePoolSize = 24
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -979,10 +980,16 @@ func WithBeforeCommit(ctx context.Context, step BeforeCommit) context.Context {
 }
 
 // WithoutBeforeCommit returns ctx with the step taken off, for a transaction of a request's that
-// writes none of the request's own work: the document rooms' conditional-edit queue takes its
-// bookkeeping transaction this way (docs.Service.admitConditionalEdit), since it commits before
-// the request's write and a crash between the two must leave the key for the repeat to run rather
-// than answer it KEY_COMMITTED for a write nobody made.
+// writes none of the request's own work. Three callers use it. The document rooms' conditional-edit
+// queue opens its bookkeeping transaction with it (docs.Service.admitConditionalEdit): it commits
+// before the request's write, and a crash between the two must leave the key for the repeat to
+// run rather than answer it KEY_COMMITTED for a write nobody made. The writing check's events log
+// opens the transaction of each row with it (Store.InsertWritingCheckEvent): the row is the
+// check's record of the request's write and no part of that write, so its transaction must not
+// take the step that marks the request's key committed. A held text's post marks the row of a
+// kept write whose route wrote nothing in a transaction of its own with it (api's postReplay):
+// the step is the kept write's own mark (markKeptWritePosted), which only that write's
+// transactions take.
 func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }

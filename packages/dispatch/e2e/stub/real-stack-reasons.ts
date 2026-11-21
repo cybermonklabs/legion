@@ -65,6 +65,18 @@ export const realStackReasons: Record<string, string> = {
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
+  "ask-card-define.e2e.ts":
+    "a definition is the server's model call through the stand-in, its side question goes through the fake Envoy, and the answer, the records and the counts are the server's to keep",
+  "ask-card-menu.e2e.ts":
+    "each key of the card writes or reads the server: a rewrite through the stand-in, an ask back, a hand-on, a decline, and the Reaches list the server and the fake Envoy answer",
+  "ask-card-pictures.e2e.ts":
+    "it takes the design's pictures from the build against the server, the stand-in and the reviewer's server, which make every rewrite and definition it shows",
+  "ask-card-quote.e2e.ts":
+    "the asks, comments, messages and documents it quotes are seeded through the server, and the answer it sends with a quote is read back from it",
+  "ask-card-reviewer.e2e.ts":
+    "the reviewer's server holds each text and posts it on its own sweep, and the open page shows it over the live socket with no reload",
+  "ask-card-rewrite.e2e.ts":
+    "the server rewrites in the background through the stand-in and the page follows its quiet events over the live socket; the edit, its event and the refused answer are the server's",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
   "ask-part-references.e2e.ts": "the reference and backlink index the server builds from the write",
   "asked-of-cli.e2e.ts":

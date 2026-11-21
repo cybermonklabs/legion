@@ -286,6 +286,37 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
 });
 
+// A comment the reviewer rewrote shows its original with its badge, or with `w` while it holds
+// the focus, in the Inbox's thread view as on the issue's page.
+test("w on a rewritten comment of a thread shows the agent's wording in place, and w again the rewrite", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [
+    comment("comment-1", "The retry budget is too small.", {
+      rewrite: {
+        at: "2026-10-12T00:00:00Z",
+        by: "reviewer",
+        original: { body: "retry budg 2 small imo" },
+        state: "rewritten",
+      },
+    }),
+  ]);
+  renderCard(commentRow());
+
+  const body = await screen.findByTestId("inbox-thread-comment");
+  const words = await within(body).findByText("The retry budget is too small.");
+  expect(within(body).getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+    "title",
+    "Show the original wording (w)"
+  );
+  await user.click(words);
+  await user.keyboard("w");
+  expect(await within(body).findByText("retry budg 2 small imo")).toBeTruthy();
+  await user.keyboard("w");
+  expect(await within(body).findByText("The retry budget is too small.")).toBeTruthy();
+});
+
 // A thread box in the Inbox stands for its thread: its reply is the box's own address, which
 // nothing ends, so it draws no Cancel reply. Pressed, that control would do nothing and leave the
 // draft in the field (MentionComposer's `standing`).

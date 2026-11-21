@@ -3,6 +3,7 @@ import { forgetSessions, quiesceDocuments, resetLogins } from "./api";
 import { resetFakeBroker } from "./fake-broker-helpers";
 import { resetFakeEmbedder } from "./fake-embedder-helpers";
 import { resetFakeGithub } from "./fake-github-helpers";
+import { resetFakeModel } from "./fake-model-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
 
@@ -64,6 +65,16 @@ const tables = [
   // by its state and its node row stays.
   "priority_tuples",
   "priority_nodes",
+  // INFRA-3231's tables no foreign key ties to an issue (migrations 20261119050001,
+  // 20261119050003, 20261119050004): a held text a row leaves behind would be posted by the
+  // reviewer's sweep into the next row's issue of the same key, and the writing check's events
+  // and the word records are what the counts route and the reader's words route add up, so a row
+  // that reads them would count every earlier row's. The records job's cursor
+  // (word_records_cursor) stays: its one row is the migration's own, and no server of this
+  // harness runs the job.
+  "held_texts",
+  "writing_check_events",
+  "word_questions",
   // The step records Legion's daemon writes of an issue, and their tuple log (the
   // `workflow_nodes` migration). No foreign key reaches either table, so the closure below does
   // not find them: a step a row wrote would otherwise stand in the next row's Steps tab, under
@@ -293,6 +304,7 @@ export async function resetDatabase(): Promise<void> {
         resetFakeBroker(),
         resetFakeGithub(),
         resetFakeEmbedder(),
+        resetFakeModel(),
       ]);
       for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
     }),

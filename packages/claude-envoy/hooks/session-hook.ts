@@ -3,7 +3,7 @@
 // characters, so a long open-asks summary or answers list sharing a command with the skill could
 // push it out.
 //
-// open-asks (every SessionStart: startup, resume, clear, compact, fork). Four jobs:
+// open-asks (every SessionStart: startup, resume, clear, compact, fork). Five jobs:
 // 1. Name Claude Code as the `dispatch` command's host and hand on the session's envoy.json:
 //    append `export DISPATCH_HOST=claude` and `export ENVOY_CONFIG_FILE='<path>'` (the file
 //    Claude Code's rule picks, `$CLAUDE_CONFIG_DIR/envoy.json` when that is set) to
@@ -40,6 +40,9 @@
 // 4. Put the session's open Dispatch asks into the model's context, after one `envoy: <warning>`
 //    line for each file the read found and did not read (a checkout's `.opencode/envoy.json`,
 //    naming its rename), as the other plugins' start notices and the `dispatch` command name it.
+// 5. On a compaction (`source: "compact"`), count it in the `dispatch` command's state file
+//    (`noteCompaction`), so the command shows the written rules again before the session's next
+//    write of an ask, an issue, a comment or a message.
 // Plain stdout becomes context; it always exits 0 so a Dispatch outage never
 // blocks a session from starting.
 //
@@ -97,6 +100,7 @@ import {
 } from "@legion/envoy-client/dispatch-first"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
+import { noteCompaction } from "@legion/envoy-client/dispatch-session-state"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import {
@@ -129,6 +133,7 @@ const OpenAsksInput = z.object({
   session_id: z.string().min(1),
   cwd: z.string().optional(),
   session_title: z.string().optional(),
+  source: z.string().optional(),
 })
 const DispatchFirstInput = z.object({
   hook_event_name: z.enum(["SessionStart", "SubagentStart"]),
@@ -309,6 +314,25 @@ async function openAsks(raw: unknown): Promise<void> {
     await recordChosenTitle(input.session_id, input.session_title)
   } catch (error) {
     process.stderr.write(`envoy: could not record the session title — ${messageFor(error)}\n`)
+  }
+  if (input.source === "compact") {
+    // A compaction of the session's context is counted in the `dispatch` command's state file,
+    // so the command shows the written rules again before the session's next write
+    // (`noteCompaction`). The session is the one the command writes as: the QA override
+    // ENVOY_SESSION_ID, else Claude Code's. A count that cannot be written costs that one
+    // showing and nothing else.
+    try {
+      noteCompaction(
+        sessionDirectory(
+          process.env,
+          configuredValue(process.env["ENVOY_SESSION_ID"]) ?? input.session_id,
+        ),
+      )
+    } catch (error) {
+      process.stderr.write(
+        `envoy: the compaction was not counted for the written rules — ${messageFor(error)}\n`,
+      )
+    }
   }
 
   const directory = claudeProjectDirectory(

@@ -18,6 +18,7 @@ import {
   putProjectDefaultAssignee,
   replyToCommentDelivery,
 } from "./api";
+import { askBack } from "./ask-card";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
@@ -82,41 +83,44 @@ test("ask cards show urgency accents and copy their session ID, title, and tmux 
     // column, which draws the row it is given.
     const blockingAccent = await askCard(page, blocking.id);
     await expect(blockingAccent).toHaveAccessibleName("Urgency: Blocking");
-    await expect(blockingAccent).toContainText("BLOCKING");
+    await expect(blockingAccent).not.toContainText("BLOCKING");
     const highAccent = await askCard(page, high.id);
     await expect(highAccent).toHaveAccessibleName("Urgency: High");
-    await expect(highAccent).toContainText("HIGH");
+    await expect(highAccent).not.toContainText("HIGH");
     const mediumAccent = await askCard(page, medium.id);
     await expect(mediumAccent).toHaveAccessibleName("Urgency: Medium");
-    // The card spends no word on a medium question - its accent is the whole mark - while the
-    // row it belongs to wears the urgency mark the list gained, which is the word itself
-    // (`RowUrgencyMark`, outside the card).
+    // The card spends no word on a question's urgency - its accent is the whole mark, and its
+    // accessible name says it (INFRA-3231's R7) - while the row it belongs to wears the urgency
+    // mark the list gained, which is the word itself (`RowUrgencyMark`, outside the card).
     await expect(mediumAccent.getByText("Medium", { exact: true })).toHaveCount(0);
     await expect(inboxRow(page, medium.id).getByText("Medium", { exact: true })).toHaveCount(1);
 
     const blockingCard = await askCard(page, blocking.id);
     // The ask's own reference is on the provenance line; the session's own handles - its ID,
-    // its title, its tmux target - fold behind the author chip, so the line fits a phone and a
-    // 280 px margin without pushing the reference out of reach (LEGION-67).
+    // its title, its tmux target - are in the popover the chevron beside the asker's name opens
+    // (INFRA-3231's R7), so the line fits a phone and a 280 px margin without pushing the
+    // reference out of reach (LEGION-67).
     const reference = `dispatch://${issue.key}/ask/${blocking.id}`;
     await expect(blockingCard.getByRole("button", { name: /^Copy / })).toHaveCount(1);
     await blockingCard.getByRole("button", { expanded: false, name: /e2e-session/ }).click();
-    const copyButtons = blockingCard.getByRole("button", { name: /^Copy / });
-    await expect(copyButtons).toHaveCount(4);
+    const handles = page
+      .getByRole("dialog")
+      .filter({ has: page.getByRole("button", { name: "Copy session ID e2e-session" }) });
+    const copyButtons = handles.getByRole("button", { name: /^Copy / });
+    await expect(copyButtons).toHaveCount(3);
     expect(
       await copyButtons.evaluateAll((buttons) => buttons.map((button) => button.ariaLabel))
     ).toEqual([
-      `Copy reference ${reference}`,
       "Copy session ID e2e-session",
       "Copy session title e2e-session-title",
       "Copy tmux target dev:4.7",
     ]);
-    await blockingCard.getByRole("button", { name: "Copy session ID e2e-session" }).click();
-    await expect(blockingCard.getByText("Copied", { exact: true })).toBeVisible();
-    await blockingCard
-      .getByRole("button", { name: "Copy session title e2e-session-title" })
-      .click();
-    await blockingCard.getByRole("button", { name: "Copy tmux target dev:4.7" }).click();
+    await handles.getByRole("button", { name: "Copy session ID e2e-session" }).click();
+    await expect(handles.getByText("Copied", { exact: true })).toBeVisible();
+    await handles.getByRole("button", { name: "Copy session title e2e-session-title" }).click();
+    await handles.getByRole("button", { name: "Copy tmux target dev:4.7" }).click();
+    await page.keyboard.press("Escape");
+    await expect(handles).toHaveCount(0);
     await blockingCard.getByRole("button", { name: `Copy reference ${reference}` }).click();
     await expect.poll(copied).toEqual(["e2e-session", "e2e-session-title", "dev:4.7", reference]);
     await page.screenshot({ fullPage: true, path: testInfo.outputPath("askcard-1280.png") });
@@ -179,8 +183,7 @@ test("an ask thread shows its newest two replies, expands the earlier ones, and 
     await showFewer.click();
     await expect.poll(replyBodies).toEqual(["Newer reply", "Newest reply"]);
 
-    await card.getByLabel("Your answer").fill("Fresh reply");
-    await card.getByRole("button", { name: "Ask back" }).click();
+    await askBack(card, "Fresh reply");
     await expect.poll(replyBodies).toEqual(["Newest reply", "Fresh reply"]);
     const after = testInfo.outputPath(`ask-thread-after-${testInfo.project.name}.png`);
     await page.screenshot({ path: after, fullPage: true });
@@ -593,8 +596,7 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     // for the row she is on.
     const card = await askCard(page, clarifying.id);
     const thread = card.getByTestId(`thread-${clarifying.id}`);
-    await card.getByLabel("Your answer").fill("Ship what, exactly?");
-    await card.getByRole("button", { name: "Ask back" }).click();
+    await askBack(card, "Ship what, exactly?");
     await expect(thread.getByText("Ship what, exactly?")).toBeVisible();
     await expect(card).toBeVisible();
 
@@ -648,7 +650,8 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", untouched.id);
     const handedBack = await askCard(page, clarifying.id);
     await expect(handedBack.getByText("The release candidate.")).toBeVisible();
-    await expect(page.getByTestId(`turn-${clarifying.id}`)).toHaveText("Waiting on you");
+    // Her own question again: a card names whose turn it is only where it is not the reader's.
+    await expect(page.getByTestId(`turn-${clarifying.id}`)).toHaveCount(0);
 
     const questionShaped = await createAsk(
       issue.key,

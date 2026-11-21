@@ -1,0 +1,35 @@
+-- 20261119050005_held_decision_blocks.up.sql — a decision block the reviewer holds from people's
+-- Inboxes, and a decision block a person typed.
+--
+-- INFRA-3231's R5 and Decision 3 of its plan: a decision block an agent writes in a document is
+-- shown in the document when the document is saved, so its ask row exists at once. With
+-- DISPATCH_REVIEWER_DECISION_BLOCKS=hold the reviewer keeps it out of every person's Inbox, every
+-- open-ask count and every notice until the review ends (api/decision_blocks.go):
+--
+--   asks.held_until  the time until which no person's Inbox or open-ask count shows the ask, null
+--                    for an ask nobody holds, which is every row this migration leaves. Each read
+--                    INFRA-3552's R5 lists leaves out an open ask whose held_until is still to
+--                    come (api/ask_rows.go, askNotHeld); the end of the review sets it back to
+--                    null. A review that never ends (its process stopped and no sweep runs) holds
+--                    the ask no longer than this bound: the review's time bound and the writer's
+--                    window, with a minute more. The hold itself is a held_texts row of kind
+--                    decision_block under the ask's id.
+--
+--   doc_ask_block_authors.person_typed  the write that put the block in its document, or that
+--                    left it there, was a command a person typed in a session
+--                    (Dispatch-Person-Typed: 1, Decision 26): the settlement that next indexes the
+--                    block opens its ask, or rewords it, unheld and unreviewed, and marks its
+--                    ask.opened or ask.edited person_typed; that settlement deletes the row.
+--
+-- Both columns are added with no check, asks.held_until nullable with no default and
+-- person_typed with a constant default, so each table is held in ACCESS EXCLUSIVE for the catalog
+-- write alone and no row is rewritten. The release before this one names its columns in every
+-- insert of an ask and of an ask block's author and never reads these, so it rolls
+-- (cmd/dispatch/README.md, "Database migrations"). The census's catalog-only exemption covers a
+-- nullable text column alone, so CensusTableLimit applies to both tables, which are far below
+-- it. The identifier is a UTC moment of the forward merge of main on 2026-11-19, which put this
+-- migration after main's newest, as `migrationid` requires of every migration past the numbered
+-- series.
+alter table asks add column held_until timestamptz;
+
+alter table doc_ask_block_authors add column person_typed boolean not null default false;

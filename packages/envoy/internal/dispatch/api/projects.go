@@ -24,7 +24,7 @@ const projectListQuery = `
 			from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
-			where a.state = 'open'
+			where a.state = 'open' and ` + askNotHeld + `
 			  and (i.key is null or i.closed_at is null)
 			group by coalesce(i.project_key, ar.project_key)
 		) open_asks on open_asks.project_key = p.key
@@ -119,23 +119,29 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
 	// own token creates projects, and that token holds no scope at all. Such a caller acts for
 	// nobody, so it must name the person itself, which is the refusal below. Whichever step
-	// answers, the login is held to somebody who has signed in (allowedLogin), as PUT
+	// answers, the login is held to somebody who has signed in, as PUT
 	// /api/v1/projects/{key}/default-assignee holds one: a typo never becomes a stored default,
 	// and neither does the owner a broker-issued token names, which the broker decides rather
-	// than the people table.
+	// than the people table. A login the call names is refused quoting it (allowedLogin); the
+	// person the credential acts for is refused naming nobody (signedIn), since that login is the
+	// credential's and no word of the call's, and a refusal is an error the route's error path
+	// carries.
 	projectDefault := strings.TrimSpace(input.DefaultAssignee)
-	if projectDefault == "" {
-		if login, acts := actorPerson(actor); acts {
-			projectDefault = login
+	var err error
+	if projectDefault != "" {
+		projectDefault, err = s.allowedLogin(r.Context(), projectDefault)
+	} else if login, acts := actorPerson(actor); acts && login != "" {
+		var known bool
+		if projectDefault, known, err = s.signedIn(r.Context(), login); err == nil && !known {
+			err = errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED",
+				"the person this credential acts for has not signed in to Dispatch, so the call must name default_assignee, a person who has")
 		}
-	}
-	if projectDefault == "" {
+	} else {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
 		return
 	}
-	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

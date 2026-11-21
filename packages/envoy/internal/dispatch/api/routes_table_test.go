@@ -626,6 +626,12 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The scope edit is the one route that was no row at all before INFRA-1017: it is the
 		// person's own, as the mint and the revoke beside it are.
 		"PATCH /api/v1/me/agent-tokens/{id}",
+		// A person's Rewrite and Define (INFRA-3231's R7) are a person's acts, and a definition
+		// is kept for the person who asked for it alone.
+		"POST /api/v1/asks/{id}/rewrites",
+		"POST /api/v1/definitions",
+		"GET /api/v1/definitions/{id}",
+		"GET /api/v1/me/definitions",
 	}
 	for _, name := range browserOnly {
 		scopes, named := routeScopes[name]

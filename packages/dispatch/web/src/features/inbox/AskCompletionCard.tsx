@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import type {
@@ -30,6 +30,7 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
+import type { QuoteRef } from "../threads/quote-reply";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
@@ -151,6 +152,7 @@ function AnsweredAsk({
   frame,
   markRef,
   onChangeAnswer,
+  quoteRef,
 }: {
   answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
@@ -160,7 +162,20 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
+  quoteRef?: QuoteRef;
 }): ReactNode {
+  // The record is the read mark's element and the text Quote reply reads, one element for both.
+  const recordRef = useCallback(
+    (element: HTMLElement | null) => {
+      const unmark = markRef?.(element);
+      const unquote = quoteRef?.(element);
+      return () => {
+        unmark?.();
+        unquote?.();
+      };
+    },
+    [markRef, quoteRef]
+  );
   const { answer } = ask;
   // A chosen "Other" answer carries no real option (answer.selected is empty) but still has
   // free text - render it under an Other label so the record reads as a chosen option, not an
@@ -174,7 +189,7 @@ function AnsweredAsk({
     <article
       className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
       data-testid={`ask-${ask.id}`}
-      ref={markRef}
+      ref={recordRef}
     >
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="success" />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
@@ -247,11 +262,13 @@ function ResolvedAsk({
   documentLink,
   edits,
   frame,
+  quoteRef,
 }: {
   ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
+  quoteRef?: QuoteRef;
 }): ReactNode {
   const { resolution } = ask;
   const reason = askResolutionReason(resolution);
@@ -259,6 +276,7 @@ function ResolvedAsk({
     <article
       className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
       data-testid={`ask-${ask.id}`}
+      ref={quoteRef}
     >
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
       {frame === "block" ? null : (
@@ -323,6 +341,10 @@ interface AskCompletionCardProps {
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
+  /** The record as a text of Quote reply (`useQuoteTargetRef` in `threads/quote-reply.ts`): the
+   *  card that draws the ask says what a quote of its words does, which for an answered or a
+   *  resolved ask is a quote into its thread's reply box. */
+  quoteRef?: QuoteRef;
 }
 
 export function AskCompletionCard({
@@ -334,6 +356,7 @@ export function AskCompletionCard({
   frame = "card",
   markRef,
   onChangeAnswer,
+  quoteRef,
 }: AskCompletionCardProps): ReactNode {
   if (ask.state === "resolved") {
     if (ask.resolution === undefined) {
@@ -345,6 +368,7 @@ export function AskCompletionCard({
         documentLink={documentLink}
         edits={edits}
         frame={frame}
+        quoteRef={quoteRef}
       />
     );
   }
@@ -358,6 +382,7 @@ export function AskCompletionCard({
       frame={frame}
       markRef={markRef}
       onChangeAnswer={onChangeAnswer}
+      quoteRef={quoteRef}
     />
   );
 }

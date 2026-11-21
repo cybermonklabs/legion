@@ -87,6 +87,7 @@ import {
   sessionStateRoot,
 } from "@legion/envoy-client/dispatch-session-directory";
 import {
+  noteCompaction,
   readResultsSince,
   resultsEnd,
   writeSessionTitle,
@@ -1329,10 +1330,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   // host has left is logged here, so every reply to one says so - twice for a reply whose
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
-  // reply failure.
+  // reply failure. `generated` marks text this plugin wrote rather than the agent, which
+  // `postDeliveryReply` sends with the generated-text header.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
-    result: { readonly body?: string; readonly error?: string },
+    result: { readonly body?: string; readonly error?: string; readonly generated?: boolean },
     replySessionID: string
   ): Promise<void> => {
     if (!sessionOpen(replySessionID)) {
@@ -1574,19 +1576,25 @@ export default function envoyExtension(hostApi: PiApi): void {
   // person who sent the line with no answer at all; Dispatch's words say why, and they are short
   // enough to post in its place. Both the typed path and the `!command` path post through here,
   // so the fallback exists once. Both texts name the one session, so the fallback is signed as
-  // the reply it replaces was.
+  // the reply it replaces was. Every text posted here is the plugin's own, not the agent's
+  // words - a `!command`'s report (`shellCommandReport` and its refusals, `../src/typed-shell`),
+  // a slash command's output, this host's error for a line it did not run (`typedInputReply`)
+  // and the fallback - so each is posted as generated.
   const postTypedInputReply = async (
     delivery: DispatchDelivery,
     replySessionID: string,
     body: string
   ): Promise<void> => {
     try {
-      await postDispatchReply(delivery, { body }, replySessionID);
+      await postDispatchReply(delivery, { body, generated: true }, replySessionID);
     } catch (error) {
       if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
       await postDispatchReply(
         delivery,
-        { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
+        {
+          body: `Your command ran, and Dispatch refused its output: ${error.message}`,
+          generated: true,
+        },
         replySessionID
       );
     }
@@ -2050,10 +2058,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     // failed, and a same-mode re-send of it must reach this session again, so the claim is
     // released before the reply goes out. A BTW side turn adds nothing to the transcript, so
     // running it again for that re-send repeats no work the session kept. A relay frame is done
-    // once the reply is posted: the re-send is a new frame.
+    // once the reply is posted: the re-send is a new frame. The error is this plugin's own text
+    // (or the host's failure it names), not the agent's words, so it is posted as generated.
     const refuse = async (delivery: DispatchDelivery, error: string): Promise<void> => {
       held.release();
-      await postDispatchReply(delivery, { error }, session);
+      await postDispatchReply(delivery, { error, generated: true }, session);
       relayed.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (the relay's queue), so the next frame
@@ -2203,10 +2212,12 @@ export default function envoyExtension(hostApi: PiApi): void {
           // The person's answer, and the end of their attempt with it. The accept spent the
           // attempt, so each answer below settles rather than releases - Dispatch holds the
           // message delivered and refuses a re-send of it - and the reply is what tells the
-          // person what became of their line.
+          // person what became of their line. Each text answered here is the plugin's own - the
+          // refusal of a line this host cannot run, or of one the session it was accepted for
+          // is no longer open to run - so it is posted as generated.
           const answerAndSettle = (body: string): void => {
             offWorker(async () => {
-              await postDispatchReply(accepted.delivery, { body }, session);
+              await postDispatchReply(accepted.delivery, { body, generated: true }, session);
               await taken();
             });
           };
@@ -3135,9 +3146,24 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The host asks whether any extension handles `session_before_compact`, which turns its
   // background compaction off, but never these two: handling them changes nothing it does. A
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
+  // A compaction of the main agent's context is also counted in the `dispatch` command's state
+  // file, so the command shows the written rules again before the session's next write
+  // (`noteCompaction`); a subagent's own compaction leaves the session's context as it was. A
+  // count that cannot be written costs that one showing and nothing else.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
+    const id = process.env.DISPATCH_SESSION_ID;
+    if (id !== undefined && id !== "" && context.agent?.kind !== "sub") {
+      try {
+        noteCompaction(dispatchSessionDirectory(process.env, id));
+      } catch (error) {
+        logger.warn("envoy: the compaction was not counted for the written rules", {
+          sessionID: id,
+          error: messageFor(error),
+        });
+      }
+    }
   });
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);

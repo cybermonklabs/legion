@@ -242,6 +242,18 @@ type Request struct {
 	// Final is the JSON schema the last reply must be exactly one object of, which is what
 	// Result.Value holds. A nil Final asks for free text.
 	Final json.RawMessage
+	// StrictFinal sends Final in OpenAI's strict mode on openai-chat
+	// (response_format.json_schema.strict true), where the endpoint holds the reply to the
+	// schema as the model writes it, rather than only this package reading the reply back
+	// against it. Final must then keep strict mode's rules: every object lists each of its
+	// properties in required and sets additionalProperties false, and a property a reply may
+	// leave empty allows null. Unset, openai-chat sends strict false (chatOptions). It changes
+	// nothing on any other protocol: openai-responses already sends every Final strict, and
+	// Anthropic's protocols have no such mode.
+	StrictFinal bool
+	// Temperature is the sampling temperature every call of the run is sent with. A nil
+	// Temperature sends none, which leaves the provider's default.
+	Temperature *float64
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
 	// built, and OnStep every step as it finishes. An error from any of them ends the run
 	// at that point and Run returns it with the Result so far. A nil callback is not
@@ -277,6 +289,11 @@ type Step struct {
 	// word for it: stop, length, content-filter, tool-calls, error or other. A reply the
 	// provider cut at its token limit reads length, whatever the provider called it.
 	Finish string
+	// Model is the model id the provider's response says served the call, which can differ
+	// from Model.ID: an Azure deployment, a gateway alias or a provider's own versioned name
+	// answers with the model behind it. A provider whose response names no model leaves the
+	// id the call asked for.
+	Model string
 }
 
 // Result is the outcome of a run, and every outcome is one: a run that ends on a fault, on its

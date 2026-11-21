@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // routeAnswer is one answer a route can give: a status and a zero value of the Go type its body
@@ -67,6 +68,10 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
+	// Held is a route whose success answer is, for a write the reviewer holds (reviewer.go's
+	// reviewWrite, and held_replay.go's reviewReply for an agent's reply to a delivery), the
+	// same payload with a `held` sibling (heldState) merged into it, as advice is merged.
+	Held bool
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
@@ -233,10 +238,10 @@ type issueResolveQuery struct {
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
 // share: one page of an event log.
 type eventListQuery struct {
-	// After reads the events above this event id, oldest first; it combines with neither
-	// Before nor order=desc.
+	// After reads the events whose sequence on their owner (the event's seq, not its id) is above
+	// this one, oldest first; it combines with neither Before nor order=desc.
 	After int `query:"after"`
-	// Before reads the events below this event id.
+	// Before reads the events whose sequence on their owner is below this one.
 	Before int `query:"before"`
 	// IDs reads exactly these event ids, comma-separated.
 	IDs string `query:"ids"`
@@ -511,6 +516,36 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// writingCheckCountsQuery is GET /api/v1/writing-check/counts's query: the range and the page of
+// its rows.
+type writingCheckCountsQuery struct {
+	// First and Last are the range's first and last UTC days, YYYY-MM-DD, both counted.
+	First string `query:"first"`
+	Last  string `query:"last"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// readerWordsQuery is GET /api/v1/readers/{login}/words's query.
+type readerWordsQuery struct {
+	// Before, an RFC 3339 time, keeps the words of the records written before it alone.
+	Before string `query:"before"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// myDefinitionsQuery is GET /api/v1/me/definitions's query: the page.
+type myDefinitionsQuery struct {
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
 // --- the shapes ------------------------------------------------------------------------------
 
 // routeShapes is the shape of every row of the table with its test hooks in, by
@@ -614,6 +649,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
+	"GET /api/v1/settings/writing-rules": {Status: http.StatusOK, Response: writingRulesSettings{}},
 	"GET /api/v1/projects/{key}/legion/daemon": {
 		Status: http.StatusOK, Response: legion.Settings{},
 		// A project that names no daemon answers 200 and the JSON literal `null`
@@ -683,7 +719,7 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: model.IssueSummaryPage{}}},
 	},
 	"POST /api/v1/issues": {
-		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{}, Held: true,
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
 		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
@@ -742,7 +778,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
 	"POST /api/v1/issues/{key}/messages": {
-		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/issues/{key}/messages":      {Status: http.StatusOK, Response: []messageRead{}},
 	"GET /api/v1/issues/{key}/messages/{id}": {Status: http.StatusOK, Response: messageRead{}},
@@ -781,12 +817,17 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: acceptedDelivery{}, Request: actorInput{},
 	},
 	"POST /api/v1/messages/{id}/reply": {
-		Status: http.StatusCreated, Response: replyRead{}, Request: messageReplyInput{}, Params: messageReplyQuery{},
+		Status: http.StatusCreated, Response: replyRead{}, Request: messageReplyInput{}, Params: messageReplyQuery{}, Held: true,
 		// An attempt already answered is answered the stored reply, 200, marked duplicate
-		// when nothing was posted; an error report answers the attempt itself.
+		// when nothing was posted; an error report answers the attempt itself. A reply to the
+		// frame that carried a held text's findings names the held text and answers it, 202
+		// (answerHeldFrame); a reply to a definition's side question names the definition and
+		// answers its id and the side question's state, 202 (answerDefinitionFrame).
 		Also: []routeAnswer{
 			{Status: http.StatusOK, Body: replyRead{}},
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
+			{Status: http.StatusAccepted, Body: heldRead{}},
+			{Status: http.StatusAccepted, Body: definitionAnswerRead{}},
 		},
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
@@ -821,7 +862,17 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
-	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/writing-check":    {Status: http.StatusOK, Response: writingCheckState{}},
+	"GET /api/v1/writing-check/counts": {
+		Status: http.StatusOK, Response: store.WritingCheckCounts{}, Params: writingCheckCountsQuery{},
+	},
+	"GET /api/v1/readers/{login}/words": {
+		Status: http.StatusOK, Response: readerWordsResponse{}, Params: readerWordsQuery{},
+	},
+	"POST /api/v1/writing-rules": {
+		Status: http.StatusOK, Response: writingRulesResponse{}, Request: writingRulesInput{},
+	},
+	"GET /api/v1/agents": {Status: http.StatusOK, Response: []agentResponse{}},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
@@ -848,7 +899,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/broadcasts":      {Status: http.StatusOK, Response: []broadcastSummary{}},
 	"GET /api/v1/broadcasts/{id}": {Status: http.StatusOK, Response: broadcastRead{}},
 	"POST /api/v1/issues/{key}/asks": {
-		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/issues/{key}/asks":                   {Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{}},
 	"GET /api/v1/issues/{key}/decisions":              {Status: http.StatusOK, Response: issueDecisions{}},
@@ -866,7 +917,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
@@ -876,7 +927,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
 	"POST /api/v1/comments/{id}/reply": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentReplyInput{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentReplyInput{}, Held: true,
 		// An attempt already answered is answered the stored reply, 200; an error report
 		// answers the attempt itself (comment_delivery.go).
 		Also: []routeAnswer{
@@ -889,12 +940,24 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {
-		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/artifacts/{id}/comments": {Status: http.StatusOK, Response: []shapedComment{}},
 	"POST /api/v1/artifacts/{id}/comments": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{}, Held: true,
 	},
+	"GET /api/v1/held/{id}":       {Status: http.StatusOK, Response: heldRead{}},
+	"PATCH /api/v1/held/{id}":     {Status: http.StatusOK, Response: heldRead{}, Request: heldEditInput{}},
+	"PUT /api/v1/held/{id}/state": {Status: http.StatusOK, Response: heldRead{}, Request: heldStateInput{}},
+	"POST /api/v1/reviewer-drafts": {
+		Status: http.StatusOK, Response: reviewerDraftAnswer{}, Request: reviewerDraftInput{},
+	},
+	"POST /api/v1/asks/{id}/rewrites": {Status: http.StatusAccepted, Response: askRewriteAnswer{}},
+	"POST /api/v1/definitions": {
+		Status: http.StatusCreated, Response: definitionRead{}, Request: defineInput{},
+	},
+	"GET /api/v1/definitions/{id}":                           {Status: http.StatusOK, Response: definitionRead{}},
+	"GET /api/v1/me/definitions":                             {Status: http.StatusOK, Response: definitionsPage{}, Params: myDefinitionsQuery{}},
 	"GET /api/v1/artifacts/{id}/events":                      {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
 	"GET /api/v1/artifacts/{id}/references":                  {Status: http.StatusOK, Response: model.ArtifactReferences{}},
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},

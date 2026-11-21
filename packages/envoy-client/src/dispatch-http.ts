@@ -44,6 +44,10 @@ import type {
   GraphReferences,
   Handoff,
   HandoffSummary,
+  HeldEditInput,
+  HeldRead,
+  HeldState,
+  HeldStateInput,
   InboxRow,
   Issue,
   IssueCheckResults,
@@ -76,10 +80,16 @@ import type {
   UpdateIssueInput,
   Version,
   WhoamiResponse,
+  WritingRulesInput,
+  WritingRulesResponse,
+  WritingRulesSettings,
 } from "@legion/contracts";
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  DISPATCH_ACCEPTS_KEPT_WRITE_HEADER,
+  DISPATCH_GENERATED_TEXT_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -121,6 +131,11 @@ export interface ArtifactFileVersion {
   readonly mime: string;
   readonly bytes: Uint8Array;
 }
+
+/** A write's answer that Dispatch's reviewer may hold (INFRA-3231's R5): its own shape, built
+ *  from what the hold stored under the id it reserved, with `held` where the reviewer holds it.
+ *  No person sees a held text until it posts. */
+export type Holdable<T> = T & { readonly held?: HeldState };
 
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
@@ -273,6 +288,112 @@ export class DispatchWriteLandedError extends Error {
         "made: read it back with `dispatch read`, or with the matching list for something it created."
     );
   }
+}
+
+/**
+ * A write a client made with `holdWrites` did not send: the request it would have sent, `body` the
+ * JSON text of the request's body (null for a body that is not text). The dispatch CLI runs a
+ * command with such a client to learn the route and the body of the command's write before it
+ * shows the writing rules for that write's reader (`writing-rules.ts`). Nothing was sent, so this
+ * is no refusal of Dispatch's.
+ */
+export class DispatchWriteHeld extends Error {
+  override readonly name = "DispatchWriteHeld";
+
+  constructor(
+    readonly method: string,
+    readonly url: string,
+    readonly body: string | null
+  ) {
+    super(`${method} ${url} was held and not sent`);
+  }
+}
+
+/** The answer Dispatch keeps a write with (`holdRequest`): the id it keeps the write under, and
+ *  `held`, whose `waits_on` names the held text the write runs after. */
+interface KeptAnswer {
+  readonly id: string;
+  readonly held: HeldState & { readonly waits_on: string };
+}
+
+/**
+ * A write Dispatch kept beside a held text its path names (an issue, an ask, a comment or a
+ * message its reviewer holds, which has not posted): Dispatch answered it 202 with `HeldDeferred`,
+ * the id the write is kept under and `held`, whose `waits_on` names that text, and runs the write
+ * right after that text posts (`holdRequest`, packages/envoy/internal/dispatch/api/held_replay.go).
+ * The write was accepted, so this is no refusal; it carries none of the route's own answer, so no
+ * caller can read one. `url` is the request's URL as a text names it (`requestForText`).
+ */
+export class DispatchWriteKept extends Error {
+  override readonly name = "DispatchWriteKept";
+  /** The id Dispatch keeps the write under, which `GET /api/v1/held/{id}` reads. */
+  readonly id: string;
+  readonly held: KeptAnswer["held"];
+
+  constructor(
+    readonly method: string,
+    readonly url: string,
+    { id, held }: KeptAnswer
+  ) {
+    super(
+      `${method} ${url} was kept as ${id}, and Dispatch runs it right after held text ${held.waits_on} posts`
+    );
+    this.id = id;
+    this.held = held;
+  }
+}
+
+/**
+ * The kept write's answer `answer` is (`DispatchWriteKept`): 202 whose body is an object of
+ * exactly `id` and `held`, `held.waits_on` a text's id. Undefined for any other answer, the
+ * reviewer's own hold of a write among them, which is the route's whole shape with `held` beside
+ * it (`Holdable`). Dispatch answers every kept write `posting` with no deadline (`holdRequest`),
+ * which `held` reads where its own `state` or `deadline` is not one.
+ */
+function keptAnswer(status: number, answer: unknown): KeptAnswer | undefined {
+  if (status !== 202 || typeof answer !== "object" || answer === null) return undefined;
+  if (Object.keys(answer).length !== 2 || !("id" in answer) || !("held" in answer)) {
+    return undefined;
+  }
+  const { id, held } = answer;
+  if (typeof id !== "string" || typeof held !== "object" || held === null) return undefined;
+  const waitsOn = "waits_on" in held ? held.waits_on : undefined;
+  if (typeof waitsOn !== "string" || waitsOn === "") return undefined;
+  const state = "state" in held ? held.state : undefined;
+  const deadline = "deadline" in held ? held.deadline : undefined;
+  return {
+    id,
+    held: {
+      state: typeof state === "string" ? state : "posting",
+      deadline: typeof deadline === "string" ? deadline : null,
+      waits_on: waitsOn,
+    },
+  };
+}
+
+/** How a `DispatchClient` sends its requests, each its default where unset. */
+export interface DispatchClientOptions {
+  readonly signal?: AbortSignal | undefined;
+  /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
+   *  maker with a budget of its own names it here rather than as a timed `signal`, so the
+   *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+  readonly deadlineMs?: number | undefined;
+  readonly writeRetry?: DispatchWriteRetry | undefined;
+  readonly sleep?: Sleep | undefined;
+  /** Whether a request a Dispatch process answered with no route for it is asked again
+   *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
+   *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
+   *  of its own to a missing route and wants it at once, rather than after the waits of
+   *  `NO_ROUTE_RETRY_DELAYS_MS`. */
+  readonly retryNoRoute?: boolean | undefined;
+  /** Send no write: every request but a GET or a HEAD throws `DispatchWriteHeld` and sends
+   *  nothing, before it presents the credential. */
+  readonly holdWrites?: boolean | undefined;
+  /** Whether a person typed the command this client serves (`DISPATCH_PERSON_TYPED=1`, which the
+   *  `dispatch` command reads once at start): each write then carries
+   *  `DISPATCH_PERSON_TYPED_HEADER: 1`, and Dispatch posts it at once with no review, counted
+   *  apart. The client never reads the environment for it; a plugin's own client passes nothing. */
+  readonly personTyped?: boolean | undefined;
 }
 
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
@@ -804,8 +925,10 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   whatever this process knows of the layer, a captive portal's 200 page for one; or it carried no
  *   key back from a Dispatch this process knows runs the keyed layer (`layerKnown`), whose every
- *   answer to a keyed write carries the key (`keyedWrites`, request_keys.go). A 2xx whose body is
- *   not the JSON it says it is was cut short on the way (`body-malformed`).
+ *   answer to a keyed write carries the key (`keyedWrites`, request_keys.go), but for the answer
+ *   of a write Dispatch kept beside a held text (`keptAnswer`): Dispatch keeps an upload to a held
+ *   issue before that layer runs (`routeHandler`, server.go), so that 202 carries no key. A 2xx
+ *   whose body is not the JSON it says it is was cut short on the way (`body-malformed`).
  * - Two refusals are read by their codes whatever came back with them, since Dispatch makes both
  *   before any handler or its keyed layer runs: its `401 BROKER_TOKEN_NOT_ACTIVE`
  *   (`brokerTokenActor`), a dead token to present afresh where `canTellDeadToken` (the credential
@@ -821,7 +944,8 @@ function answerEvent(
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
     if (answer.malformed) return "body-malformed";
-    return !answer.echoed && layerKnown ? "foreign-2xx" : "applied";
+    if (answer.echoed || !layerKnown) return "applied";
+    return keptAnswer(status, answer.json?.value) === undefined ? "foreign-2xx" : "applied";
   }
   if (status >= 300 && status < 400) return "redirect";
   if (status === 401 && answer.code === BROKER_TOKEN_NOT_ACTIVE) {
@@ -988,6 +1112,12 @@ function reachesDispatch(status: number): boolean {
   return status >= 500;
 }
 
+/** Whether `method` is a read, a GET or a HEAD: the request `holdWrites` sends and the write
+ *  headers mark nothing on (`#holdUnlessRead`, `#writeHeaders`). */
+function isReadMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD";
+}
+
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
@@ -1017,6 +1147,10 @@ export class DispatchClient {
    * client's life the write began.
    */
   readonly #madeAt: number;
+  /** `DispatchClientOptions.holdWrites`. */
+  readonly #holdWrites: boolean;
+  /** `DispatchClientOptions.personTyped`. */
+  readonly #personTyped: boolean;
   /** When the client's own deadline ends, on the process's monotonic clock, which the deadline's
    *  timer keeps too: the time a credential is given to present is read off it
    *  (`#credentialSignal`). */
@@ -1035,21 +1169,7 @@ export class DispatchClient {
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
-    options: {
-      readonly signal?: AbortSignal | undefined;
-      /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
-       *  maker with a budget of its own names it here rather than as a timed `signal`, so the
-       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
-      readonly deadlineMs?: number | undefined;
-      readonly writeRetry?: DispatchWriteRetry | undefined;
-      readonly sleep?: Sleep | undefined;
-      /** Whether a request a Dispatch process answered with no route for it is asked again
-       *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
-       *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
-       *  of its own to a missing route and wants it at once, rather than after the waits of
-       *  `NO_ROUTE_RETRY_DELAYS_MS`. */
-      readonly retryNoRoute?: boolean | undefined;
-    } = {}
+    options: DispatchClientOptions = {}
   ) {
     this.#credential = credential;
     // Its user info held, as the Envoy client's is (`holdUrlUserinfo`).
@@ -1087,6 +1207,8 @@ export class DispatchClient {
     this.#sleep = options.sleep ?? sleep;
     this.#retryNoRoute = options.retryNoRoute ?? true;
     this.#madeAt = this.#now();
+    this.#holdWrites = options.holdWrites === true;
+    this.#personTyped = options.personTyped === true;
   }
 
   /** The secret this client presents, which an excerpt of someone else's answer redacts; "" while
@@ -1099,8 +1221,12 @@ export class DispatchClient {
    * Creates an issue. `created` is whether this call made one (Dispatch's 201); false (its 200)
    * means Dispatch already holds the issue `external` names and answered with that issue.
    */
-  async issue(input: CreateIssueInput): Promise<Advised<Issue> & { created: boolean }> {
-    const answer = await this.#jsonAnswer<Advised<Issue>>("POST", ["api", "v1", "issues"], input);
+  async issue(input: CreateIssueInput): Promise<Holdable<Advised<Issue>> & { created: boolean }> {
+    const answer = await this.#jsonAnswer<Holdable<Advised<Issue>>>(
+      "POST",
+      ["api", "v1", "issues"],
+      input
+    );
     return { ...answer.payload, created: answer.status === 201 };
   }
 
@@ -1167,6 +1293,42 @@ export class DispatchClient {
       { writes: false }
     );
     return payload.markdown;
+  }
+
+  /** `GET /api/v1/settings/writing-rules`: whether the dispatch command refuses an agent's first
+   *  write to show the written rules, and the rule sets it shows beside them; null from a server
+   *  older than the route, which has no refusal: once every attempt met no route
+   *  (`DispatchNoRouteError`), or at once from a client built with `retryNoRoute: false`
+   *  (`isNoRoute`). */
+  async writingRulesSettings(): Promise<WritingRulesSettings | null> {
+    try {
+      return await this.#json("GET", ["api", "v1", "settings", "writing-rules"]);
+    } catch (error) {
+      if (isNoRoute(error) || error instanceof DispatchNoRouteError) return null;
+      throw error;
+    }
+  }
+
+  /** `POST /api/v1/writing-rules`: the written rules for the reader of a write not sent yet, its
+   *  `route` ("<method> <path>") and the JSON `body` it would send. The route writes nothing. */
+  async writingRules(input: WritingRulesInput): Promise<WritingRulesResponse> {
+    return this.#json("POST", ["api", "v1", "writing-rules"], input);
+  }
+
+  /** `GET /api/v1/held/{id}`: a text the reviewer holds, which no person sees until it posts. */
+  async getHeld(id: string): Promise<HeldRead> {
+    return this.#json("GET", ["api", "v1", "held", id]);
+  }
+
+  /** `PATCH /api/v1/held/{id}`: the writer's edit of its held text, which the reviewer reads again. */
+  async editHeld(id: string, input: HeldEditInput): Promise<HeldRead> {
+    return this.#json("PATCH", ["api", "v1", "held", id], input);
+  }
+
+  /** `PUT /api/v1/held/{id}/state {state: "posted"}`: the writer posts its held text as written,
+   *  with its reason. The same call again, once the text posted so, answers it as it stands. */
+  async postHeld(id: string, input: Omit<HeldStateInput, "state">): Promise<HeldRead> {
+    return this.#json("PUT", ["api", "v1", "held", id, "state"], { ...input, state: "posted" });
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
@@ -1322,7 +1484,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Holdable<Advised<AskWithTrees>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1666,7 +1828,10 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
-  async comment(issue: string, input: CreateCommentInput): Promise<Advised<CommentWriteResponse>> {
+  async comment(
+    issue: string,
+    input: CreateCommentInput
+  ): Promise<Holdable<Advised<CommentWriteResponse>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
@@ -1693,7 +1858,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Holdable<Advised<AskWithTrees>>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1703,7 +1868,7 @@ export class DispatchClient {
       readonly body?: string;
       readonly replace_with: string;
     }
-  ): Promise<Advised<Comment>> {
+  ): Promise<Holdable<Advised<Comment>>> {
     const { replace_with, ...comment } = input;
     return this.#json(
       "POST",
@@ -1722,7 +1887,7 @@ export class DispatchClient {
   async artifactComment(
     id: string,
     input: CreateCommentInput
-  ): Promise<Advised<CommentWriteResponse>> {
+  ): Promise<Holdable<Advised<CommentWriteResponse>>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], input);
   }
 
@@ -1732,7 +1897,7 @@ export class DispatchClient {
       readonly body?: string;
       readonly replace_with: string;
     }
-  ): Promise<Advised<Comment>> {
+  ): Promise<Holdable<Advised<Comment>>> {
     const { replace_with, ...comment } = input;
     return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], {
       ...comment,
@@ -1740,7 +1905,7 @@ export class DispatchClient {
     });
   }
 
-  async message(issue: string, input: CreateMessageInput): Promise<Advised<Message>> {
+  async message(issue: string, input: CreateMessageInput): Promise<Holdable<Advised<Message>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"],
@@ -1770,7 +1935,7 @@ export class DispatchClient {
     id: string,
     input: MessageReplyInput,
     options: { readonly followUp?: boolean } = {}
-  ): Promise<MessageReplyResult> {
+  ): Promise<Holdable<MessageReplyResult>> {
     return this.#json(
       "POST",
       ["api", "v1", "messages", id, "reply"],
@@ -1785,20 +1950,20 @@ export class DispatchClient {
    * body names the session as `actor` and the `attempt`). `followUp` is `messageReply`'s own
    * option: the attempt is settled by the first reply Dispatch takes, so a second answer to it -
    * the output a waiting reply promised - is posted only when it asks (`?follow_up=true`).
+   * `generated` marks text the plugin generated rather than an agent wrote with
+   * `DISPATCH_GENERATED_TEXT_HEADER`, which these two routes read and every other route ignores.
    */
   async deliveryReply(
     resource: "message" | "comment",
     id: string,
     input: Readonly<Record<string, unknown>>,
-    options: { readonly followUp?: boolean } = {}
+    options: { readonly followUp?: boolean; readonly generated?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json(
-      "POST",
-      ["api", "v1", collection, id, "reply"],
-      input,
-      options.followUp === true ? { follow_up: "true" } : undefined
-    );
+    await this.#jsonAnswer("POST", ["api", "v1", collection, id, "reply"], input, {
+      query: options.followUp === true ? { follow_up: "true" } : undefined,
+      writeHeaders: options.generated === true ? { [DISPATCH_GENERATED_TEXT_HEADER]: "1" } : {},
+    });
   }
 
   async getMessage(issue: string, id: string): Promise<MessageRead> {
@@ -2100,15 +2265,25 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       readonly key?: string | undefined;
       readonly writes?: boolean;
+      /** Headers a write (POST or PATCH) sends on every attempt beside the client's own. */
+      readonly writeHeaders?: Readonly<Record<string, string>>;
     } = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, writes = true } = options;
+    const { query, signal, key, writes = true, writeHeaders } = options;
     const url = this.#url(path, query);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
     const write = this.#writeCall(method, url, key, writes);
     if (write !== undefined) {
-      const answer = await this.#write(method, url, encoded, "application/json", signal, write);
+      const answer = await this.#write(
+        method,
+        url,
+        encoded,
+        "application/json",
+        signal,
+        write,
+        writeHeaders
+      );
       return { status: answer.response.status, payload: this.#payloadOf<T>(method, url, answer) };
     }
     return this.#noRoute(async () => {
@@ -2231,8 +2406,32 @@ export class DispatchClient {
     return (await this.#sendOnce(method, url, body, accept, signal)).answer;
   }
 
-  /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+  /** Throws `DispatchWriteHeld` for a request a client made with `holdWrites` would send that is
+   *  not a GET or a HEAD, before it presents the credential, so nothing is sent. */
+  #holdUnlessRead(method: string, url: string, body: EncodedBody | undefined): void {
+    if (this.#holdWrites && !isReadMethod(method)) {
+      throw new DispatchWriteHeld(
+        method,
+        url,
+        typeof body?.content === "string" ? body.content : null
+      );
+    }
+  }
+
+  /** The headers every request that is not a GET or a HEAD carries, and nothing for a read:
+   *  `DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`, since this client reads the `202` of a write Dispatch
+   *  keeps beside a held text (`DispatchWriteKept`), which Dispatch answers `409 HELD_TEXT` to a
+   *  write without it; and `DISPATCH_PERSON_TYPED_HEADER` from a client made with `personTyped`. */
+  #writeHeaders(method: string): Readonly<Record<string, string>> {
+    if (isReadMethod(method)) return {};
+    return {
+      [DISPATCH_ACCEPTS_KEPT_WRITE_HEADER]: "1",
+      ...(this.#personTyped ? { [DISPATCH_PERSON_TYPED_HEADER]: "1" } : {}),
+    };
+  }
+
+  /** One request of a read, a PUT or a DELETE (`#send`), presenting the credential for it, and
+   *  the headers it presented; `signal` aborts it beside the client's own signal. */
   async #sendOnce(
     method: string,
     url: string,
@@ -2240,6 +2439,7 @@ export class DispatchClient {
     accept: string,
     signal: AbortSignal | undefined
   ): Promise<{ readonly answer: Response; readonly presented: Readonly<Record<string, string>> }> {
+    this.#holdUnlessRead(method, url, body);
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
     // registration stops at it, naming the session, and one whose renewal goes unanswered answers
@@ -2257,6 +2457,7 @@ export class DispatchClient {
       headers: {
         Accept: accept,
         ...(body === undefined ? {} : { "Content-Type": body.type }),
+        ...this.#writeHeaders(method),
         ...presented,
       },
       signal: limit,
@@ -2297,6 +2498,10 @@ export class DispatchClient {
    * made. A failing answer that echoed the request's key is itself the knowledge that Dispatch
    * runs the keyed layer; Dispatch's own refusal with no echo sets aside what the process
    * remembers, and the write asks `/healthz` afresh.
+   * `extraHeaders` go on every attempt beside the client's own. A client made with `holdWrites`
+   * sends nothing and throws `DispatchWriteHeld` here; every attempt carries the write headers
+   * (`#writeHeaders`), `DISPATCH_PERSON_TYPED_HEADER` among them for a client made with
+   * `personTyped`.
    */
   async #write(
     method: string,
@@ -2304,11 +2509,18 @@ export class DispatchClient {
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined,
-    write: WriteCall
+    write: WriteCall,
+    extraHeaders: Readonly<Record<string, string>> = {}
   ): Promise<WriteAnswer> {
+    this.#holdUnlessRead(method, url, body);
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     const { key, progress } = write;
-    const headers: Record<string, string> = { Accept: accept, [IDEMPOTENCY_KEY_HEADER]: key };
+    const headers: Record<string, string> = {
+      ...extraHeaders,
+      ...this.#writeHeaders(method),
+      Accept: accept,
+      [IDEMPOTENCY_KEY_HEADER]: key,
+    };
     if (body !== undefined) headers["Content-Type"] = body.type;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
@@ -2780,7 +2992,8 @@ export class DispatchClient {
    * read as `open-asks`' answer told a session that nothing waited on it). A write Dispatch made
    * whose answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading
    * `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a
-   * refusal nor a payload.
+   * refusal nor a payload. A write Dispatch kept beside a held text, to run right after it posts
+   * (`keptAnswer`), is a `DispatchWriteKept`: its answer is no payload of the route's either.
    */
   async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
@@ -2828,6 +3041,14 @@ export class DispatchClient {
         response.status,
         method,
         requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
+      );
+    }
+    const kept = isReadMethod(method) ? undefined : keptAnswer(response.status, payload);
+    if (kept !== undefined) {
+      throw new DispatchWriteKept(
+        method,
+        requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING),
+        kept
       );
     }
     return payload as T;

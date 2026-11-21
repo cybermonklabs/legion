@@ -133,7 +133,13 @@ type jsonArtifactUpload struct {
 	Summary      string                  `json:"summary"`
 	Actor        *model.Actor            `json:"actor"`
 	Precondition *model.EditPrecondition `json:"precondition"`
+	// unreadFile is the media type of an uploaded file the writing check does not read, one not
+	// stored as a Markdown document; "" for every upload it reads. It is no member of the body.
+	unreadFile string
 }
+
+// unreadUpload answers the media type of an uploaded file the writing check does not read.
+func (upload jsonArtifactUpload) unreadUpload() string { return upload.unreadFile }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	issueKey := r.PathValue("key")
@@ -155,7 +161,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
 // keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
 // layer's 400, which spools no body either and refuses the request's form before anything is
-// looked up.
+// looked up. A session's upload to a held issue, which no issues row holds until it posts, goes on
+// to the keyed layer and to awaitHeldTarget inside it, which keeps it beside the held issue under
+// its key (or answers 409 HELD_TEXT); a person's is refused as an upload to an issue nobody holds
+// is, since a person learns nothing of a held text.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -181,6 +190,17 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		if refusal == nil {
 			handler(w, r)
 			return
+		}
+		if !human {
+			parent, err := s.heldTargetOf(r, "key")
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if parent != nil {
+				handler(w, r)
+				return
+			}
 		}
 		// Only the issue's own refusal (closed, missing) stands aside for the key: a check that
 		// failed is answered as it always was.
@@ -290,8 +310,49 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 			return
 		}
 	}
+	if !s.checkUploadWriting(w, r, input, actor, kind, mediaType, target) {
+		return
+	}
 	input.contentType = storedType
 	s.storeArtifact(w, r, input, actor, kind, target)
+}
+
+// checkUploadWriting runs the writing check over an upload before anything of it is stored: a
+// Markdown document's text, read as inline content is, and the summary, which is read on a file
+// upload too. A new version of a document uploaded whole is read for the blocks it adds to the
+// newest saved version alone. Any other file is not read, and its record says so
+// (exempt_unread_upload). It answers whether the upload goes on: false where the read of the
+// document's newest version failed, which it answered.
+func (s *server) checkUploadWriting(
+	w http.ResponseWriter, r *http.Request, input artifactUploadInput, actor model.Actor, kind, mediaType string,
+	target artifactTarget,
+) bool {
+	checked := jsonArtifactUpload{Summary: input.summary}
+	if kind != "doc" {
+		checked.unreadFile = mediaType
+		s.writingCheck(r, actor, checked)
+		return true
+	}
+	content := string(input.content)
+	if s.deps.WritingCheck.on() {
+		existing, err := lookupArtifactByNameOrSlug(r.Context(), s.deps.Store.Pool, target, input.name)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			s.writeHandlerError(w, err)
+			return false
+		case existing.Kind == "doc":
+			previous, err := s.previousDocumentMarkdown(r.Context(), existing.ID)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return false
+			}
+			content = addedMarkdownBlocks(previous, content)
+		}
+	}
+	checked.Content = &content
+	s.writingCheck(r, actor, checked)
+	return true
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -924,6 +985,11 @@ func (s *server) storeArtifact(
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), appendedEvents(published...)...)
+	if kind == "doc" {
+		// An agent's document version is saved at once and reviewed after the save
+		// (DISPATCH_REVIEWER_DOCUMENTS=after), its findings sent to the writer.
+		s.reviewDocumentAfterSave(r, actor, input, artifact.ID, artifact.IssueKey, documentMarkdown)
+	}
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
@@ -1310,6 +1376,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.writingCheck(r, actor, input)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1399,6 +1466,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// An edit adds only what its operations write (with, markdown), and the check reads only
+	// that: the text an operation finds is the document's already.
+	s.writingCheck(r, actor, input)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1479,6 +1549,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			}
 			published = append(published, event)
 		}
+	} else {
+		// Such a batch writes none of the words the check read, so its 200 records no row of the
+		// check.
+		dropWritingCheck(r)
 	}
 	// The approval this edit's own version superseded, read in the edit's read phase, where that
 	// version and any carry it made are queued: a person's approval of a spec is Legion's design
@@ -1520,6 +1594,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), appendedEvents(published...)...)
+	if edit.Changed {
+		// An agent's document version is saved at once and reviewed after the save
+		// (DISPATCH_REVIEWER_DOCUMENTS=after), its findings sent to the writer.
+		s.reviewDocumentAfterSave(r, actor, input, artifact.ID, artifact.IssueKey, "")
+	}
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}

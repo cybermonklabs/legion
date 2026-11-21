@@ -68,6 +68,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
+import { defineKey, documentPlace, useDocumentDefine } from "./document-define";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -149,11 +150,12 @@ const SCHEMA_REFUSAL_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
 const NEWER_CONTENT_RELOAD_MS = 60_000;
 
 /** What the live editor lets the reader do. A closed issue's document takes comments by quote (the
- * bar's Comment alone): the server admits every socket on a closed issue read-only, so its
- * admission cannot say whether this editor's schema is outdated too. On an open issue a read-only
- * admission means it is, and the document takes nothing until a reload, since this editor's
- * reading of it may not be the server's. A reading column (`page` false) takes neither edits nor
- * comments: a reader who clicks into the text beside a list is only reading. */
+ * bar's Comment, beside Define, which writes nothing): the server admits every socket on a closed
+ * issue read-only, so its admission cannot say whether this editor's schema is outdated too. On an
+ * open issue a read-only admission means it is, and the document takes nothing until a reload,
+ * since this editor's reading of it may not be the server's. A reading column (`page` false)
+ * takes neither edits nor comments: a reader who clicks into the text beside a list is only
+ * reading. */
 function editorAccess(
   page: boolean,
   isClosed: boolean,
@@ -421,6 +423,12 @@ export function ProofDocument({
       ),
     [asksQuery.data, artifact.id]
   );
+  // Define reads words where they stand: the document, of an issue or a project, and its
+  // decision blocks' asks for words selected in one. A past version shown below defines its own
+  // (`VersionView`).
+  const definePlace = documentPlace(artifact);
+  const definable = definePlace !== undefined;
+  const { define, popover: definition } = useDocumentDefine(root, definePlace, blockAsks);
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
@@ -622,12 +630,18 @@ export function ProofDocument({
   // comment composer, an ask card's field, a read-only or historical document, which cannot hold
   // focus - the chord does nothing. `inEditable` because the editor is where it is pressed. A
   // document is its own scope, since the issue page and a project's document page both render
-  // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
-  // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // one. A pane pushes no scope: the scope stack belongs to the page the reader is on, and a
+  // pane's editor takes no edits, so it would never offer Comment. Define's `d` is offered on
+  // both, in the page's scope - the document's, or the Inbox's for a pane - while words of this
+  // document are selected outside any text field, and its chord while the editor has the focus.
+  /** Whether this editor takes edits, has the focus and holds a selection: where its chords act. */
+  const editingSelection = () => {
+    const view = editorRef.current?.view;
+    return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
+  };
   useKeymapScope(page ? "document" : null);
-  useKeymap(
-    "document",
-    page
+  useKeymap(page ? "document" : "inbox", [
+    ...(page
       ? [
           {
             id: "comment-on-selection",
@@ -635,14 +649,25 @@ export function ProofDocument({
             keys: "$mod+Alt+m",
             label: "Comment on selection",
             run: () => editorRef.current?.commentOnSelection(),
-            when: () => {
-              const view = editorRef.current?.view;
-              return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
-            },
+            when: editingSelection,
           },
         ]
-      : []
-  );
+      : []),
+    ...(page && definable
+      ? [
+          {
+            id: "define-selection-in-editor",
+            inEditable: true,
+            // Free in browsers, macOS and Dispatch (⌘⌥D is the Dock's); Y is Google Docs' Define key.
+            keys: "$mod+Alt+y",
+            label: "Define the selected words",
+            run: () => editorRef.current?.defineSelection(),
+            when: editingSelection,
+          },
+        ]
+      : []),
+    ...(definable ? [defineKey(root, () => editorRef.current)] : []),
+  ]);
   useEffect(() => {
     setOpenDecisionIndex((current) => Math.min(current, Math.max(openBlockAsks.length - 1, 0)));
   }, [openBlockAsks.length]);
@@ -945,6 +970,7 @@ export function ProofDocument({
                     : connection.awareness,
                 heatMapMode: "hidden",
                 onAskBlockHosts: setAskBlockHosts,
+                onDefine: definable ? define : undefined,
                 onMarkAction: (action) => {
                   switch (action.kind) {
                     case "comment":
@@ -1044,6 +1070,8 @@ export function ProofDocument({
     anchoredBlockId,
     artifact.id,
     createEditor,
+    define,
+    definable,
     documentRef,
     focusInEditor,
     followBlockHash,
@@ -1105,6 +1133,7 @@ export function ProofDocument({
         open={isNameDialogOpen}
         saving={nameVersion.isPending}
       />
+      {definition}
       {nameVersion.unanswered === undefined ? null : (
         <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
       )}
@@ -1331,7 +1360,9 @@ export function ProofDocument({
             artifactId={artifact.id}
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
+            definePlace={definePlace}
             highlight={highlight}
+            keyScope={page ? "document" : "inbox"}
             owner={owner.kind === "document" ? owner : undefined}
             version={version}
           />

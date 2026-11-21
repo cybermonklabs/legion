@@ -282,7 +282,7 @@ test("changing a decision block's answer rewrites the block in the document", as
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = block.locator("article[data-testid^=ask-]");
     await expect(hosted).toBeVisible();
-    await hosted.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    await hosted.getByRole("button", { name: "Add a note" }).click();
     await hosted.getByLabel("Your answer").fill("Release tonight.");
     await hosted.getByRole("radio", { name: "Ship Release it" }).check();
     await hosted.getByRole("button", { exact: true, name: "Answer" }).click();

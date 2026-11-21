@@ -499,13 +499,20 @@ class UnsupportedEnvoyToolError extends Error {
  * Answer a targeted Dispatch delivery, on the sender's behalf: the reply this session has for it,
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
- * already settled, which every answer after the first needs (`postDeliveryReply`).
+ * already settled, which every answer after the first needs (`postDeliveryReply`). `generated`
+ * marks text this plugin wrote itself rather than the agent, which goes out with the
+ * generated-text header, `Dispatch-Generated-Text: 1`.
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
   configFile: SessionConfigFile,
   delivery: DispatchDelivery,
-  result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
+  result: {
+    readonly body?: string
+    readonly error?: string
+    readonly followUp?: boolean
+    readonly generated?: boolean
+  },
 ): Promise<void> {
   const config = sessionDispatchSettings(configFile, process.env, {
     cwd: identity.directory,
@@ -606,8 +613,10 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
+        // This plugin's own error text, not the agent's words: posted as generated.
         return postDispatchReply(input.identity, input.configFile, rejected, {
           error: "Invalid Dispatch targeted delivery frame",
+          generated: true,
         }).then(
           () => false,
           (error: unknown) => {

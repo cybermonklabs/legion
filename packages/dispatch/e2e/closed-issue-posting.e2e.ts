@@ -235,8 +235,8 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
 });
 
 // A closed issue's document takes no edit, so the browser writes no mark: the selection bar offers
-// Comment alone, the comment names its text by quote, the server writes the mark, and the thread
-// arrives in the margin.
+// Comment, and Define, which writes nothing either; the comment names its text by quote, the
+// server writes the mark, and the thread arrives in the margin.
 test("a margin comment on a closed issue's spec posts with its quote @phone", async ({
   browser,
 }) => {
@@ -248,7 +248,7 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
     await page.goto(`/issues/${issueKey}/spec`);
     await expect(documentEditor(page)).toContainText(spec);
     await selectEditorQuote(page, "brown");
-    await expect(actionBar(page).getByRole("button")).toHaveText(["Comment"]);
+    await expect(actionBar(page).getByRole("button")).toHaveText(["Comment", "Define"]);
     await barAction(page, "Comment");
     const margin = composer(page);
     await expect(margin.locator("blockquote")).toHaveText("brown");
@@ -274,8 +274,9 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
 });
 
 // The issue can close while a person has its spec open with the editor focused - the merge closes
-// it - and the open page goes over to the closed document's Comment alone. A selection made then
-// is offered Comment, as it is on a page loaded after the close, on a phone as on a desktop.
+// it - and the open page goes over to the closed document's bar, Comment and Define with no mark
+// to write. A selection made then is offered those two, as it is on a page loaded after the close,
+// on a phone as on a desktop.
 test("a margin comment on a spec whose issue closed while the page was open posts with its quote @phone", async ({
   browser,
 }) => {
@@ -298,7 +299,7 @@ test("a margin comment on a spec whose issue closed while the page was open post
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
 
     await selectEditorQuote(page, "lazy");
-    await expect(actionBar(page).getByRole("button")).toHaveText(["Comment"]);
+    await expect(actionBar(page).getByRole("button")).toHaveText(["Comment", "Define"]);
     await barAction(page, "Comment");
     const margin = composer(page);
     await expect(margin.locator("blockquote")).toHaveText("lazy");

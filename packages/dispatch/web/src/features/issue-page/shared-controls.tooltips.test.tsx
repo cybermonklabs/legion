@@ -71,10 +71,13 @@ import {
   classOf,
   colourOf,
   DECISIONS_ID,
+  definePopover,
+  definitionOf,
   doc,
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  HandOnPickerOpen,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -85,6 +88,8 @@ import {
   priorities,
   proofDocument,
   RAW_COLOR_PATTERN,
+  REWRITE_FAILED_REASON,
+  rewriteBadges,
   SPEC_ID,
   STALLED_SESSION,
   type Surface,
@@ -192,9 +197,12 @@ function githubAnswer(body: unknown): Response {
   return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 }
 
-/** The `api` methods the mounts read, each answered for the whole file and restored after each
- *  test: a read no stub answers reaches the network, which fails the test (`setup.ts`). */
+/** The `api` methods the mounts read, and the one write a mount makes as it is drawn (Define's,
+ *  which asks for its definition as it opens), each answered for the whole file and restored
+ *  after each test: a request no stub answers reaches the network, which fails the test
+ *  (`setup.ts`). */
 interface Stubs {
+  readonly defineWords: Mock<typeof api.defineWords>;
   readonly getArchitecture: Mock<typeof api.getArchitecture>;
   readonly getArtifact: Mock<typeof api.getArtifact>;
   readonly getArtifactBlocks: Mock<typeof api.getArtifactBlocks>;
@@ -220,6 +228,7 @@ let stubs: Stubs;
 
 beforeEach(() => {
   stubs = {
+    defineWords: spyOn(api, "defineWords"),
     getArchitecture: spyOn(api, "getArchitecture"),
     getArtifact: spyOn(api, "getArtifact"),
     getArtifactBlocks: spyOn(api, "getArtifactBlocks"),
@@ -253,6 +262,7 @@ const originalClipboard = navigator.clipboard;
 /** Each stub's answer for a mount that asks nothing else of it; a mount that needs another
  *  answer sets it in its own `node` or `settle`, and the next mount starts from these again. */
 function answerDefaults(): void {
+  stubs.defineWords.mockImplementation(async (input) => definitionOf(input.words?.[0] ?? ""));
   stubs.getArchitecture.mockResolvedValue(architecture);
   stubs.getArtifact.mockImplementation(async (id) =>
     id === specDocument.id ? specDocument : notes
@@ -428,18 +438,13 @@ function pressing(name: string | RegExp) {
 
 /** The roots of what `AskCard`'s children of other files draw (the rule that no shared control
  *  sets a `title` leaves them out, since the new page draws no `AskCard`): each option row
- *  (`AskChoiceRow`, the label inside the options' fieldset), the decline control
- *  (`DeclineControl`, around its button), the recipients (`AskRecipients`), the replies
- *  (`AskThread`) and the question's Markdown body. */
+ *  (`AskChoiceRow`, the label inside the options' fieldset), the recipients (`AskRecipients`), the
+ *  replies (`AskThread`) and the question's Markdown body. */
 function askCardChildren(root: HTMLElement): Element[] {
-  const declines = within(root)
-    .queryAllByRole("button", { name: "Decline to answer" })
-    .flatMap((button) => (button.parentElement === null ? [] : [button.parentElement]));
   return [
     ...root.querySelectorAll(
       "form fieldset > label, section[aria-label='Recipients'], section[aria-label='Replies'], .dispatch-markdown"
     ),
-    ...declines,
   ];
 }
 
@@ -453,6 +458,17 @@ function documentEditor(root: HTMLElement): Element[] {
 function markdownBodies(root: HTMLElement): Element[] {
   return [...root.querySelectorAll(".dispatch-markdown")];
 }
+
+/** What Define's mounts draw: the record's meaning of the words, the asking agent's answer, why
+ *  Dispatch gave no meaning for other words, and why it refused to define a third. */
+const DEFINED = "The way a change reaches production after review.";
+const AGENT_DEFINED = "The path that ships on Thursday, after the freeze.";
+const DEFINE_FAILURE = "The model gave no meaning for these words.";
+const DEFINE_REFUSAL = "These words are not in the question.";
+
+/** The people the hand-on picker lists, the assignee first. */
+const ASSIGNEE = "bob@example.com";
+const ASKED_OF = "alice@example.com";
 
 const MOUNTS: readonly Mount[] = [
   {
@@ -646,7 +662,8 @@ const MOUNTS: readonly Mount[] = [
       await user.click(
         within(view.container).getByRole("button", { expanded: false, name: /Implementer/ })
       );
-      await within(view.container).findByRole("button", { name: /Copy session ID/ });
+      // The session's handles are in the asker's popover, which is drawn in the page's body.
+      await within(view.baseElement).findByRole("button", { name: /Copy session ID/ });
     },
   },
   {
@@ -663,6 +680,57 @@ const MOUNTS: readonly Mount[] = [
       );
     },
     outside: askCardChildren,
+  },
+  // The ask card's children that a press of the card draws: its rewrite's badge, its hand-on
+  // picker, and Define.
+  {
+    name: "RewriteBadge, rewriting, rewritten, the original shown and failed",
+    node: rewriteBadges,
+  },
+  {
+    name: "AskHandOnPicker, the assignee first and the person asked now ticked",
+    node: () => {
+      stubs.listUsers.mockResolvedValue([{ login: ASKED_OF }, { login: ASSIGNEE }]);
+      return <HandOnPickerOpen assignee={ASSIGNEE} waitingOn={ASKED_OF} />;
+    },
+    values: [ASSIGNEE, ASKED_OF],
+  },
+  {
+    name: "DefinePopover, a meaning with its links and the asking agent's answer",
+    node: () => {
+      stubs.defineWords.mockImplementation(async () =>
+        definitionOf("release path", {
+          agent: { answer: AGENT_DEFINED, session: LIVE_SESSION, state: "answered" },
+          definitions: [
+            {
+              links: ["dispatch://CORE-1/spec", "https://example.com/notes"],
+              meaning: DEFINED,
+              words: "release path",
+            },
+          ],
+        })
+      );
+      return definePopover("release path");
+    },
+    values: [DEFINED, "https://example.com/notes", AGENT_DEFINED],
+  },
+  {
+    name: "DefinePopover, words Dispatch gave no meaning for, and words it refused to define",
+    node: () => {
+      stubs.defineWords.mockImplementation(async (input) => {
+        if (input.words?.[0] === "stage") {
+          return definitionOf("stage", { definitions: [], failure: DEFINE_FAILURE });
+        }
+        throw new ApiError(422, { code: "DEFINITION_INPUT", error: DEFINE_REFUSAL });
+      });
+      return (
+        <>
+          {definePopover("stage")}
+          {definePopover("freeze")}
+        </>
+      );
+    },
+    values: [DEFINE_FAILURE, DEFINE_REFUSAL],
   },
   {
     name: "IssuePriorityLine, its own priority and an inherited one",
@@ -1395,9 +1463,10 @@ const VACANCY =
 
 /**
  * Every `title` each mount carries on `main`, in document order, as `main`'s files write them
- * (read at the merge-base), and none for a mount whose files set none. The three mounts of
- * `MOUNTS` whose instants move with the clock are read here through their twins at fixed
- * instants.
+ * (read at the merge-base), and none for a mount whose files set none. The exception is a title
+ * INFRA-3231 added, which its row's comment names: the ask card's children, which `main` does not
+ * have, and the ask card's split button. The three mounts of `MOUNTS` whose instants move with
+ * the clock are read here through their twins at fixed instants.
  */
 const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
@@ -1440,6 +1509,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-1",
+      // The split button's chevron, which `main`'s card does not have (INFRA-3231): the title it
+      // draws today, which it keeps outside `NoTooltips`.
+      "More actions",
       "Copy session ID session-live-0001",
       "Copy session title Implementer",
       "Copy tmux target legion:3",
@@ -1453,7 +1525,25 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The split button's chevron (INFRA-3231), as in the row above.
+      "More actions",
     ],
+  ],
+  // The ask card's children, which `main` does not have: the titles each draws today, which it
+  // keeps outside `NoTooltips`.
+  [
+    mountNamed("RewriteBadge, rewriting, rewritten, the original shown and failed"),
+    [
+      "Show the original wording (w)",
+      "Show the rewrite (w)",
+      `${REWRITE_FAILED_REASON} Try again (r)`,
+    ],
+  ],
+  [mountNamed("AskHandOnPicker, the assignee first and the person asked now ticked"), []],
+  [mountNamed("DefinePopover, a meaning with its links and the asking agent's answer"), []],
+  [
+    mountNamed("DefinePopover, words Dispatch gave no meaning for, and words it refused to define"),
+    [DEFINE_FAILURE, DEFINE_REFUSAL],
   ],
   [
     personAsksForApproval,
@@ -1462,6 +1552,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
       "Add a reason to send Request changes",
+      // The ask card's split button's chevron (INFRA-3231), as in the AskCard rows above.
+      "More actions",
     ],
   ],
   [
@@ -1816,6 +1908,31 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     },
     values: [LONG.login, LONG.handedOnBy, LONG.tmux],
   }),
+  withLongValues(
+    mountNamed("AskHandOnPicker, the assignee first and the person asked now ticked"),
+    {
+      node: () => {
+        stubs.listUsers.mockResolvedValue([{ login: LONG.login }, { login: LONG.handedOnBy }]);
+        return <HandOnPickerOpen assignee={LONG.handedOnBy} waitingOn={LONG.login} />;
+      },
+      values: [LONG.login, LONG.handedOnBy],
+    }
+  ),
+  withLongValues(
+    mountNamed("DefinePopover, a meaning with its links and the asking agent's answer"),
+    {
+      node: () => {
+        stubs.defineWords.mockImplementation(async () =>
+          definitionOf("release path", {
+            agent: { answer: LONG.reason, session: LIVE_SESSION, state: "answered" },
+            definitions: [{ links: [LONG.url], meaning: LONG.question, words: "release path" }],
+          })
+        );
+        return definePopover("release path");
+      },
+      values: [LONG.question, LONG.url, LONG.reason],
+    }
+  ),
   withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
     node: () => (
       <ApprovalSteps
@@ -2096,7 +2213,12 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  // The card's Answer, which the split button draws, and the card's children a press draws.
+  "features/inbox/AskHandOnPicker.tsx",
+  "features/inbox/AskSplitButton.tsx",
   "features/inbox/AskThread.tsx",
+  "features/inbox/DefinePopover.tsx",
+  "features/inbox/RewriteBadge.tsx",
   "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",
 ] as const;
@@ -2697,6 +2819,41 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     expect(wider?.textContent).toContain(STATE_LINES.subscription_wider);
     expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toHaveLength(0);
   });
+
+  // The ask card's rewrite badge, which `main` does not have, says what its tooltip says today as
+  // its description: why a rewrite failed and that a press tries again, and what a press of
+  // Rewritten or of Original shows.
+  await readDrawn(
+    mountNamed("RewriteBadge, rewriting, rewritten, the original shown and failed"),
+    "inside",
+    (view) => {
+      const scope = within(view.container);
+      for (const [name, description] of [
+        ["Rewritten", "Show the original wording (w)"],
+        ["Original", "Show the rewrite (w)"],
+        ["Rewrite failed", `${REWRITE_FAILED_REASON} Try again (r)`],
+      ] as const) {
+        expect(scope.getByRole("button", { description, name })).toBeTruthy();
+      }
+    }
+  );
+
+  // Define, which `main` does not have, draws why Dispatch gave no meaning for the words, or
+  // refused to define them, under what it says of them, where a `title` holds it today.
+  await readDrawn(
+    mountNamed("DefinePopover, words Dispatch gave no meaning for, and words it refused to define"),
+    "inside",
+    (view) => {
+      const scope = within(view.baseElement);
+      for (const [words, reason] of [
+        ["stage", DEFINE_FAILURE],
+        ["freeze", DEFINE_REFUSAL],
+      ] as const) {
+        const popover = scope.getByRole("dialog", { name: `What “${words}” means` });
+        expect(within(popover).getByText(reason)).toBeTruthy();
+      }
+    }
+  );
 });
 
 // Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
@@ -3395,14 +3552,14 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
           name: CONTROL_LABELS.unnamed_author,
         })
       );
-      await within(view.container).findByRole("button", { name: /Copy session ID/ });
+      await within(view.baseElement).findByRole("button", { name: /Copy session ID/ });
     },
   };
   await readDrawn(askedByNameless, "inside", (view) => {
     const asker = view.container.querySelector(`[data-agent-name="${nameless}"]`);
     expect(asker?.querySelector("button")?.textContent).toBe(CONTROL_LABELS.unnamed_author);
     expect(
-      within(view.container).getByRole("button", { name: `Copy session ID ${nameless}` })
+      within(view.baseElement).getByRole("button", { name: `Copy session ID ${nameless}` })
     ).toBeTruthy();
     expect(view.baseElement.innerHTML).not.toContain("session:");
   });

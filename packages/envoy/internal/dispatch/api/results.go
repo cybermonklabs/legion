@@ -151,6 +151,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The dry run writes nothing, so the check reads the record's words alone. readResultRequest
+	// opens no transaction, so the check still runs before any transaction, lock or write.
+	s.writingCheck(r, request.actor, request.input)
 	// The row keeps linkedCommitRepo, so the results read compares the result with the branches
 	// of that linked repository (comparisonReader, onNamedBranch), reads its pull requests
 	// through it (readThroughHead) and decides a `before_merge` result by it (commitStands):

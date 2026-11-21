@@ -135,7 +135,7 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 	left join (
 		select a.issue_key, count(*) as total
 		from asks a
-		where a.state = 'open' and a.issue_key in (select key from members)
+		where a.state = 'open' and ` + askNotHeld + ` and a.issue_key in (select key from members)
 		group by a.issue_key
 	) open_asks on open_asks.issue_key = i.key
 	where ` + priorityProjectFilter + `

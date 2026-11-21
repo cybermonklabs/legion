@@ -46,16 +46,24 @@ import {
   parseInboxSearch,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
+import {
+  DIALOG_SCOPE,
+  type KeyBinding,
+  type KeymapScope,
+  useKeymap,
+  useKeymapScope,
+} from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { quotableSelection, quoteReplyKey, quoteSelection } from "../threads/quote-reply";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
+import { ASKING_BACK_SELECTOR, askCardActions, useAskCardKeys } from "./ask-card-keys";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
@@ -122,10 +130,10 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
 
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
+/** The "Add a note" disclosure an `AskCard` folds its answer box behind in its compact variant -
+ *  the card a decision block hosts, which is what the reading column shows for a question written
+ *  as one - while it is still shut. The card carries the handle (`AskCard.tsx`), as it carries
+ *  `data-ask-answer` and `data-ask-option`. */
 const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
 
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */
@@ -769,11 +777,11 @@ export function Inbox({
    *  server does to the text they search. Written on every render below. */
   const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
   // And the same for a hand-on, whose control sits in the card rather than beside it
-  // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
-  // write starts, so without this the card holding the control would be unmounted before the
-  // server answered and a refusal would come back to a fresh card that never failed. The cards
-  // register through the context this list provides below (`hand-on-live.ts`), since one of
-  // them is the document page's own and takes no prop of this list's.
+  // (`useHeldHandOn` in `AskCard`): the optimistic `waiting_on_person` takes the row out of this
+  // list as the write starts, so without this the card holding the control would be unmounted
+  // before the server answered and a refusal would come back to a fresh card that never failed.
+  // The cards register through the context this list provides below (`hand-on-live.ts`), since
+  // one of them is the document page's own and takes no prop of this list's.
   //
   // Only an ask this list was drawing when the write began is held. That context reaches every
   // card under the Inbox, and many of them are not a listed row's own: the card of a Reply
@@ -1171,43 +1179,71 @@ export function Inbox({
   // has no row to fall back through - is one level out rather than a dead end.
   const pickerOrigin = useRef<string | null>(null);
   useKeymapScope(keymapScope);
-  useKeymap(keymapScope, [
-    // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
-    // With the reading column on, movement is the selection's: the column follows it, and the
-    // focus stays where the reader left it in the list.
+  // The selected question's card takes its keys first: the `ask` scope stands above the list's
+  // own. The drawer is a dialog, which consults its own scope alone, so there the card's keys
+  // go on the dialog's scope instead.
+  const cardScope: KeymapScope = keymapScope === DIALOG_SCOPE ? keymapScope : "ask";
+  useKeymapScope(cardScope === "ask" ? "ask" : null);
+  /** Whether the focus is in a dialog the list itself holds - a card's Decline to answer, drawn
+   *  in its row - which, as the innermost dialog, owns the keyboard: Escape closes it before
+   *  anything of the list under it. On the page a dialog's scope masks the list's keys already;
+   *  in the drawer both are the `dialog` scope's, so there the list's keys stand down for it. */
+  const inHeldDialog = () => {
+    const modal = closestMatching(document.activeElement, '[aria-modal="true"]');
+    return modal !== null && rowAround(modal) !== null;
+  };
+  /** The card the Inbox's card keys act on: the selected question's (`answerHand`), but none
+   *  while the focus is inside an ask card on a page that consults the `ask` scope, where that
+   *  card's own keys act on it (`AskCard`) - so one key never has two bindings acting at once.
+   *  In the drawer a card's own keys are never consulted, so the Inbox's act there, on the card
+   *  holding the focus, else on the focused row's. */
+  const cardHand = () =>
+    cardScope === "ask"
+      ? outsideAskCard()
+        ? answerHand()
+        : null
+      : inHeldDialog()
+        ? null
+        : (closestMatching(document.activeElement, "[data-ask-card]") ?? answerHand());
+  /** Whether the card in hand is asking back, where Escape returns its box to answering
+   *  (`ask-card-keys.ts`) and the list's own Escape waits. */
+  const askingBackInHand = () => cardHand()?.querySelector(ASKING_BACK_SELECTOR) != null;
+  /** Where `back` takes the reader one level out: from inside a row to the row, from a row off
+   *  it, and from the reading column to the row it shows. Escape's order is inner first: a card
+   *  asking back, then this, then the selection the rows were marked with (`clear-selection`). */
+  const backApplies = () =>
+    !askingBackInHand() &&
+    (rowAround(document.activeElement) !== null ||
+      (paneShown && focusInPane() && paneWayBack() !== null));
+  /** The list's own keys, which in the drawer stand down while a dialog it holds is open. */
+  const listKeys = (bindings: readonly KeyBinding[]): KeyBinding[] =>
+    keymapScope === DIALOG_SCOPE
+      ? bindings.map((binding) => ({
+          ...binding,
+          when: () => !inHeldDialog() && binding.when?.() !== false,
+        }))
+      : [...bindings];
+  const cardLead: KeyBinding[] = [
     {
-      id: "next",
-      keys: "j",
-      label: "Next row",
-      palette: false,
-      run: () => move(1),
-      when: () => rows().length > 0,
-    },
-    {
-      id: "previous",
-      keys: "k",
-      label: "Previous row",
-      palette: false,
-      run: () => move(-1),
-      when: () => rows().length > 0,
-    },
-    {
-      id: "arrows",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: `Next / previous row while ${arrowsWhen}`,
-      run: (event) => move(event.key === "ArrowDown" ? 1 : -1),
-      when: arrowsMove,
+      id: "option",
+      keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      label: "Pick an option",
+      run: (event) => {
+        const options = cardHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
+        options?.[Number(event.key) - 1]?.click();
+      },
+      when: () => cardHand()?.querySelector("[data-ask-option]") != null,
     },
     {
       id: "answer",
       keys: "Enter",
-      label: `Answer the ${acted} ask`,
+      label: "Put the cursor in the answer box",
       run: () => {
-        // A decision block's compact card folds its answer box behind "Add a note or answer in
-        // your own words"; Enter presses that disclosure, and the card lands the focus in the
-        // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column draws that compact card: from a row, and
-        // from a disclosure already open, the key goes straight to the box.
+        // A decision block's compact card folds its answer box behind "Add a note"; Enter
+        // presses that disclosure, and the card lands the focus in the box its own render
+        // reveals (`AskCard.tsx`) - the box does not exist in this tick, so nothing here could
+        // focus it. Only the column draws that compact card: from a row, and from a disclosure
+        // already open, the key goes straight to the box.
         const box = inAnswerHand("[data-ask-answer]");
         if (box === null && paneShown) {
           inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
@@ -1230,201 +1266,239 @@ export function Inbox({
               inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
           : inAnswerHand("[data-ask-answer]") !== null,
     },
-    {
-      id: "option",
-      keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-      label: `Select option 1–9 of the ${acted} ask`,
-      run: (event) => {
-        const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
-        options?.[Number(event.key) - 1]?.click();
+  ];
+  // The lead goes in with the card's other keys, in the help's order.
+  useAskCardKeys(cardHand, cardLead, cardScope);
+  // Quote reply on words of a thread the list or the column shows (`threads/quote-reply.ts`).
+  // The card in hand quotes its own question's words with its own `q`; in the drawer both are
+  // the dialog's scope, so this one stands down while the card's applies.
+  useKeymap(
+    keymapScope,
+    listKeys([
+      quoteReplyKey(
+        "Quote selected words in a reply",
+        quoteSelection,
+        () => askCardActions(cardHand())?.hasSelection() !== true && quotableSelection() !== null
+      ),
+    ])
+  );
+  useKeymap(
+    keymapScope,
+    listKeys([
+      // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
+      // With the reading column on, movement is the selection's: the column follows it, and the
+      // focus stays where the reader left it in the list.
+      {
+        id: "next",
+        keys: "j",
+        label: "Next row",
+        palette: false,
+        run: () => move(1),
+        when: () => rows().length > 0,
       },
-      when: () => inAnswerHand("[data-ask-option]") !== null,
-    },
-    {
-      id: "open",
-      keys: "o",
-      label: "Open the row's issue, document or thread",
-      run: () => inHand("[data-inbox-owner]")?.click(),
-      when: () => inHand("[data-inbox-owner]") !== null,
-    },
-    {
-      id: "copy-ref",
-      keys: "y",
-      // An Agent row has no reference of its own - its thread is a message to a session - so
-      // it draws no copy control and this stands down on it.
-      label: `Copy the ${acted} row's reference`,
-      run: () => inHand(COPY_REF_SELECTOR)?.click(),
-      when: () => inHand(COPY_REF_SELECTOR) !== null,
-    },
-    {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the row, then clear the focused row",
-      run: () => {
-        // From the reading column, Escape is the way back to the row the reader came from: `l`
-        // recorded that row, which is not the selected one whenever `j` moved the selection
-        // without moving the focus. Every other way in records nothing, or the row the column
-        // is showing, and returns, as it always has, to that row. `paneWayBack` is both of
-        // those, and the `when` below asks it the same question, so the key never fires on a way
-        // back the run then cannot find.
-        if (paneShown && focusInPane()) {
-          paneWayBack()?.focus();
-          return;
-        }
-        const row = rowAround(document.activeElement);
-        if (row === focusedRow()) {
-          row?.blur();
-        } else {
-          row?.focus();
-        }
+      {
+        id: "previous",
+        keys: "k",
+        label: "Previous row",
+        palette: false,
+        run: () => move(-1),
+        when: () => rows().length > 0,
       },
-      // Both ways back are tested, because either can be the only one left. The column keeps a
-      // question whose row the typed text hides while the reader has an unsent answer in it
-      // (`pane-selection.ts`'s `paneAsk`), and there the row `l` was pressed on is the way out,
-      // the selected row having none; every other way into the column records no row, and there
-      // the selected row is the way out. With only the selected row tested, Escape in a column
-      // held open over a hidden row would match no binding and do nothing.
-      when: () =>
-        rowAround(document.activeElement) !== null ||
-        (paneShown && focusInPane() && paneWayBack() !== null),
-    },
-    {
-      // The column is the other half of the page, and `l` is the step into it: the scroller
-      // takes the focus, and the browser scrolls it on the arrow keys, Page Up, Page Down,
-      // Space, Home and End from there.
-      id: "read-pane",
-      keys: "l",
-      label: "Move the focus into the reading pane",
-      run: () => {
-        // The record Escape reads, written only where no record stands. It names the row the
-        // reader came from - the one holding the focus, or the selected one where the focus is
-        // on nothing (`document.body`, where a reader who has pressed no key yet stands) or on
-        // something that is not a row, which includes a press from inside the column itself.
-        //
-        // A press with a record standing writes nothing, whether the reader is in the column
-        // already or on the body an unmount inside the column dropped their focus to: both
-        // would write the row the column is showing, or null, over the row the reader actually
-        // came from, which is the row Escape owes them. So the key leaves a standing record
-        // exactly as a click back into the column does, and the two ways back in agree.
-        if (paneReturn.current === null) {
-          paneReturn.current =
-            focusedRow()?.dataset.inboxRow ?? paneSelection.selectedRow()?.dataset.inboxRow ?? null;
-        }
-        paneScroller()?.focus();
+      {
+        id: "arrows",
+        keys: ["ArrowDown", "ArrowUp"],
+        label: `Next / previous row while ${arrowsWhen}`,
+        run: (event) => move(event.key === "ArrowDown" ? 1 : -1),
+        when: arrowsMove,
       },
-      // One test for all three cases the key does nothing in: below 1280 px and in the drawer
-      // `paneShown` is false (`pane && wideEnoughForPane`), and with no row selected no column
-      // is rendered at all, so `paneRef.current` is null and there is no scroller under it.
-      when: () => paneShown && paneScroller() !== null,
-    },
-    {
-      // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
-      id: "select",
-      keys: "x",
-      label: `Select or deselect the ${acted} row`,
-      palette: false,
-      run: () => {
-        const id = markableRow();
-        if (id !== undefined) onMark(id);
+      {
+        id: "open",
+        keys: "o",
+        label: "Open the row's issue, document or thread",
+        run: () => inHand("[data-inbox-owner]")?.click(),
+        when: () => inHand("[data-inbox-owner]") !== null,
       },
-      when: () => markableRow() !== undefined,
-    },
-    {
-      id: "dismiss",
-      keys: "e",
-      // The row goes out of the Inbox, and in the Dismissed view back into it; the selection then
-      // moves to the next row, as it does after a snooze. An Ask or an Approval row has no
-      // Dismiss, so the key does nothing on one.
-      label: showDismissed
-        ? `Move the ${acted} thread back to the Inbox`
-        : `Dismiss the ${acted} thread`,
-      run: () => {
-        const named = dismissableRow();
-        if (named !== undefined) dismissRows([named]);
+      {
+        id: "copy-ref",
+        keys: "y",
+        // An Agent row has no reference of its own - its thread is a message to a session - so
+        // it draws no copy control and this stands down on it.
+        label: `Copy the ${acted} row's reference`,
+        run: () => inHand(COPY_REF_SELECTOR)?.click(),
+        when: () => inHand(COPY_REF_SELECTOR) !== null,
       },
-      // Not from inside an ask the reader is answering, the rule `h` holds to: the card's own
-      // controls are not the list's, and a typed `e` belongs to whatever holds the focus.
-      when: () => dismissableRow() !== undefined && (!paneShown || outsideAskCard()),
-    },
-    {
-      id: "snooze",
-      keys: "h",
-      // One key for both: with rows marked it is the whole selection, otherwise the row in hand.
-      label: "Snooze the focused ask, or every selected ask",
-      run: () => {
-        if (selectedAsks.length === 0) {
-          // The short row carries no Snooze of its own: the reading column's head does, for the
-          // row it is showing.
-          inHand("[data-inbox-snooze]")?.focus();
-          return;
-        }
-        bulkPicker()?.focus();
+      {
+        id: "back",
+        inEditable: true,
+        keys: "Escape",
+        label: "Back to the row, then clear the focused row",
+        run: () => {
+          // From the reading column, Escape is the way back to the row the reader came from: `l`
+          // recorded that row, which is not the selected one whenever `j` moved the selection
+          // without moving the focus. Every other way in records nothing, or the row the column
+          // is showing, and returns, as it always has, to that row. `paneWayBack` is both of
+          // those, and the `when` below asks it the same question, so the key never fires on a way
+          // back the run then cannot find.
+          if (paneShown && focusInPane()) {
+            paneWayBack()?.focus();
+            return;
+          }
+          const row = rowAround(document.activeElement);
+          if (row === focusedRow()) {
+            row?.blur();
+          } else {
+            row?.focus();
+          }
+        },
+        // Both ways back are tested, because either can be the only one left. The column keeps a
+        // question whose row the typed text hides while the reader has an unsent answer in it
+        // (`pane-selection.ts`'s `paneAsk`), and there the row `l` was pressed on is the way out,
+        // the selected row having none; every other way into the column records no row, and there
+        // the selected row is the way out. With only the selected row tested, Escape in a column
+        // held open over a hidden row would match no binding and do nothing. A card asking back
+        // takes Escape first, out of Ask back and into answering, and the reader stays in it.
+        when: backApplies,
       },
-      // The selection's key works from wherever marking leaves the reader - a row, the checkbox
-      // they just ticked, the bar - but not from inside an ask they are answering: an option
-      // radio takes no typed text, so the registry passes the key through, and the card's own
-      // controls are not the list's. The issue page withholds its writing keys the same way.
-      // Inside the column that rule covers the lone Snooze too, the card there being the
-      // column's own.
-      when: () =>
-        (selectedAsks.length > 0 && outsideAskCard()) ||
-        (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
-    },
-    {
-      id: "back-from-bulk",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the list from the bulk snooze picker",
-      run: () => {
-        // With every marked row gone there is no row to return to, so the bar itself is the
-        // level out: it holds the count and the way to clear it.
-        (originRow(pickerOrigin.current) ?? rows()[0] ?? bulkBarRef.current)?.focus();
+      {
+        // The column is the other half of the page, and `l` is the step into it: the scroller
+        // takes the focus, and the browser scrolls it on the arrow keys, Page Up, Page Down,
+        // Space, Home and End from there.
+        id: "read-pane",
+        keys: "l",
+        label: "Move the focus into the reading pane",
+        run: () => {
+          // The record Escape reads, written only where no record stands. It names the row the
+          // reader came from - the one holding the focus, or the selected one where the focus is
+          // on nothing (`document.body`, where a reader who has pressed no key yet stands) or on
+          // something that is not a row, which includes a press from inside the column itself.
+          //
+          // A press with a record standing writes nothing, whether the reader is in the column
+          // already or on the body an unmount inside the column dropped their focus to: both
+          // would write the row the column is showing, or null, over the row the reader actually
+          // came from, which is the row Escape owes them. So the key leaves a standing record
+          // exactly as a click back into the column does, and the two ways back in agree.
+          if (paneReturn.current === null) {
+            paneReturn.current =
+              focusedRow()?.dataset.inboxRow ??
+              paneSelection.selectedRow()?.dataset.inboxRow ??
+              null;
+          }
+          paneScroller()?.focus();
+        },
+        // One test for all three cases the key does nothing in: below 1280 px and in the drawer
+        // `paneShown` is false (`pane && wideEnoughForPane`), and with no row selected no column
+        // is rendered at all, so `paneRef.current` is null and there is no scroller under it.
+        when: () => paneShown && paneScroller() !== null,
       },
-      when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
-    },
-    {
-      id: "clear-selection",
-      keys: "Escape",
-      // Escape is one level out, and the selection is the outermost thing a row press made:
-      // `back` takes the reader off the row first, and this clears what they marked. It is
-      // offered exactly while the bar's Clear is, a pick in flight and a refusal the reader has
-      // since unticked the rows of included - the keyboard that raised them dismisses them. Not a
-      // palette row: in the palette Escape closes the palette, so the row would name a key that
-      // does something else there.
-      label: "Clear the selection",
-      palette: false,
-      run: clearSelection,
-      // A popover of the bar's takes Escape first: one press closes it, and dropping what the
-      // reader marked at the same time would be two undos for one key.
-      when: () => focusedRow() === null && bulkBarShown && !barOpen,
-    },
-    {
-      // The box is one key away from anywhere on the page, and `f` is not `inEditable`: inside
-      // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
-      // the registry passes the key through and the reader types an `f` rather than re-focusing
-      // what they are already in.
-      id: "search",
-      keys: "f",
-      label: "Search asks",
-      run: () => searchRef.current?.focus(),
-      when: () => searchRef.current !== null,
-    },
-    {
-      // Escape is one level out, and out of the box is the list: the row the column is showing
-      // on the page, and the first row in the drawer, where nothing is selected. It is offered
-      // only while the focus is in the box, so the three Escapes above are untouched - `back`
-      // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
-      // at all - and the drawer's own Close waits its turn, the Inbox's registration being the
-      // first of the scope to match (`keymap.ts`'s `resolve`).
-      id: "leave-search",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the list from the search box",
-      run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
-      when: () => searchRef.current !== null && document.activeElement === searchRef.current,
-    },
-  ]);
+      {
+        // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
+        id: "select",
+        keys: "x",
+        label: `Select or deselect the ${acted} row`,
+        palette: false,
+        run: () => {
+          const id = markableRow();
+          if (id !== undefined) onMark(id);
+        },
+        when: () => markableRow() !== undefined,
+      },
+      {
+        id: "dismiss",
+        keys: "e",
+        // The row goes out of the Inbox, and in the Dismissed view back into it; the selection then
+        // moves to the next row, as it does after a snooze. An Ask or an Approval row has no
+        // Dismiss, so the key does nothing on one.
+        label: showDismissed
+          ? `Move the ${acted} thread back to the Inbox`
+          : `Dismiss the ${acted} thread`,
+        run: () => {
+          const named = dismissableRow();
+          if (named !== undefined) dismissRows([named]);
+        },
+        // Not from inside an ask the reader is answering, the rule `h` holds to: the card's own
+        // controls are not the list's, and a typed `e` belongs to whatever holds the focus.
+        when: () => dismissableRow() !== undefined && (!paneShown || outsideAskCard()),
+      },
+      {
+        id: "snooze",
+        keys: "h",
+        // One key for both: with rows marked it is the whole selection, otherwise the row in hand.
+        label: "Snooze the focused ask, or every selected ask",
+        run: () => {
+          if (selectedAsks.length === 0) {
+            // The short row carries no Snooze of its own: the reading column's head does, for the
+            // row it is showing.
+            inHand("[data-inbox-snooze]")?.focus();
+            return;
+          }
+          bulkPicker()?.focus();
+        },
+        // The selection's key works from wherever marking leaves the reader - a row, the checkbox
+        // they just ticked, the bar - but not from inside an ask they are answering: an option
+        // radio takes no typed text, so the registry passes the key through, and the card's own
+        // controls are not the list's. The issue page withholds its writing keys the same way.
+        // Inside the column that rule covers the lone Snooze too, the card there being the
+        // column's own.
+        when: () =>
+          (selectedAsks.length > 0 && outsideAskCard()) ||
+          (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
+      },
+      {
+        id: "back-from-bulk",
+        inEditable: true,
+        keys: "Escape",
+        label: "Back to the list from the bulk snooze picker",
+        run: () => {
+          // With every marked row gone there is no row to return to, so the bar itself is the
+          // level out: it holds the count and the way to clear it.
+          (originRow(pickerOrigin.current) ?? rows()[0] ?? bulkBarRef.current)?.focus();
+        },
+        when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
+      },
+      {
+        id: "clear-selection",
+        keys: "Escape",
+        // Escape is one level out, and the selection is the outermost thing a row press made:
+        // `back` takes the reader off the row first, and this clears what they marked. It is
+        // offered exactly while the bar's Clear is, a pick in flight and a refusal the reader has
+        // since unticked the rows of included - the keyboard that raised them dismisses them. Not a
+        // palette row: in the palette Escape closes the palette, so the row would name a key that
+        // does something else there.
+        label: "Clear the selection",
+        palette: false,
+        run: clearSelection,
+        // A popover of the bar's takes Escape first: one press closes it, and dropping what the
+        // reader marked at the same time would be two undos for one key. So does every step
+        // nearer the reader - a card asking back, `back` from anywhere in a row or the column -
+        // so one press never both leaves where the reader is and drops what they marked.
+        when: () => !askingBackInHand() && !backApplies() && bulkBarShown && !barOpen,
+      },
+      {
+        // The box is one key away from anywhere on the page, and `f` is not `inEditable`: inside
+        // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
+        // the registry passes the key through and the reader types an `f` rather than re-focusing
+        // what they are already in.
+        id: "search",
+        keys: "f",
+        label: "Search asks",
+        run: () => searchRef.current?.focus(),
+        when: () => searchRef.current !== null,
+      },
+      {
+        // Escape is one level out, and out of the box is the list: the row the column is showing
+        // on the page, and the first row in the drawer, where nothing is selected. It is offered
+        // only while the focus is in the box, so the three Escapes above are untouched - `back`
+        // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
+        // at all - and the drawer's own Close waits its turn, the scope's `fallback` (`useDialog`).
+        id: "leave-search",
+        inEditable: true,
+        keys: "Escape",
+        label: "Back to the list from the search box",
+        run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
+        when: () => searchRef.current !== null && document.activeElement === searchRef.current,
+      },
+    ])
+  );
 
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;

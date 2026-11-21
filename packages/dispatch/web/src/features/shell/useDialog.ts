@@ -117,7 +117,9 @@ export interface DialogHandle<T extends HTMLElement> {
  * picker all use this). While open it pushes the `dialog` keymap scope, which masks every page
  * and global binding, and registers Escape there for the innermost open dialog, whatever
  * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
- * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * picker) stops propagation before the dispatcher sees it, and one whose Escape is a binding of
+ * the `dialog` scope (the Inbox drawer's way back to a row) takes the key first, the close being
+ * that scope's `fallback`. Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -134,6 +136,8 @@ export function useDialog<T extends HTMLElement>({
       ? [
           {
             id: "dialog.close",
+            // The last step of the scope's Escape: what the dialog holds takes the key first.
+            fallback: true,
             inEditable: true,
             keys: "Escape",
             label: "Close dialog",

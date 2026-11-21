@@ -20,6 +20,9 @@ import {
 } from "./local-instance-support";
 import { sqlAt } from "./psql";
 import { sessionIds } from "./session-ids";
+// A type alone, which the build erases: the module itself is imported only once the ports are
+// known (step 4).
+import type { SeededWorkspace } from "./workspace";
 
 const dispatchPackage = fileURLToPath(new URL("..", import.meta.url));
 const envoyPackage = fileURLToPath(new URL("../../envoy", import.meta.url));
@@ -131,34 +134,44 @@ async function main(): Promise<void> {
   // broadcast's recipient ORDER is deliberately not checked here: e2e/broadcast.e2e.ts owns that
   // assertion, and this instance has to start on a server without the fix so that spec can go
   // red against it. The reset runs only now, after the server's own loopback check let it boot.
-  await untilInterrupted(resetDatabase());
-  // The Inbox was read settling in 230 ms (the sampler e2e/workspace.ts cites); 15 s is far
-  // above that, so only a seed that does not settle fails it.
-  const seedBoundMs = 15_000;
-  const seeded = await untilInterrupted(
-    seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
-  );
+  // DISPATCH_E2E_KEEP_DATABASE=1 starts on the database as it is: a caller that loaded records
+  // into it (INFRA-3231's measurement harness, `writing-check harness local --keep`) restarts the
+  // instance with other settings and keeps them, so nothing is emptied or seeded, and only the
+  // sign-in is proved.
+  const keep = process.env.DISPATCH_E2E_KEEP_DATABASE === "1";
+  let seeded: SeededWorkspace | undefined;
+  if (!keep) {
+    await untilInterrupted(resetDatabase());
+    // The Inbox was read settling in 230 ms (the sampler e2e/workspace.ts cites); 15 s is far
+    // above that, so only a seed that does not settle fails it.
+    const seedBoundMs = 15_000;
+    seeded = await untilInterrupted(
+      seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
+    );
+  }
   const whoami = await fetch(`${baseUrl}/auth/whoami`, { headers: await userHeaders("alice") });
   const identity = (await whoami.json()) as { login?: string };
   check(whoami.status === 200 && identity.login === "alice", "signed-in whoami");
-  console.log(seeded.inboxLine);
-  const [newest] = await listBroadcasts({ login: "alice" });
-  check(newest?.id === seeded.broadcast.id, "broadcast listed");
-  const agents = new Set((await listAgents({ login: "alice" })).map((agent) => agent.session_id));
-  check(
-    workspaceSessionIds.every((id) => agents.has(id)),
-    "agents listed"
-  );
-  // The live view rides the live socket, not the API, and Dispatch refuses an agent view whose
-  // session id is not a uuid: a seed of named sessions passes every check above and still reads
-  // "This session's conversation is unavailable" at /agents/<id>/live.
-  // Dispatch answers an agent view's subscribe at once, accepted or refused, so 10 s fails only
-  // a Dispatch that does not answer.
-  const liveViewBoundMs = 10_000;
-  const liveView = await untilInterrupted(
-    agentViewRefusal(baseUrl, await userHeaders("alice"), sessionIds.planner, liveViewBoundMs)
-  );
-  check(liveView === undefined, `the Planner's live view: ${liveView}`);
+  if (seeded !== undefined) {
+    console.log(seeded.inboxLine);
+    const [newest] = await listBroadcasts({ login: "alice" });
+    check(newest?.id === seeded.broadcast.id, "broadcast listed");
+    const agents = new Set((await listAgents({ login: "alice" })).map((agent) => agent.session_id));
+    check(
+      workspaceSessionIds.every((id) => agents.has(id)),
+      "agents listed"
+    );
+    // The live view rides the live socket, not the API, and Dispatch refuses an agent view whose
+    // session id is not a uuid: a seed of named sessions passes every check above and still reads
+    // "This session's conversation is unavailable" at /agents/<id>/live.
+    // Dispatch answers an agent view's subscribe at once, accepted or refused, so 10 s fails only
+    // a Dispatch that does not answer.
+    const liveViewBoundMs = 10_000;
+    const liveView = await untilInterrupted(
+      agentViewRefusal(baseUrl, await userHeaders("alice"), sessionIds.planner, liveViewBoundMs)
+    );
+    check(liveView === undefined, `the Planner's live view: ${liveView}`);
+  }
 
   // 6. Hand over, and run until Ctrl-C or until one of the processes stops by itself.
   const fakeEnvoy = `http://127.0.0.1:${harness.env[harnessVariables.fakeEnvoy]}`;
@@ -166,11 +179,15 @@ async function main(): Promise<void> {
     "\nDispatch local instance is up.\n" +
       `  Open (signed in as alice): ${baseUrl}/auth/_dev/signin?login=alice&next=/\n` +
       `  Sign in as bob:            ${baseUrl}/auth/_dev/signin?login=bob&next=/\n` +
-      `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${seeded.broadcast.id}\n` +
+      (seeded === undefined
+        ? ""
+        : `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${seeded.broadcast.id}\n`) +
       `  Planner's live view:       ${baseUrl}/agents/${sessionIds.planner}/live\n` +
       `  Agent bearer:              e2e-token (for a local Oh My Pi session: DISPATCH_URL=${baseUrl} ` +
       "DISPATCH_TOKEN=e2e-token, with DISPATCH_TOKEN_FILE unset since it wins)\n" +
-      `  Database (truncated and reseeded on every start): ${databaseUrl}\n` +
+      (keep
+        ? `  Database (kept as it is, DISPATCH_E2E_KEEP_DATABASE=1): ${databaseUrl}\n`
+        : `  Database (truncated and reseeded on every start): ${databaseUrl}\n`) +
       `  Fake Envoy: live sessions GET ${fakeEnvoy}/v1/sessions; ` +
       `reseed them with PUT ${fakeEnvoy}/__fixture/sessions\n` +
       "  Run a spec against it from packages/dispatch (this empties the instance; restart it to " +

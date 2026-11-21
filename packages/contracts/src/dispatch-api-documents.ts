@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActorSchema, InboundWriterSchema } from "./dispatch-api-core";
 import { ASK_TURNS } from "./dispatch-api-limits";
-import { referenceChangesFields } from "./dispatch-api-refs";
+import { personTypedFields, referenceChangesFields } from "./dispatch-api-refs";
 
 /**
  * A document, a file or an image: the row, its versions and reviews, the blocks a reader
@@ -130,7 +130,7 @@ export const artifactFields = {
 export const ArtifactSchema = z.strictObject(artifactFields).readonly();
 
 export const WrittenArtifactCreatedEventPayloadSchema = z
-  .strictObject({ artifact: ArtifactSchema, ...referenceChangesFields })
+  .strictObject({ artifact: ArtifactSchema, ...referenceChangesFields, ...personTypedFields })
   .readonly();
 
 export type ArtifactCreatedEventPayload = z.output<typeof WrittenArtifactCreatedEventPayloadSchema>;
@@ -173,7 +173,11 @@ export const artifactVersionEventPayloadFields = {
 };
 
 export const WrittenArtifactVersionEventPayloadSchema = z
-  .strictObject({ ...artifactVersionEventPayloadFields, ...referenceChangesFields })
+  .strictObject({
+    ...artifactVersionEventPayloadFields,
+    ...referenceChangesFields,
+    ...personTypedFields,
+  })
   .readonly();
 
 export type ArtifactVersionEventPayload = z.output<typeof WrittenArtifactVersionEventPayloadSchema>;
@@ -247,6 +251,7 @@ export const artifactReviewEventPayloadFields = {
   kind: ArtifactReviewKindSchema.optional(),
   content_sha256: z.string().optional(),
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
+  ...personTypedFields,
 };
 
 export const WrittenArtifactReviewEventPayloadSchema = z

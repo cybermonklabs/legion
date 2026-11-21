@@ -26,9 +26,11 @@ import { hasErrnoCode, messageFor } from "./errors";
  * The `dispatch` CLI's state, one directory per host session under `<root>/sessions/<session id>`
  * (`dispatch-session-directory.ts` names it): what a long-lived host kept in memory across calls
  * (the triage lines and pictures already shown, the asks whose follow notice was printed, which
- * Dispatch lately showed it runs the keyed layer) in `state.json`, a ledger of every call's result
- * in `results.jsonl`, and the pictures and long results the CLI wrote for the agent to open. The
- * state names issue keys and picture addresses, so every file is the owner's alone.
+ * Dispatch lately showed it runs the keyed layer) and what the refusal that shows the written
+ * rules keeps (`WritingRulesState`, whose compactions the host plugin counts) in `state.json`, a
+ * ledger of every call's result in `results.jsonl`, and the pictures and long results the CLI
+ * wrote for the agent to open. The state names issue keys and picture addresses, so every file is
+ * the owner's alone.
  *
  * Two calls racing in one session can lose a memory entry; that costs one repeated line, or one
  * `/healthz` read before a failed write is asked again. They can also bring back a keyed-layer
@@ -62,6 +64,100 @@ interface SessionMemory {
   readonly follows: readonly string[];
   /** `keyedLayerMemory()`: each Dispatch origin with when a call last saw its keyed layer. */
   readonly keyedLayer: Readonly<Record<string, string>>;
+  /** What the written rules' refusal keeps (`WritingRulesState`); absent until it keeps any. */
+  readonly writingRules?: WritingRulesState;
+}
+
+/**
+ * What the `dispatch` command keeps in `state.json` for the refusal that shows the written rules
+ * (`writing-rules.ts`). The host plugin counts each compaction of the session's context here
+ * (`noteCompaction`), and the command refuses a write once for each count.
+ */
+export interface WritingRulesState {
+  /** How many times the host compacted the session's context. */
+  readonly compactions: number;
+  /** The value of `compactions` when the command last showed the rules; null before it first
+   *  showed them. */
+  readonly shownForCompaction: number | null;
+  /** Dispatch's last answer about the refusal (`GET /api/v1/settings/writing-rules`). */
+  readonly settings?: WritingRulesSettingsRead;
+}
+
+/** One answer of `GET /api/v1/settings/writing-rules`, and when the command read it. A server
+ *  without the route has no refusal, which reads as `refusal: false`. */
+export interface WritingRulesSettingsRead {
+  readonly readAt: string;
+  readonly refusal: boolean;
+}
+
+const NO_WRITING_RULES: WritingRulesState = { compactions: 0, shownForCompaction: null };
+
+/** A count `state.json` holds, or null for anything that is not a whole number of 0 or more. */
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** `value` as the state the refusal keeps; any part it cannot read is that part's start. */
+function writingRulesState(value: unknown): WritingRulesState {
+  if (typeof value !== "object" || value === null) return NO_WRITING_RULES;
+  const kept: { compactions?: unknown; shownForCompaction?: unknown; settings?: unknown } = value;
+  const settings: { readAt?: unknown; refusal?: unknown } =
+    typeof kept.settings === "object" && kept.settings !== null ? kept.settings : {};
+  const { readAt, refusal } = settings;
+  return {
+    compactions: count(kept.compactions) ?? 0,
+    shownForCompaction: count(kept.shownForCompaction),
+    ...(typeof readAt === "string" && typeof refusal === "boolean"
+      ? { settings: { readAt, refusal } }
+      : {}),
+  };
+}
+
+/** `state.json` as an object, or undefined when the file is not there. A file that is not a JSON
+ *  object throws, naming it. */
+function readState(dir: string): Partial<Record<keyof SessionMemory, unknown>> | undefined {
+  const path = join(dir, "state.json");
+  const text = readIfPresent(path);
+  if (text === undefined) return undefined;
+  try {
+    const state: unknown = JSON.parse(text);
+    if (typeof state === "object" && state !== null && !Array.isArray(state)) return state;
+    throw new Error("it holds no JSON object");
+  } catch (error) {
+    throw new Error(
+      `the session state ${path} is not JSON (${(error as Error).message}); remove it to start this session's memory over`
+    );
+  }
+}
+
+/** What the refusal of the written rules keeps for the session in `dir`; a session with no state
+ *  file is at no compaction, shown nothing. A state file that is not JSON throws, naming it. */
+export function readWritingRules(dir: string): WritingRulesState {
+  return writingRulesState(readState(dir)?.writingRules);
+}
+
+/**
+ * Replaces what the refusal keeps with `change` of what `state.json` holds now, and leaves every
+ * other part of the file as it is. The host plugin and the command each read the file at the
+ * moment they write it, so neither puts back a count the other moved; two writers in the same
+ * moment can still lose one change, as the memories can.
+ */
+export function updateWritingRules(
+  dir: string,
+  change: (state: WritingRulesState) => WritingRulesState
+): void {
+  ensureDirectory(dir);
+  const state = readState(dir) ?? {};
+  writeAtomically(
+    join(dir, "state.json"),
+    `${JSON.stringify({ ...state, writingRules: change(writingRulesState(state.writingRules)) })}\n`
+  );
+}
+
+/** Counts one compaction of the session's context, which the host plugin reports: the command
+ *  then shows the written rules again before the session's next write (`writing-rules.ts`). */
+export function noteCompaction(dir: string): void {
+  updateWritingRules(dir, (state) => ({ ...state, compactions: state.compactions + 1 }));
 }
 
 const PRIVATE_DIR = 0o700;
@@ -104,17 +200,8 @@ function stringList(value: unknown): string[] {
  * sighting is passed over (`rememberKeyedLayer`).
  */
 export function loadSessionMemory(dir: string, sessionId: string): Set<string> {
-  const path = join(dir, "state.json");
-  const text = readIfPresent(path);
-  if (text === undefined) return new Set();
-  let state: Partial<Record<keyof SessionMemory, unknown>>;
-  try {
-    state = JSON.parse(text);
-  } catch (error) {
-    throw new Error(
-      `the session state ${path} is not JSON (${(error as Error).message}); remove it to start this session's memory over`
-    );
-  }
+  const state = readState(dir);
+  if (state === undefined) return new Set();
   const advice = adviceMemory();
   for (const key of stringList(state.advice)) advice.add(key);
   const pictures = shownPictures(sessionId);
@@ -129,12 +216,16 @@ export function saveSessionMemory(dir: string, sessionId: string, follows: Set<s
   writeMemory(dir, sessionId, follows);
 }
 
+/** Writes the memories, and keeps what the written rules' refusal holds in the file now: the host
+ *  plugin counts compactions there while a call runs (`updateWritingRules`). */
 function writeMemory(dir: string, sessionId: string, follows: Set<string>): void {
+  const kept = readState(dir)?.writingRules;
   const state: SessionMemory = {
     advice: [...adviceMemory()],
     pictures: [...shownPictures(sessionId)],
     follows: [...follows],
     keyedLayer: keyedLayerMemory(),
+    ...(kept === undefined ? {} : { writingRules: writingRulesState(kept) }),
   };
   writeAtomically(join(dir, "state.json"), `${JSON.stringify(state)}\n`);
 }

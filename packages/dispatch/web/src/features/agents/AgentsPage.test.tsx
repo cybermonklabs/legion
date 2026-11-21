@@ -49,6 +49,7 @@ import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { appKeymap } from "../shell/keymap";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -730,6 +731,25 @@ test("Agents shows the shared empty state when Envoy has no live sessions", asyn
   try {
     const emptyState = await screen.findByRole("region", { name: "Agents empty state" });
     expect(within(emptyState).getByText("No agents are connected.")).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Agents page draws no ask, so of the selection bar's keys it registers Quote reply alone:
+// Define there would be a row of `?` that never applies.
+test("Agents registers the selection bar's Quote reply and no Define", async () => {
+  const page = renderAgents();
+  try {
+    await waitFor(() =>
+      expect(
+        appKeymap.describe().filter((key) => key.scope === "agents" && key.keys.includes("q"))
+      ).not.toHaveLength(0)
+    );
+    expect(
+      appKeymap.describe().filter((key) => key.scope === "agents" && key.keys.includes("d"))
+    ).toEqual([]);
   } finally {
     page.view.unmount();
     page.restore();

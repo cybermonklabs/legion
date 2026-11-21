@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  Dispatch's errors no longer name a person's login or a session id in the places a request's
+  identity reaches: the people store's every read and write, the ask follower writes and reads, a
+  held write's dry run, a thread's read mark, the check of whether a login has signed in, a
+  document's pending authors, and the Envoy client, which names a read of the listener by its
+  route's pattern (`GET /v1/registry/{session_id}`) in its errors and its log lines, and a role
+  send it refuses by its role alone. `403 ACTOR_SESSION_MISMATCH` and `403 SESSION_SCOPE` keep
+  their codes, and their messages name no session. Where the caller's credential proved the
+  session, the message points at `GET /api/v1/whoami`, which answers it. A role holder's reply the
+  listener could not judge is still `503 ENVOY_UNAVAILABLE`, naming the route and not the session
+  replying, and `POST /api/v1/projects` still refuses a default it takes from the person the
+  credential acts for, nobody having signed in as them, with `400 ASSIGNEE_NOT_ALLOWED`, now naming
+  nobody; a login the call names is quoted as before.

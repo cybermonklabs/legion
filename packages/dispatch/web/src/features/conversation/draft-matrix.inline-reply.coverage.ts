@@ -17,7 +17,7 @@ const REASONS = {
   5: "5. The Conversation draws a loading line or an error in place of the list while its reads are out or failed (`loading`, `failed`), which unmounts the reply as Collapse thread does.",
   6: "6. Another issue's address draws the issue page afresh (`IssueDetail` keyed by `route.key`), unmounting the card and its reply as Collapse thread does, and another tab hides the Conversation's panel with the reply mounted (`draft-matrix.issue-page.test.tsx` makes both moves for the docked and phone thread composers).",
   7: "7. Which end of the thread the reply sits at (`composerFirst`, from `useThreadOrder`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
-  8: "8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes it as Back does (`phone.hide`).",
+  8: "8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own composer (`onReply`, and Reply's `!isPhone`), as a Quote reply on its words does (`quoteReply`'s `isPhone`), so the first row and the phone Reply row are the phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes it as Back does (`phone.hide`).",
   9: "9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past the phone layout closes the view as Back does unless a send from it is out (`usePhoneThread`'s `outlived`), the first row's move either way.",
   10: "10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a thread is open; it marks the issue read and moves no reply. The margin's thread reply is the margin file's, and the app shell's forms are the sign-in file's.",
 } as const;
@@ -159,6 +159,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("CommentTurn | - | form | if (forceExpanded || (isPhone && !expanded)) return …", {
     reason: REASONS[8],
   }),
+  ...answers("CommentTurn | - | form | if (isPhone) return …", { reason: REASONS[8] }),
   ...answers(
     "CommentTurn | - | form | if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone)",
     { reason: REASONS[8] }

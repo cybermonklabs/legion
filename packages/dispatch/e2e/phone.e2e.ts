@@ -122,7 +122,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect(reviewToggle).toBeVisible();
       await reviewToggle.click();
       const askCard = needsYouCards(page).getByTestId(`ask-${openAsk.id}`);
-      await askCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+      await askCard.getByRole("button", { name: "Add a note" }).click();
       await askCard.getByLabel("Your answer").fill("Yes.");
       await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
       await expect
@@ -693,12 +693,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
     //    second.
     expect(measured.onFirstLowerEdge).toBe("First choice");
     expect(measured.firstBottom).toBeLessThanOrEqual(measured.secondTop);
-    // 5. Two choices a hard break puts on consecutive lines of the card's 15px text on 24.375px
-    //    lines (`text-[15px] leading-relaxed`): the lower one's padded box starts at or below
-    //    the upper one's own text.
+    // 5. Two choices a hard break puts on consecutive lines of a paragraph after the question's
+    //    first, which the card sets at 14px on 24px lines (`askQuestionProse`'s `text-sm
+    //    leading-6`): the lower one's padded box starts at or below the upper one's own text.
     await expectConsecutiveLinksClear(card, "Upper choice", "Lower choice", {
-      fontSize: 15,
-      lineHeight: 24.375,
+      fontSize: 14,
+      lineHeight: 24,
     });
   } finally {
     await context.close();

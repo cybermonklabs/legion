@@ -95,6 +95,10 @@ on an open issue instead; it is then posted on that issue as a comment that ment
 
 Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send.
 
+Select words of one of the agent's replies in the row and choose **Quote reply** on the bar that
+appears over them, or press `q`: the message box then replies to that message, with the words
+quoted in it.
+
 A message straight to the agent that Dispatch has not confirmed after 30 seconds says **Still
 sending — Dispatch has not confirmed it yet. It keeps trying, and the message is delivered once.**
 The page keeps sending it under one key, so however many tries reach Dispatch, the agent gets the
@@ -364,6 +368,10 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   A `!` with nothing after it is no command and reaches the agent as the message it is.
   What it printed appears in the conversation as your own message, is posted as the reply to your
   message, and is given to the agent to read at its next turn; it starts no turn.
+  The reply opens with your line as you sent it, and then what it printed, set as code.
+  A line whose first word is `dispatch` runs that command as your own: what it writes to Dispatch
+  posts at once, and Dispatch counts it as your text, so neither the reviewer nor the written
+  rules ([For agents](/legion/dispatch/for-agents/#the-written-rules-and-the-reviewer)) stop it.
   If the session moves to another conversation (`/new`, `/resume`) while the command runs, the
   agent is not given it, so the other conversation never reads output that is not its own.
   If it moved before the command started, the command is not run at all and the reply says so, so

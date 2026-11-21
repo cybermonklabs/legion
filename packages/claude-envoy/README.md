@@ -341,9 +341,12 @@ The plugin ships eleven skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,
 `claude-envoy:thermonuclear-code-quality` and `claude-envoy:thermonuclear-deep-review`.
 The first four teach the Envoy tools, the `dispatch` command and how to write a spec; `asd-ste100` gives the
 ASD-STE100 rules for text a person reads; `outside-message` holds the steps and the approval before text
-reaches a person outside the company; `plain-words` the empty verb phrases to delete from any text a
-person reads, and `agent-secrets` the secrets broker's client, which gives a credential to one command
-in that command's environment, so no value reaches your shell or your transcript.
+reaches a person outside the company; `plain-words` the rules agents write by, ce-noslop's tests,
+pattern catalog and terminology and its table of five phrases to stop, which the `dispatch`
+command also shows once before a session's first write, and its first after each compaction, when
+Dispatch's `DISPATCH_WRITING_RULES_REFUSAL` is on; and `agent-secrets` the secrets broker's client,
+which gives a credential to one command in that command's environment, so no value reaches your
+shell or your transcript.
 `approval-review` is read by no other session than one judging an approval request: what such a
 request asks, what an agent never decides and hands back, and how to retrieve the nearest past
 decisions.

@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -257,6 +258,10 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
+	// Writing is the work on agents' texts (the DISPATCH_REVIEWER_*, DISPATCH_REWRITE_DEFINE_*,
+	// DISPATCH_WORD_RECORDS*, DISPATCH_WRITING_RULES_* and DISPATCH_MODEL_DEPLOYMENT_QUOTAS
+	// settings, and DISPATCH_TEST_MODEL_URL), checked whole.
+	Writing writingSettings
 }
 
 func main() {
@@ -535,12 +540,38 @@ func main() {
 		embedder = client
 	}
 
+	// pacer is the process's one pacer of model deployments (modelpace): every part of the server
+	// that calls a model joins it, so the callers of one deployment share its quota.
+	pacer := modelpace.New(modelpace.Config{Quotas: boot.Writing.DeploymentQuotas})
 	// answerer is nil where the deployment configured no model, which newAnswerer logs: the
 	// server boots and says it cannot answer. A shape it could not build from is a refusal to
 	// boot, as the embedder's is, since the deployment asked for a model and got none.
-	answerer, err := newAnswerer(boot.Answerer)
+	answerer, err := newAnswerer(boot.Answerer, pacer)
 	if err != nil {
 		slog.Error("dispatch: build the answerer", "error", err)
+		os.Exit(1)
+	}
+	// The writing check (INFRA-3231) records what its structure rules find in each agent's
+	// write, on every server, and lets every write through; its detector stays off.
+	writingCheck := api.NewWritingCheck()
+	// The reviewer (INFRA-3231's R5) is nil where its model group is unset, which newReviewer
+	// logs; a group set builds it whatever DISPATCH_REVIEWER_<KIND> say, for the draft route.
+	textReviewer, err := newReviewer(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build the reviewer", "error", err)
+		os.Exit(1)
+	}
+	// Rewrite and Define (INFRA-3231's R7) are nil where their model group is unset, which
+	// newRewriteDefine logs, and on whenever it is set.
+	rewriteDefine, err := newRewriteDefine(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build Rewrite and Define", "error", err)
+		os.Exit(1)
+	}
+	// The models a test request may name (DISPATCH_TEST_MODELS, under the test hooks alone).
+	testModels, err := newTestModels(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build the test models", "error", err)
 		os.Exit(1)
 	}
 
@@ -564,6 +595,10 @@ func main() {
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		WritingCheck:   writingCheck,
+		Reviewer:       textReviewer,
+		RewriteDefine:  rewriteDefine,
+		TestModels:     testModels,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -640,10 +675,17 @@ func main() {
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
 	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
+	//     start, with or without NATS), the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     stored text has a tree at it), the records job of the words people ask about
+	//     (wordrecords.Job.Run, lease word-records, every 10 s from a tick at start, only while
+	//     its model group is set) and the reviewer's sweep of held texts (api.Background's
+	//     SweepHeld, lease reviewer-sweep, every 10 s from a tick at start, only while the
+	//     reviewer's model group is set), each recording its passes in duty_passes like the timers
+	//     above; each tick sends its statements whether or not anything is owed. The writing
+	//     check's event sweep (api.RunWritingCheckEventSweep, every day from a tick at start)
+	//     polls too, with no lease and no duty_passes row: its pass is one delete by age, which
+	//     every process may run.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -731,6 +773,14 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The records job of the words people ask about (wordrecords.Job.Run, lease word-records):
+	// reserved here whether or not DISPATCH_WORD_RECORDS and its model group turn it on, so that
+	// this process's count is the same in every configuration.
+	wordRecordsLeases := reserve("word records")
+	// The reviewer's sweep of held texts (api.Background.SweepHeld, lease reviewer-sweep):
+	// reserved here whether or not the reviewer's model group is set, so that this process's
+	// count is the same in every configuration.
+	reviewerSweepLeases := reserve("reviewer sweep")
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
@@ -1088,6 +1138,34 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
+	// The writing check's decisions past their retention, once a day in every process, the first
+	// pass at start, with no lease: a row R8's counts read once it is older than 366 days, and any
+	// other once it is older than 90 (store.SweepWritingCheckEvents). The deletes by age are the
+	// same whichever process runs them.
+	go api.RunWritingCheckEventSweep(ctx, database)
+	// INFRA-3231's R8: the records job reads the texts people write from the event log after
+	// each write has committed, up to the safe horizon of the API server's one events.Horizon, as
+	// the suggestion outcome sweep does, and asks its model group whether each asks about an
+	// agent's words. A pass every 10 seconds under the lease word-records, the first at start, so
+	// one process serves each period (duty.RunLeased). It is off with DISPATCH_WORD_RECORDS=off
+	// and while its model group is unset, which newWordRecords logs.
+	wordRecords, err := newWordRecords(boot.Writing, pacer, database, background.EventHorizon())
+	if err != nil {
+		slog.Error("dispatch: build the records job", "error", err)
+		exitAfterIntakes()
+	}
+	if wordRecords != nil {
+		go wordRecords.Run(ctx, wordRecordsLeases)
+	}
+	// INFRA-3231's R5: the reviewer's sweep of held texts, a pass every 10 seconds under the lease
+	// reviewer-sweep, the first at start, so one process serves each period (duty.RunLeased). It
+	// reviews again a text a stopped process left in review, posts as DISPATCH_REVIEWER_UNEDITED
+	// says each text whose writer did not act in DISPATCH_REVIEWER_WRITER_WINDOW or has gone, and
+	// posts each decided text whose turn came. It runs only while the reviewer's model group is set:
+	// no text is held without it.
+	if textReviewer != nil {
+		go duty.RunLeased(ctx, reviewerSweepLeases, api.ReviewerSweepLease, api.ReviewerSweepInterval, duty.TickAtStart, background.SweepHeld)
+	}
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1477,6 +1555,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
+	boot.Writing, err = resolveWritingSettings(env, boot.TestHooksEnabled, boot.Answerer)
+	if err != nil {
+		return bootConfig{}, err
+	}
 	// The dev embedder's vectors mean nothing beyond the words a text and a query share, so a
 	// deployment that set it would answer meaning search with them and never know.
 	if !devSignIn && boot.Embedder.Place == embed.PlaceDev {
@@ -1819,6 +1901,10 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
+	built.WritingRules = api.WritingRulesConfig{
+		Refusal: boot.Writing.WritingRulesRefusal,
+		Extra:   boot.Writing.WritingRulesExtra,
+	}
 	return built
 }
 
@@ -2229,6 +2315,26 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 		return fmt.Errorf("%s=%q (expected a positive Go duration)", name, raw)
 	}
 	*target = value
+	return nil
+}
+
+// testHookURL reads the test-only URL setting name into target, leaving target as it is when the
+// setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any value
+// that is not an absolute http or https URL with a host and no query or fragment: a test process
+// reaches its stand-ins over plain HTTP, which only the hooks allow.
+func testHookURL(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("%s=%q (expected an absolute http or https URL with a host and no query or fragment)", name, raw)
+	}
+	*target = raw
 	return nil
 }
 

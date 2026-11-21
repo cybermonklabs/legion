@@ -3,13 +3,13 @@
  *  an issue held by Playwright's route control with the window it was held in, or answered `503`
  *  until the row lets it through, with the shell's Stop trying for a pick gone late; each read of
  *  a list or of the issue with when it was sent and answered, what the server stored from the
- *  issue's own events, every value a control or a table's cell shows at every animation frame,
- *  and the issue page's own picker, with the controls that reach it and the Inbox drawer on either
- *  issue page: the one with the sidebar, which holds Peek, and whose `main` holds every picker,
- *  and that of dispatch://INFRA-1196, whose icon rail opens the navigation that holds Peek and
- *  whose Details holds the repository. The rows live in the spec files of the pages they drive
- *  (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`, `inbox-drawer.e2e.ts`,
- *  `inbox-reading-pane.e2e.ts`); this module holds no row. */
+ *  issue's own events, every value a control, a table's cell or any element shows at every
+ *  animation frame, and the issue page's own picker, with the controls that reach it and the
+ *  Inbox drawer on either issue page: the one with the sidebar, which holds Peek, and whose
+ *  `main` holds every picker, and that of dispatch://INFRA-1196, whose icon rail opens the
+ *  navigation that holds Peek and whose Details holds the repository. The rows live in the spec
+ *  files of the pages they drive (`project.e2e.ts`, `board.e2e.ts`, `issues-table.e2e.ts`,
+ *  `inbox-drawer.e2e.ts`, `inbox-reading-pane.e2e.ts`); this module holds no row. */
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
@@ -362,6 +362,38 @@ export async function watchShown(page: Page, name: string, within = ":root"): Pr
       requestAnimationFrame(sample);
     },
     { binding, name, within }
+  );
+  return shown;
+}
+
+/**
+ * Records every text the elements `selector` (a CSS selector, such as an ask card's
+ * `[data-testid="ask-<id>"]` inside the Inbox drawer) match show in `page`, joined with `|`, read
+ * at every animation frame of every document the page loads from now on, as `watchShown` reads a
+ * control: for an element with no name of its own. `(none)` while nothing matches. Call it before
+ * the page loads the document a row watches.
+ */
+export async function watchText(page: Page, selector: string): Promise<Shown> {
+  const { binding, shown } = await exposeShown(page);
+  await page.addInitScript(
+    ({ binding, selector }: { binding: string; selector: string }) => {
+      const report = Reflect.get(window, binding) as (value: string) => Promise<void>;
+      let last: string | undefined;
+      const sample = () => {
+        const elements = [...document.querySelectorAll(selector)];
+        const value =
+          elements.length === 0
+            ? "(none)"
+            : elements.map((element) => element.textContent ?? "").join("|");
+        if (value !== last) {
+          last = value;
+          void report(value);
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    },
+    { binding, selector }
   );
   return shown;
 }

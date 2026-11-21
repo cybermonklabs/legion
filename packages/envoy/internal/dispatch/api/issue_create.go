@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -251,16 +253,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// yields an empty chain and still gets its own refusal inside the transaction, so no error
 	// changes order.
 	var outcome nearCopyOutcome
-	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
-	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
-	// or in the create's transaction where recordInTx says so. A create the gate never ran for
-	// (outcome.Check nil) writes nothing, and a create refused later for another reason writes
-	// nothing either.
-	var nearCopyRecord nearCopyCheckRow
-	// recordInTx is set where the decision is made, for a near copy let in because its refusal's
-	// row could not be confirmed (nearCopyOutcome.unrecorded): its row is written in the create's
-	// transaction, under the id the refusal used, rather than after the commit.
-	recordInTx := false
+	// nearCopy is this create's near_copy_checks row, holding outcome.Check, the gate's answer,
+	// at each write: at the 409, or with the issue's filing (issueNearCopy), which a held issue's
+	// post makes as much as this request. A create the gate never ran for (nil) writes nothing, and
+	// a create refused later for another reason writes nothing either.
+	var nearCopy *issueNearCopy
 	if input.External == "" {
 		ancestors := []string{}
 		if parentKey != "" {
@@ -276,9 +273,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			spec = *input.Spec
 		}
 		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
-		nearCopyRecord = newNearCopyCheckRow(s.newNearCopyRowID(), input.Project, actor, input.Title, spec, parentKey, outcome.Check)
+		nearCopy = &issueNearCopy{
+			row:   newNearCopyCheckRow(s.newNearCopyRowID(), input.Project, actor, input.Title, spec, parentKey, outcome.Check),
+			check: outcome.Check,
+		}
 		if len(outcome.Refuse) > 0 {
-			if s.recordNearCopyRefusal(r.Context(), nearCopyRecord, outcome.Check) {
+			if s.recordNearCopyRefusal(r.Context(), nearCopy.row, outcome.Check) {
 				WriteJSON(w, http.StatusConflict, issueDuplicateError{
 					Candidates: outcome.Refuse,
 					Code:       "POSSIBLE_DUPLICATE",
@@ -289,11 +289,27 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			// A refusal is answered only once its row is known to be written, so a count of the
 			// gate's refusals from near_copy_checks misses none. Otherwise it is a check not made,
 			// as a read past the gate's bound is: the create goes in, the filer is told what the
-			// gate found, and the create's row is written in its transaction under the same id, so
-			// it replaces the refused row if that insert landed unseen.
+			// gate found, and the create's row is written in the transaction that files the issue,
+			// under the same id, so it replaces the refused row if that insert landed unseen.
 			outcome = outcome.unrecorded()
-			recordInTx = true
+			nearCopy.check, nearCopy.inTx = outcome.Check, true
 		}
+	}
+	// The reviewer's hook, which reads the title, the spec and a components reason with the writing
+	// check before anything is written or locked: either may call a model, and no transaction waits
+	// on it. It comes after the near-copy gate, so a near copy the gate refuses is refused above,
+	// held or not, and nothing is held; a held create's answer tells the filer what the gate found
+	// (issueCreate.gate, heldAdvice).
+	create := issueCreate{
+		Project: input.Project, Title: input.Title, Parent: parentKey, Blockers: blockers, Advances: advances,
+		Labels: labels, Priority: priority, Assignee: assignee, Components: components,
+		ComponentsProvided: componentsProvided, Repo: repo, Spec: input.Spec, External: input.External,
+		ExternalRepo: externalRepo, ExternalNumber: externalNumber, CallerProject: callerProject,
+		Forced: outcome.Forced, NearCopy: nearCopy, gate: outcome,
+	}
+	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
+	if !proceed {
+		return
 	}
 
 	tx, err := s.begin(r.Context())
@@ -302,72 +318,244 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	written, err := s.writeIssue(r.Context(), tx, create, actor, 0, nil)
+	if errors.Is(err, errExternalIssueImported) {
+		if err := tx.Rollback(r.Context()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.announceIssue(r.Context(), written)
+	issue, advice, key := written.issue, written.advice, written.issue.Key
+	s.reviewPosted(r.Context(), after, key)
+	// The related-item check runs after the write committed, whatever writeAdvice
+	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
+	// own when the write-advice read failed. An answered ask it offers carries the display tree
+	// of that answer where this request asked for the trees, which its reader fills before the
+	// response is written.
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		project: input.Project,
+		text:    input.Title + "\n" + written.markdown,
+		title:   input.Title,
+		source:  suggestionSource{kind: "issue", issueKey: key, actor: actor},
+		record:  true,
+		trees:   trees,
+	})
+	trees.resolve()
+	outcome.tell(suggestions)
+	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
+}
+
+// errExternalIssueImported is writeIssue finding the GitHub issue its create names imported
+// already, by another create that committed first: createIssue answers with that issue.
+var errExternalIssueImported = errors.New("the external issue is imported already")
+
+// issueCreate is an issue a write files, decoded and checked (createIssue): what writeIssue
+// writes, and what a held issue stores, so that its post files the issue the write itself would
+// have filed. Forced is what the near-copy gate recorded of a forced create (nearCopyOutcome), and
+// NearCopy the gate's answer the filing records (issueNearCopy).
+type issueCreate struct {
+	Project            string              `json:"project"`
+	Title              string              `json:"title"`
+	Parent             string              `json:"parent,omitempty"`
+	Blockers           []string            `json:"blockers,omitempty"`
+	Advances           []string            `json:"advances,omitempty"`
+	Labels             []string            `json:"labels"`
+	Priority           *int                `json:"priority,omitempty"`
+	Assignee           *string             `json:"assignee,omitempty"`
+	Components         *componentsInput    `json:"components,omitempty"`
+	ComponentsProvided bool                `json:"components_provided,omitempty"`
+	Repo               *string             `json:"repo,omitempty"`
+	Spec               *string             `json:"spec,omitempty"`
+	External           string              `json:"external,omitempty"`
+	ExternalRepo       string              `json:"external_repo,omitempty"`
+	ExternalNumber     string              `json:"external_number,omitempty"`
+	CallerProject      string              `json:"caller_project,omitempty"`
+	Forced             *model.ForcedCreate `json:"forced,omitempty"`
+	NearCopy           *issueNearCopy      `json:"near_copy,omitempty"`
+	// gate is the near-copy gate's whole answer to the request, which the request's own answer
+	// tells the filer, held or not (nearCopyOutcome.tell). It is not stored: a held issue's post
+	// answers nobody.
+	gate nearCopyOutcome
+}
+
+// issueNearCopy is the near_copy_checks row of the near-copy gate's answer to a create: the
+// create the gate answered (row) and the answer (check), which the issue's filing writes once it
+// knows the issue's key. writeIssue writes it in the filing's transaction where inTx says so, and
+// announceIssue after the commit otherwise. issueCreate carries it, so a held issue's post writes
+// the row of the answer its create was given, under the id chosen for it, with the title and the
+// spec the gate read, whatever an edit or a Rewrite changed since. inTx is a near copy let in
+// because its refusal's row could not be confirmed (nearCopyOutcome.unrecorded): its row replaces
+// a refused row under the same id, so it commits with the issue or not at all.
+type issueNearCopy struct {
+	row   nearCopyCheckRow
+	check *nearCopyCheck
+	inTx  bool
+}
+
+// issueNearCopyJSON is issueNearCopy as a held issue stores it in its request.
+type issueNearCopyJSON struct {
+	ID         string                         `json:"id"`
+	Project    string                         `json:"project"`
+	Actor      model.Actor                    `json:"actor"`
+	Title      string                         `json:"title"`
+	Spec       string                         `json:"spec"`
+	Parent     string                         `json:"parent,omitempty"`
+	Outcome    string                         `json:"outcome"`
+	Reason     string                         `json:"reason,omitempty"`
+	Force      bool                           `json:"force,omitempty"`
+	Candidates []model.NearCopyCheckCandidate `json:"candidates"`
+	InTx       bool                           `json:"in_tx,omitempty"`
+}
+
+func (n issueNearCopy) MarshalJSON() ([]byte, error) {
+	candidates := make([]model.NearCopyCheckCandidate, 0, len(n.check.candidates))
+	for _, candidate := range n.check.candidates {
+		candidates = append(candidates, model.NearCopyCheckCandidate{Key: candidate.Key, Title: candidate.Title, Score: candidate.Score})
+	}
+	return json.Marshal(issueNearCopyJSON{
+		ID: n.row.id, Project: n.row.project, Actor: n.row.actor, Title: n.row.title, Spec: n.row.spec,
+		Parent: n.row.parent, Outcome: n.check.outcome, Reason: n.check.reason, Force: n.check.force,
+		Candidates: candidates, InTx: n.inTx,
+	})
+}
+
+func (n *issueNearCopy) UnmarshalJSON(data []byte) error {
+	var stored issueNearCopyJSON
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return err
+	}
+	candidates := make([]scoredDuplicate, 0, len(stored.Candidates))
+	for _, candidate := range stored.Candidates {
+		candidates = append(candidates, scoredDuplicate{
+			DuplicateCandidate: model.DuplicateCandidate{Key: candidate.Key, Title: candidate.Title}, Score: candidate.Score,
+		})
+	}
+	check := &nearCopyCheck{outcome: stored.Outcome, reason: stored.Reason, force: stored.Force, candidates: candidates}
+	*n = issueNearCopy{
+		row:   newNearCopyCheckRow(stored.ID, stored.Project, stored.Actor, stored.Title, stored.Spec, stored.Parent, check),
+		check: check,
+		inTx:  stored.InTx,
+	}
+	return nil
+}
+
+// filed is n for the issue its create filed under key, nil for a create the gate never ran for.
+func (n *issueNearCopy) filed(key string) *issueNearCopy {
+	if n == nil {
+		return nil
+	}
+	filed := *n
+	filed.row.issue = key
+	return &filed
+}
+
+// issueWritten is what writeIssue wrote: the issue, its issue.created event, the advice the
+// write answers with (nil for a held issue's post, which answers nobody), its spec's document,
+// the spec as the seed stored it, and the near-copy gate's row the filing writes after its commit
+// (nil where it wrote it in its transaction or has none). A hold's dry run, which writes no issue,
+// answers the advice, the spec and assignee, the person the issue is filed under.
+type issueWritten struct {
+	issue      model.Issue
+	event      model.Event
+	advice     *writeAdvice
+	artifactID string
+	markdown   string
+	nearCopy   *issueNearCopy
+	assignee   *string
+}
+
+// writeIssue files create as actor's issue in tx, the issue's rows, its spec's first version and
+// its issue.created event, and commits tx. number is the issue's number: 0 takes the next of its
+// project's sequence, which createIssue does, and a held issue's post passes the number its hold
+// reserved (held, whose row the write phase takes first and marks posted in the same
+// transaction). A hold's dry run answers errHeldDryRun, before the commit, with what the write
+// would have answered: its advice, its spec as the seed stored it and its assignee.
+func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, actor model.Actor, number int, held *heldPost) (issueWritten, error) {
+	parentKey, assignee := create.Parent, create.Assignee
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
 	// takes none. Only the blockers can name another project, since a parent is of the issue's own
 	// project.
-	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
-			s.writeHandlerError(w, err)
-			return
+	if len(create.Blockers) > 0 || parentKey != "" {
+		if err := lockIssueDependencyWrite(ctx, tx, create.Project, create.CallerProject, create.Blockers); err != nil {
+			return issueWritten{}, err
 		}
 	}
 	var parentAssignee *string
 	if parentKey != "" {
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
+		err := tx.QueryRow(ctx, `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
-			return
+			return issueWritten{}, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parentKey)
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return issueWritten{}, err
 		}
-		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
-			return
+		if parentProject != create.Project {
+			return issueWritten{}, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
 		}
-		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if err := refuseParentTooDeep(ctx, tx, "", parentKey); err != nil {
+			return issueWritten{}, err
 		}
 	}
 	// The project's owner lock comes before its row's update: every writer of a projects row
 	// takes it first (an event append, a mapping write, the default assignee's PUT, the gated
-	// steps' publish), so none of them holds the row while it waits on the lock this create
-	// holds.
+	// steps' publish, a held issue's number reservation), so none of them holds the row while it
+	// waits on the lock this create holds.
 	//
 	// The create's read phase (INFRA-636): the spec's parse, render and encoding (SeedText), its
 	// task count, its reference index and the advice all run here, before the update of the
 	// project's next_number - the create's first write, which every later statement follows - so
 	// none of that work holds the transaction's id. The issue's key is read now, in the statement
-	// after the lock: next_number is written by an issue create alone, under the project's owner
-	// lock this one holds, so the update below takes exactly this number. The spec's id is taken
-	// in the same read, before its row is written (gen_random_uuid assigns no transaction id), so
-	// the document's writes, which name it, are queued here with its version, its task count and
-	// its index, and run in the write phase after the artifact's insert. An issue created without
-	// a spec gets an empty primary document.
-	var number int
+	// after the lock: next_number is written under the project's owner lock alone, by an issue
+	// create and a held issue's reservation (reserveIssueNumber), and this create holds that lock,
+	// so the update below takes exactly this number. A held issue's post files the number its hold
+	// reserved, writes no next_number, and reads the project's default assignee here instead,
+	// under the same lock. The spec's id is taken in the same read, before its row is written
+	// (gen_random_uuid assigns no transaction id), so the document's writes, which name it, are
+	// queued here with its version, its task count and its index, and run in the write phase after
+	// the artifact's insert. An issue created without a spec gets an empty primary document.
+	reserved := number != 0
 	var artifactID string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(input.Project), `
-		select next_number, gen_random_uuid()::text from projects where key = $1
-	`, []any{input.Project}, &number, &artifactID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	var projectDefaultAssignee string
+	if !reserved {
+		if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner(create.Project), `
+			select next_number, gen_random_uuid()::text from projects where key = $1
+		`, []any{create.Project}, &number, &artifactID); err != nil {
+			return issueWritten{}, err
+		}
+	} else if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner(create.Project), `
+		-- default_assignee as it stands: the column names a person and refuses nothing
+		-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql).
+		select default_assignee, gen_random_uuid()::text from projects where key = $1
+	`, []any{create.Project}, &projectDefaultAssignee, &artifactID); err != nil {
+		return issueWritten{}, err
 	}
-	key := fmt.Sprintf("%s-%d", input.Project, number)
+	key := fmt.Sprintf("%s-%d", create.Project, number)
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
+	hasSpec := create.Spec != nil && strings.TrimSpace(*create.Spec) != ""
 	var markdown string
-	if input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
-		markdown = *input.Spec
+	if hasSpec {
+		markdown = *create.Spec
 	}
-	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
+	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
 	// The issue's row and its spec's artifacts row are both written below, after the document
 	// work, so what they will hold is recorded for the reads of this transaction that need it.
@@ -382,18 +570,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
 		RefKey:        key + "/spec",
 		IssueKey:      key,
-		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
+		Ref:           refs.ArtifactRef(&key, create.Project, nil, "spec", "doc", true),
 		PendingParent: parentKey,
 	})
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
-	specVersion, err := ledger.QueueVersion(r.Context(), artifactID, markdown, []model.Actor{actor}, nil)
+	specVersion, err := ledger.QueueVersion(ctx, artifactID, markdown, []model.Actor{actor}, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	// The spec is a stored text, so its display tree is stored once this transaction commits
 	// (docs.Ledger.storeVersionTrees); this route queues the version row itself.
@@ -404,192 +590,175 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	documentReadBack := ledger.ReadBackOf(artifactID, markdown)
 	// The count is queued after the version's insert, so it names that version (LEGION-542).
 	if err := recordDocumentTaskProgress(documentCtx, tx, artifactID, documentReadBack, markdown); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	var parentRef *string
 	if parentKey != "" {
 		parentRef = &parentKey
 	}
 	// A new issue is in triage (the column's default), and its row - its labels and its parent -
-	// is not written yet (writeAdviceBefore).
-	advice := s.writeAdviceBefore(
-		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
-		adviceIssueRow{parent: parentRef, labels: labels}, adviceAsks{},
-	)
+	// is not written yet (writeAdviceBefore). A held issue's post answers nobody.
+	var advice *writeAdvice
+	if held.answers() {
+		advice = s.writeAdviceBefore(
+			ctx, tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
+			adviceIssueRow{parent: parentRef, labels: create.Labels}, adviceAsks{},
+		)
+		// The spec's blocks come from the rendering the seed read back above, so they are worked
+		// out here, before the write phase's first statement takes the transaction's id, and never
+		// between two of its statements (INFRA-636's window).
+		if advice != nil && hasSpec {
+			advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
+		}
+	}
 
-	// The write phase: the statements from here on run back to back.
-	var written int
-	var projectDefaultAssignee string
-	if err := tx.QueryRow(r.Context(), `
-		update projects
-		set next_number = next_number + 1
-		where key = $1
-		-- default_assignee as it stands: the column names a person and refuses nothing
-		-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so the
-		-- chain's last step always lands and this statement reads no other table for it.
-		returning next_number - 1, default_assignee
-	`, input.Project).Scan(&written, &projectDefaultAssignee); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The write phase: the statements from here on run back to back. A held issue's post takes
+	// and marks its held row first (heldPost.queuePosted).
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		held.queuePosted(b)
+		return nil
+	}); err != nil {
+		return issueWritten{}, err
 	}
-	if written != number {
-		s.writeHandlerError(w, fmt.Errorf("project %s numbered issue %d under its owner lock, not the %d it read", input.Project, written, number))
-		return
+	if !reserved {
+		var written int
+		if err := tx.QueryRow(ctx, `
+			update projects
+			set next_number = next_number + 1
+			where key = $1
+			-- default_assignee as it stands: the column names a person and refuses nothing
+			-- (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so the
+			-- chain's last step always lands and this statement reads no other table for it.
+			returning next_number - 1, default_assignee
+		`, create.Project).Scan(&written, &projectDefaultAssignee); err != nil {
+			return issueWritten{}, err
+		}
+		if written != number {
+			return issueWritten{}, fmt.Errorf("project %s numbered issue %d under its owner lock, not the %d it read", create.Project, written, number)
+		}
 	}
-	// The project's stored default is the chain's last step, and this update already holds the
-	// project row: the decision moves below it so the create takes no round trip and no lock of
-	// its own for it.
+	// The project's stored default is the chain's last step, read with the project row this
+	// create already holds: the update above returns it, and a held issue's post, which writes no
+	// next number, read it under the owner lock. So the decision takes no round trip and no lock
+	// of its own.
 	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
-	if err := lockProjectRankAllocation(r.Context(), tx, input.Project); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := lockProjectRankAllocation(ctx, tx, create.Project); err != nil {
+		return issueWritten{}, err
 	}
 
-	lastRank, err := lastProjectRank(r.Context(), tx, input.Project, "")
+	lastRank, err := lastProjectRank(ctx, tx, create.Project, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	issueRank := rank.Between(lastRank, "")
 
-	if _, err := tx.Exec(r.Context(), `
+	if _, err := tx.Exec(ctx, `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	`, key, create.Project, number, create.Title, parentRef, actorJSON, create.Labels, create.Priority, issueRank, assignee, create.Repo); err != nil {
+		return issueWritten{}, err
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := writeBlockedBy(ctx, tx, key, create.Project, create.CallerProject, create.Blockers); err != nil {
+		return issueWritten{}, err
 	}
 	// The new issue holds no relation, so every id it names is stated and none is retracted.
-	if len(advances) > 0 {
-		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, time.Now().UTC()); err != nil {
-			s.writeHandlerError(w, err)
-			return
+	if len(create.Advances) > 0 {
+		if err := writeIssueAdvances(ctx, tx, key, nil, create.Advances, actor, time.Now().UTC()); err != nil {
+			return issueWritten{}, err
 		}
 	}
-	if componentsProvided {
-		if err := writeIssueComponents(r.Context(), tx, key, input.Project, *components); err != nil {
-			s.writeHandlerError(w, err)
-			return
+	if create.ComponentsProvided {
+		if err := writeIssueComponents(ctx, tx, key, create.Project, *create.Components); err != nil {
+			return issueWritten{}, err
 		}
 	}
-	if input.External != "" {
-		if _, err := tx.Exec(r.Context(), `
+	if create.External != "" {
+		if _, err := tx.Exec(ctx, `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
-			if !isUniqueViolation(err) {
-				s.writeHandlerError(w, err)
-				return
+		`, key, externalURL(create.ExternalRepo, create.ExternalNumber)); err != nil {
+			if isUniqueViolation(err) {
+				return issueWritten{}, errExternalIssueImported
 			}
-			if err := tx.Rollback(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			existingKey, err := s.resolveIssueRef(r.Context(), input.External)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
-			return
+			return issueWritten{}, err
 		}
 	}
 
-	if _, err := tx.Exec(r.Context(), `
+	if _, err := tx.Exec(ctx, `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by)
 		values ($1, $2, $3, 'spec', 'spec.md', 'doc', true, $4)
-	`, artifactID, key, input.Project, actorJSON); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	`, artifactID, key, create.Project, actorJSON); err != nil {
+		return issueWritten{}, err
 	}
-	issue, err := s.loadIssue(r.Context(), tx, key)
+	issue, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	issue.LastSeq++
 	// A new issue's blocked_by edges move each blocker's count, beside what its spec cites.
-	blockerChanges, err := issueEdgeChanges(r.Context(), tx, unsetIssue, issue, false)
+	blockerChanges, err := issueEdgeChanges(ctx, tx, unsetIssue, issue, false)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
 	// A new issue changed every field it holds a value in, measured from an issue with none.
-	payload, err := newIssueEventPayload(r.Context(), tx, issue, refs.MergeChanges(specChanges, blockerChanges), issueChangedFields(unsetIssue, issue))
+	payload, err := newIssueEventPayload(ctx, tx, issue, refs.MergeChanges(specChanges, blockerChanges), issueChangedFields(unsetIssue, issue))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
-	payload.Forced = outcome.Forced
+	payload.Forced = create.Forced
 	// The issue.created event and its stamp of the spec's new edges follow the spec's queued
 	// writes: the stamp needs the index's edges written, and the document's pending-settlement row
 	// comes before the event.
 	event, err := s.queueStampedEvent(ledger, issueOwner(key).event("issue.created", actor, payload), "artifact", artifactID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueWritten{}, err
 	}
-	nearCopyRecord.issue = key
-	// A near copy let in because its refusal's row could not be confirmed (recordInTx) writes its
-	// row in this transaction, under the id the refusal used: the create and the row that replaces
-	// a refused row under that id commit together or not at all, so no committed create keeps a
-	// refused row. It is one of the create's inline writes, after its first (the project's next
-	// number, which already holds the projects row its foreign key shares) and so after the read
-	// phase's owner lock, document work and advice; its result steers the route, since a row that
-	// cannot land admits no create. It binds values worked out before the transaction opened
+	// A near copy let in because its refusal's row could not be confirmed (issueNearCopy.inTx)
+	// writes its row in this transaction, under the id the refusal used: the issue and the row that
+	// replaces a refused row under that id commit together or not at all, so no committed issue
+	// keeps a refused row. It is one of the create's inline writes, after its first - the project's
+	// next number, which already holds the projects row its foreign key shares, or, in a held
+	// issue's post, which writes no next number, the mark of its held row - and so after the
+	// read phase's owner lock, document work and advice; its result steers the route, since a row
+	// that cannot land admits no create. It binds values worked out before the transaction opened
 	// (newNearCopyCheckRow), so the spec's hash and the candidates' encoding run outside the
-	// create's transaction id. Every other row is written after the commit.
-	if recordInTx {
-		if err := s.writeNearCopyCheck(r.Context(), tx, nearCopyRecord, outcome.Check); err != nil {
-			s.writeHandlerError(w, err)
-			return
+	// create's transaction id. Every other row is written after the commit (announceIssue).
+	nearCopy := create.NearCopy.filed(key)
+	if nearCopy != nil && nearCopy.inTx {
+		if err := s.writeNearCopyCheck(ctx, tx, nearCopy.row, nearCopy.check); err != nil {
+			return issueWritten{}, err
 		}
+		nearCopy = nil
 	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
+		return issueWritten{advice: advice, markdown: markdown, assignee: assignee}, err
 	}
+	if err := ledger.Commit(ctx); err != nil {
+		return issueWritten{}, err
+	}
+	return issueWritten{
+		issue: issue, event: *event, advice: advice, artifactID: artifactID, markdown: markdown,
+		nearCopy: nearCopy,
+	}, nil
+}
+
+// announceIssue is what follows an issue's commit, a held issue's post as much as the write's
+// own: its spec's settlement is queued, its event published, and the near-copy gate's row not
+// written in its transaction is written (recordNearCopyCheck).
+func (s *server) announceIssue(ctx context.Context, written issueWritten) {
 	// A seeded spec never passed through a live edit, so nothing has queued the document
 	// closer that indexes its ask blocks and repairs block ids; queue it now that the
 	// transaction is durable.
-	s.deps.Docs.ScheduleSettlement(artifactID)
-	s.publish(r.Context(), *event)
-	if !recordInTx {
-		s.recordNearCopyCheck(r.Context(), nearCopyRecord, outcome.Check)
+	s.deps.Docs.ScheduleSettlement(written.artifactID)
+	s.publish(ctx, written.event)
+	if near := written.nearCopy; near != nil {
+		s.recordNearCopyCheck(ctx, near.row, near.check)
 	}
-	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
-		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
-	}
-	// The related-item check runs after the write committed, whatever writeAdvice
-	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
-	// own when the write-advice read failed. An answered ask it offers carries the display tree
-	// of that answer where this request asked for the trees, which its reader fills before the
-	// response is written.
-	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	suggestions := s.relatedCheck(r.Context(), relatedInput{
-		project: input.Project,
-		text:    input.Title + "\n" + markdown,
-		title:   input.Title,
-		source:  suggestionSource{kind: "issue", issueKey: key, actor: actor},
-		record:  true,
-		trees:   trees,
-	})
-	trees.resolve()
-	suggestions.TitleMatches = outcome.TitleMatches
-	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
-	suggestions.NearCopyCheck = outcome.NearCopyCheck
-	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
@@ -694,6 +863,65 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 	check := *outcome.Check
 	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
 	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
+}
+
+// tell puts what the gate tells the filer on suggestions, the create's related-item check result:
+// the issues a forced create went past, the likely duplicate, and why no check was made.
+func (outcome nearCopyOutcome) tell(suggestions *model.Suggestions) {
+	suggestions.TitleMatches = outcome.TitleMatches
+	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
+	suggestions.NearCopyCheck = outcome.NearCopyCheck
+}
+
+// recheckNearCopy runs the near-copy gate once more for create, a held issue, at its post: against
+// the project as it now stands, so an issue filed while it was held is read, and against its title
+// and spec as they now stand, after an edit or a Rewrite. Nobody waits on a post to be refused, so
+// a near copy found here refuses nothing: the issue posts as a create forced past it posts, its
+// issue.created event recording the issues it went past (forced) and its near_copy_checks row this
+// answer, under the id the hold chose. copies are the near copies the hold's own record did not
+// already name, which its writer is told of (tellNearCopy). Where the gate finds none, or does not
+// answer, create is left as the hold settled it.
+func (s *server) recheckNearCopy(ctx context.Context, create issueCreate) (issueCreate, []model.DuplicateCandidate) {
+	if create.NearCopy == nil || create.NearCopy.check == nil {
+		return create, nil
+	}
+	ancestors := []string{}
+	if create.Parent != "" {
+		chain, err := refs.IssueAncestors(ctx, s.deps.Store.Pool, create.Parent)
+		if err != nil {
+			slog.Warn("dispatch: read a held issue's ancestors for its near-copy check at the post",
+				"project", create.Project, "error", err)
+			return create, nil
+		}
+		ancestors = append([]string{create.Parent}, chain...)
+	}
+	spec := ""
+	if create.Spec != nil {
+		spec = *create.Spec
+	}
+	// Run as a forced create's, which settles every record of a create that goes in past a refusal.
+	outcome := s.runNearCopyGate(ctx, create.Project, create.Title, spec, ancestors, true)
+	if len(outcome.TitleMatches) == 0 {
+		return create, nil
+	}
+	var named []string
+	if create.Forced != nil {
+		named = create.Forced.Past
+	}
+	copies := slices.DeleteFunc(slices.Clone(outcome.TitleMatches), func(candidate model.DuplicateCandidate) bool {
+		return slices.Contains(named, candidate.Key)
+	})
+	// The row keeps whether the create asked for force, which the run above does not.
+	check := *outcome.Check
+	check.force = create.NearCopy.check.force
+	// The row is built again over the title and the spec as they now stand and the candidates
+	// this run read (newNearCopyCheckRow), under the id the hold chose.
+	recorded := *create.NearCopy
+	row := recorded.row
+	recorded.row = newNearCopyCheckRow(row.id, row.project, row.actor, create.Title, spec, row.parent, &check)
+	recorded.check = &check
+	create.NearCopy, create.Forced = &recorded, outcome.Forced
+	return create, copies
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

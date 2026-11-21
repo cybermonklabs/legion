@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Every read of an ask, a comment, a message and an issue now carries
+  `rewrite {state, by, at, original, reason?}` where a rewrite touched the text. `by` is `person`
+  for a person's Rewrite and `reviewer` for the reviewer's, and `original` is the wording before
+  the rewrite. No event payload carries it.
+  The web app marks such a text with one **Rewritten** badge, on the ask card, a comment, a message
+  and an issue's title alike. Pressing the badge shows the original wording in place.

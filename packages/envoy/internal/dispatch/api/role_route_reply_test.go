@@ -357,8 +357,9 @@ func TestAReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
 
 // Whether a session the attempt does not name holds the role is the listener's to say, so a role
 // lookup the listener does not answer is a 503 ENVOY_UNAVAILABLE the reply's host can make again,
-// never a refusal that ends a reply the role's holder may well be entitled to. The session the
-// attempt names is answered as ever, with no lookup at all.
+// never a refusal that ends a reply the role's holder may well be entitled to. It names the route
+// and not the session replying, since a handler's error path carries it. The session the attempt
+// names is answered as ever, with no lookup at all.
 func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 	rig := newRoleRouteReplies(t)
 	const role = "reply-unanswered"
@@ -376,6 +377,9 @@ func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 	} {
 		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
 			t.Fatalf("the role's holder's reply to %s with the lookup unanswered: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", what, response.Code, response.Body.String())
+		}
+		if body := response.Body.String(); !strings.Contains(body, "role:"+role) || strings.Contains(body, "ses_role_b") {
+			t.Fatalf("the 503 to the reply to %s = %s, want it naming role:%s and not the session replying", what, body, role)
 		}
 	}
 	if answered := rig.replyMessage(t, message, "ses_role_a", map[string]any{"body": "Warm, says A."}, false); answered.Code != http.StatusCreated {

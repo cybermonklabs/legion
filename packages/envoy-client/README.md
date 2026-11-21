@@ -265,11 +265,15 @@ uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
 own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
 names and drops it at the end, starts the server, which migrates that database as it boots, and
-answers its URL and the agent bearer token it minted for the run. Two tests run on it:
+answers its URL and the agent bearer token it minted for the run. Four tests run on it:
 `src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to end,
-and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
-document write's advice the same way; each is the real CLI entry `bin/dispatch.ts` writing to that
-server, the server's record and the client's sentence together. They share
+`src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
+document write's advice the same way, `src/__tests__/comment-mention.live.test.ts`, which proves
+that a comment the CLI posts with `--mention` carries one delivery attempt for that target, and
+`src/__tests__/held-ask.live.test.ts`, which proves that a reviewer that holds asks holds the ask
+the CLI sends, and that the line the CLI prints names the held ask's id; each is the real CLI
+entry `bin/dispatch.ts` writing to that server, the server's record and the client's sentence
+together. They share
 `@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in `test/`), which holds the
 real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
 writes about; each file keeps the constants and the sentences that are its own. A test that uses
@@ -280,11 +284,13 @@ and `go` on `PATH`; with the variable set it fails rather than skips. So, to run
 cd packages/envoy-client
 LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
   bun test src/__tests__/design-gate-advice.live.test.ts \
-  src/__tests__/moved-approval-advice.live.test.ts
+  src/__tests__/moved-approval-advice.live.test.ts \
+  src/__tests__/comment-mention.live.test.ts \
+  src/__tests__/held-ask.live.test.ts
 ```
 
-CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
-both a PostgreSQL and a Go.
+CI runs all four in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package
+with both a PostgreSQL and a Go.
 
 ## HTTP transport
 
@@ -791,6 +797,30 @@ next version), or the closing reason of `issue-update --status done` (the close 
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0.
 
+A write whose path names a text Dispatch's reviewer holds and that has not posted (an issue, an
+ask, a comment or a message) is kept by Dispatch and runs right after that text posts: Dispatch
+answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. Dispatch keeps such
+a write only for a client that says it reads that `202`: every write the client sends carries
+`Dispatch-Accepts-Kept-Write: 1` (`DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`), and Dispatch answers a
+write without it `409 HELD_TEXT` with the held id and keeps nothing. Three kinds of
+write are not kept so: a new ask, comment or message on a held issue, which the reviewer holds
+under an id of its own and answers `201` in its whole shape with `held` beside it; a reply to a
+delivered message or mention, and a delivery's resend or accept; and a result's dry run
+(`heldTargetSelf`, `packages/envoy/internal/dispatch/api/held_replay.go`). The client reads no
+such `202` as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept `id`
+and `held`), which is no refusal and no `DispatchServiceError`. Dispatch keeps an upload to a held
+issue inside its keyed layer, as it keeps every other such write, so that `202` carries the
+`Idempotency-Key` back and a retry under the same key is answered the same `202`. The `dispatch`
+command prints one line for it, `Kept until held text <waits_on> posts: Dispatch keeps this write
+as <id> and runs it right after that text posts.`, with `dispatch held <id>` to read it, and
+exits 0. `dispatch result`, `artifact` to an issue, `claim`, `claim --release` and
+`handoff-write` reach such a write, and so do `edit-ask`, `resolve-ask`, `follow --action
+unfollow` and `resolve-comment` when given the text's full id. Given a `dispatch://` reference
+those four read the text first, as `issue-update` and `follow --action follow` always do, and
+Dispatch answers a session's read of a held text `409 HELD_TEXT`, so they send no write. A
+picture upload ahead of the command's own write that is kept fails the command, saying the
+picture was not uploaded yet, since the call's text has no address for it until it is.
+
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
 with no decision blocks, three or more session writes without a human response (with stronger
@@ -1049,7 +1079,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the forty
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.

@@ -433,7 +433,7 @@ func closeBody(response *http.Response) {
 // ended, which is the whole of dispatch://INFRA-392.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	const route = "/v1/sessions"
-	response, err := c.get(ctx, route, includeUnresponsive)
+	response, err := c.get(ctx, route, route, includeUnresponsive)
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +461,7 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 // receive an issue's or document's events. Its failures are Sessions'.
 func (c *Client) ListInterests(ctx context.Context) ([]listenerwire.InterestRow, error) {
 	const route = "/v1/interests/"
-	response, err := c.get(ctx, route, "")
+	response, err := c.get(ctx, route, route, "")
 	if err != nil {
 		return nil, err
 	}
@@ -492,8 +492,8 @@ func (c *Client) ListInterests(ctx context.Context) ([]listenerwire.InterestRow,
 // the listener lists an interest a direct bucket write stored under such a key until an operator
 // purges it, so a removal left pending on one completes once the interest is gone.
 func (c *Client) Interest(ctx context.Context, sessionID string) (listenerwire.InterestRow, error) {
-	route := "/v1/interests/" + url.PathEscape(sessionID)
-	response, err := c.get(ctx, route, "")
+	const route = "/v1/interests/{session_id}"
+	response, err := c.get(ctx, route, "/v1/interests/"+url.PathEscape(sessionID), "")
 	if err != nil {
 		return listenerwire.InterestRow{}, err
 	}
@@ -569,8 +569,8 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 // record like any other, so the delivery still resolves to it and its frame is stored until it
 // answers again (lapsedRoleHolder).
 func (c *Client) Role(ctx context.Context, role string) (Session, error) {
-	route := "/v1/roles/" + url.PathEscape(role)
-	response, err := c.get(ctx, route, includeUnresponsive)
+	const route = "/v1/roles/{role}"
+	response, err := c.get(ctx, route, "/v1/roles/"+url.PathEscape(role), includeUnresponsive)
 	if err != nil {
 		return Session{}, err
 	}
@@ -680,8 +680,8 @@ func (c *Client) SessionIncludingStopped(ctx context.Context, sessionID string) 
 // readSession is the one GET /v1/registry/<session_id> both reads make, under the include
 // selector each asks with.
 func (c *Client) readSession(ctx context.Context, sessionID, include string) (Session, error) {
-	route := "/v1/registry/" + url.PathEscape(sessionID)
-	response, err := c.get(ctx, route, include)
+	const route = "/v1/registry/{session_id}"
+	response, err := c.get(ctx, route, "/v1/registry/"+url.PathEscape(sessionID), include)
 	if err != nil {
 		return Session{}, err
 	}
@@ -708,8 +708,8 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 // carrying the listener's reason: a read the registry did not answer says nothing about whether
 // the session was recorded.
 func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.LegionAgentAnswer, error) {
-	route := "/v1/legion/agents/sessions/" + url.PathEscape(sessionID)
-	response, err := c.get(ctx, route, "")
+	const route = "/v1/legion/agents/sessions/{session_id}"
+	response, err := c.get(ctx, route, "/v1/legion/agents/sessions/"+url.PathEscape(sessionID), "")
 	if err != nil {
 		return listenerwire.LegionAgentAnswer{}, err
 	}
@@ -732,18 +732,19 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 // first, the first being the role's current holder; none when it holds none. Any answer but a 200
 // is ErrUnavailable.
 func (c *Client) RoleAgents(ctx context.Context, roleToken string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "")
+	return c.legionAgents(ctx, "/v1/legion/agents/roles/{role_token}", "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "")
 }
 
 // IssueAgents returns every session the Legion agent registry holds for an issue, by role in
 // workflow order (architect, planner, implementer, tester, reviewer, merger), then newest first;
 // none when it holds none. Any answer but a 200 is ErrUnavailable.
 func (c *Client) IssueAgents(ctx context.Context, issueKey string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents", "?issue="+url.QueryEscape(issueKey))
+	const route = "/v1/legion/agents"
+	return c.legionAgents(ctx, route, route, "?issue="+url.QueryEscape(issueKey))
 }
 
-func (c *Client) legionAgents(ctx context.Context, route, query string) ([]listenerwire.LegionAgentAnswer, error) {
-	response, err := c.get(ctx, route, query)
+func (c *Client) legionAgents(ctx context.Context, route, path, query string) ([]listenerwire.LegionAgentAnswer, error) {
+	response, err := c.get(ctx, route, path, query)
 	if err != nil {
 		return nil, err
 	}
@@ -761,20 +762,32 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 	return body.Entries, nil
 }
 
-// get makes one authorized GET of route+query, the one shape every read of the listener takes.
-// route names the read in each error this returns, without query's selector, so the same read
-// reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
+// get makes one authorized GET of path+query, the one shape every read of the listener takes.
+// route names the read in each error this returns and in each line do writes: path's pattern,
+// `{session_id}`, `{role}` or `{role_token}` standing where path names one, and without query's
+// selector, so the same read reads alike however it was asked, and no error or log line of a read
+// names the session or role it read. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
-func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
+func (c *Client) get(ctx context.Context, route, path, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+query, nil)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, withoutURL(err))
 		}
 		return request, nil
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
+		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, withoutURL(err)))
 	})
+}
+
+// withoutURL is err without the URL a *url.Error quotes, whose path names the session or role a
+// read is for: get names the read by its route's pattern instead.
+func withoutURL(err error) error {
+	var failed *url.Error
+	if errors.As(err, &failed) {
+		return failed.Err
+	}
+	return err
 }
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
@@ -849,9 +862,9 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}
 	marked := input.Role != ""
 	if marked && !c.presentsIdentity() {
-		err := fmt.Errorf("%w (a send for role %s to %s)", ErrNoListenerIdentity, input.Role, input.TargetSession)
+		err := fmt.Errorf("%w (a send for role %s)", ErrNoListenerIdentity, input.Role)
 		c.logger.Error("dispatch: a send for a role is refused: this Dispatch presents no identity to the Envoy listener",
-			"role", input.Role, "target_session", input.TargetSession, "error", err.Error())
+			"role", input.Role, "error", err.Error())
 		return SendResult{}, err
 	}
 	send.Role = input.Role

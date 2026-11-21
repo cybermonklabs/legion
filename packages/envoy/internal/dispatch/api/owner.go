@@ -11,11 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// owner identifies the issue, unlinked artifact, or project that owns collaboration.
+// owner identifies the issue, unlinked artifact, or project that owns collaboration. A held
+// text's stored request carries it (held_texts.request), under these JSON names.
 type owner struct {
-	IssueKey   *string
-	ArtifactID *string
-	ProjectKey *string
+	IssueKey   *string `json:"issue_key,omitempty"`
+	ArtifactID *string `json:"artifact_id,omitempty"`
+	ProjectKey *string `json:"project_key,omitempty"`
 }
 
 func issueOwner(key string) owner {

@@ -1,7 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
@@ -25,8 +24,7 @@ function agent(sessionId: string, title: string): Agent {
   };
 }
 
-test("AskRecipients folds its routing list at rest and still names the count", async () => {
-  const user = userEvent.setup();
+test("AskRecipients names the count in its heading and lists every session at once, with no fold", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -49,13 +47,9 @@ test("AskRecipients folds its routing list at rest and still names the count", a
   );
 
   try {
-    const toggle = screen.getByRole("button", { name: "Reaches 2" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("list", { name: "Followers" })).not.toBeInTheDocument();
-
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByRole("list", { name: "Followers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Reaches 2" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Reaches/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Followers" })).toBeTruthy();
   } finally {
     view.unmount();
     listAgents.mockRestore();
@@ -68,7 +62,9 @@ test("AskRecipients names followers by registry title, else by shortened id, wit
 
   try {
     const section = screen.getByRole("region", { name: "Recipients" });
-    expect(within(section).getByRole("button", { name: /^Reaches/ }).textContent).toBe("Reaches 2");
+    expect(within(section).getByRole("heading", { name: /^Reaches/ }).textContent).toBe(
+      "Reaches 2"
+    );
     const planner = await within(section).findByText("Planner");
     expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
     const items = within(section).getAllByRole("listitem");
@@ -194,7 +190,7 @@ test("AskRecipients adds the issue's subscribers once each, removes one through 
   try {
     const section = screen.getByRole("region", { name: "Recipients" });
     await waitFor(() =>
-      expect(within(section).getByRole("button", { name: /^Reaches/ }).textContent).toBe(
+      expect(within(section).getByRole("heading", { name: /^Reaches/ }).textContent).toBe(
         "Reaches 3"
       )
     );
@@ -238,7 +234,7 @@ test("AskRecipients says when the subscribers fetch failed and retries it, inste
     page.getIssueSubscribers.mockResolvedValue([subscriber("b0b0b0b0b0b0b0b0", "Platform PO")]);
     await page.user.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(within(section).getByRole("button", { name: /^Reaches/ }).textContent).toBe(
+      expect(within(section).getByRole("heading", { name: /^Reaches/ }).textContent).toBe(
         "Reaches 3"
       )
     );
@@ -260,8 +256,8 @@ test("AskRecipients says the agent list is refilling and claims no count or offl
     const notice = await within(section).findByTestId("agent-list-refilling");
     expect(notice.textContent).toBe(AGENT_LIST_REFILLING);
     expect(within(section).queryByRole("alert")).not.toBeInTheDocument();
-    expect(within(section).queryByRole("button", { name: /^Reaches/ })).not.toBeInTheDocument();
-    expect(within(section).getByRole("button", { name: "Recipients" })).toBeTruthy();
+    expect(within(section).queryByRole("heading", { name: /^Reaches/ })).not.toBeInTheDocument();
+    expect(within(section).getByRole("heading", { name: "Recipients" })).toBeTruthy();
     await waitFor(() =>
       expect(within(section).getAllByRole("img", { name: "Running state unknown" })).toHaveLength(2)
     );
@@ -280,7 +276,7 @@ test("AskRecipients tells the human an unfollowed session still hears the ask th
     const section = screen.getByRole("region", { name: "Recipients" });
     await waitFor(() => expect(page.getIssueSubscribers).toHaveBeenCalledWith("CORE-1"));
     await waitFor(() =>
-      expect(within(section).getByRole("button", { name: /^Reaches/ }).textContent).toBe(
+      expect(within(section).getByRole("heading", { name: /^Reaches/ }).textContent).toBe(
         "Reaches 2"
       )
     );
@@ -323,7 +319,6 @@ test("AskRecipients reads a project document's subscribers for a document-owned 
 });
 
 test("AskRecipients never asks for subscribers unless the signed-in principal is a user", async () => {
-  const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const queryClient = new QueryClient({
@@ -346,14 +341,14 @@ test("AskRecipients never asks for subscribers unless the signed-in principal is
   );
 
   try {
-    const toggle = within(screen.getByRole("region", { name: "Recipients" })).getByRole("button", {
-      name: /^Reaches/,
-    });
-    expect(toggle.textContent).toBe("Reaches 2");
-    // Opening the list mounts the followers' names, which read the agent registry; once that read
-    // has begun, the card's fetches have all started, and the one needing the `person` scope is
-    // not among them.
-    await user.click(toggle);
+    const heading = within(screen.getByRole("region", { name: "Recipients" })).getByRole(
+      "heading",
+      { name: /^Reaches/ }
+    );
+    expect(heading.textContent).toBe("Reaches 2");
+    // The followers' names read the agent registry as the list draws them; once that read has
+    // begun, the card's fetches have all started, and the one needing the `person` scope is not
+    // among them.
     await waitFor(() => expect(listAgents).toHaveBeenCalled());
     expect(getIssueSubscribers).not.toHaveBeenCalled();
   } finally {
@@ -368,7 +363,7 @@ const routed = "e2e2e2e2e2e2e2e2";
 const holder = "d3d3d3d3d3d3d3d3";
 
 function reachesText(section: HTMLElement): string | null {
-  return within(section).getByRole("button", { name: /^Reaches/ }).textContent;
+  return within(section).getByRole("heading", { name: /^Reaches/ }).textContent;
 }
 
 test("AskRecipients lists the issue's claimant via claim, drawn by AgentName, with no control", async () => {

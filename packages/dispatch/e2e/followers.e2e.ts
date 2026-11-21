@@ -52,10 +52,12 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     await page.clock.install();
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const followers = card.getByRole("region", { name: "Recipients" });
+    // The routing list is in the popover the chevron beside the asker's name opens, under its
+    // `Reaches N` heading (INFRA-3231's R7); the card itself carries no line of it.
+    await expect(card.getByRole("region", { name: "Recipients" })).toHaveCount(0);
+    await card.locator("[data-ask-asker]").click();
+    const followers = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(followers).toContainText("Reaches 2");
-    // The routing list is folded at rest; the count names it, and the chips are inside.
-    await followers.getByRole("button", { name: /^Reaches/ }).click();
     await expect(followers.getByText("Asker (e2e)", { exact: true })).toBeVisible();
     await expect(followers.getByText("Replier (e2e)", { exact: true })).toBeVisible();
     await expect(followers.getByRole("img", { exact: true, name: "Running" })).toHaveCount(2);
@@ -133,9 +135,9 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
   try {
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(recipients).toContainText("Reaches 2");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     await expect(
       recipients.getByRole("list", { name: "Followers" }).locator(`[title='${asker.id}']`)
     ).toHaveCount(1);

@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  A text the reviewer holds has three routes. `GET /api/v1/held/{id}` reads it: its state, its
+  wording, the findings, the reviewer's rewrite and the deadline. Any agent's token reads it, and a
+  person at a browser gets `403 HELD_FORBIDDEN`.
+  `PATCH /api/v1/held/{id}` changes the wording, and the reviewer reads it again.
+  `PUT /api/v1/held/{id}/state {state: "posted", reason}` posts it as written and records the
+  reason. `posted` is the one state it takes: any other is `400 HELD_STATE_INPUT`. The same
+  request sent again after the text posted answers the held text as it stands.
+  Only the session that wrote the text may change or post it (`403 HELD_NOT_WRITER`), and only
+  while it is in review or waits on its writer (`409 HELD_TEXT_DECIDED`).
+  A session that reads a held ask, comment, message or issue by its usual route gets
+  `409 HELD_TEXT`, with the held id.
+  A session's write that names a held text, such as a reply to it, a child issue or a claim, is
+  kept when it creates a kind of text the reviewer holds, and otherwise only when its request
+  carries `Dispatch-Accepts-Kept-Write: 1`, which the agents' `DispatchClient` sends on every
+  write. A kept create answers `201` in its usual shape, and any other kept write `202 {id, held}`.
+  A kept write runs right after the held text posts, in the order the writes came, and a text the
+  reviewer reads among them is reviewed once the held text has posted. A session's other write
+  without the header gets `409 HELD_TEXT` with the held id, and nothing is kept. A repeat of a
+  kept write under its `Idempotency-Key`, an upload to a held issue included, is answered the
+  same `202` and keeps nothing more. A person's write on a held text's path, or a person's create
+  on a held issue, is answered as if no such text existed, as a person's read is.

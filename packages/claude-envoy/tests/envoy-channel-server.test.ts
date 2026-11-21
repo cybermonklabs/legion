@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { DISPATCH_GENERATED_TEXT_HEADER } from "@legion/contracts"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -647,6 +648,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
+      readonly generated: string | null
       readonly body: unknown
     }> = []
     server = Bun.serve({
@@ -655,6 +657,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
+          generated: request.headers.get(DISPATCH_GENERATED_TEXT_HEADER),
           body: await request.json(),
         })
         return Response.json({})
@@ -678,6 +681,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       {
         path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
         auth: `Bearer ${DISPATCH_TOKEN}`,
+        // The plugin's own error text: one send, with the generated-text header.
+        generated: "1",
         body: {
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,

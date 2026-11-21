@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
@@ -57,6 +58,10 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(replyRead{}):                "MessageReplyResult",
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
+	// A person's definition is the route's whole answer, so it takes the plain name; the meaning of
+	// each selection the component answers is a part of it, named apart from it.
+	reflect.TypeOf(definitionRead{}):      "Definition",
+	reflect.TypeOf(reviewer.Definition{}): "DefinitionMeaning",
 
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
@@ -200,6 +205,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"type": "boolean",
 		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
 			"an artifact is made the issue's spec at issue creation and never by an upload",
+	}},
+	// postWritingRules (writing_rules.go) reads the JSON of a write the caller has not sent, the
+	// request of whichever route its route field names, so no one Go type names it.
+	{reflect.TypeOf(writingRulesInput{}), "body"}: rawField{Fragment: map[string]any{
+		"type": "object", "additionalProperties": map[string]any{},
+		"description": "the JSON body of the write that route takes, as the write would send it",
 	}},
 	// createBroadcast refuses `idempotency_key` whenever the body carries one (broadcasts.go):
 	// the key is the Idempotency-Key header. The field is described so a client reading the

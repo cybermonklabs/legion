@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  Dispatch's server now reads the prose of each agent write that a person reads, before it stores
+  the write, and records what it finds. It refuses no write: the write goes on whatever it finds.
+  The check applies three STE100 structure rules, `phrasal-verb`, `nominalization` and
+  `dangling-conjunction`, and `key-pointer`, which finds a sentence whose subject is an issue key,
+  a pull request number or a link, and a sentence that holds a possessive key (`BET-1323's`).
+  `semicolon`, `long-sentence` and the phrase detector stay off. No setting turns the check on or
+  off.
+  It reads a write by an agent session, and a write a person's credential makes for such a
+  session. It does not read a person's own write, the Legion daemon's write or a write Dispatch
+  makes. The server decides who reads the text from the record, never from the text, and a write
+  that no person reads is recorded `exempt_no_reader`.
+  Each decision about a write that took place is one row of the new table `writing_check_events`,
+  with its outcome (`findings`, `clean` or an `exempt_*` outcome), its route, its writer, the rules
+  it broke and its reader. A write the route refuses after the check records no row, and neither
+  does a reply's repeat that writes nothing. A daily sweep deletes a row the counts' rows of each
+  day, project and person read once it is older than 366 days, and any other row once it is older
+  than 90 days.
+  `GET /api/v1/writing-check` answers the check as the process runs it: its rules, the rules it
+  leaves out and why, and that its own phrase detector is off, since the detector runs as the
+  reviewer's `detector` rule set.
+  The image's third-party notices now carry the licence of the ported rules and of the data the
+  tagger's model was trained on.

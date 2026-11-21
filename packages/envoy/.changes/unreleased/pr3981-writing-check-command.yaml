@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+  `cmd/writing-check` is a new development command that measures Dispatch's writing check and the
+  work on agents' texts. No image and no release ships it; run it from `packages/envoy` with
+  `go run ./cmd/writing-check`.
+  Its first subcommands measure the structure rules and the phrase detector against agent writes
+  read from Dispatch's event log. `writing-check dataset` builds the dataset of texts a person could
+  not read, and of texts they read with no trouble, from a snapshot of the event log.
+  `writing-check harness` scores the reviewer, Rewrite and Define and the other changes on that
+  dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
+  score's interval, wait and cost. The harness, the dataset steps (`export-sessions.sh` among
+  them), `fetch` and `readers` refuse to write their output inside a repository, and a refused
+  `dataset build` or `dataset sessions` leaves its output as it was: an earlier run's files stay,
+  and an output directory that did not exist is not left behind. The harness's model calls escape
+  each tag of their message that a text holds, as the reviewer does, and read the words a reply
+  copies with the escape undone. `dataset fetch` and `dataset named` take the owner as a required
+  `--owner`, and `dataset/DATASET` records the owner's SHA-256 (`owner_sha256`), not the address.
+  `writing-check dataset followups` reads what the person did after each text (their next texts
+  and their acts) and writes the agents' explanations of their words as answer cases, so the
+  harness's score can be held against what the person did. `harness score --grader` takes a model
+  of another family only with `--grader-no-session` and `--readers-from`: it grades that run's
+  answers again and reads no session text.
+  The `answered` grader reads the text the fresh reader read, and fails an answer when the person
+  said they could not follow the text and the text still leans on words of the work it does not
+  explain (the check `7_not_plain`; the reply's fields now end at `9_answers`).

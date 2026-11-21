@@ -42,14 +42,17 @@ package api
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
 // another project, to no project at all, or to nothing at all — no such row, or an id Postgres
-// will not read as a uuid — is refused. Each resolver sends Postgres the value the prefix layer
-// resolved, the one the handler behind it sends too: an id written as a unique prefix is the
-// whole id by the time either reads it, and anything else is the path value as written
-// (resolveIDPrefixes, which register wraps outside this check for exactly that reason). So the
-// parser that decides what this check resolved is the parser the handler then addresses its row
-// by, and the two cannot disagree about which object a path names: Go's uuid.Parse refuses
-// spellings Postgres accepts (a hyphen after any group of four digits), and a check that
-// resolved nothing where the handler resolves a row would be a write nothing judged.
+// will not read as a uuid — is refused. An issue, an ask, a comment or a message the reviewer
+// holds, which no row of its own table holds until it posts, resolves to the project of its held
+// text (orHeldProject), and is refused or admitted by that project as its row would be. Each
+// resolver sends Postgres the value the prefix layer resolved, the one the handler behind it sends
+// too: an id written as a unique prefix is the whole id by the time either reads it, and anything
+// else is the path value as written (resolveIDPrefixes, which register wraps outside this check
+// for exactly that reason). So the parser that decides what this check resolved is the parser the
+// handler then addresses its row by, and the two cannot disagree about which object a path names:
+// Go's uuid.Parse refuses spellings Postgres accepts (a hyphen after any group of four digits),
+// and a check that resolved nothing where the handler resolves a row would be a write nothing
+// judged.
 //
 // Failing closed does not close the existence oracle, and does not claim to. The two refusals
 // still read differently — a target of another project is told which project that is, and one
@@ -137,25 +140,45 @@ type projectResolver func(ctx context.Context, q queryer, r *http.Request) (stri
 // projectResolverFor is the resolver a route's address calls for, read from the shape of its
 // pattern, and whether the pattern names an object at all. Every row the table classes
 // scopeProject has one; undecidableWrites holds the table to that and register refuses to
-// mount a table that breaks it, so a mounted scopeProject row always resolves.
+// mount a table that breaks it, so a mounted scopeProject row always resolves. An issue, an ask,
+// a comment and a message the reviewer holds resolve to the project of the held text
+// (orHeldProject).
 func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 	switch {
 	case addresses(pattern, "/api/v1/issues/{key}"):
-		return s.projectOfIssue, true
+		return orHeldProject(s.projectOfIssue, "key"), true
 	case addresses(pattern, "/api/v1/projects/{key}"):
 		return s.projectOfProject, true
 	case addresses(pattern, "/api/v1/artifacts/{id}"):
 		return s.projectOfArtifact, true
 	case addresses(pattern, "/api/v1/asks/{id}"):
-		return s.projectOfAsk, true
+		return orHeldProject(s.projectOfAsk, "id"), true
 	case addresses(pattern, "/api/v1/comments/{id}"):
-		return s.projectOfComment, true
+		return orHeldProject(s.projectOfComment, "id"), true
 	case addresses(pattern, "/api/v1/messages/{id}"):
-		return s.projectOfMessage, true
+		return orHeldProject(s.projectOfMessage, "id"), true
 	case addresses(pattern, "/api/v1/results/{id}"):
 		return s.projectOfCheckResult, true
 	}
 	return nil, false
+}
+
+// orHeldProject is resolve, falling back, for an address that resolves to no project, to the
+// project of the held text the path value param names that has not posted: no row of its own
+// table holds it yet, and a write that names it is kept beside it (awaitHeldTarget) or held
+// beside it (reviewWrite) to run in that project once it posts. Its post writes the row and marks
+// the held row posted in one transaction, so no id resolves both ways.
+func orHeldProject(resolve projectResolver, param string) projectResolver {
+	return func(ctx context.Context, q queryer, r *http.Request) (string, error) {
+		project, err := resolve(ctx, q, r)
+		if err != nil || project != "" {
+			return project, err
+		}
+		return scanProjectKey(q.QueryRow(ctx, `
+			select coalesce(project, '') from held_texts
+			where id = $1 and state in `+heldOpenStatesSQL+` and kind <> 'decision_block'
+		`, r.PathValue(param)))
+	}
 }
 
 // addresses answers whether pattern addresses the object prefix names: that object itself, or
@@ -379,8 +402,8 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential acts for session %s; %s %s writes into session %s",
-				proved, route.Method, route.Pattern, addressed))
+				"this request's credential proves a session, and %s %s writes into another: address the session the credential proves (GET /api/v1/whoami answers it)",
+				route.Method, route.Pattern))
 			return
 		}
 		handler(w, r)

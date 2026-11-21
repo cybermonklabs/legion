@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  A write whose path names a text Dispatch's reviewer holds, which has not posted (an issue, an
+  ask, a comment or a message), is kept by Dispatch and runs right after that text posts.
+  `DispatchClient` sends `Dispatch-Accepts-Kept-Write: 1` on every write, and Dispatch keeps such a
+  write only when it gets that header, answering it `202` with only the id it keeps the write under
+  and `held`. `DispatchClient` throws `DispatchWriteKept` for that answer, with the method, the URL,
+  the kept id and `held`, even for an upload, whose `202` carries no `Idempotency-Key`. The command
+  prints `Kept until held text <id> posts: Dispatch keeps this write as <kept id> and runs it right
+  after that text posts.`, then names `dispatch held <kept id>` to read it, and exits 0.
+  `dispatch result`, `dispatch artifact` to an issue, `dispatch claim`, `dispatch claim --release`
+  and `dispatch handoff-write` print it, and so do `dispatch edit-ask`, `dispatch resolve-ask`,
+  `dispatch follow --action unfollow` and `dispatch resolve-comment` when given the text's full id.
+  Given a `dispatch://` reference those four read the text first, as `dispatch issue-update` and
+  `dispatch follow --action follow` always do, and Dispatch answers a session's read of a held
+  text `409 HELD_TEXT`, so they send no write. A picture that Dispatch keeps fails its call before
+  the call's own write, and says that the picture was not uploaded yet. Three kinds of write are not
+  kept: a new ask, comment or message on a held issue, which the reviewer holds under an id of its
+  own and answers `201` in its whole shape; a reply to a delivered message or mention, and a
+  delivery's resend or accept; and a result's dry run.

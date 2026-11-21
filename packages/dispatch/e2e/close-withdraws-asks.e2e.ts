@@ -122,9 +122,7 @@ async function openIssueAndInbox(
 /** The block hosts the open, answerable card. */
 async function expectOpenDecision(decision: Locator): Promise<void> {
   await expect(decision.getByRole("radio", { name: "Ship Release it" })).toBeVisible();
-  await expect(
-    decision.getByRole("button", { name: "Add a note or answer in your own words" })
-  ).toBeVisible();
+  await expect(decision.getByRole("button", { name: "Add a note" })).toBeVisible();
   await expect(decision.getByTestId("ask-resolution-badge")).toHaveCount(0);
 }
 
@@ -141,9 +139,7 @@ async function expectWithdrawn(
   // The server's reason repeats the sentence, so the card does not show it.
   await expect(decision).not.toContainText("Withdrawn by the close of");
   await expect(decision.getByRole("radio")).toHaveCount(0);
-  await expect(
-    decision.getByRole("button", { name: "Add a note or answer in your own words" })
-  ).toHaveCount(0);
+  await expect(decision.getByRole("button", { name: "Add a note" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Awaiting approval" })).toHaveCount(0);
   // The close takes every one of the issue's questions out of the Inbox. From 1280 px the
   // reading column is showing one of them, and a row the reader is reading is held where they

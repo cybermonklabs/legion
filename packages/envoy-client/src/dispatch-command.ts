@@ -470,6 +470,14 @@ export function parseCommand(
         }
         continue;
       }
+      // `dispatch held-edit <id>` names the held text as plainly as `--held <id>` does: the
+      // reviewer's findings frame writes the command that way, so a bare first word of a command
+      // that takes --held is its --held.
+      if (index === 0 && surface.flags.has("--held")) {
+        // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access on an index signature.
+        if (claim("held", `the held text ${token}`, false)) args["held"] = token;
+        continue;
+      }
       problems.push(`unexpected argument ${quoteWord(token)}: every value follows its flag`);
       continue;
     }

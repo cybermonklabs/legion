@@ -69,9 +69,9 @@ export interface HarnessProcess {
 
 export interface Harness {
   /** The port each started listener serves on, by its variable (`DISPATCH_E2E_PORT`,
-   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, and in
-   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`): the environment a process
-   *  that addresses the harness needs. */
+   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_MODEL_PORT`, `FAKE_BROKER_PORT`,
+   *  `PLAIN_HTTP_PORT`, and in two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`):
+   *  the environment a process that addresses the harness needs. */
   readonly env: Readonly<Record<string, string>>;
   readonly processes: readonly HarnessProcess[];
   /** Rejects as soon as one of the processes exits by itself, naming it. */
@@ -93,6 +93,10 @@ export interface HarnessOptions {
   /** Aborting it while the harness starts stops every process started so far, and the start
    *  rejects with `Interrupted`. */
   readonly signal?: AbortSignal;
+  /** The rows to start, in place of the table's (`targetedListeners`): a spec that starts a
+   *  server of its own beside its stack's, as `e2e/reviewer-server.ts` starts the reviewer's
+   *  Dispatch, starts that row alone, against the ports and the database `env` names. */
+  readonly listeners?: readonly HarnessListener[];
 }
 
 interface Watched extends HarnessProcess {
@@ -251,7 +255,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const environment: NodeJS.ProcessEnv = { ...process.env, ...options.env };
   // Refuses a malformed or duplicated port before anything starts.
   const given = harnessPorts(environment);
-  const listeners = targetedListeners();
+  const listeners = options.listeners ?? targetedListeners();
   if (options.logDir !== undefined) mkdirSync(options.logDir, { recursive: true });
   const supervisor = new Supervisor();
   const interrupt = () => supervisor.interrupt();

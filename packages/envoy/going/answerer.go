@@ -11,15 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"golang.org/x/time/rate"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
-
-// charsPerToken is how many characters of a request are counted as one token. It is
-// embed.EstimateTokens' own rule, cited rather than imported: that package links the AWS SDK and
-// this one stays thin enough for the daemon to speak the same stream. Four characters a token is
-// a rough estimate for English prose, which is what pacing a shared quota needs and all it needs;
-// it is never exact, and dense text costs more.
-const charsPerToken = 4
 
 // answerRules is the system message every run sends: the rules an answer keeps, stated once
 // because they never change between runs. It names the bounds and the tool from contracts, so the
@@ -47,13 +40,9 @@ var searchToolSchema = map[string]any{
 	"additionalProperties": false,
 }
 
-// errQuotaPastDeadline is a call the quota cannot pace inside the time the run has left. It wraps
-// context.DeadlineExceeded because that is what it is - the run reaching its deadline - which is
-// the issue's one deadline ending and needs no second code of its own.
-var errQuotaPastDeadline = fmt.Errorf("going: the quota cannot pace this call inside the time left: %w", context.DeadlineExceeded)
-
 // Answerer answers one question from what Dispatch holds. It is built once at boot from the
-// settings and used by every request, so its quota pacer is the process's one pacer.
+// settings and used by every request, so its share of the deployment's quota is the process's one
+// share.
 type Answerer struct {
 	model Client
 }
@@ -62,10 +51,14 @@ type Answerer struct {
 type AnswererConfig struct {
 	// Model is the chat client; required.
 	Model Client
-	// TokensPerMinute is the deployment's quota, which paces this process's calls. Zero or less
-	// is no pacing: the endpoint form names no quota.
+	// Pace is the answerer's share of the process's pacer (modelpace), which every caller of the
+	// answerer's deployment shares; each call is charged to it before it is made. Nil paces the
+	// calls on a pacer of the answerer's own, by TokensPerMinute.
+	Pace *modelpace.Caller
+	// TokensPerMinute is, with no Pace, the deployment's quota, which paces this answerer's
+	// calls. Zero or less is no pacing: the endpoint form names no quota.
 	TokensPerMinute int
-	// Now replaces time.Now; a test drives the pacer with it.
+	// Now replaces time.Now in a pacer of the answerer's own; a test drives the pacer with it.
 	Now func() time.Time
 }
 
@@ -75,19 +68,14 @@ func NewAnswerer(cfg AnswererConfig) (*Answerer, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("going: an answerer needs a chat client")
 	}
-	model := cfg.Model
-	if cfg.TokensPerMinute > 0 {
-		now := cfg.Now
-		if now == nil {
-			now = time.Now
-		}
-		model = &pacedClient{
-			inner:   cfg.Model,
-			now:     now,
-			limiter: rate.NewLimiter(rate.Limit(float64(cfg.TokensPerMinute)/60), cfg.TokensPerMinute),
-		}
+	pace := cfg.Pace
+	if pace == nil && cfg.TokensPerMinute > 0 {
+		pace = modelpace.New(modelpace.Config{Now: cfg.Now}).Join(modelpace.Share{TokensPerMinute: cfg.TokensPerMinute, StatesQuota: true})
 	}
-	return &Answerer{model: model}, nil
+	if pace == nil {
+		return &Answerer{model: cfg.Model}, nil
+	}
+	return &Answerer{model: &pacedClient{inner: cfg.Model, pace: pace}}, nil
 }
 
 // Request is one question and the two reads the answerer makes through its caller, which is what
@@ -157,7 +145,7 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 	case loopFaultTime:
 		// The reader is told one code for the whole ending, so runErr - the run's window having
 		// run out, or a call the quota could not pace inside what was left of it
-		// (errQuotaPastDeadline) - is said once here, as the provider's refusal is below. It
+		// (modelpace.ErrPastDeadline) - is said once here, as the provider's refusal is below. It
 		// carries no credential and none of the question's words.
 		slog.Warn("going: the run ran out of time with no answer", "error", runErr)
 		return run.send(Fault(contracts.GoingErrorAnswerDidNotArrive))
@@ -344,54 +332,38 @@ func readFaultCode(ctx context.Context, err error) string {
 	return contracts.GoingErrorAnswerFailed
 }
 
-// pacedClient charges the deployment's quota for a call before it makes it, so this process never
-// spends more of that quota a minute than the deployment has: one rate.Limiter, as
-// embed.RateLimitedEmbedder paces the embedder, sized at the tokens a minute with a burst of a
-// minute's quota, charged with the call's estimated tokens.
+// pacedClient charges the answerer's share of the deployment's quota (modelpace) for a call
+// before it makes it, so this process never spends more of that quota a minute than the
+// deployment has, whichever of its parts call the deployment: the call's estimated tokens wait on
+// the deployment's one limiter and on the answerer's own ceiling. A call is charged as every
+// caller's is (modelpace.Caller.WaitFor): the characters its request sends at
+// modelpace.CharsPerToken, and no reply bound, since the answerer's request names none.
 //
 // The swap to agentloop (dispatch://INFRA-1311) moves the reservation rather than keeping this
 // wrapper: agentloop builds its own transport from an Endpoint whose Token closure it calls on
 // every HTTP attempt, so the reservation is taken in that closure, which paces the retries of a
 // call too - this wrapper cannot, since it sees one Chat and not the attempts inside it.
 type pacedClient struct {
-	inner   Client
-	now     func() time.Time
-	limiter *rate.Limiter
+	inner Client
+	pace  *modelpace.Caller
 }
 
 var _ Client = (*pacedClient)(nil)
 
-// Chat waits out the quota's own pacing and then makes the call. A reservation that cannot be
-// served inside the time the run has left is refused rather than waited on, because waiting it
-// out would spend the whole window to make no call at all.
+// Chat waits out the quota's own pacing and then makes the call. A call the quota cannot serve
+// inside the time the run has left is refused rather than waited on (modelpace.ErrPastDeadline,
+// which wraps context.DeadlineExceeded: the run reaching its deadline), because waiting it out
+// would spend the whole window to make no call at all.
 func (p *pacedClient) Chat(ctx context.Context, request ChatRequest, onText func(string) error) ([]ToolCall, error) {
-	reservation := p.limiter.ReserveN(p.now(), estimateTokens(request))
-	if !reservation.OK() {
-		// The call costs more than a minute's whole quota, so no wait would ever serve it.
-		return nil, errQuotaPastDeadline
-	}
-	if delay := reservation.DelayFrom(p.now()); delay > 0 {
-		deadline, hasDeadline := ctx.Deadline()
-		if hasDeadline && p.now().Add(delay).After(deadline) {
-			reservation.CancelAt(p.now())
-			return nil, errQuotaPastDeadline
-		}
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			reservation.CancelAt(p.now())
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+	if err := p.pace.WaitFor(ctx, requestRunes(request), 0); err != nil {
+		return nil, err
 	}
 	return p.inner.Chat(ctx, request, onText)
 }
 
-// estimateTokens is what one call is charged against the quota before it is made: the characters
-// it sends, at charsPerToken. It counts the request alone, which is what a call can be charged
-// for before its reply exists.
-func estimateTokens(request ChatRequest) int {
+// requestRunes is how many characters one call sends: its messages, its tool calls and its tools.
+// It counts the request alone, which is what a call can be charged for before its reply exists.
+func requestRunes(request ChatRequest) int {
 	chars := 0
 	for _, message := range request.Messages {
 		chars += utf8.RuneCountInString(message.Content)
@@ -402,5 +374,5 @@ func estimateTokens(request ChatRequest) int {
 	for _, tool := range request.Tools {
 		chars += utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
 	}
-	return chars / charsPerToken
+	return chars
 }

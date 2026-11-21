@@ -144,6 +144,9 @@ type VersionedStore interface {
 
 // Service owns live Yjs documents and their durable Dispatch versions.
 type Service struct {
+	// askBlocks is the reviewer told of each decision block a settlement opens or rewords
+	// (SetAskBlockReviewer, ask_block_reviewer.go); empty tells nobody.
+	askBlocks         askBlockReviewerSlot
 	srv               *roomServer
 	store             *store.Store
 	persistence       VersionedStore

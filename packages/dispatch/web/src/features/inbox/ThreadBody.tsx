@@ -31,6 +31,7 @@ import type {
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
+  TextRewrite,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useSending } from "../../hooks/useSending";
@@ -62,10 +63,19 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import {
+  originalToggleProps,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "./ask-rewrite";
+import { RewriteBadge } from "./RewriteBadge";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -79,6 +89,9 @@ interface ThreadTurn {
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
+  /** The reviewer's rewrite of the comment or message, where it held the text and posted it
+   *  rewritten: its badge beside the author and time shows the agent's wording in place. */
+  readonly rewrite?: TextRewrite;
 }
 
 /** The text a thread in a document is anchored to, which a card and the pane's fall-back show in
@@ -107,17 +120,27 @@ function ThreadTurnView({
   turn: ThreadTurn;
   unread: boolean;
 }): ReactNode {
+  const original = originalWording(turn.rewrite, useOriginalShown(turn.id));
+  // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
+  const toggle = originalToggleProps(turn.id, turn.rewrite?.state === "rewritten");
   return (
-    <div
+    <article
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
       data-inbox-thread-first-unread={first === true ? "" : undefined}
       data-inbox-thread-turn={turn.id}
       data-inbox-thread-unread={unread ? "" : undefined}
+      {...toggle}
     >
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
         </span>
+        <RewriteBadge
+          onToggle={() => toggleOriginal(turn.id)}
+          rewrite={turn.rewrite}
+          showingOriginal={original !== undefined}
+          toggleKey="w"
+        />
         {unread ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
@@ -127,10 +150,13 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} tree={turn.tree} />
+        <MarkdownBody
+          markdown={original?.body ?? turn.body}
+          tree={original === undefined ? turn.tree : undefined}
+        />
       </div>
       {turn.note}
-    </div>
+    </article>
   );
 }
 
@@ -292,6 +318,7 @@ function CommentThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const { sending } = useSending(threadSendKey(thread.thread_id));
   const markNewest = useThreadRead(
     thread,
     owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
@@ -327,42 +354,52 @@ function CommentThreadBody({
     )
     .map(commentTurn);
   const rootTurn = root === undefined ? undefined : commentTurn(root);
+  // Quote reply on the thread's words goes into its reply box below (`threads/quote-reply.ts`),
+  // while no reply of the thread's is on its way.
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
-          // body for one thread after another, and the composer holds the uploads made in it -
-          // an upload's refusal and its Retry with them - so the next thread is drawn with a
-          // composer of its own, never under this one's refusal. What the reader typed and did
-          // not send waits under the same name (`standing`), for the box drawn when the column
-          // comes back to this thread. The key names the composer too: the thread's root is
-          // drawn beside it under the thread's id, and siblings are told apart by their keys.
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            kind="comment"
-            key={`composer:${thread.thread_id}`}
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={owner}
-            replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined || sending
+          ? undefined
+          : (blocks) => quoteInto(threadSendKey(thread.thread_id), blocks)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
+            // body for one thread after another, and the composer holds the uploads made in it -
+            // an upload's refusal and its Retry with them - so the next thread is drawn with a
+            // composer of its own, never under this one's refusal. What the reader typed and did
+            // not send waits under the same name (`standing`), for the box drawn when the column
+            // comes back to this thread. The key names the composer too: the thread's root is
+            // drawn beside it under the thread's id, and siblings are told apart by their keys.
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              kind="comment"
+              key={`composer:${thread.thread_id}`}
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: commentsKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={owner}
+              replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 
@@ -373,6 +410,7 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     created_at: comment.created_at,
     id: comment.id,
     tree: comment.body_tree,
+    ...(comment.rewrite === undefined ? {} : { rewrite: comment.rewrite }),
   };
 }
 
@@ -384,6 +422,7 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     id: message.id,
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
+    ...(message.rewrite === undefined ? {} : { rewrite: message.rewrite }),
   };
 }
 
@@ -399,6 +438,7 @@ function MessageThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const { sending } = useSending(threadSendKey(thread.thread_id));
   const markNewest = useThreadRead(thread, { issue: issueKey });
   const issue = useQuery(issueQuery(issueKey));
   const messagesKey = ["issue-messages", issueKey];
@@ -420,42 +460,52 @@ function MessageThreadBody({
     read === undefined ? undefined : newestAttempt([read.message, ...(read.replies ?? [])]);
   const target = root?.target;
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            key={`composer:${thread.thread_id}`}
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={{ issueKey, kind: "issue" }}
-            replyTo={{
-              actor: root.author,
-              excerpt: "",
-              id: root.id,
-              parentKind: "message",
-              ...(target === null || target === undefined
-                ? {}
-                : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }),
-            }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined || sending
+          ? undefined
+          : (blocks) => quoteInto(threadSendKey(thread.thread_id), blocks)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              key={`composer:${thread.thread_id}`}
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: messagesKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={{ issueKey, kind: "issue" }}
+              replyTo={{
+                actor: root.author,
+                excerpt: "",
+                id: root.id,
+                parentKind: "message",
+                ...(target === null || target === undefined
+                  ? {}
+                  : {
+                      thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target },
+                    }),
+              }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 
@@ -564,43 +614,56 @@ function AgentThreadBody({
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
   return (
     <>
-      <ThreadTurns
-        composer={
-          agent === undefined || read === undefined || newest === undefined ? null : (
-            <div data-inbox-agent-composer="">
-              {noDelivery !== undefined ? (
-                <>
-                  <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
-                  <p className={`mt-1 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
-                    {noDelivery}
-                  </p>
-                </>
-              ) : null}
-              {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
-                  its send named by it (`threadSendKey`): the draft, its uploads and its reply out
-                  or refused are this thread's, and the session's other sends it shows are the
-                  ones answering this thread. */}
-              <AgentMessageComposer
-                agent={agent}
-                hold={hold}
-                key={`composer:${thread.thread_id}`}
-                onCancelReply={noReturn}
-                onClose={noReturn}
-                replyTo={agentReplyTo(agent, read, newest)}
-                sendKey={sendKey}
-                standing
-                thread={new Set(turns.map((shown) => shown.id))}
-              />
-            </div>
-          )
+      {/* Quote reply on the conversation's words goes into its message box, while the session
+          takes a message and none is on its way. */}
+      <QuotableText
+        onQuote={
+          agent === undefined || read === undefined || noDelivery !== undefined || hold.sending
+            ? undefined
+            : (blocks) => quoteInto(sendKey, blocks)
         }
-        markNewest={markNewest}
-        openAtFirstUnread={openAtFirstUnread}
-        replies={turns.slice(1)}
-        root={turns[0]}
-        threadId={thread.thread_id}
-        unread={unreadWrites(thread, turns)}
-      />
+      >
+        <ThreadTurns
+          composer={
+            agent === undefined || read === undefined || newest === undefined ? null : (
+              <div data-inbox-agent-composer="">
+                {noDelivery !== undefined ? (
+                  <>
+                    <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
+                    <p
+                      className={`mt-1 text-sm ${dangerText}`}
+                      data-testid="agent-takes-no-messages"
+                    >
+                      {noDelivery}
+                    </p>
+                  </>
+                ) : null}
+                {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
+                    its send named by it (`threadSendKey`): the draft, its uploads and its reply out
+                    or refused are this thread's, and the session's other sends it shows are the
+                    ones answering this thread. */}
+                <AgentMessageComposer
+                  agent={agent}
+                  hold={hold}
+                  key={`composer:${thread.thread_id}`}
+                  onCancelReply={noReturn}
+                  onClose={noReturn}
+                  replyTo={agentReplyTo(agent, read, newest)}
+                  sendKey={sendKey}
+                  standing
+                  thread={new Set(turns.map((shown) => shown.id))}
+                />
+              </div>
+            )
+          }
+          markNewest={markNewest}
+          openAtFirstUnread={openAtFirstUnread}
+          replies={turns.slice(1)}
+          root={turns[0]}
+          threadId={thread.thread_id}
+          unread={unreadWrites(thread, turns)}
+        />
+      </QuotableText>
       {/* A session the live list no longer holds takes no message at all, so the thread shows
           what the live view shows and offers no composer, as the Agents page's "Replied, no
           longer connected" rows do. */}

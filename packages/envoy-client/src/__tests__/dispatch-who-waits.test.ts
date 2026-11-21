@@ -592,11 +592,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
   ],
   // A closed question, which nobody owes an answer.
   [
-    "packages/dispatch/web/src/features/inbox/AskCard.tsx",
-    "An ask that is not open waits on nobody",
-    "a closed ask has nobody to wait on; the rule decides whom an open question waits on",
-  ],
-  [
     "packages/dispatch/web/src/features/inbox/AskCard.test.tsx",
     "an answered, a resolved or a withdrawn question waits on nobody",
     "a closed question has nobody to wait on; the rule decides whom an open question waits on",

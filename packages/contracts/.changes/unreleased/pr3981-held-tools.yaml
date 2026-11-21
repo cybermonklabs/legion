@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  Three Dispatch specs act on a text that Dispatch's reviewer holds, each by its id (`held`):
+  `dispatch_held` reads it, `dispatch_held_edit` changes it (an ask's `question` and `options`, an
+  issue's `title` and `spec`, or a `body`), and `dispatch_held_post` posts it as written with a
+  `reason`. None of them names an issue. There are now forty specs.

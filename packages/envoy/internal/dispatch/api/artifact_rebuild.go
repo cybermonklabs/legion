@@ -42,6 +42,19 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	// Supplied markdown is a new version uploaded whole, so the check reads only the blocks it
+	// adds to the newest saved version.
+	checked := input
+	if input.Markdown != nil && s.deps.WritingCheck.on() {
+		previous, err := s.previousDocumentMarkdown(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		added := addedMarkdownBlocks(previous, *input.Markdown)
+		checked.Markdown = &added
+	}
+	s.writingCheck(r, actor, checked)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

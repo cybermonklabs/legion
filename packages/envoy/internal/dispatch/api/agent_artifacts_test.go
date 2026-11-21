@@ -311,9 +311,9 @@ func TestAnAgentsConversationRefusesADocumentAndAnInvalidSessionID(t *testing.T)
 // TestAnUploadIsHeldToTheSessionTheCredentialProved: an agent conversation's files belong to
 // that conversation, and a caller whose credential proved a session may put bytes only in its
 // own. A broker-issued token is the one credential that proves one, and it is refused another
-// session's path by name before the upload is read; its own is taken and stored under it. A
-// person's cookie proves no session and keeps uploading into the conversation it names, which
-// is how a person puts a file in front of an agent.
+// session's path before the upload is read, by a refusal that names the route and no session;
+// its own is taken and stored under it. A person's cookie proves no session and keeps uploading
+// into the conversation it names, which is how a person puts a file in front of an agent.
 func TestAnUploadIsHeldToTheSessionTheCredentialProved(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -331,9 +331,13 @@ func TestAnUploadIsHeldToTheSessionTheCredentialProved(t *testing.T) {
 	if refusal.Code != codeSessionScope {
 		t.Fatalf("refusal = %+v, want %s", refusal, codeSessionScope)
 	}
-	if !strings.Contains(refusal.Error, brokerTestSession) || !strings.Contains(refusal.Error, anotherSession) {
-		t.Fatalf("refusal %q names neither the session the credential proved (%s) nor the session addressed (%s)",
-			refusal.Error, brokerTestSession, anotherSession)
+	if !strings.Contains(refusal.Error, "POST /api/v1/agents/{session_id}/artifacts") || !strings.Contains(refusal.Error, "GET /api/v1/whoami") {
+		t.Fatalf("refusal %q names not the route and GET /api/v1/whoami", refusal.Error)
+	}
+	for _, session := range []string{brokerTestSession, anotherSession} {
+		if strings.Contains(refusal.Error, session) {
+			t.Fatalf("refusal %q names the session %s", refusal.Error, session)
+		}
 	}
 	if strings.Contains(refusal.Error, token) {
 		t.Fatalf("the refusal repeats the token: %q", refusal.Error)

@@ -690,8 +690,9 @@ func heldEntries(hold *roomHold) int {
 }
 
 // upsertPendingAuthors writes one statement, which Postgres refuses when it names one row twice,
-// so it refuses an author named twice at one writing update itself, naming the pair, and writes
-// nothing; the same author at two updates is two rows and is written.
+// so it refuses an author named twice at one writing update itself, naming the author's kind and
+// the update and not the author's id, and writes nothing; the same author at two updates is two
+// rows and is written.
 func TestUpsertPendingAuthorsRefusesAnAuthorNamedTwiceAtOneUpdate(t *testing.T) {
 	service, artifactID := newTestService(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -714,8 +715,11 @@ func TestUpsertPendingAuthorsRefusesAnAuthorNamedTwiceAtOneUpdate(t *testing.T) 
 	}
 	err := write([]pendingAuthor{{actor: carol, writtenThrough: 3}, {actor: bob, writtenThrough: 4}, {actor: bob, writtenThrough: 4}})
 	t.Logf("a repeated pair: %v", err)
-	if err == nil || !strings.Contains(err.Error(), "user/bob at update 4") {
-		t.Fatalf("upsert with bob twice at update 4 = %v, want a refusal naming user/bob at update 4", err)
+	if err == nil || !strings.Contains(err.Error(), "a user author at update 4") {
+		t.Fatalf("upsert with bob twice at update 4 = %v, want a refusal naming a user author at update 4", err)
+	}
+	if strings.Contains(err.Error(), "bob") {
+		t.Fatalf("the refusal names the author's id: %v", err)
 	}
 	if owed := pendingAuthorRows(t, service.store, artifactID); len(owed) != 0 {
 		t.Fatalf("pending authors after the refused upsert = %+v, want none", owed)

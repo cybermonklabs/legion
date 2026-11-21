@@ -851,6 +851,70 @@ export function getAsk(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}", { params: { id } }, options);
 }
 
+/** `POST /api/v1/asks/{id}/rewrites`: a person's Rewrite of an open question (INFRA-3231's R7),
+ *  answered at once while the rewrite runs in the background. */
+export function rewriteAsk(id: string, options: ApiOptions = {}) {
+  return post("/api/v1/asks/{id}/rewrites", { params: { id } }, options);
+}
+
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open question to `askedOf`, as the caller. */
+export function setAskedOf(id: string, askedOf: string, options: ApiOptions = {}) {
+  return put(
+    "/api/v1/asks/{id}/asked-of",
+    { body: { asked_of: askedOf }, params: { id } },
+    options
+  );
+}
+
+/** `GET /api/v1/held/{id}`: one text the reviewer holds (INFRA-3231's R5), as an agent's bearer
+ *  reads it - no person reads one - with its state (`reviewing`, `awaiting_writer`, `posting`,
+ *  `posted`, `failed`) and, once it posts, its outcome. `id` is the id its write answered: an
+ *  issue's key, else a uuid. */
+export function getHeld(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/held/{id}", { params: { id } }, { as: "agent", ...options });
+}
+
+/** `GET /api/v1/me/definitions`: one page of the caller's own definitions, newest first
+ *  (`{items, total, limit, offset}`); no other person's. */
+export function listMyDefinitions(
+  query: Query<"/api/v1/me/definitions", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/me/definitions", { query }, options);
+}
+
+/** `GET /api/v1/writing-check/counts` (INFRA-3231's R8): each day's counts, and one page of the
+ *  counts of each day, project and person (`items`, `total`, `limit`, `offset`), for the UTC days
+ *  `first` to `last`, the last 14 by default. */
+export function getWritingCheckCounts(
+  query: Query<"/api/v1/writing-check/counts", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/writing-check/counts", { query }, options);
+}
+
+/** `GET /api/v1/readers/{login}/words`: one page of the words `login` asked about, a Define use
+ *  among them, each once with how many records name it. A person reads their own alone. */
+export function getReaderWords(
+  login: string,
+  query: Query<"/api/v1/readers/{login}/words", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/readers/{login}/words", { params: { login }, query }, { login, ...options });
+}
+
+/** `GET /api/v1/events/log`: the whole event log by id, oldest first, the events after `after`. */
+export function getEventLog(
+  query: Query<"/api/v1/events/log", "get"> = {},
+  options: ApiOptions = {}
+): Promise<DispatchEvent[]> {
+  return getAnswering<DispatchEvent[], "/api/v1/events/log">(
+    "/api/v1/events/log",
+    { query },
+    options
+  );
+}
+
 export function listAskFollowers(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}/followers", { params: { id } }, options);
 }

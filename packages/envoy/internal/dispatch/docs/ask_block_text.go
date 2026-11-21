@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/reearth/ygo/crdt"
@@ -42,6 +43,13 @@ type AskBlockEdit struct {
 	Options  *[]model.AskOption
 	Multiple *bool
 	Urgency  *string
+	// QuestionMarkdown is whether Question is markdown rather than plain text: a rewrite's
+	// question (INFRA-3231's Decision 23), which reads the block's question as the document
+	// holds it (AskBlockQuestionMarkdown) and writes it back with its pictures, links and marks.
+	// The row still takes the plain text the block parses back to, and a write that would drop
+	// a picture or a link the question holds is refused (refuseDroppedInlines). Every other edit
+	// writes its question as the plain text a person or an agent sends.
+	QuestionMarkdown bool
 }
 
 // ErrAskBlockUnrepresentable reports text the `:::ask` block cannot carry unchanged. The ask row
@@ -127,7 +135,8 @@ func (s *Service) SetAskBlockText(
 			want.Urgency = *edit.Urgency
 			attributes["urgency"] = *edit.Urgency
 		}
-		if edit.Question != nil {
+		// A markdown question's plain reading is the written block's, taken once it is built.
+		if edit.Question != nil && !edit.QuestionMarkdown {
 			want.Question = normalizeAskQuestion(*edit.Question)
 		}
 		if edit.Options != nil {
@@ -146,9 +155,23 @@ func (s *Service) SetAskBlockText(
 			if err != nil {
 				return err
 			}
+			if edit.QuestionMarkdown {
+				if err := refuseDroppedInlines(block.node.Children, children); err != nil {
+					return err
+				}
+			}
 			next, err = pmdoc.SetBlockBody(tree, blockID, children, attributes)
 			if err != nil {
 				return err
+			}
+			if edit.QuestionMarkdown && edit.Question != nil {
+				// The row takes the question as the written block reads it back: the plain
+				// text of the markdown the rewrite wrote, as settlement reads every block.
+				written, err := askBlockOf(next, blockID)
+				if err != nil {
+					return err
+				}
+				want.Question = written.question
 			}
 		} else {
 			// Attributes alone: every child keeps its nodes, its marks and its identity.
@@ -199,13 +222,25 @@ func askBlockBodyChanges(current askBlock, edit AskBlockEdit) bool {
 // idempotent retry sends the whole ask back, and rebuilding nodes that already say the same thing
 // would mint fresh inner block ids and orphan the anchors inside them for no change at all.
 func withoutUnchanged(current askBlock, edit AskBlockEdit) AskBlockEdit {
-	if edit.Question != nil && normalizeAskQuestion(*edit.Question) == current.question {
+	if edit.Question != nil && asksQuestion(current, edit) {
 		edit.Question = nil
 	}
 	if edit.Options != nil && reflect.DeepEqual(normalizeAskOptions(*edit.Options), current.options) {
 		edit.Options = nil
 	}
 	return edit
+}
+
+// asksQuestion reports whether current already asks edit's question: its plain text, or, for a
+// markdown question, the markdown its paragraphs render to. A block whose paragraphs cannot be
+// rendered is taken as asking another.
+func asksQuestion(current askBlock, edit AskBlockEdit) bool {
+	question := normalizeAskQuestion(*edit.Question)
+	if !edit.QuestionMarkdown {
+		return question == current.question
+	}
+	markdown, err := questionMarkdownOf(current.node.Children)
+	return err == nil && question == markdown
 }
 
 // askBlockChildren is the block's children after edit: the parts it names rebuilt, the parts it
@@ -243,7 +278,11 @@ func askBlockChildren(current askBlock, edit AskBlockEdit, budget *pmdoc.WriteBu
 	edit = withoutUnchanged(current, edit)
 
 	if edit.Question != nil {
-		rebuilt, err := questionBlocks(normalizeAskQuestion(*edit.Question), budget)
+		build := questionBlocks
+		if edit.QuestionMarkdown {
+			build = questionMarkdownBlocks
+		}
+		rebuilt, err := build(normalizeAskQuestion(*edit.Question), budget)
 		if err != nil {
 			return nil, err
 		}
@@ -307,18 +346,139 @@ func questionBlocks(question string, budget *pmdoc.WriteBudget) ([]*pmdoc.Node, 
 	if refusal != "" {
 		return nil, &ErrAskBlockUnrepresentable{Field: "question", Reason: refusal}
 	}
+	return rebuilt, refuseNonParagraphs(rebuilt)
+}
+
+// refuseNonParagraphs refuses a question that reads as anything but paragraphs, or as nothing at
+// all: it is no question.
+func refuseNonParagraphs(rebuilt []*pmdoc.Node) error {
 	for _, node := range rebuilt {
 		if node.Type != "paragraph" {
-			return nil, &ErrAskBlockUnrepresentable{
+			return &ErrAskBlockUnrepresentable{
 				Field:  "question",
 				Reason: "the text reads as a " + node.Type + " rather than a question paragraph",
 			}
 		}
 	}
 	if len(rebuilt) == 0 {
-		return nil, &ErrAskBlockUnrepresentable{Field: "question", Reason: "the question is empty"}
+		return &ErrAskBlockUnrepresentable{Field: "question", Reason: "the question is empty"}
 	}
-	return rebuilt, nil
+	return nil
+}
+
+// questionMarkdownBlocks is the paragraphs a markdown question is written as
+// (AskBlockEdit.QuestionMarkdown): the markdown parsed on budget, the write's, by the document's
+// own pipeline, as an upload parses it, so its pictures, links and marks are the document's own
+// and its paragraphs carry the attributes and block ids a parse gives. Markdown that reads as
+// anything but paragraphs, or as nothing at all, is no question, and is refused.
+func questionMarkdownBlocks(question string, budget *pmdoc.WriteBudget) ([]*pmdoc.Node, error) {
+	doc, err := pmdoc.ParseFragment(question, false, budget)
+	if err != nil && !errors.Is(err, pmdoc.ErrSchema) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, &ErrAskBlockUnrepresentable{Field: "question", Reason: "the text would leave the document's markdown unreadable"}
+	}
+	return doc.Children, refuseNonParagraphs(doc.Children)
+}
+
+// AskBlockQuestionMarkdown is the question of the ask block blockID of markdown as the document
+// holds it: its paragraphs' own markdown, with their pictures, links and marks, which an ask's row
+// leaves out (parseAskBlock reads the text alone). A rewrite of a decision block reads it
+// (reviewer.BuildRecord) and writes its own back the same way (AskBlockEdit.QuestionMarkdown).
+func AskBlockQuestionMarkdown(markdown, blockID string) (string, error) {
+	tree, err := pmdoc.Parse(markdown)
+	if err != nil {
+		return "", fmt.Errorf("parse the document: %w", err)
+	}
+	block, _, err := askBlockToEdit(tree, blockID)
+	if err != nil {
+		return "", err
+	}
+	return questionMarkdownOf(block.node.Children)
+}
+
+// questionMarkdownOf is the markdown the question paragraphs among an ask block's children render
+// to, trimmed as a question is (normalizeAskQuestion); the option lists are left out.
+func questionMarkdownOf(children []*pmdoc.Node) (string, error) {
+	paragraphs := []*pmdoc.Node{}
+	for _, child := range children {
+		if child.Type != "bullet_list" {
+			paragraphs = append(paragraphs, child)
+		}
+	}
+	markdown, err := renderTree(&pmdoc.Node{Type: "doc", Children: paragraphs})
+	if err != nil {
+		return "", err
+	}
+	return normalizeAskQuestion(markdown), nil
+}
+
+// RefuseDroppedInlines is the write guard of a markdown question (refuseDroppedInlines) over two
+// questions in markdown: an *ErrAskBlockUnrepresentable naming the first picture or link question
+// holds that rewrite leaves out, nil where it keeps them all, and an error where either does not
+// parse. The reviewer's decision weighs a held decision block's rewrite with it before the release
+// writes it (the server's applicableDecision), so what it decides is what the write would do.
+func RefuseDroppedInlines(question, rewrite string) error {
+	before, err := pmdoc.Parse(question)
+	if err != nil {
+		return fmt.Errorf("parse the question: %w", err)
+	}
+	after, err := pmdoc.Parse(rewrite)
+	if err != nil {
+		return fmt.Errorf("parse the rewrite: %w", err)
+	}
+	return refuseDroppedInlines(before.Children, after.Children)
+}
+
+// refuseDroppedInlines refuses a markdown question's write (AskBlockEdit.QuestionMarkdown) whose
+// question paragraphs, after, leave out a picture or a link the block's, before, hold: each
+// picture's address must still be a picture's, and each link's address a link's. A rewrite keeps
+// them (INFRA-3231's R7), and the reviewer weighs the markdown it read before it writes
+// (reviewer.Preserve); this is the write's own guard, over the trees, which a picture written as
+// a bare address or a link written as plain text cannot pass.
+func refuseDroppedInlines(before, after []*pmdoc.Node) error {
+	pictures, links := inlineTargets(before)
+	keptPictures, keptLinks := inlineTargets(after)
+	for _, picture := range pictures {
+		if !slices.Contains(keptPictures, picture) {
+			return &ErrAskBlockUnrepresentable{Field: "question", Reason: fmt.Sprintf("it drops the picture %q", picture)}
+		}
+	}
+	for _, link := range links {
+		if !slices.Contains(keptLinks, link) {
+			return &ErrAskBlockUnrepresentable{Field: "question", Reason: fmt.Sprintf("it drops the link %q", link)}
+		}
+	}
+	return nil
+}
+
+// inlineTargets is the address of every picture and of every link in the question paragraphs
+// among an ask block's children (the option lists left out), in document order. A link whose
+// mark spans several text nodes is named once for each.
+func inlineTargets(children []*pmdoc.Node) (pictures, links []string) {
+	var walk func(node *pmdoc.Node)
+	walk = func(node *pmdoc.Node) {
+		if node.Type == "image" {
+			src, _ := node.Attrs["src"].(string)
+			pictures = append(pictures, src)
+		}
+		for _, mark := range node.Marks {
+			if mark.Type == "link" {
+				href, _ := mark.Attrs["href"].(string)
+				links = append(links, href)
+			}
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	for _, child := range children {
+		if child.Type != "bullet_list" {
+			walk(child)
+		}
+	}
+	return pictures, links
 }
 
 // parsedBlockBody is what the document's own markdown pipeline makes of nodes, which hold text as

@@ -1,0 +1,47 @@
+kind: Added
+body: |-
+  Dispatch can now review an agent's text to a person, before or after the person sees it. The
+  reviewer reads an ask, a new issue's title and spec, a comment, a message, and an agent's reply to
+  a delivery. It reads no text a person wrote, none the Legion daemon wrote, and none that only an
+  agent reads.
+  One setting for each kind chooses what happens: `DISPATCH_REVIEWER_ASKS`,
+  `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS` and `DISPATCH_REVIEWER_MESSAGES`, each
+  `off` (the default), `after` or `hold`.
+  With `hold`, no person sees the text until the review ends. The write answers at once, in its
+  usual shape, under an id kept for the text, with an added `held` object. That answer carries the
+  advice the write gets with the reviewer off, the nearest existing issues and answered questions
+  and the near-copy check included, and a near copy the check refuses is refused at once, with
+  nothing held. A review that finds nothing posts the text. Otherwise the findings and the
+  reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
+  or posts it as written.
+  A held issue writes its `near_copy_checks` row when it posts, under its key, with the title and
+  the spec the near-copy gate read.
+  At its post a held issue is checked for near copies again, and one filed while it was held, or
+  one its edited title matches, refuses nothing: the issue posts marked as forced past it, and its
+  writer is told the copy's key and title.
+  When Dispatch refuses a held text's post, that text and every held text that waits on it are not
+  posted, and the writer session of each is told so, with the refusal or the text it waited on. A
+  refusal a later post can clear (`429`, `DOC_NEWER_CONTENT`, `DOCUMENT_UNLOADABLE`) leaves the
+  text for the sweep to post again.
+  A session's later reply to a delivery whose earlier reply is held waits on it, a generated or
+  typed one too, so the replies post in the order written; one sent again on the same attempt
+  while the first is held is answered the first's held answer, and nothing more is held. A held
+  reply from the live holder of the role its delivery went to posts on what the listener said when
+  it was written.
+  With `after`, the text posts at once, and the findings of the review after it go to the writer.
+  Nothing more happens if the writer does not act.
+  A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that
+  has gone has none. Then `DISPATCH_REVIEWER_UNEDITED` decides what posts: `rewrite` (the default)
+  posts the reviewer's rewrite, marked as rewritten, and `as_written` posts the text as written.
+  A review whose model fails, or that takes longer than `DISPATCH_REVIEWER_TIMEOUT` (default
+  `120s`), posts the text as written. A reply that is not the object the call asks for is asked
+  again, two more times at most, inside that same bound. On an `azure` model group each call sends
+  its schema in strict mode. A finding whose quote is not in the text is dropped.
+  `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
+  `reader_words`, `ask_parts`, `structure` and `detector`. The default is
+  `noslop,phrases,reader_words,ask_parts`.
+  A value other than `off` needs the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`): without
+  it the server refuses to start.
+  A sweep under the lease `reviewer-sweep`, every 10 seconds, reviews again a text a stopped
+  process left and posts each text whose writer did not act in time. Each decision is a row of
+  `writing_check_events`.

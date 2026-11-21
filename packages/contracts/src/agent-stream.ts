@@ -298,11 +298,29 @@ export function capAgentStreamText(text: string, limit: number): string {
 export const SHELL_COMMAND_REPORT_SEPARATOR = "\n\n";
 
 /**
+ * The opening of a `!command` report from a plugin build that fenced the person's line: the line
+ * inside a fenced code block whose fence is longer than any run of backticks the line holds.
+ * `isShellCommandReport` still reads it. The plugin writes the line bare, which is the one
+ * opening an Agents page older than that build reads.
+ */
+function shellCommandLine(body: string): string {
+  let longest = 0;
+  for (const run of body.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${body}\n${fence}`;
+}
+
+/**
  * Whether `text`, a streamed user turn's text, is the report of the `!command` message whose
  * stored body is `body`: the body is a command, and the report opens with that whole body and
- * the separator above. Anything else is some other text under the message's tag, which the bus
- * is open to any client to publish.
+ * the separator above. A report that opens with the body fenced (`shellCommandLine`) is one too.
+ * Anything else is some other text under the message's tag, which the bus is open to any client
+ * to publish.
  */
 export function isShellCommandReport(text: string, body: string): boolean {
-  return body.startsWith("!") && text.startsWith(`${body}${SHELL_COMMAND_REPORT_SEPARATOR}`);
+  if (!body.startsWith("!")) return false;
+  return (
+    text.startsWith(`${body}${SHELL_COMMAND_REPORT_SEPARATOR}`) ||
+    text.startsWith(`${shellCommandLine(body)}${SHELL_COMMAND_REPORT_SEPARATOR}`)
+  );
 }

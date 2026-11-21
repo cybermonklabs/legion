@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -147,6 +148,24 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// writingCheck is the writing check the server runs (INFRA-3231); nil is the check on with
+	// the bundle's structure rules and no model, as every deployment runs it.
+	writingCheck *WritingCheck
+	// writingCheckOff runs the server with the writing check turned off, for a test about the
+	// server with the check off.
+	writingCheckOff bool
+	// writingRules is the refusal of the written rules as the deployment set it (Deps.WritingRules);
+	// zero is the refusal off with no rule set beside the written rules.
+	writingRules WritingRulesConfig
+	// reviewer is the reviewer of agents' texts (Deps.Reviewer); nil is a deployment that sets no
+	// reviewer's model group.
+	reviewer *Reviewer
+	// rewriteDefine is a person's Rewrite and Define (Deps.RewriteDefine); nil is a deployment
+	// that sets no model group for them.
+	rewriteDefine *RewriteDefine
+	// testModels are the models a request may name in its Dispatch-Test-Model header
+	// (Deps.TestModels), which a server with testHooks reads.
+	testModels map[string]reviewer.Model
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -280,6 +299,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
+	writingCheck := options.writingCheck
+	if writingCheck == nil && !options.writingCheckOff {
+		writingCheck = NewWritingCheck()
+	}
 	agentPublisher := options.agentPublisher
 	switch {
 	case options.noAgentPublisher:
@@ -322,6 +345,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:          options.answerer,
 		Files:             options.files,
 		DashboardEntry:    options.dashboardEntry,
+		WritingCheck:      writingCheck,
+		WritingRules:      options.writingRules,
+		Reviewer:          options.reviewer,
+		RewriteDefine:     options.rewriteDefine,
+		TestModels:        options.testModels,
 		BuildCommit:       options.buildCommit,
 		OutboxPublishes:   options.outboxPublishes,
 		Metrics:           options.metrics,

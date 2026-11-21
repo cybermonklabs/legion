@@ -148,7 +148,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
-	asks, replies, err := served.queryOwnerAsks(ctx, pool, issueOwner(issue.Key), "open")
+	asks, replies, err := served.queryOwnerAsks(ctx, pool, issueOwner(issue.Key), "waiting")
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}

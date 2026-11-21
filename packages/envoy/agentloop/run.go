@@ -82,6 +82,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if req.System != "" {
 		opts = append(opts, aisdk.WithSystem(req.System))
 	}
+	if req.Temperature != nil {
+		opts = append(opts, aisdk.WithTemperature(*req.Temperature))
+	}
 	if req.Final != nil {
 		final, err := finalOutput(req.Final)
 		if err != nil {
@@ -181,7 +184,7 @@ func languageModel(req Request, client *http.Client) (provider.LanguageModel, pr
 			openaicompatible.WithBaseURL(endpoint.BaseURL), openaicompatible.WithAPIKey(placeholderKey),
 			openaicompatible.WithHTTPClient(client), openaicompatible.WithIncludeUsage(true),
 			openaicompatible.WithStructuredOutputs(true))
-		return model, chatOptions(req.Model.Effort), nil
+		return model, chatOptions(req.Model.Effort, req.StrictFinal), nil
 	case AzureAnthropic:
 		// The deployment name is given only where it differs from the model id, and the
 		// foundry config owns the base URL, which NewAnthropic applies itself. The run's
@@ -422,6 +425,7 @@ func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 		Blocks: blocksOf(state.Content, r.kind),
 		Usage:  priced(state.Usage, r.req.Model.Price),
 		Finish: string(state.FinishReason.Unified),
+		Model:  state.Response.ModelID,
 	}
 	r.mu.Lock()
 	r.steps = append(r.steps, step)
@@ -700,13 +704,13 @@ func openaiOptions(effort string) openai.OpenAIResponsesOptions {
 }
 
 // chatOptions is a Chat Completions call at the model's reasoning effort, with a Final reply's
-// schema sent as it is rather than in OpenAI's strict mode: strict mode refuses schemas that are
-// valid JSON Schema, a oneOf at the root or a property left out of required among them, and this
-// package reads the reply back against the schema itself, raising FaultMalformed where it does
-// not fit, so strict mode would turn requests the model can serve into requests it refuses and
-// buy no check the run does not already make.
-func chatOptions(effort string) openaicompatible.OpenAIOptions {
-	strict := false
+// schema sent in OpenAI's strict mode only where the request asks for it (Request.StrictFinal).
+// Strict mode refuses schemas that are valid JSON Schema, a oneOf at the root or a property left
+// out of required among them, and this package reads the reply back against the schema itself,
+// raising FaultMalformed where it does not fit, so by default the schema rides as it is. A caller
+// whose model writes something else in place of the object (Kimi-K3.1-Pro with no reasoning
+// writes its reasoning as the reply) asks for strict mode with a schema that keeps its rules.
+func chatOptions(effort string, strict bool) openaicompatible.OpenAIOptions {
 	return openaicompatible.OpenAIOptions{
 		ReasoningEffort:  openaiEffort(effort),
 		StrictJSONSchema: &strict,

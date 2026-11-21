@@ -319,8 +319,8 @@ type artifactClear struct {
 // all (events_one_owner, ownerForArtifact), and a project's document, whose events are its own,
 // is refused outright. A delete written for them would take a person's comment, ask or review
 // the day a gap in that test let one through, where the foreign key refuses the removal instead,
-// and it would make "nothing deletes an ask" false where two `for no key update` levels rest on
-// it (lockAskForTransition, docs' loadAskBlocks).
+// and it would make "nothing deletes an ask" false where two reads that take no row lock rest on
+// it (readAskForTransition, docs' loadAskBlocks).
 func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 	id := []any{artifact.ID}
 	return []artifactClear{

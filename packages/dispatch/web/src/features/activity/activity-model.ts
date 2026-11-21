@@ -165,6 +165,12 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return event.payload.anchor?.orphaned
         ? `made an ask lose its quote: “${event.payload.question}”`
         : `re-anchored an ask after an edit: “${event.payload.question}”`;
+    case "ask.reviewed":
+      return `showed the reviewed question “${event.payload.question}”`;
+    case "ask.rewriting":
+      return `asked Dispatch to rewrite the question “${event.payload.rewrite.original.body}”`;
+    case "ask.rewrite_failed":
+      return `could not rewrite the question “${event.payload.rewrite.original.body}”`;
     case "ask.edited":
       return `edited the question "${event.payload.question}"`;
     case "ask.handed_back":

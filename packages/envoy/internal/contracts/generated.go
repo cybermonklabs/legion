@@ -400,6 +400,27 @@ const LiveSocketMaxSubscriptions = 64
 const IdempotencyKeyHeader = "Idempotency-Key"
 const IdempotencyReplayedHeader = "Idempotency-Replayed"
 
+// GeneratedTextHeader is the request header (1) a plugin puts on a reply holding text it generated
+// rather than text the agent wrote. The server reads it on the two delivery reply routes alone.
+// Generated from DISPATCH_GENERATED_TEXT_HEADER in packages/contracts so the server and the
+// plugins name it once.
+const GeneratedTextHeader = "Dispatch-Generated-Text"
+
+// PersonTypedHeader is the request header (1) the dispatch command puts on every write of a
+// command a person typed in a session. The server reads it on every write route: the write posts
+// at once with no review, is recorded exempt_person_typed, and its event carries person_typed.
+// Generated from DISPATCH_PERSON_TYPED_HEADER in packages/contracts so the server and the command
+// name it once.
+const PersonTypedHeader = "Dispatch-Person-Typed"
+
+// AcceptsKeptWriteHeader is the request header (1) the agents' DispatchClient puts on every write:
+// it reads the 202 {id, held} of a write the server keeps beside a held text. The server keeps a
+// session's write so only where its request carries the header, and answers a session's request
+// without it 409 HELD_TEXT; a person's write at a browser is the route's own, which finds no held
+// text. Generated from DISPATCH_ACCEPTS_KEPT_WRITE_HEADER in packages/contracts so the server and
+// the client name it once.
+const AcceptsKeptWriteHeader = "Dispatch-Accepts-Kept-Write"
+
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and
 // the keys every client mints cannot drift apart.

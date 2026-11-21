@@ -1011,26 +1011,31 @@ type advisedResponse struct {
 }
 
 func (response advisedResponse) MarshalJSON() ([]byte, error) {
-	payload, err := json.Marshal(response.payload)
+	return mergedJSON(response.payload, "advice", response.advice)
+}
+
+// mergedJSON is payload's JSON object with one more member, name, holding value, written beside
+// the payload's own members rather than nesting the payload: a write's answer with its `advice`
+// (advisedResponse) or with the `held` object of a write the reviewer holds (heldAnswer), which
+// the OpenAPI document states as one rule (openAPIAdvised). A payload that is no JSON object is an
+// error.
+func mergedJSON(payload any, name string, value any) ([]byte, error) {
+	object, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) < 2 || payload[0] != '{' || payload[len(payload)-1] != '}' {
-		return nil, fmt.Errorf("write advice payload must be a JSON object")
+	if len(object) < 2 || object[0] != '{' || object[len(object)-1] != '}' {
+		return nil, fmt.Errorf("an answer that carries %s beside its payload needs a payload that is a JSON object", name)
 	}
-	advice, err := json.Marshal(response.advice)
+	member, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(advice)+11)
-	encoded = append(encoded, payload[:len(payload)-1]...)
-	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+	key := `"` + name + `":`
+	if len(object) > 2 {
+		key = "," + key
 	}
-	encoded = append(encoded, `"advice":`...)
-	encoded = append(encoded, advice...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(object[:len(object)-1], []byte(key), member, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {

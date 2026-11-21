@@ -1297,6 +1297,8 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the review.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -1814,6 +1816,10 @@ type Ask struct {
 	// person. Set on ask reads only (inbox rows, ask lists, the ask detail), never on the ask.*
 	// event payloads.
 	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
+	// Rewrite is the ask's rewrite where one runs, was written or failed (TextRewrite). Set on
+	// ask reads only (api.queueAskDetails, api.attachAskReadFields), never on the ask.* event
+	// payloads.
+	Rewrite *TextRewrite `json:"rewrite,omitempty"`
 }
 
 // AskAnchorArtifact is the document containing an ask's quoted anchor.
@@ -1961,6 +1967,8 @@ type AskEventPayload struct {
 	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved.
 	// Absent on every other ask event; [] when nobody has a row.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // NewReferenceChangesPayload states what a write moved on a typed event payload.
@@ -2017,6 +2025,8 @@ type IssueEventPayload struct {
 	Ancestors    []string      `json:"ancestors,omitzero"`
 	ThreadLogins []string      `json:"thread_logins,omitzero"`
 	Forced       *ForcedCreate `json:"forced,omitempty"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // ForcedCreate is IssueEventPayload.Forced: what the near-copy refusal named when a create went
@@ -2063,8 +2073,81 @@ type AskEditEventPayload struct {
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as
 	// they carry every event. The first move after an opening or a hand-back is not quiet, even
 	// when a thread reply left the request waiting on its agent, unless it keeps the request
-	// waiting on the human.
+	// waiting on the human. Every rewrite's edit (Rewrite set) is quiet too, so a rewrite starts
+	// no turn of any agent (INFRA-3552's R3).
 	Quiet bool `json:"quiet,omitempty"`
+	// Rewrite is set on the ask.edited of a rewrite (INFRA-3231's Decision 23): whose rewrite it
+	// is, who asked for it and why, and whether it read the asking session's answer. Previous
+	// holds the original wording. Its actor and EditedBy are Dispatch itself.
+	// The key `rewrite` shadows the read-only Ask.Rewrite, which no payload carries.
+	Rewrite *AskRewriteEdit `json:"rewrite,omitempty"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the edit.
+	PersonTyped bool `json:"person_typed,omitempty"`
+}
+
+// The kinds of a rewrite (AskRewriteEdit.By): a person's Rewrite, and the reviewer's of R5.
+const (
+	RewriteByPerson   = "person"
+	RewriteByReviewer = "reviewer"
+)
+
+// AskRewriteEdit is the record of a rewrite an ask.edited carries: By is RewriteByPerson or
+// RewriteByReviewer, AskedBy who asked for it (the person, or Dispatch's reviewer), and Reason
+// why (the reviewer's findings; a person's Rewrite gives none). AgentAnswer is whether the
+// rewrite read the asking session's answer to Dispatch's side question (INFRA-3552's R2), and
+// QuestionMessage the message that keeps that question and its answer, on the asking session's
+// own conversation (INFRA-3552's R3), absent where no side question was sent.
+type AskRewriteEdit struct {
+	By              string `json:"by"`
+	AskedBy         Actor  `json:"asked_by"`
+	Reason          string `json:"reason"`
+	AgentAnswer     bool   `json:"agent_answer"`
+	QuestionMessage string `json:"question_message,omitempty"`
+}
+
+// The states of a rewrite (TextRewrite.State).
+const (
+	// RewriteRewriting is a person's Rewrite that runs.
+	RewriteRewriting = "rewriting"
+	// RewriteRewritten is a text whose wording is a rewrite.
+	RewriteRewritten = "rewritten"
+	// RewriteFailed is a person's Rewrite that failed or was not applied; the text is as it was.
+	RewriteFailed = "failed"
+)
+
+// TextRewrite is what the read of an ask, a comment, a message and an issue carries as
+// `rewrite` where a rewrite of it runs, was written or failed (INFRA-3231's Decision 23): its
+// state (RewriteRewriting, RewriteRewritten, RewriteFailed), whose rewrite it is (By:
+// RewriteByPerson or RewriteByReviewer), when it started, was written or failed, the wording
+// before it (Original, in the kind's fields), and why: the reviewer's findings for its rewrite,
+// and why a failed one failed. A rewritten ask's comes from its ask.edited, a text the reviewer
+// held and posted rewritten from its held_texts row. Set on reads only, never on an event
+// payload; absent where no rewrite touched the text.
+type TextRewrite struct {
+	State    string      `json:"state"`
+	By       string      `json:"by"`
+	At       time.Time   `json:"at"`
+	Original TextWording `json:"original"`
+	Reason   string      `json:"reason,omitempty"`
+}
+
+// TextWording is a text's wording in its kind's fields: an issue's title and spec (Body), an
+// ask's question (Body), options and choice, and any other kind's body.
+type TextWording struct {
+	Title    string      `json:"title,omitempty"`
+	Body     string      `json:"body"`
+	Options  []AskOption `json:"options,omitempty"`
+	Multiple bool        `json:"multiple,omitempty"`
+}
+
+// AskRewriteEventPayload is the payload of ask.rewriting and ask.rewrite_failed: the ask (ID)
+// and its owner, and its rewrite as a read now carries it (Rewrite). Both events are quiet
+// (events.Quiet): they reach no session as a card, and an open page follows the rewrite on them.
+type AskRewriteEventPayload struct {
+	ID         string      `json:"id"`
+	IssueKey   *string     `json:"issue_key"`
+	ArtifactID *string     `json:"artifact_id"`
+	Rewrite    TextRewrite `json:"rewrite"`
 }
 
 // NewAskEditEventPayload builds the payload of an `ask.edited` event.
@@ -2896,6 +2979,9 @@ type Comment struct {
 	// RepliesToBlock is the node id comments.replies_to_block stores, null for a comment that
 	// names no block; ReplyBlock is read from it, and only for a comment that names one.
 	RepliesToBlock *string `json:"-"`
+	// Rewrite is the reviewer's rewrite of the comment where it posted rewritten (TextRewrite).
+	// Set on comment reads only (api.hydrateCommentSideTables), never on an event payload.
+	Rewrite *TextRewrite `json:"rewrite,omitempty"`
 }
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
@@ -3153,6 +3239,8 @@ type CommentEventPayload struct {
 	// Replies row on the comment's thread (its ask, else its root) once the comment is in, read
 	// in its own transaction (events.ThreadLogins). Absent on every other comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
 
 // Message is a short update, optionally linked to an issue and threaded under another message.
@@ -3174,6 +3262,9 @@ type Message struct {
 	// RepliesToBlock is the node id messages.replies_to_block stores, null for a message that
 	// names no block; ReplyBlock is read from it, and only for a message that names one.
 	RepliesToBlock *string `json:"-"`
+	// Rewrite is the reviewer's rewrite of the message where it posted rewritten (TextRewrite).
+	// Set on message reads only (api.hydrateMessageThreads), never on an event payload.
+	Rewrite *TextRewrite `json:"rewrite,omitempty"`
 }
 
 // MessageDelivery records one attempt to reach a live agent with a targeted message.
@@ -3253,7 +3344,24 @@ type MessageEventPayload struct {
 	// Inbox an Agent row of that thread sits in, and [] when no person opened the thread. Carried
 	// by message.created and message.answered; absent on a delivery frame.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// PersonTyped is WithPersonTyped's mark: a person typed the command that made the write.
+	PersonTyped bool `json:"person_typed,omitempty"`
 }
+
+// The text payloads' WithPersonTyped is the payload with the mark that a person typed the
+// command that made the write in a session (Dispatch-Person-Typed: 1, Decision 26 of INFRA-3231's
+// plan), of the same type, so a reader of the event log (the records job,
+// internal/dispatch/wordrecords) reads its text as that person's though a session is its actor.
+// The event broker marks each event of such a write with it (events.markedPersonTyped); a new
+// text payload type carries a PersonTyped field and this method beside it.
+
+func (p CommentEventPayload) WithPersonTyped() any        { p.PersonTyped = true; return p }
+func (p MessageEventPayload) WithPersonTyped() any        { p.PersonTyped = true; return p }
+func (p AskEventPayload) WithPersonTyped() any            { p.PersonTyped = true; return p }
+func (p AskAnsweredEventPayload) WithPersonTyped() any    { p.PersonTyped = true; return p }
+func (p AskEditEventPayload) WithPersonTyped() any        { p.PersonTyped = true; return p }
+func (p IssueEventPayload) WithPersonTyped() any          { p.PersonTyped = true; return p }
+func (p ArtifactReviewEventPayload) WithPersonTyped() any { p.PersonTyped = true; return p }
 
 // UserAgentStateEventPayload is `user_agent_state.updated`: one viewer's Clear or read mark on
 // one session's conversation changed. It names the viewer so their other open tabs and devices

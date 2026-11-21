@@ -100,7 +100,7 @@ loopback database: `e2e/seed.ts` empties it before every row and never selects a
 default, and the dev sign-in flag refuses a non-loopback host. psql runs without
 `PGHOSTADDR` (`e2e/psql.ts`), which would otherwise send it somewhere the server
 never checked. The harness ports `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
-`FAKE_GITHUB_PORT`, `PLAIN_HTTP_PORT` and `FAKE_BROKER_PORT` are its other
+`FAKE_GITHUB_PORT`, `FAKE_MODEL_PORT`, `PLAIN_HTTP_PORT` and `FAKE_BROKER_PORT` are its other
 inputs, resolved for the whole suite by `e2e/harness-ports.ts`. Unset, each
 server serves on a port the OS chooses and holds until it serves: the Dispatch
 server on a socket `scripts/e2e/lib/held-port.py` hands it, each Bun listener by
@@ -124,7 +124,13 @@ credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
 `DISPATCH_E2E_AGENT_SECRETS_URL` runs the suite with no broker instead, as a
 deployment that configures none (`e2e/run-server.sh` and `e2e/harness-broker.ts` have the
-switch). It also starts
+switch). It starts
+`e2e/fake-model.ts`, the stand-in model, which the server's model groups call through
+`DISPATCH_TEST_MODEL_URL`, and tests script its answers and read the requests it got with
+`setModelRules` and `modelRequests` from `e2e/fake-model-helpers.ts`. The server sets one group,
+Rewrite and Define's (deployment `stand-in-rewrite-define`), so a person's Rewrite and Define
+answer; the reviewer holds texts only on the server `e2e/ask-card-reviewer.e2e.ts` starts for
+itself beside its stack's, with the reviewer's settings (`e2e/reviewer-server.ts`). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
@@ -188,6 +194,24 @@ bunx playwright test --config e2e/playwright.config.ts --ui
 recipe written as a script, for the container it runs Playwright in. A session
 of the stubbed layer alone needs no stack at all, since it addresses none:
 `--project=stub --ui` opens as it is.
+
+The ask card's 29 pictures (INFRA-3231's check b5ee93c7) are one row of
+`e2e/ask-card-pictures.e2e.ts`, which runs only where the command names its
+project: `bun run e2e -- --project=ask-card-pictures`. It seeds the demo's
+fixture text (`e2e/ask-card-fixtures.ts`) through the stack's server and the
+reviewer's (`e2e/reviewer-server.ts`), with the stand-in model, and writes each
+picture under the row's output directory. With `DISPATCH_E2E_ASK_CARD_DEMO`
+naming a directory of the demo's pictures it lays each beside the demo's with
+its share of changed pixels (`bunx pixelmatch@5.3.0`), and
+`bun e2e/tools/ask-card-pictures-diff.ts <built> <demo> <out>` does the same for
+pictures taken elsewhere. The pictures are drawn in Inter, as the demo's were,
+and the app asks for the family `Inter`. On a machine that lacks it, point
+Chromium's fontconfig (`FONTCONFIG_FILE`) at a file that adds Inter 4.1's
+`InterVariable.ttf` (from `Inter-4.1.zip`, the release
+`web/src/fonts/inter/subset.sh` pins) and maps the family `Inter` onto
+`Inter Variable`, the name that file gives itself; without that mapping
+Chromium draws every screen in a fallback, and each picture differs from the
+demo's in every line of text.
 
 Playwright's own `--workers <n>` runs the suite in parallel, and the config's
 default is 1. `e2e/global-setup.ts` starts one stack

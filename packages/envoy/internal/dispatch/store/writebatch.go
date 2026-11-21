@@ -20,8 +20,25 @@ import (
 // id sequence's currval), never read back in Go between them. A value the caller needs once the
 // batch has run - an event's id, a returned timestamp - is read by the statement's callback (Exec,
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
+//
+// A batch carries one mark of the write it belongs to, read off the context it is built under
+// (NewWriteBatch, RunWrite): whether a person typed the write in a session (WithPersonTyped), which
+// marks each text event queued on it (events.Broker.QueueAppendWithLogins).
 type WriteBatch struct {
-	batch pgx.Batch
+	batch       pgx.Batch
+	personTyped bool
+}
+
+// NewWriteBatch is an empty batch of the write ctx is the context of, carrying its mark
+// (PersonTyped).
+func NewWriteBatch(ctx context.Context) *WriteBatch {
+	return &WriteBatch{personTyped: PersonTyped(ctx)}
+}
+
+// PersonTyped reports whether the batch's write is one a person typed in a session
+// (WithPersonTyped on the context the batch was built under).
+func (b *WriteBatch) PersonTyped() bool {
+	return b.personTyped
 }
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
@@ -134,11 +151,12 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	return tx.SendBatch(ctx, &batch).Close()
 }
 
-// RunWrite runs write's statements in tx at once, as a batch of their own (Send): what a write
-// step does in a transaction that queues no write phase.
+// RunWrite runs write's statements in tx at once, as a batch of their own of the write ctx is the
+// context of (NewWriteBatch, Send): what a write step does in a transaction that queues no write
+// phase.
 func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) error {
-	var batch WriteBatch
-	if err := write(&batch); err != nil {
+	batch := NewWriteBatch(ctx)
+	if err := write(batch); err != nil {
 		return batch.SendFailed(ctx, tx, err)
 	}
 	return batch.Send(ctx, tx)
@@ -153,4 +171,21 @@ func (b *WriteBatch) SendFailed(ctx context.Context, tx pgx.Tx, err error) error
 		return sendErr
 	}
 	return err
+}
+
+// personTypedKey marks the context of a write a person typed in a session: the write carried
+// Dispatch-Person-Typed: 1 (Decision 26 of INFRA-3231's plan), which the server's routes read.
+type personTypedKey struct{}
+
+// WithPersonTyped is ctx marked as a person's typed write's: a batch built under it carries the
+// mark (NewWriteBatch), so every text event queued on it carries person_typed: true, and a
+// document write under it records its asks' authors as the person's.
+func WithPersonTyped(ctx context.Context) context.Context {
+	return context.WithValue(ctx, personTypedKey{}, true)
+}
+
+// PersonTyped reports whether ctx is a person's typed write's (WithPersonTyped).
+func PersonTyped(ctx context.Context) bool {
+	typed, _ := ctx.Value(personTypedKey{}).(bool)
+	return typed
 }

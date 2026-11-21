@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  With `DISPATCH_PERSON_TYPED=1`, the `dispatch` command takes the call as a command a person typed.
+  It reads the variable once at start and removes it from its environment before it starts any
+  child process. Such a call is never refused to show the written rules, and each write it sends
+  carries `Dispatch-Person-Typed: 1` (`DispatchClient`'s `personTyped` option), so Dispatch posts
+  it at once with no review.

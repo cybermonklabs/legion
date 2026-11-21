@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  A records job now counts each text in which a person asks what a word of an agent's text means,
+  says they cannot understand the text, or complains about its words. It reads each text a person
+  wrote from the event log after the write commits, so no write waits on it, and asks its model
+  about the text. Each text is one row of the new table `word_questions`. A Define use is a word
+  question too.
+  The job runs every 10 seconds under the lease `word-records` while `DISPATCH_WORD_RECORDS` is `on`
+  (the default) and its model group `DISPATCH_WORD_RECORDS_MODEL_*` is set. With no group set it
+  does not run. `DISPATCH_WORD_RECORDS_FROM` (default `2026-10-16T00:00:00Z`) is the time of the
+  first event its first run reads.
+  A model call that fails is tried again after 30 seconds, and after twice the wait each time
+  after that, up to an hour.

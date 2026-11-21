@@ -54,9 +54,10 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
   try {
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    // The routing list is in the popover the chevron beside the asker's name opens.
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(recipients).toContainText("Reaches 3");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     await expect(
       recipients.getByRole("list", { name: "Followers" }).locator(`[title='${asker.id}']`)
     ).toHaveCount(1);
@@ -137,9 +138,9 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
     await page.clock.install();
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(recipients).toContainText("Reaches 1");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     await expect(recipients.locator(`[title='${asker.id}']`)).toHaveCount(1);
     await expect(recipients.getByRole("list", { name: "Via claim or route" })).toHaveCount(0);
 
@@ -202,10 +203,10 @@ test("a role route held by the claimant is counted once, under the claim that na
   try {
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     // The asker and the claimant: the route reaches the claimant, already counted.
     await expect(recipients).toContainText("Reaches 2");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     const viaIssue = recipients.getByRole("list", { name: "Via claim or route" });
     await expect(viaIssue.getByRole("listitem")).toHaveCount(1);
     const holderRow = viaIssue.getByRole("listitem");
@@ -282,9 +283,9 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
 
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(recipients).toContainText("Reaches 1 + route (unknown)");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     const routeRow = recipients
       .getByRole("list", { name: "Via claim or route" })
       .getByRole("listitem")
@@ -338,12 +339,12 @@ test("a route change in a status write moves the open card's route row without a
     await page.clock.install();
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
-    await expect(recipients).toContainText("Reaches 2");
     // From 1280 px this card is the reading column's: the question the Inbox selected when the
-    // page opened, with the list's short rows beside it. The toggle is in the column, so the
-    // reader's hand is on no row at all.
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
+    // page opened, with the list's short rows beside it. The list is in the popover the chevron
+    // beside the asker's name opens, in the column, so the reader's hand is on no row at all.
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
+    await expect(recipients).toContainText("Reaches 2");
     const viaIssue = recipients.getByRole("list", { name: "Via claim or route" });
     const routeRow = (session: string) =>
       viaIssue.getByRole("listitem").filter({ has: page.locator(`[title='${session}']`) });
@@ -451,9 +452,9 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
 
     // The card mounts from the body that names no claimant, and shows the claim anyway.
     const card = page.getByTestId(`ask-${ask.id}`);
-    const recipients = card.getByRole("region", { name: "Recipients" });
+    await card.locator("[data-ask-asker]").click();
+    const recipients = page.getByRole("dialog").getByRole("region", { name: "Recipients" });
     await expect(recipients).toContainText("Reaches 2");
-    await recipients.getByRole("button", { name: /^Reaches/ }).click();
     const claimRow = recipients
       .getByRole("list", { name: "Via claim or route" })
       .getByRole("listitem")

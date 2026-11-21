@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `dispatch held <id>` reads a text that Dispatch's reviewer holds: its state, the text, the
+  findings, the reviewer's rewrite and the time left to act. `dispatch held-edit <id>` changes it,
+  and the reviewer reads it again. `dispatch held-post <id> --reason <text>` posts it as written.
+  The id may be given bare or as `--held <id>`.

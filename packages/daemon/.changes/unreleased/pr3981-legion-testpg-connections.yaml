@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=483`, up
+  from 475. One Dispatch process may now open 115 connections (`store.ConnectionsPerProcess`),
+  because the records job and the reviewer's sweep of held texts each take a lease connection of
+  their own. Four Dispatch processes and the suite's own 20 clients need 480, and Postgres keeps
+  three more for superusers.

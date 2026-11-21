@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  Two test-only settings, read only with `DISPATCH_TEST_HOOKS=1`. `DISPATCH_TEST_MODEL_URL` sends
+  every model group's calls to a stand-in model, with no credential. `DISPATCH_TEST_MODELS`
+  (`name=kind,…`) lists the models a test request may name in its `Dispatch-Test-Model` header,
+  set up by `DISPATCH_TEST_MODELS_AZURE_*` and `DISPATCH_TEST_MODELS_ANTHROPIC_*`. A draft review,
+  a Rewrite or a Define that names one calls it in place of its model group.
+  A request that names a model not on the list, or names any on a server without the test hooks,
+  is refused `400 TEST_MODEL_REFUSED`.

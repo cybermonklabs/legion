@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -340,7 +341,7 @@ func issueSummaryJoins(readAdvances bool) string {
 	left join (
 		select a.issue_key, count(*) as total
 		from asks a
-		where a.state = 'open' and a.issue_key in (select key from subjects)
+		where a.state = 'open' and ` + askNotHeld + ` and a.issue_key in (select key from subjects)
 		group by a.issue_key
 	) open_asks on open_asks.issue_key = i.key
 	left join (
@@ -876,10 +877,14 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// Rewrite is the reviewer's rewrite of the issue's title and spec where it held the new issue
+	// and posted it rewritten (model.TextRewrite, text_rewrites.go): Original holds the title and
+	// the spec as the agent wrote them.
+	Rewrite *model.TextRewrite `json:"rewrite,omitempty"`
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
+// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks ("waiting") with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
@@ -912,7 +917,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		artifacts = scanned
 		return err
 	})
-	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
+	// The detail's open asks are its "Waiting on you": a decision block the reviewer holds from
+	// people's Inboxes is left out of them, as INFRA-3552's R5 lists that read.
+	first.Queue(listIssueAsksQueryWaiting, key).Query(func(rows pgx.Rows) error {
 		scannedAsks, scannedReplies, err := scanAskReads(rows)
 		asks, replies = scannedAsks, scannedReplies
 		return err
@@ -930,6 +937,8 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
+	rewrites := map[string]model.TextRewrite{}
+	queueHeldRewrites(first, reviewer.KindIssue, []string{key}, rewrites)
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
 		return issueDetail{}, err
 	}
@@ -938,6 +947,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	}
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
+	if rewrite, held := rewrites[read.Issue.Key]; held {
+		read.Rewrite = &rewrite
+	}
 
 	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
@@ -955,12 +967,12 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 
 // readIssueDetails is getIssue's second batch: what only the first batch's answers name, filled
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
-// (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
+// (queueArtifactDetails, queueAskReadDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskReadDetails(batch, asks)
 	if batch.Len() == 0 {
 		return nil
 	}

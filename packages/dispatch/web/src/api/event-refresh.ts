@@ -129,10 +129,10 @@ function inboxRowOfAsk(id: string): RefreshTarget {
 /** Whether an ask is an open question nobody handed on: the person it waits on is then its
  *  issue's assignee, or its project's default while nobody holds the issue or the ask is on a
  *  project document (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an assignee move
- *  or a default move changes it. An answered or closed ask's card draws no Asked-of badge
- *  (`AskHandOn`, drawn for an open ask alone in `AskCard`), so neither move changes what a read of
- *  it shows. Every target below that tests a read for a question one of those moves carries
- *  tests it with this. */
+ *  or a default move changes it. An answered or closed ask's card names nobody it waits on
+ *  (`AskCard`'s turn line, which `askTurnHolder` draws for an open ask alone), so neither move
+ *  changes what a read of it shows. Every target below that tests a read for a question one of
+ *  those moves carries tests it with this. */
 function openAndNotHandedOn(ask: Pick<Ask, "asked_of" | "state">): boolean {
   return ask.state === "open" && ask.asked_of === null;
 }
@@ -420,7 +420,9 @@ function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): vo
 }
 
 // The ask lifecycle events, listed rather than matched on the `ask.` prefix so a new one falls
-// to the default branch instead of silently routing here.
+// to the default branch instead of silently routing here. A person's Rewrite starting or failing
+// (`ask.rewriting`, `ask.rewrite_failed`) moves the `rewrite` every read of the ask carries, so an
+// open card follows it (INFRA-3231's R7); a Rewrite that is applied is the ask's `ask.edited`.
 function isAskEvent(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
@@ -431,19 +433,25 @@ function isAskEvent(event: DispatchEvent): boolean {
     event.type === "ask.answered" ||
     event.type === "ask.resolved" ||
     event.type === "ask.follower_added" ||
-    event.type === "ask.follower_removed"
+    event.type === "ask.follower_removed" ||
+    event.type === "ask.reviewed" ||
+    event.type === "ask.rewriting" ||
+    event.type === "ask.rewrite_failed"
   );
 }
 
 /** The ask events that open or close an ask: the sidebar's per-project open-ask counts and an
  *  issue's pinned row (`open_asks`) move with them. An edit, a hand-back, a hand-on to another
  *  person, an anchor refresh or a follower change moves neither: the ask stays open, and only
- *  whose list it sits in can change. A block event can open or retract a decision block's ask. */
+ *  whose list it sits in can change. A block event can open or retract a decision block's ask.
+ *  The end of the reviewer's hold of a decision block (`ask.reviewed`) brings an ask the counts
+ *  left out into them. */
 function movesOpenAsks(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
     event.type === "ask.answered" ||
     event.type === "ask.resolved" ||
+    event.type === "ask.reviewed" ||
     event.type === "block.repaired" ||
     event.type === "block.invalid"
   );
@@ -830,14 +838,16 @@ const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"
 
 /** Whether the event can change what a `#id` names: a new version of a document, which decides
  *  which `:::ask{#id}` blocks the latest version declares, or an ask settling into a block,
- *  leaving one or moving - every ask event but a follower's arrival or departure, which moves
- *  no block. */
+ *  leaving one or moving - every ask event but a follower's arrival or departure and a Rewrite
+ *  starting or failing, none of which moves a block. */
 function changesQuestionMaps(event: DispatchEvent): boolean {
   return (
     event.type === "artifact.version" ||
     (isAskEvent(event) &&
       event.type !== "ask.follower_added" &&
-      event.type !== "ask.follower_removed")
+      event.type !== "ask.follower_removed" &&
+      event.type !== "ask.rewriting" &&
+      event.type !== "ask.rewrite_failed")
   );
 }
 

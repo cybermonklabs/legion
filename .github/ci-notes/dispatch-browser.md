@@ -15,22 +15,23 @@ Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browse
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
 over four shard machines, the three `-alone` projects get a machine each, the two-process job,
-the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+the fake-embedder job, the ask-card job and the containerised visual review take one each, and
+one merge job joins what the shard and alone legs wrote into a single report and publishes the
+run's flake rate.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
-fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-parallel project, the three `-alone` ones, the two-process job, the visual review and that
-same embedder job, over every row. So an unlabelled pull request pays for the rows that
-answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-run pay for the rest, each of which has the wall time for them.
+fake-embedder job, which holds a check of the pull request it is on, and the ask-card job,
+which runs the ask card's rows the full real-stack share of the `@pr` rows cannot hold; `full`
+runs every parallel project, the three `-alone` ones, the two-process job, the visual review
+and that same embedder job, over every row, the ask card's among them. So an unlabelled pull
+request pays for the rows that answer it, and the merge queue, a labelled pull request, a
+workflow_dispatch and the nightly run pay for the rest, each of which has the wall time for
+them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
-gives: `services:` is a job-level key and a composite action's step keys do not include
-timeout-minutes, and this file needs the second, on its steps; no job of it holds `services:` since
-its two-process and embedder jobs' Postgres became the harness's own. That is also why the shard and alone jobs repeat
+gives: a composite action's step keys do not include timeout-minutes, and this file needs it on
+its steps. That is also why the shard and alone jobs repeat
 their step lists rather than sharing one - they are kept textually identical where they are the
 same, so a reader can diff them.
 
@@ -845,8 +846,10 @@ nothing can make it launch another engine, and so keeps this one download.
 
 The image the harness starts each Playwright run's Postgres from, pulled here so the
 browser steps of its job after it do not pay for it inside their own budgets, as the visual job pulls
-it. The digest is the browser steps', written three times, and the three must stay the
-same: a pull of another digest leaves the browser step to pull its own. Each new step's
+it. The digest is the browser steps', written in each job that cites this section once in its pull
+and once in each of its browser steps: three times in the two-process job, twice in the embedder
+and ask-card jobs. A job's copies must stay the same: a pull of another digest leaves the browser
+step to pull its own. Each new step's
 name carries the lane, as the embedder job's build step's does, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
 
@@ -925,6 +928,57 @@ run-server.sh builds it too, inside the harness's boot wait; built here, the ser
 finds it current and starts in seconds. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
+
+## The ask-card job, the lane it runs on and its budgets
+
+The ask card's rows (INFRA-3231's R5 and R7: e2e/ask-card-rewrite.e2e.ts,
+ask-card-define.e2e.ts, ask-card-reviewer.e2e.ts, ask-card-menu.e2e.ts and
+ask-card-quote.e2e.ts's Chromium rows), which a pull
+request must see on every push, where the shard job's lane cannot hold them: its real-stack
+share is full, at the 150 rows e2e/__tests__/pull-request-lane.test.ts holds it to
+(dispatch://INFRA-1407's R1), so they carry no `@pr` and the pull-request lane runs them
+here. On the full lane the shard job runs them with every untagged row, so this job runs on
+the pull-request lane alone, and no row runs twice in one run. It is the embedder job's shape:
+one Chromium install, one stack on the harness's own Postgres, and the server built once so the
+harness and the reviewer's own server (e2e/reviewer-server.ts) both find it current. Both
+servers serve that stack's one database, which the reviewer's server reads from the stack's
+manifest as every other server of the stack does.
+
+Its Postgres is a `docker run` of the image its "Pull the ask-card stack's Postgres image" step
+pulls, started by the harness per Playwright run (e2e/harness-postgres.ts), with its connection
+limit read by a step of its own (DISPATCH_E2E_PG_CONNECTIONS), as the embedder and two-process
+jobs' are, and not a `services:` container: a service runs with crash safety on and the image's
+other defaults, which is what failed merge-group run 44456291758 on a disk stall
+(.github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs), and it has no step that
+gives the stack's connection limit.
+
+Like the embedder job its rows upload no blob report: the merge job joins the shard and alone
+legs, and this job's own conclusion is what the caller's `dispatch-browser` job reads. It is
+in the merge job's `needs` and in that job's name filter, where it gets a null leg and is
+passed over by reading one, exactly as embedder is.
+
+The ask-card job's budgets follow this file's rule, from the job's own runs: the two latest that
+ran it, read from GitHub's jobs API on 2026-11-20, both on pull request #3981 and both with the
+quote rows. Run 44557664075 (job 135678256428, fb63391f) took 432 s, the browser step 255 s and
+the install 8 s; run 44541397676 (job 135620579087, 531b0a61) took 429 s, the browser step 250 s
+and the install 9 s. The eight later runs of the pull request skipped the job, being full-lane
+runs. An earlier run, at 698fef20 (job 134701463267), before the quote rows joined, took 200 s
+in the browser step. So the browser step is 255 s x 1.15 = 293 s -> 5 min, the install step
+keeps the 4 min of
+.github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is,
+and every step without a budget took at most 170 s (429 - 250 - 9), a figure that still holds
+the 20 to 23 s the runner spent starting the `services:` container these runs had. The move to
+the harness's Postgres added the embedder job's two steps at that job's figures: the pull at
+120 s and the connections read at its two-minute floor. The browser step now also starts the
+stack's container, which those runs did not measure. 4 + 5 + 2 min plus 170 s and 120 s =
+15 min 50 s -> 16 min.
+
+## Why the ask-card job's server build carries the lane in its name
+
+run-server.sh builds it too, inside the harness's boot wait, once for the stack's
+server and once for the reviewer's; built here, both find it current and start in
+seconds. The name carries the lane because .github/scripts/check-ci-filters.sh names
+a step of this workflow by its own name.
 
 ## The visual review, its docker run and its budgets
 

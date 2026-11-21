@@ -83,7 +83,9 @@ function renderVersionView({
             asks={[]}
             changeBaseline={changeBaseline}
             createdAt="2026-09-09T00:00:00Z"
+            definePlace={undefined}
             highlight={shown}
+            keyScope="document"
             owner={undefined}
             version={1}
           />

@@ -400,6 +400,33 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 	}
 }
 
+// A caller's row of a thread that names no issue and no document is no row the mark can lock, so
+// the mark is the route's 500, and the operator's line names the thread and not the caller, whose
+// login the request's own access-log line already carries.
+func TestMarkThreadReadOfARowNamingNoOwnerLogsNoLogin(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Ownerless", "A spec")
+	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Root"}, "alice")
+	if _, err := database.Pool.Exec(context.Background(), `
+		update user_threads set issue_key = null, artifact_id = null where login = 'alice' and thread_id = $1
+	`, root.ID); err != nil {
+		t.Fatalf("take the owner off alice's row: %v", err)
+	}
+	logged := captureLog(t)
+	if response := markThreadRead(t, handler, "alice", root.ID, time.Now()); response.Code != http.StatusInternalServerError {
+		t.Fatalf("mark of a row naming no owner: status=%d body=%s, want 500", response.Code, response.Body.String())
+	}
+	var failed []string
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(line, `msg="dispatch: API handler failed"`) {
+			failed = append(failed, line)
+		}
+	}
+	if len(failed) != 1 || !strings.Contains(failed[0], root.ID) || strings.Contains(failed[0], "alice") {
+		t.Fatalf("the handler's lines = %q, want one naming thread %s and not alice", failed, root.ID)
+	}
+}
+
 // raceRounds is how many times each race below runs its two writes at once.
 const raceRounds = 50
 

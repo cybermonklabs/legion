@@ -12,8 +12,9 @@ offers.
 sequence: press `g`, let go, then press `i` within a second. While you wait, the keys pressed so far
 show in the bottom right corner.
 
-While you type in a text field, only `Ctrl+K`, `Escape`, and `Ctrl+Alt+M` in a document work as
-shortcuts, so single letters never interrupt your typing.
+While you type in a text field, only `Ctrl+K`, `Escape`, `Ctrl+Enter` in an ask card's answer box,
+and `Ctrl+Alt+M` and `Ctrl+Alt+Y` in a document work as shortcuts, so single letters never
+interrupt your typing.
 
 ## The help and the palette
 
@@ -74,6 +75,28 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 `Enter`, `1` – `9`, `x` and `h` are an open question's: a thread row has no options, no answer
 box and no snooze, so they do nothing on one. An agent-message row has no `dispatch://`
 reference, so `y` does nothing on one either.
+
+## Ask card
+
+These act on the ask card in hand: the card that holds the focus, or the card of the row the
+Inbox has selected. `?` lists them first, under **Ask card**. Inside the card's answer box only
+the last two work, so the other letters type text.
+
+| Keys | Action |
+| --- | --- |
+| `1` – `9` | Pick option 1–9 |
+| `Enter` | Put the cursor in the answer box |
+| `r` | Rewrite the question |
+| `b` | Ask back |
+| `a` | Hand this question to… |
+| `n` | Decline to answer |
+| `d` | Define the words selected in the question |
+| `q` | Quote the words selected in the question in your answer |
+| `w` | Show or hide the original wording of a rewritten question |
+| `Ctrl+Enter` | Send the answer, or the question back |
+| `Escape` | Close a definition, or stop asking back |
+
+`r` and `n` do nothing on an approval request, which is not rewritten and cannot be declined.
 
 ## Project
 
@@ -150,11 +173,19 @@ These work in an issue's documents and in a project's documents.
 | Keys | Action |
 | --- | --- |
 | `Ctrl+Alt+M` | Comment on the selected text |
+| `Ctrl+Alt+Y` | Define the selected words, while you edit the document |
+| `d` | Define the selected words of a document you are reading |
 
 `Ctrl+Alt+M` is the shortcut Google Docs uses. It does what the selection bar's **Comment** does:
 it opens a comment on the text you selected and puts the cursor in it. It works while the cursor is
 in the document and text is selected. With nothing selected, in a comment you are writing, or on a
 document you cannot edit, it does nothing.
+
+## Threads
+
+| Keys | Action |
+| --- | --- |
+| `q` | Quote the selected words of an ask, a comment, a reply or a message in the box that answers them |
 
 ## Agents
 

@@ -1,0 +1,16 @@
+# The combinations of R3's changes that `harness score --change <name>` scores, each a list of
+# changes. This file is one of the paths that decide a score: after the held-out run it must not
+# change.
+#
+# A text meets the changes of a combination in this order, whatever order the list gives: the
+# written rules (2) and the writing check alone (7a) when the agent writes, the reviewer (3, whose
+# findings go to the writer, or 4, whose rewrite posts) before the text posts, then a person's
+# Rewrite (5) and Define (6) when the person reads it. 7b gives the reviewer the check's findings
+# as inputs: it needs 3 or 4, and the local Dispatch run with DISPATCH_REVIEWER_RULES holding
+# structure and detector. A combination holds 3 or 4, not both. One that holds 6 scores the
+# question cases alone.
+combinations:
+  rules-reviewer-checks: ["2", "3", "7b"]
+  rules-reviewer: ["2", "3"]
+  reviewer-rewrite-checks: ["4", "7b"]
+  rules-reviewer-rewrite: ["2", "3", "5"]

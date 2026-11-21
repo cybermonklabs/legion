@@ -306,7 +306,8 @@ func TestTheBodysActorNamesTheActingSessionWhereTheCredentialProvedNone(t *testi
 }
 
 // A broker-issued token proves the session it acts for, so a body naming another session is 403
-// ACTOR_SESSION_MISMATCH, and one naming that same session is taken.
+// ACTOR_SESSION_MISMATCH, whose message names neither session, and one naming that same session
+// is taken.
 func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -336,6 +337,11 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 		}))
 	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != "ACTOR_SESSION_MISMATCH" {
 		t.Fatalf("answer naming another session: status=%d body=%s, want 403 ACTOR_SESSION_MISMATCH", refused.Code, refused.Body.String())
+	}
+	for _, session := range []string{brokerTestSession, "session-someone-else"} {
+		if strings.Contains(refused.Body.String(), session) {
+			t.Fatalf("the refusal names the session %s: %s", session, refused.Body.String())
+		}
 	}
 
 	agreed := openAskAs(t, rig.handler, key, "session-asking", "The same session?")

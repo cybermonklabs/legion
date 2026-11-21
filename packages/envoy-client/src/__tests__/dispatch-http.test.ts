@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ArchitectureSource,
+  DISPATCH_ACCEPTS_KEPT_WRITE_HEADER,
+  DISPATCH_GENERATED_TEXT_HEADER,
+  DISPATCH_PERSON_TYPED_HEADER,
   type IssueSummary,
   type ItemBlocks,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
@@ -586,6 +589,89 @@ describe("DispatchClient", () => {
     expect(artifactBody.get("summary")).toBe("Initial spec");
     expect(artifactBody.get("actor")).toBe(JSON.stringify(actor));
     expect((artifactBody.get("file") as Blob).type).toBe("text/markdown");
+  });
+
+  // Text a plugin generated carries the generated-text header on the reply routes; any other
+  // reply carries none, and both are one request each.
+  test("sends the generated-text header on a generated delivery reply alone", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse({}, 201), jsonResponse({}, 201)]);
+    const client = new DispatchClient(
+      "http://dispatch.test/",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    const body = { actor, attempt: 1, body: "Ran `ls`: 2 files." };
+
+    await client.deliveryReply("comment", "comment-1", body, { generated: true });
+    await client.deliveryReply("message", "message-1", body, { followUp: true });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://dispatch.test/api/v1/comments/comment-1/reply",
+      "http://dispatch.test/api/v1/messages/message-1/reply?follow_up=true",
+    ]);
+    const sent = requests.map((request) =>
+      new Headers(request.init.headers).get(DISPATCH_GENERATED_TEXT_HEADER)
+    );
+    expect(sent).toEqual(["1", null]);
+    expect(requestBody(requests[0] as RecordedRequest)).toEqual(body);
+  });
+
+  // The two headers a write carries, and a read never does. Every write says this client reads
+  // the 202 of a write Dispatch keeps beside a held text, so Dispatch keeps it rather than answer
+  // 409 HELD_TEXT, as it answers a client built before the header (awaitHeldTarget,
+  // packages/envoy/internal/dispatch/api/held_replay.go), whatever else the client was built
+  // with. A person's own typed command (Decision 26 of INFRA-3231): the client the dispatch
+  // command builds with personTyped marks every write, whatever its route; a client built
+  // without it, as every plugin's own is, marks nothing, and the client reads no environment for
+  // it. The writes are a PATCH and a POST, which the write loop sends, and a PUT and a DELETE,
+  // sent as one request each.
+  test("sends the kept-write header on every write, the person-typed one only when built with it, and neither on a read", async () => {
+    const before = process.env.DISPATCH_PERSON_TYPED;
+    process.env.DISPATCH_PERSON_TYPED = "1";
+    try {
+      for (const [options, typed] of [
+        [{ personTyped: true }, "1"],
+        [{}, null],
+      ] as const) {
+        const { fetchImpl, requests } = fakeFetch([
+          jsonResponse({ key: "DSP-1" }, 200),
+          jsonResponse({ key: "DSP-1", title: "Retitled" }, 200),
+          jsonResponse({}, 201),
+          jsonResponse({}, 200),
+          jsonResponse({}, 200),
+        ]);
+        const client = new DispatchClient(
+          "http://dispatch.test/",
+          bearerCredential("secret"),
+          fetchImpl,
+          options
+        );
+        await client.getIssue("DSP-1").catch(() => undefined);
+        await client.updateIssue("DSP-1", { title: "Retitled" }).catch(() => undefined);
+        await client.deliveryReply("comment", "comment-1", { actor, attempt: 1, body: "Done." });
+        await client.followAsk("ask-1", actor.id, actor);
+        await client.unfollowAsk("ask-1", actor.id, actor);
+        expect(
+          requests.map((request) => {
+            const headers = new Headers(request.init.headers);
+            return [
+              request.init.method ?? "GET",
+              headers.get(DISPATCH_ACCEPTS_KEPT_WRITE_HEADER),
+              headers.get(DISPATCH_PERSON_TYPED_HEADER),
+            ];
+          })
+        ).toEqual([
+          ["GET", null, null],
+          ["PATCH", "1", typed],
+          ["POST", "1", typed],
+          ["PUT", "1", typed],
+          ["DELETE", "1", typed],
+        ]);
+      }
+    } finally {
+      if (before === undefined) delete process.env.DISPATCH_PERSON_TYPED;
+      else process.env.DISPATCH_PERSON_TYPED = before;
+    }
   });
 
   test("maps a structured conflict response into DispatchServiceError candidates", async () => {
@@ -1747,6 +1833,41 @@ describe("syncArchitectureSources against a server older than the every-source s
       status: 404,
       message: "not found",
     });
+    expect(requests).toHaveLength(1);
+  });
+});
+
+// A server older than the writing-rules settings route has no refusal, so the read answers null
+// once every attempt met no route, and at once from a client that does not ask again.
+describe("writingRulesSettings against a server older than its route", () => {
+  const noRoute = jsonResponse(
+    { code: "NOT_FOUND", error: "no route for GET /api/v1/settings/writing-rules" },
+    404
+  );
+
+  test("is null once every attempt met no route", async () => {
+    const { fetchImpl, requests } = fakeFetch(noRoutes(noRoute));
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: noWait }
+    );
+
+    expect(await client.writingRulesSettings()).toBeNull();
+    expect(requests).toHaveLength(4);
+  });
+
+  test("is null at once from a client built with retryNoRoute false", async () => {
+    const { fetchImpl, requests } = fakeFetch([noRoute.clone()]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { retryNoRoute: false }
+    );
+
+    expect(await client.writingRulesSettings()).toBeNull();
     expect(requests).toHaveLength(1);
   });
 });

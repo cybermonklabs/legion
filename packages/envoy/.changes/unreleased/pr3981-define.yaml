@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  A person can select words in an ask or a document and press **Define** on the selection bar, or
+  `d`. In a document's editor, `Ctrl+Alt+Y` does the same. Dispatch shows beside the words what
+  they mean there, read from its record, with links to where it read it.
+  For words in an ask, Dispatch also asks the session that asked one side question, when the
+  session runs and its host takes side questions. The agent's answer shows beside the definition
+  when it comes within 60 seconds.
+  A definition changes nothing and appends no event. It is the person's alone, and it counts as
+  that person's question about those words.
+  The routes are `POST /api/v1/definitions {ask_id? | document?, words}`,
+  `GET /api/v1/definitions/{id}` and `GET /api/v1/me/definitions`, and each needs the `person`
+  scope. `GET /api/v1/me/definitions` answers one page of the person's definitions, the newest
+  first, as `{items, total, limit, offset}`: `limit` is 1 to 200, 50 when the request names none.
+  Define needs the model group `DISPATCH_REWRITE_DEFINE_MODEL_*`: without it the route answers
+  `503 DEFINE_NO_MODEL`.

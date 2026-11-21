@@ -321,7 +321,8 @@ func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, 
 	if err := queuePendingAuthors(ctx, tx, &plan, room, authors); err != nil {
 		return appendPlan{}, err
 	}
-	if err := queueAskAuthors(ctx, tx, &plan, room, askAuthors); err != nil {
+	// A browser's update is a person's own, never a command typed in a session.
+	if err := queueAskAuthors(ctx, tx, &plan, room, askAuthors, false); err != nil {
 		return appendPlan{}, err
 	}
 	return plan, nil

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The lease pool (`store.LeasePoolSize`) grows from 22 to 24 connections. The records job (lease
+  `word-records`) and the reviewer's sweep of held texts (lease `reviewer-sweep`) each reserve one
+  at boot, whether or not this configuration runs them. So one server process opens at most 115
+  connections to Postgres, up from 113 (`store.ConnectionsPerProcess`), and two processes at
+  their ceiling hold 230. `infra/gcp`'s `dispatchConnectionsPerPod` is 115 to match.

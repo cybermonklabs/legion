@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts what agents and people
+  wrote, over up to 366 UTC days (by default the last 14). Any signed-in caller may read it.
+  `days` counts each day's decisions of the writing check and the reviewer, by outcome and by
+  route. `items` is one page of the rows of each day, project and person, in that order, with
+  `total`, `limit` and `offset`: `limit` is 1 to 200, 50 when the request names none. A row counts
+  their word questions, their texts and those the job has not read yet, their Define and Rewrite
+  uses, the asks they answered and how many of those a person replied to before the answer, and
+  the texts to them that the reviewer held, rewrote, passed or posted unreviewed, or that posted
+  over a finding, each such text once though the writing check and the reviewer both record a
+  finding of it, on one day whichever range is asked. The sweep keeps the rows these counts read
+  for 366 days and every other row for 90, so a range that ends today counts its rows whole, and
+  the `days` entry of a day older than 90 days counts only the outcomes those rows read.

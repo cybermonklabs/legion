@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { holdNotifications } from "../../__tests__/commits";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
@@ -25,6 +26,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { quotableSelection } from "../threads/quote-reply";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
@@ -232,10 +234,22 @@ test("a read of the thread asked before the card's seed does not put back the as
       .find({ exact: true, queryKey: ["ask-thread", open.id] })?.promise;
 
     // The card mounts from an Inbox read that answered after that read was asked: the ask is
-    // answered there, and its answer changed once.
-    view.rerender(
-      page(<AskCard ask={answered} initialThread={thread(answered, [firstAnswer, secondAnswer])} />)
-    );
+    // answered there, and its answer changed once. The card's query observer, made as the card
+    // renders, puts the seed into the thread's query, and TanStack tells the reading column's
+    // observer of that query so. A browser tells it on a later timer (TanStack's notify manager),
+    // once the card has rendered; `setup.ts` tells it at once, which would update the reading
+    // column inside the card's render. So the mount holds the notifications as a browser does,
+    // and tells them once the card is drawn.
+    const notifications = holdNotifications();
+    try {
+      view.rerender(
+        page(
+          <AskCard ask={answered} initialThread={thread(answered, [firstAnswer, secondAnswer])} />
+        )
+      );
+    } finally {
+      notifications.tell();
+    }
     await waitFor(() => expect(history()).toBe("Show 1 earlier answer"));
 
     // The older read answers the ask as it stood when it was asked.
@@ -641,7 +655,8 @@ test("a first approval request shows no earlier approval and no diff control", a
   const card = within(view.container);
   try {
     await card.findByRole("radio", { name: "Approve" });
-    expect(card.getByText("Approval requested")).toBeTruthy();
+    // The question begins "Approve" and names its document, so no label says it is a request.
+    expect(card.queryByText("Approval requested")).not.toBeInTheDocument();
     expect(card.queryByText(/Approved at version/)).not.toBeInTheDocument();
     expect(card.queryByRole("button", { name: "Show diff" })).not.toBeInTheDocument();
   } finally {
@@ -886,17 +901,23 @@ for (const surface of ["inline", "collapsed"] as const) {
 }
 
 // Handing a question to somebody else is a move on a question still waiting for an answer, so
-// the control is part of an open card and of no record: an answered, a resolved or a withdrawn
-// question waits on nobody.
-test("the hand-on control is on an open question and on no closed one", async () => {
+// the action is part of an open card's menu and of no record: an answered, a resolved or a
+// withdrawn question waits on nobody.
+test("the hand-on action is on an open question and on no closed one", async () => {
+  const user = userEvent.setup();
   const open = answeredAsk({ answer: null, state: "open" });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
   const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
   try {
-    expect(
-      await within(view.container).findByLabelText("Hand this question to")
-    ).toBeInTheDocument();
+    const card = within(view.container);
+    await user.click(await card.findByRole("button", { name: "More actions" }));
+    const page = within(document.body);
+    await user.click(await page.findByRole("menuitem", { name: /^Hand this question to/ }));
+    expect(await page.findByRole("textbox", { name: "Hand this question to" })).toBeTruthy();
+    expect(await page.findByRole("button", { name: /^alice/ })).toBeInTheDocument();
   } finally {
     view.unmount();
+    listUsers.mockRestore();
   }
 
   const closedBy = (kind: "resolved" | "withdrawn"): Ask =>
@@ -918,7 +939,7 @@ test("the hand-on control is on an open question and on no closed one", async ()
       await waitFor(() => expect(card.view.getByTestId(`ask-${closed.id}`)).toBeInTheDocument());
       expect(card.view.container.querySelector("[data-ask-card]")).toBeNull();
       expect(
-        within(card.view.container).queryByLabelText("Hand this question to")
+        within(card.view.container).queryByRole("button", { name: "More actions" })
       ).not.toBeInTheDocument();
     } finally {
       card.view.unmount();
@@ -968,17 +989,17 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    expect(control.value).toBe("");
-    // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await user.click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    // The menu's Hand this question to… opens the picker, which reads the people as it opens.
+    await user.click(await card.findByRole("button", { name: "More actions" }));
+    const page = within(document.body);
+    await user.click(await page.findByRole("menuitem", { name: /^Hand this question to/ }));
+    const bob = await page.findByRole("button", { name: "bob" });
     const before = threadReads;
-    await user.selectOptions(control, "bob");
+    await user.click(bob);
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
-    await waitFor(() => expect(control.value).toBe("bob"));
+    await waitFor(() => expect(card.getByText(/Waiting on bob/)).toBeTruthy());
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -1118,6 +1139,52 @@ test("a reply that is nothing but a reference shows its card", async () => {
     ).toBe("/issues/CORE-2");
   } finally {
     getIssueSummary.mockRestore();
+    view.unmount();
+  }
+});
+
+/** Selects every word of the first element `selector` names under `root`, as a reader's drag would. */
+function selectWords(root: HTMLElement, selector: string): void {
+  const element = root.querySelector(selector);
+  if (element === null) throw new Error(`no ${selector}`);
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+test("an open ask offers Define over its question alone; a reply in its thread quotes into the answer box without it", async () => {
+  const ask = answeredAsk({ answer: null, state: "open" });
+  const reply = { ...askReply("reply-1", "2026-10-08T03:00:00Z"), body: "Ship it **now**." };
+  const { view } = renderCard(
+    <AskCard ask={ask} initialThread={{ ...thread(ask), replies: [reply] }} />
+  );
+  try {
+    const card = view.container;
+    await waitFor(() => {
+      if (card.querySelector("[data-ask-thread] [data-reply] .dispatch-markdown") === null) {
+        throw new Error("the reply has not rendered");
+      }
+    });
+    // The question's words: Quote reply and Define.
+    selectWords(card, "[data-ask-question] .dispatch-markdown");
+    expect(quotableSelection()?.target.define).toBeDefined();
+    // A reply's words in the open ask's thread: Quote reply, into the answer box, and no Define.
+    selectWords(card, "[data-ask-thread] [data-reply] .dispatch-markdown");
+    const selected = quotableSelection();
+    expect(selected?.blocks).toEqual(["Ship it **now**."]);
+    expect(selected?.target.define).toBeUndefined();
+    act(() => {
+      selected?.target.quote(selected.blocks);
+    });
+    await waitFor(() =>
+      expect(card.querySelector<HTMLTextAreaElement>("[data-ask-answer]")?.value).toBe(
+        "> Ship it **now**.\n\n"
+      )
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
     view.unmount();
   }
 });

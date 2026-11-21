@@ -157,7 +157,7 @@ done
 # The listeners whose names carry no `DISPATCH_E2E_` prefix (e2e/harness-ports.ts), the base URL
 # a deployed run targets, and CI, which the config reads for its retry count.
 for name in DEV_OIDC_ISSUER_PORT FAKE_BROKER_PORT FAKE_EMBEDDER_PORT FAKE_ENVOY_PORT \
-  FAKE_GITHUB_PORT PLAIN_HTTP_PORT REAL_BROKER_PORT PLAYWRIGHT_BASE_URL CI; do
+  FAKE_GITHUB_PORT FAKE_MODEL_PORT PLAIN_HTTP_PORT REAL_BROKER_PORT PLAYWRIGHT_BASE_URL CI; do
   forward="$forward -e $name"
 done
 

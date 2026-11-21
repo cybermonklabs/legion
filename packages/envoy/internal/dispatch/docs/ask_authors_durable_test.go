@@ -22,7 +22,7 @@ import (
 // recordedAskAuthors is artifactID's durable ask block authors, keyed by block id.
 func recordedAskAuthors(t *testing.T, database *store.Store, artifactID string) map[string]model.Actor {
 	t.Helper()
-	recorded, err := readRecordedAskAuthors(context.Background(), database.Pool, artifactID)
+	recorded, _, err := readRecordedAskAuthors(context.Background(), database.Pool, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +187,54 @@ func TestASettlementsStampCarriesTheAuthorAnotherProcessRecorded(t *testing.T) {
 	settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 	if author := askAuthorByQuestion(t, pair.taskA, pair.artifactID, question); author != bob {
 		t.Fatalf("task A made the restamped ask with author %+v, want bob, whose author it carried from the replaced id", author)
+	}
+	requireNoRecordedAskAuthors(t, pair.database, pair.artifactID)
+}
+
+// Bob's ask block on task B is one a person typed in a session (doc_ask_block_authors'
+// person_typed, which a write carrying Dispatch-Person-Typed records); then alice, on task A, puts a
+// paragraph carrying the same id ahead of it. Task A's settlement stamps the ask a new id and
+// carries the mark to it with bob's author in a row it has only queued (recordStampedAskAuthors),
+// and the ask it opens under the minted id is marked person_typed: the read of the marks takes in
+// the rows the settlement queued, as the read of the authors does (transactionRecordedAskAuthors).
+func TestASettlementsStampKeepsTheMarkOfABlockAPersonTyped(t *testing.T) {
+	pair := newProcessPair(t)
+	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
+	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
+	const question = "Which team owns the rollout?"
+	pair.leaveTaskABehind(t, 1, bob, ":::ask{#typed urgency=\"med\" multiple=\"false\"}\n"+question+"\n:::\n")
+	ctx := context.Background()
+	marked, err := pair.database.Pool.Exec(ctx, `
+		update doc_ask_block_authors set person_typed = true where artifact_id = $1 and block_id = 'typed'
+	`, pair.artifactID)
+	if err != nil || marked.RowsAffected() != 1 {
+		t.Fatalf("mark bob's recorded block as one a person typed = %d rows, %v; want 1", marked.RowsAffected(), err)
+	}
+	if outcome, err := pair.taskA.catchUpRoom(ctx, pair.database.Pool, pair.artifactID, pair.taskA.srv.GetDoc(pair.artifactID)); err != nil || outcome != catchUpApplied {
+		t.Fatalf("catch task A's room up = %v, %v, want catchUpApplied", outcome, err)
+	}
+	editAsBrowserPeer(t, pair.taskA, pair.artifactID, 2, alice, prependParagraphWithID(t, "Alice's preface.", "typed"))
+	waitForLandedAppends(t, pair.taskA, pair.artifactID)
+
+	settleCurrentGeneration(t, pair.taskA, pair.artifactID)
+	if author := askAuthorByQuestion(t, pair.taskA, pair.artifactID, question); author != bob {
+		t.Fatalf("task A made the restamped ask with author %+v, want bob, whose author it carried from the replaced id", author)
+	}
+	var blockID string
+	var typed bool
+	if err := pair.database.Pool.QueryRow(ctx, `
+		select a.block_id, coalesce((e.payload->>'person_typed')::boolean, false)
+		from events e
+		join asks a on e.payload->>'id' = a.id::text
+		where e.type = 'ask.opened' and a.block_artifact_id = $1 and a.question = $2
+	`, pair.artifactID, question).Scan(&blockID, &typed); err != nil {
+		t.Fatalf("read the ask.opened of the restamped ask: %v", err)
+	}
+	if blockID == "typed" {
+		t.Fatalf("the ask opened under the id %q, want the id the stamp minted in place of it", blockID)
+	}
+	if !typed {
+		t.Errorf("the ask.opened of the ask under the minted id %q is not marked person_typed, want the mark the stamp carried from the replaced id", blockID)
 	}
 	requireNoRecordedAskAuthors(t, pair.database, pair.artifactID)
 }

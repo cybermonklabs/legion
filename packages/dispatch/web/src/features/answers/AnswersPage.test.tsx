@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -14,6 +14,8 @@ import type {
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { AnswersPage } from "./AnswersPage";
 
 let whoAmI: Mock<typeof api.whoAmI>;
@@ -387,5 +389,80 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
     listMyAnswers.mockRestore();
     getAsk.mockRestore();
     answerAsk.mockRestore();
+  }
+});
+
+/** Selects every word under the element `selector` names in `root`, as a drag of the mouse does. */
+function selectWords(root: HTMLElement, selector: string): void {
+  const element = root.querySelector(selector);
+  if (element === null) throw new Error(`no ${selector}`);
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+// The card a Change answer opens offers Quote reply and Define over its question, and the
+// selection bar names their keys. A selection made with the mouse leaves the focus where the
+// press put it, outside the card, whose own keys then do not act: the page's `q` and `d` do. The
+// row reads `d` from the keymap, which says it applies over the words: the popover Define opens
+// places itself from measures happy-dom does not take.
+test("q and d act on the selected words of the card a Change answer opens, the focus outside it", async () => {
+  const user = userEvent.setup();
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(page([answerRow()]));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [shipAnswer],
+    ask: answeredAsk(shipAnswer),
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/answers"]}>
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+          })
+        }
+      >
+        <KeymapProvider>
+          <AnswersPage />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
+    const box = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
+    const card = view.container.querySelector<HTMLElement>('[data-answer-card="ask-1"]');
+    if (card === null) throw new Error("Change answer opened no card");
+    await waitFor(() => {
+      if (card.querySelector("[data-ask-question] .dispatch-markdown") === null) {
+        throw new Error("the question has not rendered");
+      }
+    });
+    const outside = view.getByRole("link", { name: "← Inbox" });
+
+    act(() => outside.focus());
+    selectWords(card, "[data-ask-question] .dispatch-markdown");
+    const define = appKeymap
+      .describe()
+      .find((key) => key.scope === "answers" && key.id === "define-selected-ask-words");
+    expect(define).toEqual(expect.objectContaining({ enabled: true, keys: ["d"] }));
+    await user.keyboard("q");
+    // The box holds the answer's note, which the change seeds it with, and then the quote.
+    await waitFor(() => expect(box.value).toBe("Go now.\n\n> Which release path?\n\n"));
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    view.unmount();
+    listMyAnswers.mockRestore();
+    getAsk.mockRestore();
   }
 });

@@ -615,9 +615,9 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
 // A person's broker token whose session parameter names another session than the one it proved
 // passes that gate and is refused 403 ACTOR_SESSION_MISMATCH by actingPerson: that row holds the
-// handler's own order, and reads 400 INVALID_REVIEW in a handler that reads the number first. The
-// same token naming no other session is refused that 400, so the number check is live for the
-// caller the 403 turned away. None of them writes a review.
+// handler's own order, and reads 400 INVALID_REVIEW in a handler that reads the number first. No
+// refusal names a session. The same token naming no other session is refused that 400, so the
+// number check is live for the caller the 403 turned away. None of them writes a review.
 func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -675,8 +675,14 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 			},
 		} {
 			refused := row.send()
-			if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != row.code {
+			code, text := refusalOf(t, refused)
+			if refused.Code != http.StatusForbidden || code != row.code {
 				t.Fatalf("%s reviewing version %q: status=%d body=%s, want 403 %s", row.caller, number, refused.Code, refused.Body.String(), row.code)
+			}
+			for _, session := range []string{brokerTestSession, "session-someone-else"} {
+				if strings.Contains(text, session) {
+					t.Fatalf("%s reviewing version %q: the refusal %q names the session %s", row.caller, number, text, session)
+				}
 			}
 		}
 		live := rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))

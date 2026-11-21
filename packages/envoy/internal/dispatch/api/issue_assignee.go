@@ -35,19 +35,34 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	return &canonical, true, nil
 }
 
-// allowedLogin canonicalises login and checks that it names a person who has signed in.
+// allowedLogin canonicalises login, a login the request names, and checks that it names a person
+// who has signed in (signedIn), refusing one who has not 400 ASSIGNEE_NOT_ALLOWED quoting login as
+// the request spelled it.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
-	canonical := model.CanonicalLogin(login)
-	var known bool
-	if canonical != "" {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
-			return "", fmt.Errorf("read person %q: %w", canonical, err)
-		}
+	canonical, known, err := s.signedIn(ctx, login)
+	if err != nil {
+		return "", err
 	}
 	if !known {
 		return "", errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", "%q has not signed in to Dispatch", strings.TrimSpace(login))
 	}
 	return canonical, nil
+}
+
+// signedIn is login canonicalised and whether it names a person who has signed in; a blank login
+// names nobody. Its error names no login: a route's error path logs it, and the login may be the
+// one the request's credential resolved to (createProject's default), which no log line of ours
+// carries.
+func (s *server) signedIn(ctx context.Context, login string) (string, bool, error) {
+	canonical := model.CanonicalLogin(login)
+	if canonical == "" {
+		return "", false, nil
+	}
+	var known bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
+		return "", false, fmt.Errorf("read whether a person has signed in: %w", err)
+	}
+	return canonical, known, nil
 }
 
 // actorPerson is the one rule for which person a credential acts for, read off the actor the

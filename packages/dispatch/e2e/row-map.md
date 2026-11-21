@@ -200,6 +200,12 @@ such a row loses is feedback on the pull request itself.
 | `e2e/architecture.e2e.ts` | a status write must move the server-computed bar; the server's import refusal is the assertion |
 | `e2e/artifacts.e2e.ts` | uploads, version compare, document sockets and a 503 refetch |
 | `e2e/ask-blocks.e2e.ts` | decision answers the server records, and pastes in the live document editor |
+| `e2e/ask-card-define.e2e.ts` | a definition is the server's model call through the stand-in, its side question goes through the fake Envoy, and the answer, the records and the counts are the server's to keep |
+| `e2e/ask-card-menu.e2e.ts` | each key of the card writes or reads the server: a rewrite through the stand-in, an ask back, a hand-on, a decline, and the Reaches list the server and the fake Envoy answer |
+| `e2e/ask-card-pictures.e2e.ts` | it takes the design's pictures from the build against the server, the stand-in and the reviewer's server, which make every rewrite and definition it shows |
+| `e2e/ask-card-quote.e2e.ts` | the asks, comments, messages and documents it quotes are seeded through the server, and the answer it sends with a quote is read back from it |
+| `e2e/ask-card-reviewer.e2e.ts` | the reviewer's server holds each text and posts it on its own sweep, and the open page shows it over the live socket with no reload |
+| `e2e/ask-card-rewrite.e2e.ts` | the server rewrites in the background through the stand-in and the page follows its quiet events over the live socket; the edit, its event and the refused answer are the server's |
 | `e2e/ask-concurrent-edit.e2e.ts` | two editors crossing in one `/ws/doc` room |
 | `e2e/ask-part-references.e2e.ts` | the reference and backlink index the server builds from the write |
 | `e2e/asked-of-cli.e2e.ts` | runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser |

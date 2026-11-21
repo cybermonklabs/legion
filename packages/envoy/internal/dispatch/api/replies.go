@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -415,8 +414,8 @@ func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 }
 
 // parseMyRepliesPage reads the paging of one state. unread and inbox page with ?limit= and
-// ?offset=: an absent limit is every row, which is what the Inbox reads, since it sorts, groups,
-// filters and counts over all of them, and a limit the caller names keeps the rules
+// ?offset= (parseListPage): an absent limit is every row, which is what the Inbox reads, since it
+// sorts, groups, filters and counts over all of them, and a limit the caller names keeps the rules
 // GET /api/v1/me/answers has (1 to 200, so limit=0 is refused). dismissed pages with ?cursor=
 // alone, myRepliesDismissedPage rows at a time, because its order is the dismissal mark and an
 // offset over a list that moves as rows are dismissed and restored would serve one row twice and
@@ -449,19 +448,14 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
-	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
-		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
-		}
-		limit = &value
+	page, err := parseListPage(query)
+	if err != nil {
+		return nil, 0, nil, err
 	}
-	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
-		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
-		}
-		offset = value
+	if query.Has("limit") {
+		limit = &page.limit
 	}
-	return limit, offset, nil, nil
+	return limit, page.offset, nil, nil
 }
 
 // listMyReplies answers GET /api/v1/me/replies: the caller's Inbox threads of the kinds ?kind=
@@ -811,7 +805,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// project, the cycle markInboxReadThreads rules out.
 	owner := store.OwnerOf(issueKey, artifactID)
 	if owner == nil {
-		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		s.writeHandlerError(w, fmt.Errorf("a user_threads row of thread %s names no issue and no document", threadID))
 		return
 	}
 	// Whether the mark moves at all, read under that lock in the statement after it

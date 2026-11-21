@@ -13,8 +13,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// How a handler's error becomes a response: one function, writeHandlerError, that every route's
-// error goes through, so one failure reads the same whichever route met it.
+// How a handler's error becomes a response: one decision, handlerRefusalOf, that every route's
+// error goes through as writeHandlerError writes it, so one failure reads the same whichever route
+// met it, and a held text's post reads the status its route would answer from the same decision.
 
 // The codes writeHandlerError answers a document it cannot read or serve and an unclassified
 // failure with, which a comment's or ask's single read also carries as anchor_block_error
@@ -115,32 +116,77 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
+// handlerRefusal is how a handler's error is answered: its status, the code and the message it is
+// refused with, the body that stands in for errorBody where the refusal has a richer one (nil for
+// errorBody), the headers it carries, and the operator's log line it is written with (nil for
+// none). handlerRefusalOf decides it and writeHandlerError writes it, so a caller that needs the
+// status a route would answer an error with, without answering it (a held text's post, postHeld),
+// reads the decision every route's answer is written from.
+type handlerRefusal struct {
+	status        int
+	code, message string
+	body          any
+	header        http.Header
+	log           func()
+}
+
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
+	handlerRefusalOf(err).write(w)
+}
+
+// write answers the refusal on w: its headers first, since writeError and WriteJSON write the
+// status with the body, then the operator's line.
+func (refusal handlerRefusal) write(w http.ResponseWriter) {
+	for key, values := range refusal.header {
+		w.Header()[key] = values
+	}
+	if refusal.body != nil {
+		WriteJSON(w, refusal.status, refusal.body)
+	} else {
+		writeError(w, refusal.code, refusal.status, refusal.message)
+	}
+	if refusal.log != nil {
+		refusal.log()
+	}
+}
+
+// apiError is the refusal as a handler returns one: its status, its code and its message.
+func (refusal handlerRefusal) apiError() *apiError {
+	return &apiError{status: refusal.status, code: refusal.code, message: refusal.message}
+}
+
+// handlerRefusalOf decides how err, a handler's error, is answered: one decision for every route,
+// so one failure reads the same whichever route met it.
+func handlerRefusalOf(err error) handlerRefusal {
+	refuse := func(code string, status int, message string) handlerRefusal {
+		return handlerRefusal{status: status, code: code, message: message}
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
+		refusal := refuse(apiErr.code, apiErr.status, apiErr.message)
+		if apiErr.retryAfter > 0 || apiErr.scope != "" {
+			refusal.header = http.Header{}
+		}
 		if apiErr.retryAfter > 0 {
-			// Before the body: writeError writes the status and the headers go with it.
-			w.Header().Set("Retry-After", strconv.Itoa(apiErr.retryAfter))
+			refusal.header.Set("Retry-After", strconv.Itoa(apiErr.retryAfter))
 		}
 		if apiErr.scope != "" {
-			w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(apiErr.scope))
+			refusal.header.Set("WWW-Authenticate", insufficientScopeChallenge(apiErr.scope))
 		}
-		writeError(w, apiErr.code, apiErr.status, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
 		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
+			refusal.log = func() { slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err) }
 		}
-		return
+		return refusal
 	}
 	documentCode := documentErrorCode(err)
 	switch documentCode {
 	case codeDocServiceUnavailable:
-		writeError(w, documentCode, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
-		return
+		return refuse(documentCode, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
 	case codeDocumentUnloadable:
-		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
-		slog.Warn("dispatch: API document history cannot load", "error", err)
-		return
+		refusal := refuse(documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
+		refusal.log = func() { slog.Warn("dispatch: API document history cannot load", "error", err) }
+		return refusal
 	case codeDocNewerContent:
 		// The message is the document's own (docs.NewerContentError), the same on every route.
 		var newer *docs.NewerContentError
@@ -150,30 +196,30 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 			message = newer.Error()
 			elements = newer.Elements
 		}
-		writeError(w, documentCode, http.StatusConflict, message)
+		refusal := refuse(documentCode, http.StatusConflict, message)
 		// The operator's line names the elements the document holds and nothing taken from the
 		// error: its chain carries whatever the request wrapped it in, the caller's own identity
 		// among it, which no log of ours writes (CodeQL go/clear-text-logging).
-		slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
-		return
+		refusal.log = func() {
+			slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
+		}
+		return refusal
 	}
 	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
 	// still serves every other caller of FindQuote.
 	var ambiguousQuote *docs.ErrAnchorAmbiguous
 	if errors.As(err, &ambiguousQuote) {
-		writeAmbiguousTarget(w, ambiguousQuote.Error(), ambiguousQuote.Candidates)
-		return
+		return ambiguousTargetRefusal(ambiguousQuote.Error(), ambiguousQuote.Candidates)
 	}
 	var ambiguous *pmdoc.ErrTargetAmbiguous
 	if errors.As(err, &ambiguous) {
-		writeAmbiguousTarget(w, ambiguous.Error(), ambiguous.Candidates)
-		return
+		return ambiguousTargetRefusal(ambiguous.Error(), ambiguous.Candidates)
 	}
 
 	var preconditionFailed *docs.ErrPreconditionFailed
 	if errors.As(err, &preconditionFailed) {
-		WriteJSON(w, http.StatusConflict, editPreconditionBody(preconditionFailed))
-		return
+		body := editPreconditionBody(preconditionFailed)
+		return handlerRefusal{status: http.StatusConflict, code: body.Code, message: body.Error, body: body}
 	}
 	// A write whose text a concurrent browser change removed before the write could be versioned
 	// (LEGION-269). Nothing was written, so this reads like PRECONDITION_FAILED: re-read the
@@ -190,68 +236,55 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		} else {
 			body.LostOps = &lostEdit.Ops
 		}
-		WriteJSON(w, http.StatusConflict, body)
-		return
+		return handlerRefusal{status: http.StatusConflict, code: body.Code, message: body.Error, body: body}
 	}
 	var invalidPrecondition *docs.ErrInvalidPrecondition
 	if errors.As(err, &invalidPrecondition) {
-		writeError(w, "INVALID_PRECONDITION", http.StatusBadRequest, invalidPrecondition.Error())
-		return
+		return refuse("INVALID_PRECONDITION", http.StatusBadRequest, invalidPrecondition.Error())
 	}
 	if errors.Is(err, docs.ErrPreconditionBusy) {
-		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
-		return
+		return refuse("EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock
 	if errors.As(err, &invalidAskBlock) {
-		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
-		return
+		return refuse("INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
 	}
 	var invalidCICheck *docs.ErrInvalidCICheck
 	if errors.As(err, &invalidCICheck) {
-		writeError(w, "INVALID_CI_CHECK", http.StatusBadRequest, invalidCICheck.Error())
-		return
+		return refuse("INVALID_CI_CHECK", http.StatusBadRequest, invalidCICheck.Error())
 	}
 	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
 	if errors.As(err, &unrepresentableAsk) {
-		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())
-		return
+		return refuse("ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())
 	}
 	var invalidOp *docs.ErrInvalidOp
 	if errors.As(err, &invalidOp) {
-		writeError(w, "INVALID_OP", http.StatusBadRequest, invalidOp.Error())
-		return
+		return refuse("INVALID_OP", http.StatusBadRequest, invalidOp.Error())
 	}
 	if errors.Is(err, pmdoc.ErrTargetSpansBlocks) {
-		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
-		return
+		return refuse("TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
 	}
 	if errors.Is(err, pmdoc.ErrTableWidth) {
-		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
-		return
+		return refuse("TABLE_WIDTH", http.StatusBadRequest, err.Error())
 	}
 	if errors.Is(err, docs.ErrAnchorMissing) {
-		writeError(w, "ANCHOR_MISSING", http.StatusConflict, err.Error())
-		return
+		return refuse("ANCHOR_MISSING", http.StatusConflict, err.Error())
 	}
 	if errors.Is(err, docs.ErrAnchorOrphaned) {
-		writeError(w, "ANCHOR_ORPHANED", http.StatusConflict, err.Error())
-		return
+		return refuse("ANCHOR_ORPHANED", http.StatusConflict, err.Error())
 	}
 	if errors.Is(err, pmdoc.ErrTargetNotFound) {
-		writeError(w, "TARGET_NOT_FOUND", http.StatusNotFound, err.Error())
-		return
+		return refuse("TARGET_NOT_FOUND", http.StatusNotFound, err.Error())
 	}
 	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
 	// caller's markdown to fix, as a schema refusal of it is.
 	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
-		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
-		return
+		return refuse("INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
 	}
 	if docs.IsTooLarge(err) {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
-		slog.Warn("dispatch: API refused a document too large to store", "error", err)
-		return
+		refusal := refuse("CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
+		refusal.log = func() { slog.Warn("dispatch: API refused a document too large to store", "error", err) }
+		return refusal
 	}
 	// A tree outside the schema that the document holds answers 409 with its one message, the same
 	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
@@ -259,24 +292,23 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	if documentCode == codeDocSchema {
 		var outside *docs.OutsideSchemaError
 		if errors.As(err, &outside) {
-			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
-			return
+			refusal := refuse(documentCode, http.StatusConflict, outside.Error())
+			refusal.log = func() { slog.Warn("dispatch: API document outside Proof schema", "error", err) }
+			return refusal
 		}
-		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
-		return
+		refusal := refuse(documentCode, http.StatusInternalServerError, err.Error())
+		refusal.log = func() { slog.Error("dispatch: API document outside Proof schema", "error", err) }
+		return refusal
 	}
 	if errors.Is(err, docs.ErrIssueClosed) {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
-		return
+		return refuse("ISSUE_CLOSED", http.StatusConflict, err.Error())
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
-		return
+		return refuse("NOT_FOUND", http.StatusNotFound, "not found")
 	}
-	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
+	refusal := refuse(codeInternal, http.StatusInternalServerError, "internal server error")
+	refusal.log = func() { slog.Error("dispatch: API handler failed", "error", err) }
+	return refusal
 }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
@@ -287,12 +319,9 @@ type ambiguousTargetError struct {
 	Error      string            `json:"error"`
 }
 
-// writeAmbiguousTarget serves a quote that resolved in several places: the caller picks one by
+// ambiguousTargetRefusal refuses a quote that resolved in several places: the caller picks one by
 // the candidates' positions, or narrows the quote.
-func writeAmbiguousTarget(w http.ResponseWriter, message string, candidates []pmdoc.Candidate) {
-	WriteJSON(w, http.StatusConflict, ambiguousTargetError{
-		Candidates: candidates,
-		Code:       "TARGET_AMBIGUOUS",
-		Error:      message,
-	})
+func ambiguousTargetRefusal(message string, candidates []pmdoc.Candidate) handlerRefusal {
+	body := ambiguousTargetError{Candidates: candidates, Code: "TARGET_AMBIGUOUS", Error: message}
+	return handlerRefusal{status: http.StatusConflict, code: body.Code, message: message, body: body}
 }

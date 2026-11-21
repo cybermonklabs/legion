@@ -144,7 +144,7 @@ Each item below names a variable, then its purpose.
   Where the server generates text: `azure` is a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in;
   `endpoint` is any OpenAI-shaped chat completions service, reached with the bearer token `DISPATCH_CHAT_TOKEN_FILE` names, which is read on every call.
   Unset, no model is configured, and the server starts and says so.
-  The sign-in is the embedder's too, read by whichever of the two is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where neither is.
+  The sign-in is the embedder's too, and each `azure` model group's (Agents' texts, below), read by whichever of them is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where none is.
   `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families:
   the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
@@ -196,7 +196,7 @@ No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
-absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
+absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH`, whose message names no session and points at `GET /api/v1/whoami`, which answers the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
 A read-only token names no project either.
@@ -249,7 +249,7 @@ a credential that may write one project may not create another or change a setti
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
-addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
+addressing another session's conversation is `403 SESSION_SCOPE`, naming the route and no session; `GET /api/v1/whoami` answers the session the credential acts for.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
 
@@ -1015,7 +1015,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute) and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The fifteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute), the display tree fill (`texttreefill`, lease `text-tree-fill`), the records job of the words people ask about (`wordrecords`, lease `word-records`) and the reviewer's sweep of held texts (lease `reviewer-sweep`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -1029,7 +1029,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Twenty names are leased in all: the seventeen leased loops of the two items above, the CI reconcile and the Legion sampler among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-four (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot, whether or not this configuration runs its loop, and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1214,12 +1214,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill, the display tree fill, the records job and the reviewer's sweep of held texts among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1230,7 +1230,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 230, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1551,6 +1551,15 @@ A process that finds it held tries again
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
+
+- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows the counts' rows read once they are older than 366 days (`store.WritingCheckCountedRetention`), and every other row once it is older than 90 days (`store.WritingCheckRetention`, Writing check below), once a day, its first pass at start.
+  It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is two deletes by age on the shared pool, each reading by an index only the rows it deletes, which every process runs, and a second process's pass the same day deletes nothing the first left.
+
+- The records job of the words people ask about (`wordrecords.Job.Run`, lease `word-records`, The word records below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while `DISPATCH_WORD_RECORDS` is `on` and its model group is set.
+  Its tick records its period in `duty_passes`, so one process serves each period; a pass reads the event log after its cursor up to the safe horizon, then classifies up to 100 texts that are due, 4 calls at a time.
+
+- The reviewer's sweep of held texts (`api.Background`'s `SweepHeld`, lease `reviewer-sweep`, The reviewer below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while the reviewer's model group is set.
+  Its tick records its period in `duty_passes`, so one process serves each period; a pass reviews again each held text a stopped process left in review, posts as `DISPATCH_REVIEWER_UNEDITED` says each held text whose writer did not act within `DISPATCH_REVIEWER_WRITER_WINDOW` or whose writer session has gone, and posts each decided held text whose turn came.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
@@ -3465,6 +3474,7 @@ A refusal is answered only once its row is known to be written, so every `409 PO
 otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
 Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
 a row that still cannot be written is logged, and the create stands.
+An issue the reviewer holds ([The reviewer](#the-reviewer)) writes no row at its hold: its post writes the row under the issue's key, by the same two rules, with the title and the spec the gate read, whatever an edit or a Rewrite changed since.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -3569,6 +3579,334 @@ A pod that dies mid-run therefore stores no terminal frame, and the next reader 
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
+
+## Agents' texts: the reviewer, Rewrite and Define, and the word records
+
+These settings configure the work on the texts agents write to people (INFRA-3231): the reviewer of an agent's text, a person's Rewrite and Define, the records of the words people ask agents about, and the `dispatch` command's refusal that shows the written rules (`skills/plain-words`).
+`writing_settings.go` reads them at boot into one value (`writingSettings`) and refuses a value it cannot use, naming the setting; it calls nothing and reads no file.
+Every default keeps each change to a text off.
+
+### Settings
+
+- `DISPATCH_REVIEWER_ASKS`, `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS`, `DISPATCH_REVIEWER_MESSAGES`: `off`, `after` or `hold` (default `off`), for an ask, a new issue's title and spec, a comment and a message.
+  `after` posts the text at once and sends the reviewer's findings to the writer session; `hold` keeps the text from every person until the review ends and the writer acts.
+
+- `DISPATCH_REVIEWER_DOCUMENTS`: `off` or `after` (default `off`); no document version is held.
+
+- `DISPATCH_REVIEWER_DECISION_BLOCKS`: `off`, `after` or `hold` (default `off`); `hold` shows the block in its document and keeps it out of every person's Inbox, counts and notices until the review ends.
+  A choice other than `off` of any of these six needs the reviewer's model group, and refuses the boot without it.
+
+- `DISPATCH_REVIEWER_RULES`: a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` (default `noslop,phrases,reader_words,ask_parts`).
+  `structure` and `detector` are the writing check's structure rules and phrase detector (Writing check, below).
+
+- `DISPATCH_REVIEWER_TIMEOUT` (default `120s`) and `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`): positive Go durations, the bound on a review, every try of its model call included, and the time a writer session has to act on a held text.
+
+- `DISPATCH_REVIEWER_UNEDITED`: `rewrite` (default: the reviewer's rewrite posts, marked as the reviewer's) or `as_written`, for a held text the writer does not act on in time.
+
+- `DISPATCH_WORD_RECORDS`: `on` (default) or `off`; the records job runs only while its model group is set.
+  `DISPATCH_WORD_RECORDS_FROM`: an RFC 3339 time (default `2026-10-16T00:00:00Z`), the first event the job's backfill reads.
+
+- `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words` and `ask_parts` the refusal shows beside the written rules (default none).
+
+### The reviewer
+
+The reviewer (`internal/dispatch/api/reviewer.go`, INFRA-3231's R5) reads an ask, a new issue's title and spec, a comment and a message that an agent session writes to a person, and an agent's reply to a delivery a plugin posts for it (`POST /api/v1/messages/{id}/reply`, `POST /api/v1/comments/{id}/reply`); a reply the plugin marks as generated (`Dispatch-Generated-Text: 1`) posts at once, unless the same session's earlier reply to that delivery is held (below).
+It reads no text a person writes, none the Legion daemon writes, and none whose reader is another agent: the reader is the person the record names (`writing_check_reader.go`).
+It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is set, whatever the kinds say, so the draft route answers; with the group unset it reads nothing.
+
+- `hold` keeps the text in `held_texts` alone: the write answers at once, `201` in its own shape under the id the hold reserved (an issue's key from its project's sequence, else a uuid), with an added `held` object `{state, deadline, waits_on?}`, and no person sees it.
+  Before the hold, the write runs its own path in a transaction that is rolled back, so a write that path refuses is refused at once, as with the reviewer off.
+  The answer carries the advice the same write gets with the reviewer off, the related-item check (which no `related_checks` row records) and the near-copy gate's answer included, all worked out before the id is reserved, so a near copy the gate refuses is refused at once and nothing is held.
+  The review runs in the background: a clean review posts the text (`passed`); findings go to the writer session as a turn of its own, a `message.created` frame from Dispatch whose message id is the held text's id, with no message row and no event, and the writer has `DISPATCH_REVIEWER_WRITER_WINDOW` to edit or post it; a writer session that has gone, or that does not act in time, gets the setting's choice (`DISPATCH_REVIEWER_UNEDITED`: `rewrite_posted` or `posted_as_written`); a model that fails or runs past `DISPATCH_REVIEWER_TIMEOUT` posts the text as written (`posted_unreviewed`).
+  The post runs the kind's own create path with the stored request, the recorded actor and the reserved id, so it writes the rows and the event the same write writes with the reviewer off, with the post time as their creation time.
+  A post the create path refuses fails the held text and every held text that waits on it, and the writer of each gets a frame like the findings frame that names the text, its kind and the refusal's code and message (or the held text it waited on) and says it was not posted, its `detail` recording whether the frame went, and a writer session that has gone gets none.
+  A held issue's post runs the near-copy gate again, against the issues filed while it was held and its title and spec as they now stand, and a near copy found then refuses nothing: the issue posts marked `forced` past it, its `near_copy_checks` row records that answer, and its writer gets a frame that names the copy's key and title.
+
+- `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
+
+- A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came; a text the reviewer reads among them is reviewed once the text it waits on has posted.
+  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer.
+  A person's write, a create among them, is the route's own, which finds no such text, as a person's read is.
+  The kept write marks itself posted in its own transaction, so it runs once, and it is kept inside the keyed layer, an upload to a held issue's included, so a repeat under its `Idempotency-Key` is answered the same `202` and keeps no second write.
+  A second reply of a session to the same delivery, sent while its first is held, waits on the first, so the two post in the order the session wrote them; a reply the reviewer does not read (generated, typed by a person, or one no person reads) waits on it too, unreviewed.
+  A reply sent again on the same attempt while the first is held (no follow-up, or a follow-up of the same text) is answered `200` with the first's held answer, under its id and marked `duplicate` on the message route, and nothing more is held.
+  A held reply from the live holder of the role its attempt was sent for keeps what the listener said when it was written, and its post asks the listener nothing again.
+  A post refused for anything its route answers below 500 (a quote anchor gone from the document among them) fails the held text, and every text that waits on it, at once; a `429`, a `DOC_NEWER_CONTENT` and a `DOCUMENT_UNLOADABLE`, which a later post can clear, leave it for the sweep to post again.
+
+- A model call of the reviewer, of Rewrite or of Define whose reply is not the object its schema names, or one the component cannot use (a definition of no words), asks again, two more tries at most.
+  Each try waits for the pacer and is paid for.
+  Every try runs inside the call's one bound (`DISPATCH_REVIEWER_TIMEOUT` for the reviewer), and a try that cannot start inside it is not made, so a retry never holds a text longer.
+  A call's record (each of the draft route's `calls`, a Rewrite's `calls`, a definition's `calls`) gives `attempts` where it made more than one try, and its tokens over every try.
+  On a model group of kind `azure` each call sends its schema in OpenAI's strict mode (`agentloop.Request.StrictFinal`), so the endpoint holds the reply to the schema; the review's schema there requires `rewrite`, null for none.
+
+- A finding whose quote is not in the text is dropped: the review looks the quote up lower-cased, without `*`, backticks and curly quotes, and with each run of white space as one space, as the harness's quote check does.
+  A review whose every finding is dropped found nothing.
+  The draft route's `dropped` gives each dropped finding as `{rule_set, quote}`, the quote as the model wrote it, so a reader can see whether the model quoted the record or changed the text's words.
+
+- Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
+
+The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `PUT /api/v1/held/{id}/state {state: "posted", reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
+The `dispatch` command's `held`, `held-edit` and `held-post` call them.
+`POST /api/v1/reviewer-drafts {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing; a person at a browser whose draft another person would read gets the review without that person's words, as `GET /api/v1/readers/{login}/words` serves them.
+The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
+
+### Rewrite and Define
+
+A person's Rewrite of an open question and Define of words they selected (INFRA-3231's R7, `internal/dispatch/api/ask_rewrite.go` and `definitions.go`) call the component's Rewrite and Define (`internal/dispatch/reviewer`) with the model group `DISPATCH_REWRITE_DEFINE_MODEL_*` and the rule sets of `DISPATCH_REVIEWER_RULES`.
+Both are on whenever that group is set, because a person chooses to use them; with it unset their routes answer `503` (`REWRITE_NO_MODEL`, `DEFINE_NO_MODEL`).
+Every route needs the `person` scope.
+
+- `POST /api/v1/asks/{id}/rewrites` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
+  One rewrite of an ask runs at a time (`ask_rewrites`): a request while one runs starts none (`started: false`) and gets that run's result.
+  When a session opened the ask, and Envoy reads it running or unresponsive with a host that advertises `btw`, Dispatch first sends it one side question as its own system actor (`dispatch-reviewer`): a message to that session, on its own conversation and not on the issue, whose text names the ask by its address; the run waits at most 60 seconds for the reply, which stays in that message's thread.
+  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: most of the text's words, no tag of the record's own markup that the text lacks, no long run of the record's words, each typed block's `:::` line, the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
+  The first of those rules is `reviewer.KeepMostWords`: a rewrite with fewer than a third of the text's words, counted over its title, body and options, is not applied, since it is a stub or a summary in place of the text.
+  `reviewer.KeepNoRecordTags` refuses a rewrite that holds a tag the reviewer's input wraps the record in (`<issue>`, `<document>`, `<writer_texts>` and the rest of `recordTags`) where the text does not, since the model pasted the record into the text; `reviewer.KeepFenceLines` refuses one that drops or changes a line starting with `:::`, the fence of a typed block.
+  `reviewer.KeepNoRecordRun` refuses a rewrite that holds more than 100 words in a row (`recordRunWords`) that a text of the record holds and that neither the text nor the writer's answer holds, since the model pasted the record in place of the text.
+  Its texts of the record are those the model reads: the thread, the writer's texts, the issue's title, the project's name, the document (not where it is the text itself) and the decisions document.
+  Words are compared lower-cased and without the marks at their ends, so a run pasted with other emphasis or other line breaks is the same run.
+  A longer rewrite is no paste by itself: the writer's answer can rightly add facts, and a short phrase of the record is a fact the text takes from it.
+  On INFRA-3231's harness runs, each rewrite that pasted the record held a run of several hundred words or more of it, each other rewrite with a run past 100 words lost facts of the text, and a rewrite that lost none held no run past 67 words.
+  The model reads and writes each option's label and description and no id: an option's id is its part's (`refs.AskPartIDs`), which the part index keeps through an edit that rewords the option in its place, so an applied rewrite keeps each option's id.
+  An applied rewrite goes through the edit route's own path (a decision block's through `rewriteDecisionBlock`, which writes a new version of its document) as a quiet `ask.edited` from Dispatch, whose `rewrite` holds who asked, why, whether the agent's answer was read (`agent_answer`) and the side question's message (`question_message`), and whose `previous` holds the original wording.
+  The run emits `ask.rewriting` when it starts, then `ask.edited` or `ask.rewrite_failed` with its reason; all three are quiet, so no session gets them as a card, and the live socket carries them to an open page.
+  Each request is a `writing_check_events` row, `rewrite_requested`, with the person as its reader.
+  A run a stopped process left reads as failed after 6 minutes, and the next request starts a new one.
+
+- `POST /api/v1/definitions {ask_id? | document?, words}` answers `201` at once with the definition read from Dispatch's record: `{id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}`.
+  Words in an ask, a decision block's included, also send the session that asked it one side question when Envoy reads it live and its host advertises `btw`: a frame from Dispatch whose message id is the definition's id, with no message row and no event.
+  Its answer comes to `POST /api/v1/messages/{id}/reply` under that id within 60 seconds and is kept with the definition alone (`agent.state` none, waiting, answered or unanswered); a later answer is `409 DEFINITION_ANSWER_LATE`, and another session's `403 REPLY_FORBIDDEN`.
+  Words in a document of an issue or a project get the record's definition alone.
+  A definition changes nothing in the record and appends no event; each one is the person's question about those words in the word records (`store.RecordDefineUse`, source `define`).
+
+- `GET /api/v1/definitions/{id}` reads one of the caller's own definitions, and `GET /api/v1/me/definitions` lists them, the newest first, one page at a time (`{items, total, limit, offset}`, `limit` 1 to 200, default 50); another person's is `404 DEFINITION_NOT_FOUND`.
+
+Every read of an ask, a comment, a message and an issue (`GET /api/v1/issues/{key}`) carries `rewrite {state, by, at, original, reason?}` where a rewrite touched it: `rewriting`, `rewritten` or `failed`, `by` `person` or `reviewer`, and `original` the wording before it in the kind's fields.
+An ask's comes from its newest `ask.edited` that is a rewrite, from the reviewer's held rewrite it posted, or from a person's Rewrite that runs or failed after the wording was last written; a comment's, a message's and an issue's from the `held_texts` row of a text the reviewer held and posted rewritten.
+No event payload carries it.
+
+A day's Rewrite runs, with why the failed ones failed:
+
+```sql
+select ask_id, state, reason, asked_by->>'id' as person, started_at, finished_at
+from ask_rewrites
+where started_at >= '2026-11-15' and started_at < '2026-11-16'
+order by started_at;
+```
+
+### The written rules' refusal
+
+With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the five phrases to stop).
+The agent checks its text against them and runs the command again; that call sends the write.
+A command a person typed (`DISPATCH_PERSON_TYPED=1`) is never refused.
+The setting is read on the server, so one change applies to every session:
+
+- `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`, the refusal `on` or `off` and the rule sets of `DISPATCH_WRITING_RULES_EXTRA`.
+  The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
+
+- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text.
+  `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules; both come from the reviewer's prompts (`internal/dispatch/reviewer/prompts/written-rules.md`), whose `ask_parts` rule set reads the same five parts.
+  A person signed in at a browser gets the reader's words only for a write that person reads, as `GET /api/v1/readers/{login}/words` serves them; an agent's token gets any reader's.
+
+The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
+
+### The word records
+
+The records job (`internal/dispatch/wordrecords`, INFRA-3231's R8) records each text in which a person asks what a word of an agent's text means, says they cannot understand the text, or complains about its words.
+It runs while `DISPATCH_WORD_RECORDS` is `on` and its model group (`DISPATCH_WORD_RECORDS_MODEL_*`) is set, as a pass every 10 seconds under the lease `word-records`, the first at start (Background loops, above).
+
+- It reads the event log after its cursor (`word_records_cursor`), up to the safe horizon (`events.Horizon`), so it reads only what has committed, after the write's own transaction: no write waits on it or on its model.
+  Its first pass starts at the first event created at or after `DISPATCH_WORD_RECORDS_FROM`, which is the backfill; nothing written before that time is read.
+
+- A text is a person's when a user writes it with no session acting for them, as the dataset command reads it (`cmd/writing-check`, "classify"): a comment, a message (every copy of a broadcast is one text), a question ask, an answer with words, a note that declines, retracts or resolves an ask, and a review's reason.
+  A text a person typed in a session (`Dispatch-Person-Typed: 1`, whose event's payload holds `person_typed: true`) is the person's the actor names, or the person the session's credential names (a personal token's owner); where it names nobody, such as a pod's shared token, the person is unknown and the counts give it apart.
+
+- Each text is one `word_questions` row, pending until the job's model gives it a verdict of the selection prompt (`internal/dispatch/wordrecords/select.md`, the dataset's own prompt) with the agent text it answers: up the text's replies to the first agent text, else the agent's last message in a direct conversation, else the agent's last text on the issue.
+  A row whose verdict is `asks_word_meaning`, `cannot_understand` or `jargon_complaint` is a word question and holds the words.
+  A call that fails leaves the row `failed` and it is read again after 30 seconds, doubled after each failure up to an hour, until a verdict comes.
+
+- A Define use is a word question of its own (`store.RecordDefineUse`).
+
+`GET /api/v1/readers/{login}/words` answers one page of the words the reader asked about, `{items, total, limit, offset}` (`limit` 1 to 200, default 50): each word once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
+Any agent's token reads any reader's words, because the reviewer and the written rules read them, and a person at a browser their own; another person's are `403 READER_WORDS_FORBIDDEN`.
+
+A day's word questions, by person:
+
+```sql
+select person, verdict, words, answers
+from word_questions
+where about_words and day = '2026-11-13'
+order by person, written_at;
+```
+
+The texts the job has not classified yet, with why:
+
+```sql
+select id, event_id, state, attempts, next_attempt_at, last_error
+from word_questions
+where state <> 'done'
+order by next_attempt_at;
+```
+
+### Model groups
+
+Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite and Define (`DISPATCH_REWRITE_DEFINE_MODEL_*`) and the records job (`DISPATCH_WORD_RECORDS_MODEL_*`), take the same seven settings after their prefix:
+
+- `_KIND`: `azure`, a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in (`DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`) as an `azure` answerer is; or `anthropic`, an Anthropic Messages service such as the operator's model gateway.
+
+- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`; https for `anthropic`, or http to a host inside the cluster (localhost, a loopback address, or a Service name ending `.svc` or `.cluster.local`), since the model gateway serves plain HTTP inside the cluster and each call carries the group's key.
+  http to any other host refuses the boot.
+
+- `_DEPLOYMENT`: the Azure deployment's name or the Anthropic model's id, which each request names as its model.
+
+- `_API_VERSION` (optional) and `_SCOPE` (default `embed.DefaultEntraScope`): `azure` only.
+
+- `_KEY_FILE`: `anthropic` only, and required there: the file holding the key each call presents, read on each call.
+
+- `_TOKENS_PER_MINUTE`: required, the group's ceiling on its share of its deployment's quota (One pacer per deployment, below).
+  A ceiling not more than the least a call of the group is charged refuses the boot.
+
+A group is set whole or not at all: a group set in part refuses the boot, naming each setting it is missing, and so does a setting its kind does not read.
+An `azure` group reads the shared Azure sign-in, so a deployment with neither an `azure` embedder nor an `azure` answerer may set the sign-in for its `azure` groups alone.
+Rewrite and Define are on whenever their group is set.
+
+### One pacer per deployment
+
+Every caller of a model deployment in one process charges one token limiter (`internal/dispatch/modelpace`), keyed by the caller's kind, the endpoint's host and the deployment's name or model id.
+The limiter's rate is the deployment's quota in `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` (`name=tokens_per_minute,…`), else the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` for the answerer's deployment, else the largest ceiling any caller sets for it.
+Each caller's own tokens-per-minute setting is a ceiling on its share inside that limiter, and each limiter holds a minute's tokens as its burst.
+So a caller whose ceiling is under the deployment's rate leaves the rest to the others, and where no quota is set, the caller with the largest ceiling can take the whole rate; a quota above each caller's ceiling leaves each of them a part.
+The answerer joins the process's pacer at boot (`newAnswerer`); a call the limiters cannot serve inside the run's time left ends the run as its deadline does.
+
+Each call is charged before it is sent: its prompt's estimated tokens, the system prompt and the user message at four characters a token, and its whole reply bound (`modelpace.Charge`, which every caller charges with through `modelpace.Caller.WaitFor`; the answerer's request names no reply bound, so it is charged its request alone); the pacer refuses for good a call that costs more than a minute's whole quota.
+The reply bound is `reviewer.DefaultOutputTokens`, 32768 tokens, for the reviewer's group and for Rewrite and Define's, and `wordrecords.CallOutputTokens`, 1024 tokens, for the records job's.
+No call's prompt is shorter than the shortest system prompt of the calls the group sends, under `DISPATCH_REVIEWER_RULES` (`reviewer.LeastSystemPromptRunes`): the reviewer's group's reviews, Rewrite and Define's rewrites and definitions, a test model's reviews, rewrites and definitions, and the records job's selection prompt.
+So a minute's quota not more than the charge of that prompt and the reply bound could serve no call: each call would fail, and each reviewed text would post as written.
+The boot is refused, naming the setting, its value and that least charge (`refuseQuotaNoCallFits`), when a set group's `_TOKENS_PER_MINUTE` is not more than it, and when the quota that paces the group's deployment is not more than it.
+That quota is the one `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` names for the group's deployment.
+Where it names none, it is the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` if the group's deployment is the answerer's under the limiter's key: an `azure` group whose endpoint has the host of `DISPATCH_AZURE_CHAT_ENDPOINT` and whose deployment is `DISPATCH_AZURE_CHAT_DEPLOYMENT`.
+An answerer on another endpoint host, of another deployment or beside a group of another kind is another limiter, and its quota is not held to the group's charge.
+A quota for a deployment that no set group and no test model names is not held to one.
+Set well more, since each call also carries its text: a group serves at most about ceiling / (bound + prompt) calls a minute, and a deployment's callers together about quota / (bound + prompt).
+
+### The stand-in model
+
+`DISPATCH_TEST_MODEL_URL`, read only under `DISPATCH_TEST_HOOKS=1`, is the base URL of a stand-in model that serves Anthropic Messages and OpenAI Chat Completions over plain HTTP.
+Every set group's calls go to it with no credential, each still naming its group's deployment as the model, so a test tells the callers apart by the model each request names.
+A group beside it takes only its `_KIND`, `_DEPLOYMENT`, `_TOKENS_PER_MINUTE` and, for `azure`, `_API_VERSION`; its `_ENDPOINT`, `_KEY_FILE` and `_SCOPE` refuse the boot, and it reads no sign-in.
+The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL to the server; a Go test starts `internal/dispatch/modeltest`.
+
+### The test models
+
+`DISPATCH_TEST_MODELS`, read only under `DISPATCH_TEST_HOOKS=1`, lists the models a test request may name in its `Dispatch-Test-Model` header: `name=kind,…`, kind `azure` or `anthropic`.
+A draft review (`POST /api/v1/reviewer-drafts`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
+This is how `writing-check harness` measures each change with each candidate model against one server.
+The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name, or its id where the name holds an effort, being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
+A name may also be `<id>:<effort>`, such as `Kimi-K3.1-Pro:off`: that test model calls deployment `<id>` and asks it for that reasoning effort, one of `off`, `minimal`, `low`, `medium` and `high`, the words agentloop takes; any other effort refuses the boot, naming it.
+A name of the id alone asks for its kind's own effort, as a model group does: no thinking on `anthropic`, no reasoning effort at all on `azure`.
+So one list can hold a model at its own effort and at another, each under its own name, and the header picks one by its whole name.
+The detector's reader asks for the effort it always asks for, whatever the name says.
+No model group takes an effort setting.
+The test models serve the reviewer's calls and Rewrite and Define's, so each kind's `_TOKENS_PER_MINUTE`, and the quota that paces a test model's deployment, is held to the least charge of those calls as a group's is.
+A request that names a model the list does not hold is refused 400 `TEST_MODEL_REFUSED`, and so is any request with the header on a server without the test hooks, so a deployment's own model never answers a request that asked for another.
+
+## Writing check
+
+The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.
+It runs on every server with the bundle's structure rules (`writingcheck.EnabledRules`) and no detector, and no setting turns it on or off.
+The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they matched 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
+That ceiling was set for the refusals the check made then.
+The bundle also ships `key-pointer`, which finds a sentence whose subject is an issue key, a pull request number or a link, and a sentence that holds a possessive key (`BET-1323's`).
+That measurement did not measure it: it came later, and it finds 356 of the 2169 development texts of INFRA-3231's harness dataset (16.4%).
+The check records its findings, as it records every rule's, and the write goes on.
+The reviewer applies the structure rules and the detector as its `structure` and `detector` rule sets (`DISPATCH_REVIEWER_RULES`, above).
+
+### What the check reads
+
+The check reads a write by an agent session that is not a project's Legion daemon (`legion-daemon:<PROJECT>`), and a write a person's credential makes for such a session (the actor's `act.session`).
+It does not read a person's own write, a daemon's write or a write Dispatch itself makes.
+It does not read a reply a plugin posts with the header `Dispatch-Generated-Text: 1` on `POST /api/v1/messages/{id}/reply` or `POST /api/v1/comments/{id}/reply`, which marks text the plugin generated rather than the agent wrote (a person's `!command` report, a slash command's output, the plugin's own error reply); such a reply is recorded `exempt_generated`, and the header is ignored on every other route.
+
+It reads only text a person reads.
+The server decides that person from the record, never from the text, when the write arrives and before the check reads it (`api/writing_check_reader.go`);
+every route that carries prose names its rule in one table, `writingCheckReaderRules`:
+
+- An ask's question, its options and an approval request's summary:
+  the person the ask waits on, which is the person it was handed to, else the issue's assignee, else the project's default assignee (`askedOfPersonExpression`).
+
+- A reply to a person's text (a comment, a message or an ask it answers, whose author is a person): that person.
+
+- Any other text on an issue (an answer, a comment, a reply between agents, a message, a result, a resolution, a review's reason, a version summary, a new or changed document):
+  the issue's assignee, else the project's default assignee.
+
+- A new issue's title and spec: the assignee the create names, else the person the create gives it (the person the credential acts for, the parent's assignee, the project's default assignee).
+
+- A project's document and any text on it: the project's default assignee.
+
+- A direct message, and a file put into an agent's direct conversation: the person in that conversation, who opened it.
+
+- No person: a send to an agent, a broadcast, a reply in a direct conversation a session opened, and any text whose record names nobody.
+
+An agent's write with no person as its reader is not read, and is recorded `exempt_no_reader`.
+One registry (`api/writing_check_fields.go`) marks every string member of every request type as prose or not prose, and the check reads every prose member a request carries.
+A document edit is read for the text it adds (an operation's `with` and `markdown`), and a new version uploaded whole for the blocks it adds to the newest saved version.
+An upload stored as a Markdown document is read as inline content is; any other file is not read, and only its `summary` is.
+The check runs once the request is decoded and its writer resolved, before the write opens a transaction:
+it reads the record to decide the write's reader, and no transaction waits on it.
+
+### Records
+
+Each decision about a write that took place is one row of `writing_check_events`:
+the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, `reader`, the login of the person who reads the text (null where no person does), on every row, `project`, the project of the text's issue or document where the writer records it, and `write_id`, the id of the write where more than one row records it (a held text's id on its rows; an id the server makes for the write on the check's row and on the review of the text after its post), so the counts count its text once.
+The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader` and `exempt_generated`.
+The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
+A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
+Nor is a call a reply route answers with a 2xx status and nothing written: a reply to an attempt already answered, which posts nothing, and an error report repeated on an attempt already failed.
+The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
+A daily sweep deletes the rows the counts' rows read (below) once they are older than 366 days, the longest range the counts route reads, and every other row once it is older than 90 days (`store.SweepWritingCheckEvents`, Background loops, above).
+
+`GET /api/v1/writing-check` answers the check as this process runs it:
+`enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
+`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
+
+- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
+  A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps for 366 days.
+
+- `items`: one page of the rows of each day, project and person with a count, in that order: `limit` rows (1 to 200, default 50) from `offset`, and `total` counts every row.
+  From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
+  From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
+  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings), which counts a text once by its `write_id` where the writing check and the reviewer both record a finding of it, on the day and the project of the first of its rows that names a project, picked among all its rows, so it counts on that one day whichever range is asked.
+  `project` is `""` for a text on no project or whose project was not recorded, and `person` `""` for a person the record does not name.
+
+A day's writes with findings, by rule and route:
+
+```sql
+select rules, method || ' ' || route as route, count(*)
+from writing_check_events
+where outcome = 'findings' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1, 2 order by 3 desc;
+```
+
+A day's exemptions, with the daemon-named writes counted by the personal token that made them:
+
+```sql
+select outcome, actor_id, act_session, token_id, count(*)
+from writing_check_events
+where outcome like 'exempt_%' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1, 2, 3, 4 order by 1, 5 desc;
+```
+
+An `exempt_daemon` row with a `token_id` is a daemon-named write made with a person's token:
+a session that names itself `legion-daemon:<PROJECT>` to pass the check shows up there.
+
+A day's agent writes no person reads, by route:
+
+```sql
+select method || ' ' || route as route, count(*)
+from writing_check_events
+where outcome = 'exempt_no_reader' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1 order by 2 desc;
+```
 
 ## Keyed writes
 
@@ -4215,6 +4553,29 @@ Each item below names a path with its method and identity, then its purpose.
   Each is `""` where the deployment set none: the issue then carries no label, and the bar makes it and starts no conversation on it.
   The bar writes the issue itself, through `POST /api/v1/issues` and the issue's own artifact, patch and message routes, so this read is all the configuration adds to the API.
 
+- `/api/v1/settings/writing-rules` (GET; cookie, trusted header, or bearer)
+
+  The refusal of the written rules as `DISPATCH_WRITING_RULES_REFUSAL` and `DISPATCH_WRITING_RULES_EXTRA` set it: `{refusal, extra}`, `refusal` being `"on"` or `"off"` and `extra` the rule sets the refusal shows after the written rules (`reader_words`, `ask_parts`), `[]` for none.
+  The `dispatch` command reads it before an agent's write of an ask, an issue, a comment or a message (The written rules' refusal, above).
+
+- `/api/v1/writing-rules` (POST; cookie, trusted header, or bearer)
+
+  The written rules for a write the caller has not sent, `{route, body}`: `route` is `"<method> <path>"` of a route whose text a person may read, and `body` the JSON that write would send.
+  Answers `{reader, text}`: `reader` the login of the person who reads the write, as the writing check decides it, `""` for none, and `text` the rules (The written rules' refusal, above).
+  It writes nothing.
+  A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
+  Its body may hold 1 KiB more than a JSON route's 1 MiB, so every write it can name fits inside it; past that it is `413 REQUEST_TOO_LARGE`.
+
+- `/api/v1/held/{id}` (GET, PATCH; cookie, trusted header, or bearer) and `/api/v1/held/{id}/state` (PUT; cookie, trusted header, or bearer)
+
+  A text the reviewer holds (The reviewer, above): GET reads it (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`), PATCH edits its wording, which the reviewer reads again, and PUT `{state: "posted", reason}` posts it as written, recording the reason; any other `state` is `400 HELD_STATE_INPUT`, and the same PUT again once it posted answers the held text as it stands.
+  Only its writer session edits or posts it (`403 HELD_NOT_WRITER`), and only while it is in review or awaits its writer (`409 HELD_TEXT_DECIDED`); an id no held text has is `404 HELD_NOT_FOUND`.
+
+- `/api/v1/reviewer-drafts` (POST; cookie, trusted header, or bearer)
+
+  The reviewer's review of a draft, `{kind, text, title?, options?, multiple?, issue?, reader?}`: answers `{reader, findings, dropped?, rewrite, not_applied?, calls}`, `dropped` being each finding the review dropped as `{rule_set, quote}`, each call naming the deployment its request named and the model the provider served, and writes nothing.
+  With no reviewer's model group set it is `503 REVIEWER_NO_MODEL`; a model call that gives no answer is `502 REVIEWER_MODEL_FAILED`.
+
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
   Move a project's default assignee to another person, `{assignee}` being the email of a person who has signed in:
@@ -4344,7 +4705,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write a row of the graph, of the forty tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`; the three held-text specs read, change or post the caller's own held text).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
@@ -5099,7 +5460,7 @@ Each item below names a path with its method and identity, then its purpose.
   A caller whose credential proves a session of its own
   — an access token the secrets broker issued, the one that does
   — uploads only into that session's conversation;
-  any other `session_id` is `403 SESSION_SCOPE`, naming the session the credential acts for and the session addressed.
+  any other `session_id` is `403 SESSION_SCOPE`, naming the route and no session.
   A person's cookie proves no session and uploads into the conversation it names.
   An agent's conversation holds files and images only, so a markdown document (JSON `content` or a `text/markdown` file) is `400 ARTIFACT_INPUT` ("an agent's conversation holds files and images;
   a document belongs to an issue or a project").

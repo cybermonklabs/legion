@@ -116,15 +116,17 @@ func (c itemRowLockCase) writer() string { return c.file + " " + c.function }
 // itemRowLockTable is the table: the serving writers of item rows this test holds behind an owner
 // lock. Every writer the census names that takes its owner lock in a transaction of its own is
 // here - the five comment routes, the four ask routes, the two approval-request writers, the two
-// message writers and the anchor-block backfill - and such a writer added to the census is added
-// here too, as a row of its own. Those that write inside a transaction their caller opened rest
+// message writers, the post of a held decision block and the anchor-block backfill - and such a
+// writer added to the census is added here too, as a row of its own. A route's row names the
+// function that writes its row, which the route's handler runs (writeComment, writeAsk,
+// writeAskEdit, writeMessage). Those that write inside a transaction their caller opened rest
 // on that caller's lock, which no row here drives; the gap map (itemRowLockNoRow) names each with
 // why, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
 var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the comment create route",
 		file:     "internal/dispatch/api/comment_create.go",
-		function: "createCommentFor",
+		function: "writeComment",
 		ready:    readyCommentCreate,
 	},
 	{
@@ -154,13 +156,13 @@ var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the ask create route",
 		file:     "internal/dispatch/api/asks.go",
-		function: "createAskFor",
+		function: "writeAsk",
 		ready:    readyAskCreate,
 	},
 	{
 		name:     "the ask edit route",
 		file:     "internal/dispatch/api/asks.go",
-		function: "editAsk",
+		function: "writeAskEdit",
 		ready:    readyAskEdit,
 	},
 	{
@@ -190,7 +192,7 @@ var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the issue message route",
 		file:     "internal/dispatch/api/messages.go",
-		function: "createStoredMessage",
+		function: "writeMessage",
 		ready:    readyIssueMessage,
 	},
 	{
@@ -198,6 +200,12 @@ var itemRowLockTable = []itemRowLockCase{
 		file:     "internal/dispatch/api/message_delivery.go",
 		function: "insertSessionReply",
 		ready:    readySessionReply,
+	},
+	{
+		name:     "the post of a held decision block",
+		file:     "internal/dispatch/api/decision_blocks.go",
+		function: "releaseDecisionBlock",
+		ready:    readyDecisionBlockRelease,
 	},
 	{
 		name:     "the anchor-block backfill",
@@ -361,7 +369,7 @@ func (f itemRowFixture) routeWrite(
 }
 
 // readyCommentCreate drives POST /api/v1/issues/{key}/comments, which inserts the comment row
-// under the owner's lock its own transaction takes (createCommentFor, lockCommentOwner).
+// under the owner's lock its own transaction takes (writeComment, lockCommentOwner).
 func readyCommentCreate(t *testing.T) lockedItemWrite {
 	t.Helper()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Comment create", "A spec.\n")
@@ -516,7 +524,7 @@ func readyCommentReply(t *testing.T) lockedItemWrite {
 }
 
 // readyAskCreate drives POST /api/v1/issues/{key}/asks, which inserts the ask row under the
-// owner's lock the route takes before it reads the owner (createAskFor, requireOpenOwnerStatus).
+// owner's lock the route takes before it reads the owner (writeAsk, requireOpenOwnerStatus).
 func readyAskCreate(t *testing.T) lockedItemWrite {
 	t.Helper()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Ask create", "A spec.\n")
@@ -542,7 +550,7 @@ func readyAskCreate(t *testing.T) lockedItemWrite {
 }
 
 // readyAskEdit drives PATCH /api/v1/asks/{id}, which rewords the ask row under the ask's owner
-// lock, taken before the document's (editAsk, requireOpenOwner).
+// lock, taken before the document's (editAsk, requireOpenOwner, then writeAskEdit).
 func readyAskEdit(t *testing.T) lockedItemWrite {
 	t.Helper()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Ask edit", "A spec.\n")
@@ -685,7 +693,7 @@ func readyApprovalHandBack(t *testing.T) lockedItemWrite {
 }
 
 // readyIssueMessage drives POST /api/v1/issues/{key}/messages, which inserts the message row
-// under the issue's owner lock (createStoredMessage, lockIssue).
+// under the issue's owner lock (writeMessage, lockIssue).
 func readyIssueMessage(t *testing.T) lockedItemWrite {
 	t.Helper()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Issue message", "A spec.\n")
@@ -744,6 +752,63 @@ func readySessionReply(t *testing.T) lockedItemWrite {
 				t.Fatalf("the message has %d replies, want the one the route answered with", replies)
 			}
 		})
+}
+
+// readyDecisionBlockRelease drives the post of a held decision block (releaseDecisionBlock), which
+// ends the block's hold - its ask's held_until - and appends the quiet ask.reviewed, under the
+// ask's owner lock, taken with the read of the owner before the ask is read again (ownerStatus,
+// lockedOwnerRead). It is the reviewer's post, which no route makes, so it is driven through its
+// function, on a server whose store has one connection. The block is held as the reviewer holds
+// one: its writer's document opens it, and the review sends the writer its findings, which leaves
+// the block waiting on its writer for the rig's minute. The call names no held row to mark posted
+// (a nil heldPost): the rig's own server could take a row left posting for a post of its own, and
+// the mark is a statement of the write phase, after the lock this row reads, as the hold's end is.
+func readyDecisionBlockRelease(t *testing.T) lockedItemWrite {
+	t.Helper()
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: time.Minute}, nil)
+	askID := rig.uploadDecisionBlock(false)
+	held := rig.waitHeld(askID, heldAwaitingWriter)
+	holdEnded := func(t *testing.T) bool {
+		t.Helper()
+		var ended bool
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select held_until is null from asks where id = $1::uuid`, askID).Scan(&ended); err != nil {
+			t.Fatalf("read the decision block's hold: %v", err)
+		}
+		return ended
+	}
+	if holdEnded(t) {
+		t.Fatalf("the decision block %s is not held: its ask has no held_until", askID)
+	}
+	callStore, pid := oneConnectionStore(t, rig.served.deps)
+	callDeps := rig.served.deps
+	callDeps.Store = callStore
+	poster := directServer(callDeps)
+	var released error
+	return lockedItemWrite{
+		database: rig.database,
+		owner:    store.IssueOwner(rig.issue),
+		pid:      pid,
+		writes:   "the held_until of the decision block's ask",
+		call: func() string {
+			if released = poster.releaseDecisionBlock(poster.postContext(), held, nil); released != nil {
+				return "error " + released.Error()
+			}
+			return "the hold ended"
+		},
+		wrote: func(t *testing.T) {
+			if released != nil {
+				t.Fatalf("end the decision block's hold once the lock was released: %v", released)
+			}
+			if !holdEnded(t) {
+				t.Fatal("the decision block's ask still holds its held_until")
+			}
+			if reviewed := countRows(t, rig.database, `
+				select count(*) from events where type = 'ask.reviewed' and payload->>'id' = $1`, askID); reviewed != 1 {
+				t.Fatalf("%d ask.reviewed events of the block, want the one its post appends", reviewed)
+			}
+		},
+	}
 }
 
 // backfillAnchorQuote is the quote the backfilled comment is anchored to when the row is seeded,

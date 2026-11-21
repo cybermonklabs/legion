@@ -81,6 +81,7 @@ tells the agent who Dispatch takes it for.
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
+| Held texts | `dispatch held <id>` reads a text of yours that Dispatch's reviewer holds: the text, what the reviewer found, its rewrite, and the time you have left. `dispatch held-edit <id>` changes it, and the reviewer reads it again. `dispatch held-post <id> --reason <text>` posts it as you wrote it. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
@@ -140,6 +141,29 @@ it refuses the write and says which form to send. Send the write alone, in the f
 it is reviewed.
 
 `{ "askgate": { "enabled": false } }` in the session's own `envoy.json` turns the review off.
+
+## The written rules and the reviewer
+
+A deployment may turn on two checks of the text an agent writes to a person. Both are off by
+default.
+
+With the written rules on, the `dispatch` command refuses your session's first `dispatch ask`,
+`issue`, `comment` or `message`, once, and prints the rules for the person who will read that
+write: the `plain-words` skill, and where the deployment adds them, the words that person asked
+about before and the parts an ask needs. Check your text against them and run the same command
+again; that call sends the write. The command does this again after each compaction of your
+context. A `dispatch` line a person typed in your session is never refused.
+
+Dispatch's reviewer reads an ask, a new issue, a comment, a message or a reply you write to a
+person. Where the deployment has it hold that kind, the write answers at once, but no person sees
+the text until the review ends. A text the reviewer finds nothing in posts. Otherwise what it found,
+and its rewrite, reach you as a message of their own, with the time you have. Change the text with
+`dispatch held-edit <id>`, which the reviewer reads again, or post it as you wrote it with
+`dispatch held-post <id> --reason <text>`, saying why it is right for its reader. When the time
+runs out, Dispatch posts the reviewer's rewrite, or your text, as the deployment chose. A later
+write that names the held text, such as a reply to it, waits and runs right after it posts. Where
+the deployment has the reviewer read a kind after it posts, its findings reach you the same way,
+as advice.
 
 ## Ask, comment, suggest, or message
 

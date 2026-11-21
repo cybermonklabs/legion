@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
+import type { OriginalToggleProps } from "../inbox/ask-rewrite";
 import { AgentName, type AgentPart } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
@@ -61,11 +62,13 @@ export function ReplyTurn({
   actions,
   at,
   author,
+  badge,
   body,
   current = false,
   delivery,
   markRef,
   onReply,
+  originalToggle,
   quote,
   replyDisabled = false,
   turnID,
@@ -73,6 +76,8 @@ export function ReplyTurn({
   actions?: ReactNode;
   at: string;
   author: Actor;
+  /** The reviewer's rewrite badge of the reply (`RewriteBadge`), beside its author and time. */
+  badge?: ReactNode;
   body: ReactNode;
   current?: boolean;
   delivery?: ReplyDelivery;
@@ -80,6 +85,9 @@ export function ReplyTurn({
    *  element it watches. */
   markRef?: DwellRef;
   onReply?: () => void;
+  /** What lets `w` show or hide a rewritten reply's original wording (`originalToggleProps`), on
+   *  the reply's own row. */
+  originalToggle?: OriginalToggleProps;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
    *  `reply_block`), and its turn's path. */
   quote?: {
@@ -107,12 +115,14 @@ export function ReplyTurn({
       data-reply=""
       data-turn={turnID}
       ref={markRef}
+      {...originalToggle}
     >
       <Avatar actor={author} />
       <div className="min-w-0 flex-1">
         <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
           <AgentName actor={author} className="font-semibold" inline />
           <Timestamp at={at} />
+          {badge}
         </p>
         {quote === undefined ? null : (
           <ReplyQuote

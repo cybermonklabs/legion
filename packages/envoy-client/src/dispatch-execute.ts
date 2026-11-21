@@ -5,12 +5,14 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
+import { keptWriteResult } from "./dispatch-commands/held";
 import { dryRunAsksDispatch } from "./dispatch-commands/issues";
 import {
   type DispatchCommand,
   type DispatchToolName,
   dispatchCommands,
 } from "./dispatch-commands/table";
+import { DispatchWriteKept } from "./dispatch-http";
 import { ToolInputError } from "./tool-input-errors";
 
 // What this module has always offered its callers, from the modules the command dispatcher is
@@ -59,7 +61,14 @@ export async function executeDispatchTool(
   const session = sessionContext(input, checked);
   // `dispatch_open_asks`, `dispatch_answers` and `dispatch_whoami` answer from the session alone;
   // every other command is handed the context that resolves this call's origin.
-  return command.origin === "none"
-    ? command.run(session)
-    : command.run(await commandContext(session));
+  try {
+    return command.origin === "none"
+      ? await command.run(session)
+      : await command.run(await commandContext(session));
+  } catch (error) {
+    // A write Dispatch kept beside a held text, to run right after that text posts, was
+    // accepted: the command did what it was asked, and its one line says so.
+    if (error instanceof DispatchWriteKept) return keptWriteResult(error);
+    throw error;
+  }
 }

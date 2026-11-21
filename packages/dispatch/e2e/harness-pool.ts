@@ -23,6 +23,7 @@
  *  answers; and the stack lines below name every port of every stack, so the log of such a run
  *  still shows the collision.
  */
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +35,8 @@ import {
   type StackDatabase,
   stackPostgres,
 } from "./harness-postgres";
+import { harnessProcessCount } from "./harness-processes";
+import { harnessSignIn } from "./harness-signin";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
 
@@ -292,6 +295,15 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         if (url !== "") own.DATABASE_URL = url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
+        // The stack's one server signs its dev sign-in cookies with a key this stack shares, so a
+        // second server a spec starts on the stack's database (`e2e/reviewer-server.ts`) holds
+        // the same key, which the server's process registry requires of every process of one
+        // database. Two-process mode gives its servers a key of their own
+        // (e2e/harness-listeners.ts), and DISPATCH_E2E_SIGNIN=oidc signs with its one
+        // DISPATCH_SIGNING_KEY.
+        if (harnessProcessCount === 1 && harnessSignIn === "dev") {
+          own.DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY = randomBytes(32).toString("base64url");
+        }
         const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
         stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {

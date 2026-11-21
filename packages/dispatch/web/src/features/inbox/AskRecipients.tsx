@@ -9,7 +9,6 @@ import {
   type WriteBounds,
 } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
-import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
@@ -124,8 +123,8 @@ export interface Reach {
   unknownRoute: boolean;
 }
 
-/** The card's `Reaches N` toggle, `Reaches N + route (unknown)` while a role route's reach is
- *  unknown, so the count never reads as the route reaching nobody. */
+/** The routing list's heading, `Reaches N`, or `Reaches N + route (unknown)` while a role route's
+ *  reach is unknown, so the count never reads as the route reaching nobody. */
 export function reachLabel({ count, unknownRoute }: Pick<Reach, "count" | "unknownRoute">): string {
   return unknownRoute ? `Reaches ${count} + route (unknown)` : `Reaches ${count}`;
 }
@@ -202,7 +201,9 @@ type Confirming =
   | { kind: "subscriber"; sessionId: string };
 
 /**
- * Every session the server routes this ask's answer and replies to, under `Reaches N`: the
+ * Every session the server routes this ask's answer and replies to, under a `Reaches N` heading,
+ * in the popover the asker's chevron opens on the card (`AskCard`), so the list is one click
+ * away and takes no line of the card itself: the
  * ask's followers (every session that wrote to the ask, minus any that unfollowed); then the
  * session holding the issue's claim, under `via claim`, and the session the issue's route reaches,
  * under `via route` (`via route (role:<name>)` for a role's holder; the bare `role:<name>`,
@@ -272,7 +273,6 @@ export function AskRecipients({
   // there are, and the card says why instead.
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
-  const [open, setOpen] = useState(false);
   // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
   // already (`404 FOLLOWER_NOT_FOUND`, `404 SUBSCRIBER_NOT_FOUND`), which is the change done
   // (`removedEvenIfGone`). Each press carries the ask, or the owner's subscription, it is of:
@@ -344,100 +344,91 @@ export function AskRecipients({
   };
 
   return (
-    <section aria-label="Recipients" className="mt-2">
-      <DisclosureToggle
-        expanded={open}
-        label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
-        onToggle={() => setOpen((shown) => !shown)}
-        textClassName={textMutedOnSurface}
-      />
-      {!open ? null : (
+    <section aria-label="Recipients">
+      <h3 className={`text-xs font-semibold tracking-wide uppercase ${textMutedOnSurface}`}>
+        {counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
+      </h3>
+      {followers.length === 0 ? null : (
+        <ul aria-label="Followers" className="mt-2 flex flex-wrap gap-2">
+          {followers.map((follower) => (
+            <li className={sessionChipClassName} key={follower.session_id}>
+              <span title={follower.session_id}>
+                <AgentName sessionId={follower.session_id} storedTitle={undefined} />
+              </span>
+              <button
+                className={sessionRemoveButtonClassName}
+                disabled={unfollow.isPending}
+                onClick={() => setConfirming({ kind: "follower", sessionId: follower.session_id })}
+                type="button"
+              >
+                Unfollow
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {issueRows.length === 0 ? null : (
+        <ul aria-label="Via claim or route" className="mt-2 flex flex-wrap gap-2">
+          {issueRows.map((row) => (
+            <li className={sessionChipClassName} key={`${row.via}:${row.id}`}>
+              {row.reaches ? (
+                <span title={row.id}>
+                  <AgentName sessionId={row.id} storedTitle={undefined} />
+                </span>
+              ) : (
+                <span title={row.id}>{row.id}</span>
+              )}
+              <span className="text-xs italic">{row.via}</span>
+              {row.reachUnknown ? (
+                <RouteReachUnknownMarker />
+              ) : row.reaches ? null : (
+                <UnreachableRouteMarker
+                  issue={{
+                    route: row.id,
+                    route_holder: null,
+                    route_status: routeStatus,
+                    route_status_reason: null,
+                  }}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {subscribers.length === 0 ? null : (
         <>
-          {followers.length === 0 ? null : (
-            <ul aria-label="Followers" className="mt-1 flex flex-wrap gap-2">
-              {followers.map((follower) => (
-                <li className={sessionChipClassName} key={follower.session_id}>
-                  <span title={follower.session_id}>
-                    <AgentName sessionId={follower.session_id} storedTitle={undefined} />
-                  </span>
+          <p className={`mt-1.5 text-xs italic ${textMutedOnSurface}`}>{viaLabel}</p>
+          <ul
+            aria-label={`Via ${subscription?.noun} subscription`}
+            className="mt-1 flex flex-wrap gap-2"
+          >
+            {subscribers.map((subscriber) => (
+              <li className={sessionChipClassName} key={subscriber.session_id}>
+                <span title={subscriber.session_id}>
+                  <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
+                </span>
+                {subscriber.removable ? (
                   <button
                     className={sessionRemoveButtonClassName}
-                    disabled={unfollow.isPending}
+                    disabled={unsubscribe.isPending}
                     onClick={() =>
-                      setConfirming({ kind: "follower", sessionId: follower.session_id })
+                      setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
                     }
                     type="button"
                   >
-                    Unfollow
+                    Unsubscribe
                   </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {issueRows.length === 0 ? null : (
-            <ul aria-label="Via claim or route" className="mt-1 flex flex-wrap gap-2">
-              {issueRows.map((row) => (
-                <li className={sessionChipClassName} key={`${row.via}:${row.id}`}>
-                  {row.reaches ? (
-                    <span title={row.id}>
-                      <AgentName sessionId={row.id} storedTitle={undefined} />
-                    </span>
-                  ) : (
-                    <span title={row.id}>{row.id}</span>
-                  )}
-                  <span className="text-xs italic">{row.via}</span>
-                  {row.reachUnknown ? (
-                    <RouteReachUnknownMarker />
-                  ) : row.reaches ? null : (
-                    <UnreachableRouteMarker
-                      issue={{
-                        route: row.id,
-                        route_holder: null,
-                        route_status: routeStatus,
-                        route_status_reason: null,
-                      }}
-                    />
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          {subscribers.length === 0 ? null : (
-            <>
-              <p className={`mt-1.5 text-xs italic ${textMutedOnSurface}`}>{viaLabel}</p>
-              <ul
-                aria-label={`Via ${subscription?.noun} subscription`}
-                className="mt-1 flex flex-wrap gap-2"
-              >
-                {subscribers.map((subscriber) => (
-                  <li className={sessionChipClassName} key={subscriber.session_id}>
-                    <span title={subscriber.session_id}>
-                      <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
-                    </span>
-                    {subscriber.removable ? (
-                      <button
-                        className={sessionRemoveButtonClassName}
-                        disabled={unsubscribe.isPending}
-                        onClick={() =>
-                          setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
-                        }
-                        type="button"
-                      >
-                        Unsubscribe
-                      </button>
-                    ) : (
-                      <span
-                        className="text-xs italic"
-                        title={`Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`}
-                      >
-                        via {subscriber.via}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+                ) : (
+                  <span
+                    className="text-xs italic"
+                    title={`Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`}
+                  >
+                    via {subscriber.via}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
         </>
       )}
       {subscribersQuery.isError ? (

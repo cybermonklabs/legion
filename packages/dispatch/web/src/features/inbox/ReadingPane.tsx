@@ -9,6 +9,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
+import { documentPlace } from "../doc/document-define";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -305,7 +306,9 @@ function ApprovalBody({
               (artifact.versions ?? []).find((version) => version.number === latestVersion)
                 ?.created_at
             }
+            definePlace={documentPlace(artifact)}
             highlight={undefined}
+            keyScope="inbox"
             owner={
               artifact.issue_key === null
                 ? { project: artifact.project, slug: artifact.slug }

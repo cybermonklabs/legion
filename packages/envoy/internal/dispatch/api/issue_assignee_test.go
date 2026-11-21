@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -167,6 +168,23 @@ func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
 	}
 	unchanged := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
 	expectAssignee(t, decodeBody[assigneeIssue](t, unchanged).Assignee, "alice")
+}
+
+// A read of whether a login has signed in that fails, here on a context already ended, is an error
+// that carries the cause and names no login: a route's error path logs it, and the login may be
+// the one the request's credential resolved to.
+func TestAFailedReadOfWhetherALoginSignedInNamesNoLogin(t *testing.T) {
+	served := &server{deps: Deps{Store: storetest.Open(t)}}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	const login = "unread-assignee@d.example"
+	_, err := served.allowedLogin(ended, login)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "read whether a person has signed in") {
+		t.Fatalf("the check on an ended context = %v, want the failed read carrying its cause", err)
+	}
+	if strings.Contains(err.Error(), login) {
+		t.Fatalf("the failed read names the login: %v", err)
+	}
 }
 
 // Anyone who has signed in may reassign; the update event carries the new assignee and PATCH

@@ -22,6 +22,7 @@ import {
   requestApprovalCommand,
 } from "./documents";
 import { handoffReadCommand, handoffWriteCommand } from "./handoffs";
+import { heldCommand, heldEditCommand, heldPostCommand } from "./held";
 import {
   claimCommand,
   issueCommand,
@@ -108,4 +109,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
   dispatch_inbox: onSession(inboxCommand),
+  dispatch_held: acting(heldCommand),
+  dispatch_held_edit: acting(heldEditCommand),
+  dispatch_held_post: acting(heldPostCommand),
 };

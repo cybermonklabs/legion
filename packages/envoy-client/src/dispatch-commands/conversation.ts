@@ -22,6 +22,7 @@ import {
   stringArg,
 } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
+import { heldWriteLine } from "./held";
 import {
   itemReplyTo,
   messageInReplyTo,
@@ -119,11 +120,13 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
     resolved === undefined
       ? { issue: comment.issue_key, comment: comment.id }
       : writeResultDetails(resolved, { comment: comment.id });
+  const heldDetails = comment.held === undefined ? {} : { held: comment.held };
   const adviceLines = renderAdvice(input.tool, commentOwner.label, comment.advice, {
     isAskReply: replyToAsk !== undefined,
     replyToOwnAsk:
       replyToAsk !== undefined &&
       (comment.advice?.your_open_asks?.some((ask) => ask.id === replyToAsk) ?? false),
+    held: comment.held,
   });
   if (replyToAsk !== undefined) {
     // The server answers whom the ask waits on now that this comment is its newest reply. It
@@ -136,9 +139,12 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
       requestedTurn !== "agent" && comment.ask_waiting_on === "agent"
         ? await movedApprovalLine(client, replyToAsk)
         : undefined;
+    const follows = await followsAsk(commentOwner, input.subscriptions);
     return {
       text: [
-        `Replied on ask ${replyToAsk} (comment ${comment.id}${askState}). ${await followsAsk(commentOwner, input.subscriptions)}`,
+        comment.held === undefined
+          ? `Replied on ask ${replyToAsk} (comment ${comment.id}${askState}). ${follows}`
+          : `${heldWriteLine(comment.held, "comment", comment.id, `, a reply on ask ${replyToAsk}${askState}`)} ${follows}`,
         ...(moved === undefined ? [] : [moved]),
         ...adviceLines,
       ].join("\n"),
@@ -148,17 +154,22 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
         follows: { ask: replyToAsk },
         ...(comment.ask_waiting_on === undefined ? {} : { ask_waiting_on: comment.ask_waiting_on }),
         ...(comment.advice === undefined ? {} : { advice: comment.advice }),
+        ...heldDetails,
       },
     };
   }
+  const subscribed = await notSubscribed(commentOwner, input.subscriptions);
   return {
     text: [
-      `Posted comment ${comment.id}${await notSubscribed(commentOwner, input.subscriptions)}`,
+      comment.held === undefined
+        ? `Posted comment ${comment.id}${subscribed}`
+        : heldWriteLine(comment.held, "comment", comment.id, subscribed),
       ...adviceLines,
     ].join("\n"),
     details: {
       ...commentDetails,
       ...(comment.advice === undefined ? {} : { advice: comment.advice }),
+      ...heldDetails,
     },
   };
 }
@@ -180,9 +191,16 @@ export async function suggestCommand(context: CommandContext): Promise<DispatchT
     resolved.owner.kind === "project"
       ? await client.artifactSuggest(resolved.artifact.id, suggestionInput)
       : await client.suggest(issue(), suggestionInput);
+  const subscribed = await notSubscribed(resolvedTopic(resolved), input.subscriptions);
   return {
-    text: `Posted suggestion ${comment.id}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
-    details: writeResultDetails(resolved, { comment: comment.id }),
+    text:
+      comment.held === undefined
+        ? `Posted suggestion ${comment.id}${subscribed}`
+        : heldWriteLine(comment.held, "suggestion", comment.id, subscribed),
+    details: writeResultDetails(resolved, {
+      comment: comment.id,
+      ...(comment.held === undefined ? {} : { held: comment.held }),
+    }),
   };
 }
 
@@ -228,6 +246,13 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
       { body, attempt: 1, actor },
       { followUp: true }
     );
+    // A reply the reviewer holds answers with the id it reserved: nobody reads it until it posts.
+    if (reply.held !== undefined) {
+      return {
+        text: `${heldWriteLine(reply.held, "message", reply.id, `, your reply to message ${inReplyTo}`)} ${conversationReadBack(inReplyTo)}`,
+        details: { message: reply.id, in_reply_to: inReplyTo, posted: false, held: reply.held },
+      };
+    }
     // Text this session already posted in the conversation (its first reply or an earlier
     // follow-up) posts nothing, and Dispatch says so, so the session is not told it sent
     // something new.
@@ -281,16 +306,20 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     actor,
   });
   const messageRef = dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id);
-  const adviceLines = renderAdvice(input.tool, issueKey, message.advice, {});
+  const adviceLines = renderAdvice(input.tool, issueKey, message.advice, { held: message.held });
+  const subscribed = await notSubscribed(issueTopic(issueKey), input.subscriptions);
   return {
     text: [
-      `Posted message ${message.id} (${messageRef})${await notSubscribed(issueTopic(issueKey), input.subscriptions)}`,
+      message.held === undefined
+        ? `Posted message ${message.id} (${messageRef})${subscribed}`
+        : heldWriteLine(message.held, "message", message.id, ` (${messageRef})${subscribed}`),
       ...adviceLines,
     ].join("\n"),
     details: {
       issue: issueKey,
       message: message.id,
       ...(message.advice === undefined ? {} : { advice: message.advice }),
+      ...(message.held === undefined ? {} : { held: message.held }),
     },
   };
 }

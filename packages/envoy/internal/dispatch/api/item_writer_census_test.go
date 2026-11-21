@@ -88,8 +88,12 @@ var itemRowWriters = map[string]map[string]string{
 			"transition reads the ask (requireOpenOwner)",
 	},
 	"internal/dispatch/api/asks.go": {
-		"createAskFor": "the owner's lock (requireOpenOwnerStatus)",
-		"editAsk":      "the ask's owner lock, taken before the document's (requireOpenOwner)",
+		"writeAsk": "the owner's lock, which it takes before it reads the owner (requireOpenOwnerStatus), " +
+			"for the ask route (createAskFor) and a held ask's post and dry run alike",
+		"writeAskEdit": "the ask's owner lock, which every caller takes before it reads the ask it " +
+			"hands over: the edit route, before the document's (editAsk, requireOpenOwner), a " +
+			"Rewrite's application and a held decision block's post (applyAskRewrite, " +
+			"releaseDecisionBlock: ownerStatus with lockedOwnerRead)",
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
@@ -101,19 +105,27 @@ var itemRowWriters = map[string]map[string]string{
 		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
-		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
-			"(lockCommentOwner)",
+		"writeComment": "the owner's lock, taken inside the comment's transaction before it reads " +
+			"the thread it answers or reopens (beginCommentWrite, lockCommentOwner), for the comment " +
+			"route (createCommentFor) and a held comment's post and dry run alike",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
 		"replyComment": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
+	},
+	"internal/dispatch/api/decision_blocks.go": {
+		"AskBlockOpened": "the document's owner lock, which the settlement that opens the block " +
+			"holds (lockArtifactOwner); its hold is queued after the ask's own insert",
+		"releaseDecisionBlock": "the ask's owner lock, taken with the read of the owner before " +
+			"the ask is read again (ownerStatus, lockedOwnerRead)",
 	},
 	"internal/dispatch/api/message_delivery.go": {
 		"insertSessionReply": "the issue's owner lock where the conversation names an issue " +
 			"(replyMessage's lockIssue); a direct message has no owner and needs none",
 	},
 	"internal/dispatch/api/messages.go": {
-		"createStoredMessage": "the issue's owner lock where the message names an issue " +
-			"(lockIssue); a direct message has no owner and needs none",
+		"writeMessage": "the issue's owner lock where the message names an issue, taken first " +
+			"(lockIssue), for the message routes (createMessage, createStoredMessage) and a held " +
+			"message's post and dry run alike; a direct message has no owner and needs none",
 	},
 	"internal/dispatch/api/reviews.go": {
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
@@ -347,6 +359,8 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
+	// The reviewer's hold of a new decision block, queued in the settlement that opens the block.
+	"internal/dispatch/api/decision_blocks.go": {"AskBlockOpened": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},

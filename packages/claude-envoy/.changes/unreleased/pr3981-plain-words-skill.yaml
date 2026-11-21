@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The `plain-words` skill this plugin ships now holds ce-noslop's tests, its pattern catalog and its
+  terminology (MIT, with its licence), and keeps its table of phrases to stop without its "name
+  the problem" row, five phrases of the six. The `asd-ste100` and `dispatch-writing-specs` skills
+  no longer keep a term by defining it: write the thing in words the reader uses, or drop the term.

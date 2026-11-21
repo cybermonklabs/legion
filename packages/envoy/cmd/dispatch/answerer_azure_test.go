@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
 
 // azureChatScope is the scope this deployment configures for its answerer, which is not the one
@@ -132,7 +133,7 @@ func TestNewAnswererOnAzureBesideABedrockEmbedderSignsInAtTheConfiguredScope(t *
 				azureChatEndpointHost: model.URL,
 			})
 
-			answerer, err := newAnswerer(boot.Answerer)
+			answerer, err := newAnswerer(boot.Answerer, modelpace.New(modelpace.Config{}))
 			if err != nil || answerer == nil {
 				t.Fatalf("newAnswerer = %v, %v, want the Azure answerer these settings name", answerer, err)
 			}

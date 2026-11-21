@@ -587,7 +587,8 @@ The Envoy plugin ships these skills in its `dist/skills`:
 
 - `outside-message`
 
-- `plain-words`
+- `plain-words`, the rules agents write by: ce-noslop's tests, pattern catalog and terminology, and
+  its table of five phrases to stop
 
 - the reviewer's pair, `thermonuclear-code-quality` and `thermonuclear-deep-review`, which both
   harnesses install

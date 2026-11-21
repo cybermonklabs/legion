@@ -54,6 +54,10 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A held text's post runs the write it kept through the mounted routes (held_replay.go). The
+	// server's mux is a RouteMux, so a call of its ServeHTTP reaches every handler of the module;
+	// the one route the replay runs is a route of the table, which the guard walks as its own.
+	"api.server.serveMounted": "runs one mounted route, which the guard walks as a route of its own",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
@@ -86,6 +90,12 @@ var keyedWriteGuardAllowed = map[string]string{
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
 }
+
+// keyedRouteWrappers are the functions routeHandler (server.go) wraps a keyed route's handler in,
+// inside the keyed layer, that make a write of their own in place of the handler's: the guard walks
+// every handler each returns as it walks a route's. awaitHeldTarget keeps a write beside a held
+// text it names (holdRequest), which is the request's own write and must mark its key.
+var keyedRouteWrappers = []string{"api.server.awaitHeldTarget"}
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside
 // the transactions the commit mark hooks.
@@ -160,7 +170,8 @@ func writingCallOf(functions []string) *regexp.Regexp {
 // write made as a bare pool statement commits on its own and marks nothing; the process dying after
 // it, before the answer is kept, leaves a key a repeat takes over, and the write is made twice.
 //
-// It reads each route's handler from the routes table and follows it through the copy-lock guard's
+// It reads each route's handler from the routes table, and each handler a wrapper of
+// keyedRouteWrappers returns, and follows it through the copy-lock guard's
 // graph (TestCopyLockComesBeforeEveryPendingRowAndEvent says how a call is resolved) through
 // everything the handler runs while its commit step is live: its own calls, a go statement's, and
 // the functions it hands a Go method (errgroup, WaitGroup) or anything else, since a handler that
@@ -215,6 +226,8 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 		"api.server.createCommentFor", "api.server.deliverResolvedCommentMention",
 		"api.server.recordCommentDeliveryResolution", "api.server.createStoredMessage",
 		"api.server.recordPendingMessageDelivery", "architecture.Importer.touch",
+		// A write kept beside a held text, behind awaitHeldTarget (keyedRouteWrappers).
+		"api.server.holdRequest",
 	} {
 		if !guard.reaches(function) {
 			t.Errorf("the guard does not follow a keyed handler to %s", function)
@@ -300,6 +313,18 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		}
 		return false
 	})
+	for _, wrapper := range keyedRouteWrappers {
+		walked := false
+		for _, fn := range graph.functions {
+			if strings.HasPrefix(fn.name, "the function literal at ") && strings.HasSuffix(fn.name, " in "+wrapper) {
+				guard.walk(fn)
+				walked = true
+			}
+		}
+		if !walked {
+			t.Fatalf("the guard finds no handler %s returns (keyedRouteWrappers)", wrapper)
+		}
+	}
 	return guard
 }
 

@@ -23,6 +23,11 @@ export function threadReplySendKey(sendKey: MutationKey, commentId: string): Mut
   return [...threadRepliesSendKey(sendKey), commentId];
 }
 
+/** The name of the phone thread view's own composer's send, beneath the tab's `sendKey`. */
+export function phoneThreadComposerKey(sendKey: MutationKey): MutationKey {
+  return [...sendKey, "phone-thread"];
+}
+
 /** The Conversation's full-screen thread view on a phone, and the composer of its own that a
  *  comment's Reply answers in there. */
 export interface PhoneThread {
@@ -102,7 +107,7 @@ export function usePhoneThread({
 }): PhoneThread {
   const store = useHeldSends();
   const [openId, setOpenId] = useState<string>();
-  const composerKey = useMemo<MutationKey>(() => [...sendKey, "phone-thread"], [sendKey]);
+  const composerKey = useMemo(() => phoneThreadComposerKey(sendKey), [sendKey]);
   const [replyTo, setReplyTo] = useHeldReplyTo(composerKey);
   const [parked, setParked] = useState<SentDraft>();
   const dockedIntake = useRef<DraftIntake>(null);

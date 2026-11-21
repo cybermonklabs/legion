@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The ask card has one split button. Its action is **Answer**, or **Ask back** or **Save answer**
+  where those apply. Its chevron opens every other action of the card, each with its key:
+  **Rewrite** (`r`), **Ask back** (`b`), **Hand this question to…** (`a`), **Decline to answer**
+  (`n`) and **Define selected words** (`d`). An approval request offers no Rewrite and no Decline.
+  `b` turns the answer box to a question back and keeps its text, `Ctrl+Enter` sends it as a reply,
+  and `Escape` turns the box back to an answer.
+  The card no longer draws an urgency label, an **Asked of** badge or a Decline button. It says
+  whose turn it is only where the turn is not yours, and who handed the question on, and when. The
+  **Reaches** list moved behind the chevron beside the asking agent's name.
+  The card's keys work while the card, or its Inbox row, is in hand. `?` lists them first, under
+  **Ask card**, and the command bar lists them too.

@@ -79,6 +79,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
 import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
@@ -185,9 +187,15 @@ function rowTarget(agent: Agent): AgentPart {
   return { sessionId: agent.session_id, storedTitle: agent.title };
 }
 
+/** Quote reply on a message of a row's conversation (`threads/quote-reply.ts`): the row's composer
+ *  answers that message, and the selected words' Markdown goes at the end of what it holds.
+ *  Absent while the row takes no message: its session advertises no mode, or a send is out. */
+type AgentQuoteReply = (reply: AgentReply, blocks: readonly string[]) => void;
+
 function AgentExchangeReply({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   read,
   reply,
@@ -195,6 +203,7 @@ function AgentExchangeReply({
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
@@ -224,9 +233,17 @@ function AgentExchangeReply({
       at={reply.created_at}
       author={reply.author}
       body={
-        <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
-        </div>
+        <QuotableText
+          onQuote={
+            onQuoteReply === undefined
+              ? undefined
+              : (blocks) => onQuoteReply(agentReplyTo(agent, read, reply), blocks)
+          }
+        >
+          <div className={textPrimaryOnCanvas}>
+            <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+          </div>
+        </QuotableText>
       }
       delivery={
         (reply.deliveries ?? []).length === 0
@@ -268,12 +285,14 @@ function AgentExchangeReply({
 function AgentTargetedMessage({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   read,
   replyDisabled,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyDisabled: boolean;
@@ -293,6 +312,7 @@ function AgentTargetedMessage({
   });
   const replies = read.replies ?? [];
   const answer = replies.find((reply) => reply.author.kind === "session");
+  const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
   return (
     <TargetedMessageCard
       answeredBy={answer?.author}
@@ -302,14 +322,22 @@ function AgentTargetedMessage({
             <AgentName actor={read.message.author} className="font-semibold" inline />
             <Timestamp at={read.message.created_at} />
           </p>
-          <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
-          </div>
+          <QuotableText
+            onQuote={
+              onQuoteReply === undefined
+                ? undefined
+                : (blocks) => onQuoteReply(agentReplyTo(agent, read, read.message), blocks)
+            }
+          >
+            <div className={textPrimaryOnCanvas}>
+              <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
+            </div>
+          </QuotableText>
         </>
       }
-      canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
-      canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
-      canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      canAside={capabilities?.includes("aside") !== false}
+      canBtw={capabilities?.includes("btw") !== false}
+      canSteer={capabilities?.includes("steer") !== false}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
@@ -325,6 +353,7 @@ function AgentTargetedMessage({
                 agent={agent}
                 key={reply.id}
                 liveAgents={liveAgents}
+                onQuoteReply={onQuoteReply}
                 onReply={onReply}
                 read={read}
                 reply={reply}
@@ -360,12 +389,14 @@ function exchangesAfter(
 function AgentMessageList({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   open,
   replyDisabled,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   /** Whether the row is open. Its list stays mounted while it is collapsed, and marks nothing read
    *  there: a reply is read once it is on screen. */
@@ -422,6 +453,7 @@ function AgentMessageList({
       agent={agent}
       key={read.message.id}
       liveAgents={liveAgents}
+      onQuoteReply={onQuoteReply}
       onReply={onReply}
       read={read}
       replyDisabled={replyDisabled}
@@ -841,6 +873,16 @@ function AgentRowDetails({
       <AgentMessageList
         agent={agent}
         liveAgents={liveAgents}
+        // The composer answers the quoted message, with the quote at the end of what it holds.
+        onQuoteReply={
+          modes.length === 0 || hold.sending
+            ? undefined
+            : (next, blocks) => {
+                if (hold.sendingNow()) return;
+                setReplyTo(next);
+                quoteInto(sendKey, blocks);
+              }
+        }
         onReply={(next) => {
           if (!hold.sendingNow()) setReplyTo(next);
         }}

@@ -16,7 +16,7 @@ import (
 )
 
 // writeAmbiguousID refuses an id written as a prefix two items or more carry, listing them for
-// the caller to choose between or to write more of the id. It is writeAmbiguousTarget's shape -
+// the caller to choose between or to write more of the id. It is ambiguousTargetError's shape -
 // {error, code, candidates} under a 409 - because it is the same kind of answer: the request
 // named something the server cannot narrow to one thing, and the caller picks. The page that
 // lists the candidates is the dashboard's, rendered from this answer; there is no route of its

@@ -22,7 +22,12 @@ export type KeymapScope =
   | "board"
   | "issue"
   | "document"
-  | "agents";
+  | "agents"
+  | "answers"
+  /** The ask card's own keys: pushed above the page's scope while a card, or the Inbox row
+   *  whose card the reading pane shows, is in hand, so `1`–`9`, Enter and the card's letters
+   *  act on the card before the page's keys do (`features/inbox/ask-card-keys.ts`). */
+  | "ask";
 
 export interface KeyBinding {
   /** Stable identifier, unique within the registering component. */
@@ -42,6 +47,11 @@ export interface KeyBinding {
    *  `$mod+Alt+m` runs only while its editor has focus and a selection, never from a comment
    *  composer or any other field. */
   inEditable?: boolean;
+  /** Acts only where no other binding of its scope takes the press: the last step of one key's
+   *  chain, as a dialog's Escape-to-close stands beneath the Escapes of what the dialog holds
+   *  (the Inbox drawer's way back to a row, a card's way out of Ask back). So it is never one of
+   *  two bindings acting at once (`conflicts`). */
+  fallback?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
    *  key, and a binding with several keys may pick what it does by the key pressed (the arrows,
@@ -59,6 +69,16 @@ export interface KeyBindingDescription {
   id: string;
   keys: readonly string[];
   label: string;
+  scope: KeymapScope;
+}
+
+/** Two bindings of one scope that one key press can fire at once (`Keymap.conflicts`): the
+ *  registry runs the one registered first, so the other is dead while both apply. */
+export interface KeyConflict {
+  /** The key sequence both match, as the first binding spells it. */
+  keys: string;
+  first: string;
+  second: string;
   scope: KeymapScope;
 }
 
@@ -265,6 +285,12 @@ export interface Keymap {
    *  mounted twice registers its bindings twice (an issue's hidden Spec beside another of its
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
+  /** Every pair of bindings of one scope whose `when()` holds now, that a press on the focused
+   *  control fires (only `inEditable` ones in a text field), and whose keys one press matches
+   *  alike (`$mod+k` and `Control+k` among them); a `fallback` binding is in none. No page should
+   *  ever hold one: the registry would run the first and the second would act on nothing. A test
+   *  reads it with a page mounted and the focus where a reader puts it. */
+  conflicts(): KeyConflict[];
   handleKeyDown(event: KeyboardEvent): void;
   /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
   pending(): string;
@@ -344,6 +370,8 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
       const scope = stack[depth];
       let exact: Registration | undefined;
+      // A fallback binding of the scope takes the press only where no other binding does.
+      let fallback: Registration | undefined;
       let partial = false;
       for (const registration of registrations) {
         const { binding } = registration;
@@ -359,13 +387,16 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
           }
           if (chord.length > presses.length) {
             partial = true;
+          } else if (binding.fallback === true) {
+            if (fallback === undefined && binding.when?.() !== false) fallback = registration;
           } else if (exact === undefined && binding.when?.() !== false) {
             exact = registration;
           }
         }
       }
-      if (exact !== undefined || partial) {
-        return { exact, partial };
+      const chosen = exact ?? fallback;
+      if (chosen !== undefined || partial) {
+        return { exact: chosen, partial };
       }
     }
     return { exact: undefined, partial: false };
@@ -422,6 +453,39 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         offered.push(...inScope);
       }
       return offered;
+    },
+    conflicts() {
+      // A press goes to the focused control, where a text field passes through only the
+      // bindings that fire in one; a fallback acts only where no other binding does.
+      const editable = isEditableTarget(document.activeElement);
+      const enabled = registrations.filter(
+        ({ binding }) =>
+          binding.fallback !== true &&
+          (!editable || binding.inEditable === true) &&
+          binding.when?.() !== false
+      );
+      const found: KeyConflict[] = [];
+      enabled.forEach((first, index) => {
+        for (const second of enabled.slice(index + 1)) {
+          if (second.scope !== first.scope) continue;
+          first.chords.forEach((chord, at) => {
+            const clash = second.chords.some(
+              (other) =>
+                other.length === chord.length &&
+                other.every((combo, step) => sameCombo(combo, chord[step] as KeyCombo))
+            );
+            if (clash) {
+              found.push({
+                first: first.binding.id,
+                keys: keysOf(first.binding)[at] ?? "",
+                scope: first.scope,
+                second: second.binding.id,
+              });
+            }
+          });
+        }
+      });
+      return found;
     },
     describe() {
       const described = new Map<string, KeyBindingDescription>();

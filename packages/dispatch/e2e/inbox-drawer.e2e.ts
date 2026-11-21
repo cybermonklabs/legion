@@ -13,6 +13,7 @@ import {
   savesEnded,
   storedValues,
   watchShown,
+  watchText,
 } from "./pick-writes";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -145,9 +146,11 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     const shownOnPage = await watchShown(page, `Assignee of ${key}`, "main");
     // The drawer lists the reader's own rows: the issue's row is listed, and draws its priority
     // picker, while the issue's question waits on her - while she is its assignee. Its card names
-    // the person it waits on in its hand-on picker, which shows the assignee picked.
+    // whose turn it is only where the turn is not the reader's own (`AskCard`'s turn line): a
+    // question that waits on bob says "Waiting on bob", and one that waits on alice, read by
+    // alice, names no turn at all.
     const listedInDrawer = await watchShown(page, `Priority of ${key}`, inDrawer);
-    const waitingInDrawer = await watchShown(page, "Hand this question to", inDrawer);
+    const cardInDrawer = await watchText(page, `${inDrawer} [data-testid="ask-${askId}"]`);
     const held = await holdIssuePatches(page, key);
     const detailReads = logReads(page, detailRead(key));
     const inboxReads = logReads(page, inboxRead);
@@ -183,18 +186,20 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
       "every assignee the page showed from the pick on"
     ).toEqual(["alice"]);
     // From the first paint of the issue's row in the drawer on, the row is listed - `(none)` is
-    // the row gone - and waits on alice alone, never on bob.
+    // the row gone - and its question waits on alice alone: its card never says it waits on bob.
     const fromListed = listedInDrawer.values.findIndex((value) => value !== "(none)");
     expect(
       listedInDrawer.values.slice(fromListed),
       `the drawer's row of the issue, from its first paint: ${JSON.stringify(listedInDrawer.values)}`
     ).toEqual(["3"]);
-    const fromDrawn = waitingInDrawer.values.findIndex((value) => value !== "(none)");
+    const fromDrawn = cardInDrawer.values.findIndex((value) => value !== "(none)");
+    expect(fromDrawn, "the drawer drew the card of the issue's question").toBeGreaterThanOrEqual(0);
     expect(
-      waitingInDrawer.values.slice(fromDrawn),
-      `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
-    ).toEqual(["alice"]);
+      cardInDrawer.values.slice(fromDrawn).filter((text) => text.includes("Waiting on bob")),
+      "each text of the drawer's card, from its first paint, that said the question waits on bob"
+    ).toEqual([]);
     expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
+    expect((await getAsk(askId)).ask).toMatchObject({ asked_of: null, waiting_on_person: "alice" });
     await expect(picker).toHaveValue("alice");
     await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
   } finally {

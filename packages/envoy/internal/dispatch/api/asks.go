@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
@@ -182,6 +184,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	create := askCreate{
+		Owner: owner, Kind: kind, Question: input.Question, Options: input.Options,
+		Multiple: multiple, Urgency: urgency, Anchor: input.Anchor,
+	}
+	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
+	if !proceed {
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -189,152 +199,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	defer tx.Rollback(r.Context())
-	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
-	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
+	written, err := s.writeAsk(r.Context(), tx, create, actor, uuid.NewString(), nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The row's created_at is the transaction's now(), its column default, read with its id and
-	// written explicitly, so the ask this route answers and its event carry the time the row will
-	// hold.
-	var ask model.Ask
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &ask.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	rowID := ask.ID
-	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
-	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
-	// new ask is handed to nobody, so the rule is read over its owner alone
-	// (askWaitingOnPerson): the row itself is only queued below.
-	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, owner, nil)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
-	// route queue their writes on the ledger, in the order made, and Commit sends them as one
-	// batch. Write advice is read here, before the first write is queued, so its queries hold no
-	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
-	// a question, so it hears about the asks of this issue a person declined to answer, and the
-	// same question is not put to them again.
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
-		)
-	}
-	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-
-	options, err := encodeJSON(input.Options)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	author, err := encodeJSON(actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var anchorJSON any
-	if anchor != nil {
-		anchorJSON, err = encodeJSON(anchor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	if err := queueExec(ledger, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		asks.QueueFollowAuthor(b, rowID, actor)
-		return nil
-	}); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.IssueKey = owner.IssueKey
-	ask.ArtifactID = owner.ArtifactID
-	ask.Author = actor
-	ask.Question = input.Question
-	ask.Options = input.Options
-	ask.Multiple = multiple
-	ask.Urgency = urgency
-	ask.Anchor = anchor
-	ask.State = "open"
-	ask.Kind = kind
-	if anchor != nil {
-		ask.AnchorArtifact, err = s.loadAskAnchorArtifact(r.Context(), tx, anchor.ArtifactID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
-	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
-	// statements follow the row's insert, queued above, which the rows of a part reference. The
-	// event below names what the question and the parts moved between them.
-	askChanges, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	appended := []*model.Event{}
-	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		appended = append(appended, snapshotEvent)
-	}
-	// The ask's thread_logins are read by its event's insert, after the ask's own insert and the
-	// user_threads trigger it fires.
-	event, err := s.queueLoggedEvent(ledger, owner.event(
-		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
-	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The person read in the read phase above is set only now, after the payload is built:
-	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
-	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
-	ask.WaitingOnPerson = waitingOnPerson
-	appended = append(appended, event)
-	// The review the issue's specification already carries, reported beside the advice above.
-	// It is read here, in the read phase after every write of this ask is queued, so it answers
-	// for the specification as this write leaves it: a version the anchor's snapshot queued of
-	// that document, and a review that version's carry queued, come off the ledger, and the rest
-	// from the table. It is about the document rather than about this session, so it is read for
-	// a person's question as for an agent's, and it rides the advice the write already answers
-	// rather than a read of its own. A question on a project document has no issue and so no
-	// specification, and a write whose advice read failed carries nothing to hang it on; both
-	// report no review.
-	if advice != nil && owner.IssueKey != nil {
-		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
-		)
-	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.OpenedEventID = &event.ID
-	s.publish(r.Context(), appendedEvents(appended...)...)
-	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
+	ask := written.ask
+	s.announceAsk(r.Context(), written)
+	s.reviewPosted(r.Context(), after, ask.ID)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
 	// document's and has no issue state to report, so its advice carries the result alone, as does
@@ -355,7 +227,179 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		trees: trees,
 	})
 	trees.resolve()
-	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), written.advice, suggestions))
+}
+
+// askCreate is an ask a write asks, decoded and checked (createAskFor): what writeAsk writes, and
+// what a held ask stores, so that its post writes the ask the write itself would have written.
+type askCreate struct {
+	Owner    owner              `json:"owner"`
+	Kind     string             `json:"kind"`
+	Question string             `json:"question"`
+	Options  []model.AskOption  `json:"options"`
+	Multiple bool               `json:"multiple"`
+	Urgency  string             `json:"urgency"`
+	Anchor   *model.AnchorInput `json:"anchor,omitempty"`
+}
+
+// askWritten is what writeAsk wrote: the ask, the events its commit publishes, and the advice the
+// write answers with, nil for a held ask's post, which answers nobody.
+type askWritten struct {
+	ask    model.Ask
+	events []model.Event
+	advice *writeAdvice
+}
+
+// writeAsk writes create as actor's ask under id in tx, the ask's rows and its ask.opened event,
+// and commits tx. createAskFor runs it with a fresh id, and a held ask's post with the id its hold
+// reserved (held, whose row its write phase takes first and marks posted in the same
+// transaction). A hold's dry run answers errHeldDryRun, before the commit, with the advice the
+// write would have answered with.
+//
+// Everything up to Commit is the read phase (Docs.Join): the document operations and this write
+// queue their writes on the ledger, in the order made, and Commit sends them as one batch.
+func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, actor model.Actor, id string, held *heldPost) (askWritten, error) {
+	owner := create.Owner
+	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
+	defer ledger.Discard()
+	if err := held.queuePostedOn(ledger); err != nil {
+		return askWritten{}, err
+	}
+	status, err := s.requireOpenOwnerStatus(ctx, tx, owner)
+	if err != nil {
+		return askWritten{}, err
+	}
+	// The row's created_at is the transaction's now(), its column default, read here and written
+	// explicitly, so the ask this write answers and its event carry the time the row will hold.
+	createdAt, err := ledger.Now(ctx)
+	if err != nil {
+		return askWritten{}, err
+	}
+	ask := model.Ask{ID: id, CreatedAt: createdAt}
+	// The person this question reaches, read here in the read phase, under the owner's lock
+	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
+	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
+	// new ask is handed to nobody, so the rule is read over its owner alone
+	// (askWaitingOnPerson): the row itself is only queued below.
+	waitingOnPerson, err := askWaitingOnPerson(ctx, tx, owner, nil)
+	if err != nil {
+		return askWritten{}, err
+	}
+	// Write advice is read here, before the first write is queued, so its queries hold no
+	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
+	// a question, so it hears about the asks of this issue a person declined to answer, and the
+	// same question is not put to them again. A held ask's post answers nobody.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil && held.answers() {
+		advice = s.writeAdvice(
+			ctx, tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{id}}, *status, "ask.opened", true,
+		)
+	}
+	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, create.Anchor, docs.MarkAsk, id, actor)
+	if err != nil {
+		return askWritten{}, err
+	}
+	options, err := encodeJSON(create.Options)
+	if err != nil {
+		return askWritten{}, err
+	}
+	author, err := encodeJSON(actor)
+	if err != nil {
+		return askWritten{}, err
+	}
+	var anchorJSON any
+	if anchor != nil {
+		anchorJSON, err = encodeJSON(anchor)
+		if err != nil {
+			return askWritten{}, err
+		}
+	}
+	if err := queueExec(ledger, `
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, id, owner.IssueKey, owner.ArtifactID, author, create.Question, options, create.Multiple, create.Urgency, anchorJSON, create.Kind, ask.CreatedAt); err != nil {
+		return askWritten{}, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		asks.QueueFollowAuthor(b, id, actor)
+		return nil
+	}); err != nil {
+		return askWritten{}, err
+	}
+	ask.IssueKey = owner.IssueKey
+	ask.ArtifactID = owner.ArtifactID
+	ask.Author = actor
+	ask.Question = create.Question
+	ask.Options = create.Options
+	ask.Multiple = create.Multiple
+	ask.Urgency = create.Urgency
+	ask.Anchor = anchor
+	ask.State = "open"
+	ask.Kind = create.Kind
+	if anchor != nil {
+		ask.AnchorArtifact, err = s.loadAskAnchorArtifact(ctx, tx, anchor.ArtifactID)
+		if err != nil {
+			return askWritten{}, err
+		}
+	}
+	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
+	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
+	// statements follow the row's insert, queued above, which the rows of a part reference. The
+	// event below names what the question and the parts moved between them.
+	askChanges, err := s.queueNewAskReferences(ctx, tx, ledger, ask)
+	if err != nil {
+		return askWritten{}, err
+	}
+	appended := []*model.Event{}
+	if snapshot != nil {
+		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		if err != nil {
+			return askWritten{}, err
+		}
+		appended = append(appended, snapshotEvent)
+	}
+	// The ask's thread_logins are read by its event's insert, after the ask's own insert and the
+	// user_threads trigger it fires.
+	event, err := s.queueLoggedEvent(ledger, owner.event(
+		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
+	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
+	if err != nil {
+		return askWritten{}, err
+	}
+	// The person read in the read phase above is set only now, after the payload is built:
+	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
+	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
+	ask.WaitingOnPerson = waitingOnPerson
+	appended = append(appended, event)
+	// The review the issue's specification already carries, reported beside the advice above.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document, and a review that version's carry queued, come off the ledger, and the rest
+	// from the table. It is about the document rather than about this session, so it is read for
+	// a person's question as for an agent's, and it rides the advice the write already answers
+	// rather than a read of its own. A question on a project document has no issue and so no
+	// specification, and a write whose advice read failed carries nothing to hang it on; both
+	// report no review.
+	if advice != nil && owner.IssueKey != nil {
+		advice.StandingReview = s.standingReviewAdvice(
+			ctx, tx, ledger, routeOpenAsk, *owner.IssueKey,
+		)
+	}
+	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
+		return askWritten{advice: advice}, err
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		return askWritten{}, err
+	}
+	ask.OpenedEventID = &event.ID
+	return askWritten{ask: ask, events: appendedEvents(appended...), advice: advice}, nil
+}
+
+// announceAsk is what follows an ask's commit, a held ask's post as much as the write's own: its
+// events are published and the display trees of its texts stored.
+func (s *server) announceAsk(ctx context.Context, written askWritten) {
+	s.publish(ctx, written.events...)
+	s.storeDisplayTrees(ctx, written.ask.ID, texttrees.AskWrittenTexts(nil, written.ask.Question, written.ask.Options)...)
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
@@ -436,6 +480,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		asThePerson = &person
 	}
+	// The writer the check judges is the person where the credential acts for one, since that is
+	// who an edit of their own ask is recorded as, and the actor otherwise.
+	writer := actor
+	if asThePerson != nil {
+		writer = *asThePerson
+	}
+	s.writingCheck(r, writer, input)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -491,101 +542,18 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		actor = *asThePerson
 	}
 
-	previous := model.NewAskEditPrevious(ask)
-	if input.Question != nil {
-		ask.Question = *input.Question
-	}
-	if input.Options != nil {
-		ask.Options = *input.Options
-	}
-	if input.Multiple != nil {
-		ask.Multiple = *input.Multiple
-	}
+	wording := askWording{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 	if input.Urgency != nil {
-		ask.Urgency = requestedUrgency
+		wording.Urgency = &requestedUrgency
 	}
 	// The bound is on the ask as it will be stored, not on the fields this request named: an
 	// edit that sends options alone is held against the question the row already holds.
-	if err := validateAskWording(ask.Question, ask.Options); err != nil {
+	edited := wording.applyTo(ask)
+	if err := validateAskWording(edited.Question, edited.Options); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The block is the text's source of truth. Write it first, then take the row's values from
-	// what the block parses back to, so trimming can never leave the two disagreeing and the
-	// next settlement has nothing to reconcile. Only the fields this request named are written:
-	// the row holds the question as plain text, so rebuilding the whole body from it would strip
-	// an untouched question's formatting and links and orphan the anchors inside it.
-	if ask.BlockID != nil {
-		blockArtifact, err := blockArtifactOf(ask)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
-		if input.Urgency != nil {
-			edit.Urgency = &requestedUrgency
-		}
-		stored, err := s.deps.Docs.SetAskBlockText(documentCtx, blockArtifact, *ask.BlockID, edit, actor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		ask.Question = stored.Question
-		// The row keeps the options it held where the write left a block no parse reads as a
-		// decision, whose joined options a row must not take for the reason
-		// docs.AskBlockText.SeveralOptionLists holds. It keeps them whichever fields the
-		// request named: a request that sends the question and options together sends those
-		// joined options, since a block holding two lists is refused any others
-		// (docs.SetAskBlockText), so taking the request's own would write that same reading
-		// into the row. The next edit of a block that reads as a decision writes the options
-		// it sends.
-		if stored.SeveralOptionLists {
-			ask.Options = previous.Options
-		} else {
-			ask.Options = stored.Options
-		}
-		ask.Multiple = stored.Multiple
-		ask.Urgency = stored.Urgency
-	}
-	options, err := encodeJSON(ask.Options)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// edited_at is the transaction's now(), which the queued update writes, read here so the ask
-	// this route answers and its event carry it before that update runs.
-	editedAt, err := ledger.Now(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := queueExec(ledger, `
-		update asks
-		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = $6
-		where id = $1
-	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency, editedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
-	// them at the edited_at the queued update writes, which the row above carries already, queue
-	// the index after that update, and name what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
-		"ask.edited",
-		actor,
-		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
-	), "ask", ask.ID)
+	ask, previous, event, err := s.writeAskEdit(documentCtx, tx, ledger, ask, wording, actor, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -600,7 +568,142 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
+	// An agent's edit of an ask a person already sees is reviewed after its save, with no hold
+	// (Decision 8 of INFRA-3231's plan); a decision block whose hold has not ended takes the edit
+	// as its writer's edit of the held text, reviewed again before the block reaches an Inbox. A
+	// person's typed edit is reviewed by nobody, and ends such a hold with the block as they left it.
+	switch {
+	case personTypedWrite(r):
+		if ask.BlockID != nil && s.deps.Store != nil {
+			if ended, err := s.endHeldDecisionBlockForPerson(r.Context(), s.deps.Store.Pool, ask.ID); err != nil {
+				slog.Warn("dispatch: end a decision block's hold for a person's edit", "ask", ask.ID, "error", err)
+			} else {
+				ended()
+			}
+		}
+	case !s.editedHeldDecisionBlock(r.Context(), ask):
+		kind, text, subject := askReviewSubject(ask)
+		s.reviewAfterSave(r, actor, input, kind, ask.ID, text, subject)
+	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// askWording is a rewording of an ask: the fields an edit names, nil for each it leaves as it
+// is. Urgency is already normalized (normalizeAskUrgency). QuestionMarkdown is whether Question is
+// markdown, which a decision block's rewrite alone writes (rewriteDecisionBlock,
+// docs.AskBlockEdit.QuestionMarkdown); every other edit's question is plain text.
+type askWording struct {
+	Question         *string
+	Options          *[]model.AskOption
+	Multiple         *bool
+	Urgency          *string
+	QuestionMarkdown bool
+}
+
+// applyTo is ask with the wording's named fields in place of its own.
+func (wording askWording) applyTo(ask model.Ask) model.Ask {
+	if wording.Question != nil {
+		ask.Question = *wording.Question
+	}
+	if wording.Options != nil {
+		ask.Options = *wording.Options
+	}
+	if wording.Multiple != nil {
+		ask.Multiple = *wording.Multiple
+	}
+	if wording.Urgency != nil {
+		ask.Urgency = *wording.Urgency
+	}
+	return ask
+}
+
+// writeAskEdit writes wording into the open ask as actor's edit, in tx, whose document context
+// is ctx and whose writes queue on ledger (docs.API.Join): the edit route's one path, which a
+// rewrite takes too (ask_rewrite.go, rewriteDecisionBlock). The caller has taken the ask's
+// owner's lock, read the ask under it and checked the wording's bounds. A block ask's `:::ask`
+// block is written first and the row takes what the block parses back to, so the document's next
+// version holds the wording; the row, the ask's references and its parts follow, and an
+// ask.edited holding the previous wording is appended, each queued on the ledger in that order.
+// rewrite, where set, is the rewrite the edit is: the event carries it and is quiet, so it
+// reaches no session as a card (INFRA-3552's R3). It answers the ask as edited, its previous
+// wording and the event, which is the appended one once the caller's Commit has run the write
+// phase, and which the caller publishes then.
+func (s *server) writeAskEdit(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, wording askWording, actor model.Actor, rewrite *model.AskRewriteEdit) (model.Ask, model.AskEditPrevious, *model.Event, error) {
+	previous := model.NewAskEditPrevious(ask)
+	ask = wording.applyTo(ask)
+	// The block is the text's source of truth. Write it first, then take the row's values from
+	// what the block parses back to, so trimming can never leave the two disagreeing and the
+	// next settlement has nothing to reconcile. Only the fields this edit named are written:
+	// the row holds the question as plain text, so rebuilding the whole body from it would strip
+	// an untouched question's formatting and links and orphan the anchors inside it.
+	if ask.BlockID != nil {
+		blockArtifact, err := blockArtifactOf(ask)
+		if err != nil {
+			return model.Ask{}, previous, nil, err
+		}
+		edit := docs.AskBlockEdit{
+			Question: wording.Question, Options: wording.Options, Multiple: wording.Multiple, Urgency: wording.Urgency,
+			QuestionMarkdown: wording.QuestionMarkdown,
+		}
+		stored, err := s.deps.Docs.SetAskBlockText(ctx, blockArtifact, *ask.BlockID, edit, actor)
+		if err != nil {
+			return model.Ask{}, previous, nil, err
+		}
+		ask.Question = stored.Question
+		// The row keeps the options it held where the write left a block no parse reads as a
+		// decision, whose joined options a row must not take for the reason
+		// docs.AskBlockText.SeveralOptionLists holds. It keeps them whichever fields the
+		// edit named: an edit that sends the question and options together sends those
+		// joined options, since a block holding two lists is refused any others
+		// (docs.SetAskBlockText), so taking the edit's own would write that same reading
+		// into the row. The next edit of a block that reads as a decision writes the options
+		// it sends.
+		if stored.SeveralOptionLists {
+			ask.Options = previous.Options
+		} else {
+			ask.Options = stored.Options
+		}
+		ask.Multiple = stored.Multiple
+		ask.Urgency = stored.Urgency
+	}
+	options, err := encodeJSON(ask.Options)
+	if err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	// edited_at is the transaction's now(), which the queued update writes, read here so the ask
+	// this edit answers and its event carry it before that update runs.
+	editedAt, err := ledger.Now(ctx)
+	if err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	if err := queueExec(ledger, `
+		update asks
+		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = $6
+		where id = $1
+	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency, editedAt); err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	ask.EditedAt = timestampPtr(&editedAt)
+	askChanges, err := s.queueEditedReferences(ctx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
+	if err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
+	// them at the edited_at the queued update writes, which the row above carries already, queue
+	// the index after that update, and name what they moved beside the rest.
+	askChanges, err = s.queueAskParts(ctx, ledger, ask, nil, editedAt, askChanges)
+	if err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	payload := model.NewAskEditEventPayload(ask, previous, actor, askChanges)
+	if rewrite != nil {
+		payload.Rewrite, payload.Quiet = rewrite, true
+	}
+	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event("ask.edited", actor, payload), "ask", ask.ID)
+	if err != nil {
+		return model.Ask{}, previous, nil, err
+	}
+	return ask, previous, event, nil
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the
@@ -1091,6 +1194,11 @@ var (
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
+	// listIssueAsksQueryWaiting is the issue detail's open asks (its "Waiting on you"), which leave
+	// out a decision block the reviewer holds from people's Inboxes (askNotHeld); the issue's own
+	// ask list, its conversation, shows it.
+	listIssueAsksQueryWaiting = `select ` + askReadColumns + ` ` + askReadFrom + `
+		where a.issue_key = $1 and a.state = 'open' and ` + askNotHeld + ` order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
@@ -1102,10 +1210,13 @@ var (
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",
-// "open", or "answered"), each with its opening event id, its block document, the part ids of its
-// options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
+// "open", "answered", or "waiting": the open asks less a decision block the reviewer holds from
+// people's Inboxes), each with its opening event id, its block document, the part ids of its
+// options and answer with its part revision (attachAskPartIDs), its rewrite (attachAskRewrites)
+// and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
-// no entry. The issue detail's `open_asks` and the issue's own ask list read through it.
+// no entry. The issue detail's `open_asks` reads the waiting asks through it, and the issue's
+// own ask list the rest.
 func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
 	var query, value string
 	switch {
@@ -1114,6 +1225,8 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 		switch state {
 		case "open":
 			query = listIssueAsksQueryOpen
+		case "waiting":
+			query = listIssueAsksQueryWaiting
 		case "answered":
 			query = listIssueAsksQueryAnswered
 		default:
@@ -1141,7 +1254,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := loadAskDetails(ctx, q, askReadPointers(asks)); err != nil {
+	if err := loadAskReadDetails(ctx, q, askReadPointers(asks)); err != nil {
 		return nil, nil, err
 	}
 	return asks, replies, nil

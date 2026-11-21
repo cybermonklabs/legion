@@ -69,7 +69,7 @@ test("project filters stay collapsed until needed and margin asks use the compac
   const marginCard = needsYouCards(page).getByTestId(`ask-${scene.ask}`);
   await expect(marginCard.getByRole("radio", { name: "Ship" })).toBeVisible();
   await expect(marginCard.getByLabel("Your answer")).toBeHidden();
-  await marginCard.getByText("Add a note or answer in your own words", { exact: true }).click();
+  await marginCard.getByText("Add a note", { exact: true }).click();
   await expect(marginCard.getByLabel("Your answer")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("polish-margin-1280.png"),

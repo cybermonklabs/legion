@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The reviewer also reads documents, edits and decision blocks.
+  `DISPATCH_REVIEWER_DOCUMENTS` (`off` or `after`, default `off`) reviews an agent's document
+  version after it saves. No document is held.
+  An agent's edit of an ask, a comment or an issue's title is reviewed after it saves when that
+  kind's setting is `after` or `hold`. The findings go to the writer as advice.
+  `DISPATCH_REVIEWER_DECISION_BLOCKS` (`off`, `after` or `hold`, default `off`) covers a decision
+  block an agent writes in a document. With `hold`, the block shows in its document but stays out
+  of every Inbox, the open-ask counts, the notices and the issue's "Waiting on you" until the
+  review ends. Then the block shows everywhere, with a new quiet event `ask.reviewed`. A rewrite
+  the review applies goes into a new version of the document first.

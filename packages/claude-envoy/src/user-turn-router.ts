@@ -113,13 +113,16 @@ export interface UserTurnRouterOptions {
   readonly dispatch: (ms: number) => DispatchClient | undefined
   /** Answers a delivery on Dispatch: the reply the person reads, or the error that stopped it.
    *  `followUp` is the ask that Dispatch post this answer although the attempt is already
-   *  answered, which every answer to a delivery after the first carries (`post`). */
+   *  answered, which every answer to a delivery after the first carries (`post`). `generated`
+   *  marks text this plugin wrote itself rather than the agent, which goes out with the
+   *  generated-text header (`postDeliveryReply`). */
   readonly reply: (
     delivery: DispatchDelivery,
     result: {
       readonly body?: string
       readonly error?: string
       readonly followUp?: boolean
+      readonly generated?: boolean
     },
   ) => Promise<void>
   /**
@@ -315,7 +318,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    */
   const post = async (
     delivery: DispatchDelivery,
-    result: { readonly body?: string; readonly error?: string },
+    result: { readonly body?: string; readonly error?: string; readonly generated?: boolean },
   ): Promise<void> => {
     const key = handledAttemptKey(delivery.id, delivery.attempt)
     const followUp = answered.has(key)
@@ -327,10 +330,15 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. */
+  /**
+   * Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. Every
+   * text answered here is this plugin's own, never words the agent wrote: a command's output, a
+   * pick's confirmation, the waiting reply, and the error for a message this host could not run
+   * (`typedInputReply`). So each is posted as generated.
+   */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
-    await post(delivery, { body }).catch((error: unknown) => {
+    await post(delivery, { body, generated: true }).catch((error: unknown) => {
       warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
     })
   }
@@ -420,17 +428,19 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  answer never asks for a follow-up: a BTW is answered one time, and the rule that a frame
    *  this session is handed twice posts no second answer is what Dispatch leans on for it
    *  (`replyAfterAnswer`, `packages/envoy/internal/dispatch/api/message_delivery.go`), since
-   *  nothing here guards a redelivered BTW and the fork would answer it afresh. */
+   *  nothing here guards a redelivered BTW and the fork would answer it afresh. The fork's
+   *  answer is the agent's words and goes out unmarked; the errors this host answers with itself
+   *  are posted as generated. */
   const runBtw = (delivery: DispatchDelivery): void => {
     void (async () => {
       if (!session.connected()) {
-        await reply(delivery, { error: "this session has no link to Claude Code" })
+        await reply(delivery, { error: "this session has no link to Claude Code", generated: true })
         return
       }
       try {
         await reply(delivery, { body: await session.fork(delivery.body) })
       } catch (error) {
-        await reply(delivery, { error: messageFor(error) })
+        await reply(delivery, { error: messageFor(error), generated: true })
       }
     })().catch((error: unknown) => {
       warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)

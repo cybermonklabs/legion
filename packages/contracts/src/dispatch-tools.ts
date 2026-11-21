@@ -2360,6 +2360,82 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_held",
+    example: { held: "01234567-0000-4000-8000-000000000001" },
+    description:
+      "Read a text of yours that Dispatch's reviewer holds: an ask, an issue, a comment, a message " +
+      "or a reply you wrote to a person, which no person sees until it posts. It prints the text as it " +
+      "will post, what the reviewer found in it, the reviewer's rewrite, and how long you have to act. " +
+      "Then change it with dispatch held-edit, or post it as you wrote it with dispatch held-post.",
+    arguments: (z) => ({
+      held: z
+        .string()
+        .describe("The held text's id: the id its write answered (an issue's key, else a uuid)."),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_held_edit",
+    example: {
+      held: "01234567-0000-4000-8000-000000000001",
+      body: "The test fails on its first call.",
+    },
+    description:
+      "Change a text of yours that Dispatch's reviewer holds, before it posts. An ask takes its " +
+      "question and its options, an issue its title and its spec, and a comment, a message or a " +
+      "reply its body. The reviewer reads the changed text again: a text it finds nothing in posts, " +
+      "and its findings come to you again otherwise.",
+    arguments: (z) => ({
+      held: z
+        .string()
+        .describe("The held text's id: the id its write answered (an issue's key, else a uuid)."),
+      question: z.string().optional().describe("An ask's new question."),
+      options: z
+        .array(
+          z.object({
+            label: z.string().describe("Selectable option label."),
+            description: z.string().optional().describe("What this option causes."),
+          }),
+          { max: 8 }
+        )
+        .optional()
+        .describe(
+          `${ASK_OPTIONS_CONTRACT} An ask's new options; up to 8 objects { label, description? }.`
+        ),
+      title: z.string({ max: ISSUE_TITLE_MAX }).optional().describe("An issue's new title."),
+      spec: z.string().optional().describe("An issue's new spec."),
+      body: z.string().optional().describe("A comment's, a message's or a reply's new body."),
+    }),
+    validation: {
+      check: (value) => {
+        const input = value as Readonly<Record<string, unknown>>;
+        return ["question", "options", "title", "spec", "body"].some(
+          (field) => input[field] !== undefined
+        );
+      },
+      message: "A held text's edit requires at least one field besides held.",
+    },
+    strict: true,
+  },
+  {
+    name: "dispatch_held_post",
+    example: {
+      held: "01234567-0000-4000-8000-000000000001",
+      reason: "The reader asked for the status line in these words.",
+    },
+    description:
+      "Post a text of yours that Dispatch's reviewer holds, as you wrote it, over what the " +
+      "reviewer found. Say in the reason why the text is right for its reader as written; Dispatch " +
+      "records the reason. Only the session that wrote the text posts it.",
+    arguments: (z) => ({
+      held: z
+        .string()
+        .describe("The held text's id: the id its write answered (an issue's key, else a uuid)."),
+      reason: z.string({ min: 1 }).describe("Why the text is right for its reader as written."),
+    }),
+    strict: true,
+  },
+  {
     name: "dispatch_limits",
     example: {},
     description:

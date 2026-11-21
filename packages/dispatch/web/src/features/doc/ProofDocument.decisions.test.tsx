@@ -142,13 +142,13 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
     const section = editor.root.querySelector("section[data-dispatch-ask-block]");
     if (section === null) throw new Error("the ask block shell was not mounted");
     const block = within(section as HTMLElement);
-    // The block hosts the shared ask card for its indexed row: it names the asker and reads
-    // the thread the Inbox card would.
-    const hosted = await block.findByRole("article", { name: "Urgency: High" });
-    expect(within(hosted).getByText("Architect for CORE-1")).toBeDefined();
+    // The block hosts the shared ask card for its indexed row: it names the asker, in the
+    // block's own header, and reads the thread the Inbox card would.
+    await block.findByRole("article", { name: "Urgency: High" });
+    expect(await block.findByText("Architect for CORE-1")).toBeDefined();
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     await user.click(await block.findByRole("radio", { name: "Ship Release it" }));
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
+    await user.click(block.getByRole("button", { name: "Add a note" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Go.");
     const getArtifactText = spyOn(api, "getArtifactText");
@@ -237,8 +237,12 @@ test("after Ask back on a decision block, the hosted card's turn label follows t
     const section = editor.root.querySelector("section[data-dispatch-ask-block]");
     if (section === null) throw new Error("the ask block shell was not mounted");
     const block = within(section as HTMLElement);
-    expect((await block.findByTestId("turn-ask-1")).textContent).toBe("Waiting on you");
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
+    // The reader's own question names no turn: it is waiting on them wherever it is drawn.
+    await block.findByRole("radio", { name: "Ship Release it" });
+    expect(block.queryByTestId("turn-ask-1")).toBeNull();
+    // Ask back is the card's menu's; it opens the answer box, which the action then sends.
+    await user.click(block.getByRole("button", { name: "More actions" }));
+    await user.click(await within(document.body).findByRole("menuitem", { name: "Ask back" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Ship where?");
     await user.click(block.getByRole("button", { name: "Ask back" }));

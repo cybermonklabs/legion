@@ -220,6 +220,28 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
+# The stand-in model, read before the sweep below: FAKE_MODEL_PORT names e2e/fake-model.ts, which
+# the harness starts beside the fake Envoy (e2e/harness-listeners.ts), and the server takes it as
+# DISPATCH_TEST_MODEL_URL under the DISPATCH_TEST_HOOKS=1 below, so every model group a run sets
+# calls it, over plain HTTP and with no credential. The one group set here is Rewrite and
+# Define's (INFRA-3231's R7), which a person chooses to use and which answers 503 with no group:
+# its calls name the deployment stand-in-rewrite-define, which the rows of e2e/ask-card-*.e2e.ts
+# script the stand-in by (e2e/ask-card.ts), and nothing calls it unless a row presses Rewrite or
+# Define. The reviewer and the records job stay unset, so no text is held or read in the
+# background; e2e/ask-card-reviewer.e2e.ts starts a server of its own with the reviewer's
+# (e2e/reviewer-server.ts). A caller that starts no stand-in (an acceptance script, the
+# skill-scenarios rig) sets no FAKE_MODEL_PORT, and its server has neither the stand-in nor the
+# group, so it calls no model.
+model_env=()
+if [ -n "${FAKE_MODEL_PORT:-}" ]; then
+  model_env=(
+    DISPATCH_TEST_MODEL_URL="http://127.0.0.1:$FAKE_MODEL_PORT"
+    DISPATCH_REWRITE_DEFINE_MODEL_KIND=anthropic
+    DISPATCH_REWRITE_DEFINE_MODEL_DEPLOYMENT=stand-in-rewrite-define
+    DISPATCH_REWRITE_DEFINE_MODEL_TOKENS_PER_MINUTE=1000000
+  )
+fi
+
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
 # (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
@@ -339,6 +361,36 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The caller's own server settings, read before the sweep below. DISPATCH_E2E_PASS_THROUGH names,
+# separated by spaces, DISPATCH_* settings of this environment that the server gets with the
+# caller's values, after the ones this script sets, so the caller's value of a setting this
+# script also sets wins. The measurement harness of INFRA-3231 (`writing-check harness local`,
+# packages/envoy/cmd/writing-check/harness) runs the server this way with its reviewer settings
+# and a real model group, and e2e/reviewer-server.ts with the reviewer's settings and the
+# stand-in. A list that names any setting also drops the stand-in model and Rewrite and Define's
+# group above, unless the list names DISPATCH_TEST_MODEL_URL itself, since the server refuses a
+# model group's endpoint beside the stand-in. A name that is not a DISPATCH_ setting, that is a
+# DISPATCH_E2E_ switch of this harness, or that this environment does not set is refused. Unset
+# or empty, the server gets none of the caller's DISPATCH_* settings, as before.
+pass_through_env=()
+if [ -n "${DISPATCH_E2E_PASS_THROUGH:-}" ]; then
+  for name in $DISPATCH_E2E_PASS_THROUGH; do
+    if [[ ! "$name" =~ ^DISPATCH_[A-Z0-9_]+$ ]] || [[ "$name" == DISPATCH_E2E_* ]]; then
+      echo "run-server.sh: DISPATCH_E2E_PASS_THROUGH names '$name', which is not a DISPATCH_ server setting" >&2
+      exit 2
+    fi
+    if [ -z "${!name+set}" ]; then
+      echo "run-server.sh: DISPATCH_E2E_PASS_THROUGH names $name, which this environment does not set" >&2
+      exit 2
+    fi
+    pass_through_env+=("$name=${!name}")
+  done
+  case " $DISPATCH_E2E_PASS_THROUGH " in
+    *" DISPATCH_TEST_MODEL_URL "*) ;;
+    *) model_env=() ;;
+  esac
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -350,9 +402,12 @@ done
 # throwaway App credentials: a fresh RSA key per run (nothing secret to
 # commit) beside a fake client id. Identity is the production cookie: the server
 # mints it for the email a test names at its dev sign-in route
-# (DISPATCH_DEV_SIGNIN=1) with a signing key it generates for this process
-# alone, or in two-process mode derives from the shared key above, so no
-# signing key is passed and nothing reaches the caller's persistent data dir;
+# (DISPATCH_DEV_SIGNIN=1) with a signing key it derives from the shared key
+# above: the stack's own in a pooled run (e2e/harness-pool.ts), which a second
+# server on the stack's database holds too (e2e/reviewer-server.ts), and the
+# run's in two-process mode. Without one it generates a key for this process
+# alone. Either way no signing key is passed and nothing reaches the caller's
+# persistent data dir;
 # under DISPATCH_E2E_SIGNIN=oidc it mints it at /auth/callback, signed with the
 # run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every
@@ -384,6 +439,7 @@ exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
+  "${model_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \
@@ -411,4 +467,5 @@ exec "${listen[@]}" env \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
+  "${pass_through_env[@]}" \
   "$server_bin"

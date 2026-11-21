@@ -354,8 +354,9 @@ The tarball is self-contained: it ships `dist/envoy.js` — bundling every depen
 host packages (`@legion/pi-shared`, `@legion/contracts` and `@legion/envoy-client` are inlined) —
 `dist/THIRD_PARTY_NOTICES`, and the eleven skills it ships: the eight every session with Dispatch
 reads, `agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`,
-`envoy`, `outside-message` and `plain-words`; `approval-review`, which only a session judging an
-approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
+`envoy`, `outside-message` and `plain-words` (the rules agents write by: ce-noslop's tests, pattern
+catalog and terminology, and its table of five phrases to stop); `approval-review`, which only
+a session judging an approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
 `thermonuclear-deep-review`, which ships here so one copy of each rubric reaches both harnesses.
 All eleven are staged from the repository's `skills/` at `dist/skills`. The manifest declares
 `omp.skills: ["dist/skills"]` alongside `omp.extensions`:
@@ -651,7 +652,10 @@ gated write only when it consumes one, so a write sent any other way is refused 
   the form to send, or, for a file that changed after the review, says to send the call again in a
   later message). In `warn` mode the CLI first records the write in the session's ledger, refuses
   it when the ledger cannot take that line, and then posts it with a `dispatch: warning:` line.
-  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A record that cannot
+  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. The written rules
+  run before this check: a write they refuse keeps its marker for the call sent again, and in
+  `block` mode a write with no marker meets their refusal first, when they are on, and AskGate's
+  refusal, with its `unmarked` entry, at the call after. A record that cannot
   be read, or that names a store that is gone, is a refusal. A session no live record names needs
   no marker: a terminal, CI, Claude Code, a pod without pi-envoy, a session with no Dispatch and
   one with `askgate.enabled: false`.

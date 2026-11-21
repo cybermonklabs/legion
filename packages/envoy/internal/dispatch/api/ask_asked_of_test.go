@@ -518,10 +518,14 @@ func TestAskAskedOf(t *testing.T) {
 	// lists carry them. Each event type below is produced by the flow its name describes.
 	t.Run("the ask read and every ask event the census lists carry the field", func(t *testing.T) {
 		var documentService *docs.Service
+		// The reviewer holds a decision block an agent writes, whose post ends the hold with
+		// ask.reviewed; the stand-in finds nothing in this file's block, so it posts once reviewed.
 		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 			documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
 			t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 			return documentService
+		}, func(input *DepsInput) {
+			input.Reviewer = testReviewer(ReviewerConfig{DecisionBlocks: ReviewHold, Model: reviewerModel(reviewStandIn(t).URL)})
 		})
 		issue := createInteractionIssue(t, handler, "EVENTS", "Every ask event", "The quick brown fox")
 
@@ -579,6 +583,21 @@ func TestAskAskedOf(t *testing.T) {
 		if handedBack := requestApproval("Adds the rollback budget."); handedBack.Code != http.StatusCreated {
 			t.Fatalf("hand the approval request back: status=%d body=%s", handedBack.Code, handedBack.Body.String())
 		}
+
+		// ask.reviewed, on a decision block the session writes in a new document of the issue: its
+		// settlement opens the ask and the reviewer holds it, finds nothing, and posts it, which
+		// ends the hold.
+		upload := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+			"name": "decide.md", "actor": sessionActor(),
+			"content": "# Exporter\n\n:::ask{urgency=\"med\"}\nShip the exporter today?\n\n- Ship it: Release it today.\n- Wait: Hold it a week.\n:::\n",
+		})
+		if upload.Code != http.StatusCreated {
+			t.Fatalf("write the document with a decision block: status=%d body=%s", upload.Code, upload.Body.String())
+		}
+		documentService.SettleNow(decodeBody[artifactUploadResponse](t, upload).Artifact.ID)
+		pollUntil(t, 20*time.Second, "the reviewed decision block's ask.reviewed", func() bool {
+			return countRows(t, database, `select count(*) from events where type = 'ask.reviewed'`) > 0
+		})
 
 		// GET /api/v1/asks/{id} carries the three fields, with the person the hand-on wrote.
 		read := readBlockAsk(t, handler, anchored.ID)

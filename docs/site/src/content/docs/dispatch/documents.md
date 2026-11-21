@@ -49,15 +49,24 @@ sheet from the bottom.
 
 ![A comment thread in the margin, next to its highlighted text](/legion/media/dispatch/margin-thread.png)
 
-To comment, select some text. A bar appears with three actions:
+To comment, select some text. A bar appears with these actions:
 
 - **Comment** opens a comment on the selection. `Ctrl+Alt+M` (`⌘+⌥+M` on a Mac) does the same
   from the keyboard.
 - **Suggest** proposes replacement text for the selection.
 - **Ask** opens a question on the selection, with an urgency, options, and **Allow multiple**.
+- **Define** shows what the selected words mean in this document, beside them, read from what
+  Dispatch holds on its issue or project, with links to where it read it. It changes nothing and
+  nobody else sees it. `Ctrl+Alt+Y` (`⌘+⌥+Y`) does the same while you edit, and `d` while you read.
 
-You can switch between the three in the composer before you send. The selection is highlighted in
-the document, and choosing a highlight opens its thread in the margin.
+You can switch between the first three in the composer before you send. The selection is
+highlighted in the document, and choosing a highlight opens its thread in the margin.
+
+Define is on every document of an issue or a project: in the editor, in a view you cannot edit and
+in a past version. It answers only where the deployment gives it a model. Words in a decision
+block get the question's definition, with the asking agent's answer beside it when it comes within
+a minute ([Define](/legion/dispatch/inbox-and-asks/#define)). A view you cannot edit offers no
+Suggest and no Ask, and a file, an image and an agent conversation's upload offer no Define.
 
 A thread is a card with its replies in order. In a thread you can:
 
@@ -85,6 +94,12 @@ A decision block is a question written into the document itself, at the end of t
 about. It shows as a card with its urgency and the word **Decision**, and its options as rows you
 can pick. It is an ask like any other: it appears in your Inbox too, and an answer or **Ask back**
 made in either place shows in both.
+
+Where the deployment has Dispatch's reviewer hold decision blocks, an agent's new block shows in
+its document at once but reaches no Inbox and no count until the reviewer has read it. A rewrite
+the reviewer applies is a new version of the document, and the block wears a **Rewritten** badge
+that shows the agent's own wording ([Rewrite](/legion/dispatch/inbox-and-asks/#rewrite)). A
+person's **Rewrite** of a decision block is a new version of the document too.
 
 To edit a decision's options, click into its question. The option list appears for that block,
 and folds away again when you click elsewhere.

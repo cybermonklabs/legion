@@ -59,7 +59,9 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
+import { RewriteBadge } from "../inbox/RewriteBadge";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -124,6 +126,10 @@ export function IssueHeader({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
+  // An issue the reviewer rewrote as its agent opened it: the agent's title, while its badge
+  // shows the original (`original`, the agent's title and spec).
+  const original = originalWording(issue.rewrite, useOriginalShown(issue.key));
+  const originalTitle = original === undefined ? undefined : (original.title ?? issue.title);
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);
   // Focus the route input once when editing opens: the trigger button unmounts, so without this
@@ -455,27 +461,51 @@ export function IssueHeader({
             ) : (
               <h1
                 className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
+                  isClosed || originalTitle !== undefined ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
-                  if (!isClosed) {
+                  if (!isClosed && originalTitle === undefined) {
                     setEditingTitle(true);
                   }
                 }}
                 onFocus={() => {
-                  if (!isClosed) {
+                  if (!isClosed && originalTitle === undefined) {
                     setEditingTitle(true);
                   }
                 }}
                 onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
+                  if (
+                    !isClosed &&
+                    originalTitle === undefined &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
                     event.preventDefault();
                     setEditingTitle(true);
                   }
                 }}
                 tabIndex={isClosed ? -1 : 0}
               >
-                {drafts.title}
+                {originalTitle ?? drafts.title}
+                {/* The reviewer rewrote the title and the spec as the agent opened the issue: the
+                    badge, after the title's last word, shows both as the agent wrote them, in
+                    place (the spec in its tab, `IssuePage`), and the title is not edited while
+                    they show. A press, a focus or a key on the badge is the badge's, not the
+                    title's, which would open the title's editor. */}
+                {issue.rewrite?.state !== "rewritten" ? null : (
+                  // biome-ignore lint/a11y/noStaticElementInteractions: keeps the badge button's own press, focus and keys from reaching the title, which would open its editor; the button is the control
+                  <span
+                    className="ml-2 inline-flex translate-y-[-3px] align-middle"
+                    onClick={(event) => event.stopPropagation()}
+                    onFocus={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    <RewriteBadge
+                      onToggle={() => toggleOriginal(issue.key)}
+                      rewrite={issue.rewrite}
+                      showingOriginal={original !== undefined}
+                    />
+                  </span>
+                )}
               </h1>
             )}
             <PinButton

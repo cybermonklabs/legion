@@ -673,8 +673,9 @@ test("a mention of a session the listener could not read is refused with the lis
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("failed");
+    // Dispatch names the listener's read by its route's pattern, never by the session it read.
     await expect(deliveries).toContainText(
-      "envoy listener: GET /v1/registry/planner returned 503: envoy: the message bus did not answer: nats: no responders available"
+      "envoy listener: GET /v1/registry/{session_id} returned 503: envoy: the message bus did not answer: nats: no responders available"
     );
     await expect(deliveries).not.toContainText("no live session");
     expect(await getSentMessages()).toEqual([]);
