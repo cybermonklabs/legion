@@ -116,7 +116,7 @@ import {
 } from "@legion/pi-shared/jj-attribution"
 import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
-import { processStarted } from "../src/codex/codex-session-record"
+import { procStarted } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
 import { parseHookArguments } from "./hook-arguments"
@@ -195,8 +195,8 @@ const RefreshOutcome = z.object({
  *  Unset, as Claude Code runs it, the hook writes nothing and records nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
 /** The refresher this hook process started, for `ANSWERS_TIMING_FILE`: its pid, and when it
- *  started (`processStarted`), which a later process given the same pid does not share; null when
- *  it started none. */
+ *  started (`procStarted`), which a later process given the same pid does not share, or null where
+ *  /proc does not give it at once; null when it started none. */
 let startedRefresher: { readonly pid: number; readonly started: string | null } | null = null
 /** Each wait the answers hook armed, for `ANSWERS_TIMING_FILE`: a look at the refresher's outcome,
  *  the Dispatch read, or the read left in flight after printing; when it armed it (ms after the
@@ -236,10 +236,13 @@ function writeAnswersTiming(timing: Record<string, number | null>): void {
 }
 
 /** Names the refresher `pid` in `ANSWERS_TIMING_FILE` at once, when that is set: right after its
- *  spawn, while it can be no other process's pid. */
+ *  spawn, while it can be no other process's pid. Its start comes from `/proc/<pid>/stat` alone (a
+ *  1 to 3 ms read), never `ps`, which can take seconds (procps `ps -p` reads every process: 0.76 to
+ *  0.98 s unloaded on the dev box, up to 8.2 s under load), time no part of the hook's deadline
+ *  is for. With no /proc the start is null, and the test tells the refresher's end by its pid. */
 function nameRefresher(pid: number): void {
   if (process.env[ANSWERS_TIMING_FILE] === undefined) return
-  startedRefresher = { pid, started: processStarted(pid) ?? null }
+  startedRefresher = { pid, started: procStarted(pid) ?? null }
   writeAnswersTiming({})
 }
 

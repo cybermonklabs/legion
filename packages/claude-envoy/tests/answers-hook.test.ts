@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeAll, test as bunTest, expect } from "bun:test"
 import { AsyncLocalStorage } from "node:async_hooks"
-import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -76,8 +75,8 @@ interface Row {
 }
 
 /** The row whose body the code running now belongs to: a body that goes on after its row ended
- *  still finds its own row, not the one running then. */
-const rowContext = new AsyncLocalStorage<Row>()
+ *  still finds its own row, not the one running then. The afterEach's cleanup runs with none. */
+const rowContext = new AsyncLocalStorage<Row | undefined>()
 /** The row that started last, for its afterEach. */
 let lastRow: Row | undefined
 
@@ -136,7 +135,20 @@ afterEach(async () => {
   for (const hook of current.hooks) hook.process.kill("SIGKILL")
   await Promise.all(current.hooks.map((hook) => hook.settled))
   await current.settled
-  for (const step of current.steps.splice(0).reverse()) await step()
+  // Outside any row, so a cleanup step's waits go on whichever row's context reached here.
+  // Every step runs, a stand-in Dispatch's stop included, even when one before it failed; the
+  // first failure is the afterEach's.
+  let failure: { readonly error: unknown } | undefined
+  await rowContext.run(undefined, async () => {
+    for (const step of current.steps.splice(0).reverse()) {
+      try {
+        await step()
+      } catch (error) {
+        failure ??= { error }
+      }
+    }
+  })
+  if (failure !== undefined) throw failure.error
 }, 60_000)
 
 type Route =
@@ -286,8 +298,8 @@ async function textOf(file: string): Promise<string | undefined> {
   })
 }
 
-/** A process a case knows of: its pid, and when it started (`processState`), which a later
- *  process given the same pid does not share. */
+/** A process a case knows of: its pid, and when it started (`procState`), which a later process
+ *  given the same pid does not share; null on a host with no /proc. */
 interface StartedProcess {
   readonly pid: number
   readonly started: string | null
@@ -296,50 +308,47 @@ interface StartedProcess {
 /** Whether this host has /proc, which every read of a process here prefers. */
 const PROC = existsSync("/proc/self/stat")
 
-/** Process `pid`'s state and when it started, as the hook's `processStarted` reads the start:
- *  the 3rd and 22nd fields of `/proc/<pid>/stat` (each counted after the command in parentheses,
- *  which may itself hold spaces), or where there is no /proc, `ps -o stat=,lstart= -p <pid>` in
- *  the hook's fixed environment, the start prefixed `ps:`. Undefined once no process has that
- *  pid; a `ps` that does not answer fails the row rather than read as a process gone. One
- *  process's file, or `ps` for one pid, never a scan (docs/testing.md, "A test that looks for a
- *  process it started"). */
-function processState(pid: number): { state: string; started: string } | undefined {
-  if (PROC) {
-    let stat: string
-    try {
-      stat = readFileSync(`/proc/${pid}/stat`, "utf8")
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === "ENOENT" || code === "ESRCH") return undefined
-      throw error
-    }
-    // Field 3, the state, onwards: field n is at n - 3.
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
-    return { state: fields[0] as string, started: fields[19] as string }
+/** Process `pid`'s state and when it started, the 3rd and 22nd fields of `/proc/<pid>/stat`
+ *  (each counted after the command in parentheses, which may itself hold spaces), as
+ *  `procStarted` reads the start; undefined once no process has that pid. One process's file,
+ *  never a scan (docs/testing.md, "A test that looks for a process it started"). */
+function procState(pid: number): { state: string; started: string } | undefined {
+  let stat: string
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT" || code === "ESRCH") return undefined
+    throw error
   }
-  const ps = spawnSync("ps", ["-o", "stat=,lstart=", "-p", String(pid)], {
-    encoding: "utf8",
-    env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
-    timeout: 10_000,
-  })
-  if (ps.error !== undefined || ps.signal !== null) {
-    throw new Error(`ps did not answer for process ${pid}: ${ps.error?.message ?? ps.signal}`)
-  }
-  // `ps` prints nothing, and exits 1, for a pid no process has.
-  const line = /^(\S+)\s+(.+)$/.exec(ps.stdout.trim())
-  if (line === null) return undefined
-  return { state: line[1] as string, started: `ps:${line[2]}` }
+  // Field 3, the state, onwards: field n is at n - 3.
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+  return { state: fields[0] as string, started: fields[19] as string }
 }
 
-/** Whether `known` has ended: no process has its pid, or that process is a zombie, or it is
- *  another process given the pid since (another start). Read this way rather than by
+/** Whether `known` has ended. With /proc: no process has its pid, or that process is a zombie,
+ *  or it is another process given the pid since (another start); read this way rather than by
  *  `kill(pid, 0)`, which answers for a zombie and for that other process. A process a kill reached
  *  still reads as running until the kernel has run its exit: in a gVisor sandbox a SIGKILLed
  *  subshell read S, R or D for 1 to 29 ms after the kill, and gVisor shows neither the exit flag
- *  nor the pending signal in /proc. So each read here is a wait (`processEnded`), never one look. */
+ *  nor the pending signal in /proc. So each read here is a wait (`processEnded`), never one look.
+ *  With no /proc (macOS): `kill(pid, 0)` failing with ESRCH, at once. `ps` would read the start
+ *  there, but procps `ps -p` reads every process (0.76 to 0.98 s unloaded on the dev box, up to
+ *  8.2 s on a loaded CPU pair), and rows read processes while a token command waits on their
+ *  gate, which envoy-config ends at 10 s, so `ps`'s time would decide them. A zombie not yet reaped,
+ *  or a pid given to another process within the row, makes such a wait longer, never shorter. */
 function ended(known: StartedProcess): boolean {
+  if (!PROC) {
+    try {
+      process.kill(known.pid, 0)
+      return false
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true
+      throw error
+    }
+  }
   if (known.started === null) throw new Error(`no start was read for process ${known.pid}`)
-  const now = processState(known.pid)
+  const now = procState(known.pid)
   return (
     now === undefined ||
     now.state.startsWith("Z") ||
@@ -357,16 +366,29 @@ async function processEnded(known: StartedProcess): Promise<void> {
   }
 }
 
+/** The start the test read from /proc for a refresher whose hook named it with none (its own
+ *  read of /proc missed the refresher), by the hook's timing file: read once, as soon as the case
+ *  first looks, and null when the refresher had already ended by then. */
+const startsRead = new Map<string, string | null>()
+
 /** The refreshers the hooks of `owner` named in their timing files. A hook names its refresher as
  *  soon as it started it, so one ended before it exited still told; one with no file was ended
- *  before it started any. */
+ *  before it started any. With /proc, one named with no start gets the start the test reads for
+ *  it, and one that had ended before that read is left out. */
 async function namedRefreshers(owner: Row = currentRow()): Promise<StartedProcess[]> {
   const named: StartedProcess[] = []
   for (const file of owner.timings) {
     const text = await textOf(file)
     if (text === undefined) continue
     const { refresher }: Pick<HookTiming, "refresher"> = JSON.parse(text)
-    if (refresher !== null) named.push(refresher)
+    if (refresher === null) continue
+    if (refresher.started !== null || !PROC) {
+      named.push(refresher)
+      continue
+    }
+    if (!startsRead.has(file)) startsRead.set(file, procState(refresher.pid)?.started ?? null)
+    const started = startsRead.get(file) ?? null
+    if (started !== null) named.push({ pid: refresher.pid, started })
   }
   return named
 }
@@ -411,7 +433,7 @@ function leftBehind(file: string, home: string): string {
 async function leftBehindStarted(file: string): Promise<StartedProcess> {
   await fileWritten(file)
   const pid = Number(await readFile(file, "utf8"))
-  return { pid, started: processState(pid)?.started ?? null }
+  return { pid, started: PROC ? (procState(pid)?.started ?? null) : null }
 }
 
 /** A `--preload` for a hook that writes `signal` once its process has started, then holds the
