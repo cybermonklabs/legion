@@ -446,6 +446,34 @@ func TestAFreshDaemonAtTheConsumerCapDialsNoRetiredName(t *testing.T) {
 	}
 }
 
+// A failed read is labelled with its own step on the ERROR line, not as a create: a boot whose dial
+// of the current's connection fails names op connect and the current, and nothing is created.
+func TestAFailedDialIsLabelledConnect(t *testing.T) {
+	pool := migratedPool(t)
+	cutover(t, pool, consumernames.CutoverDone)
+	js, stream, _ := freshJetStream(t)
+	spec := freshSpec(t, &lockedBuffer{}, js)
+	openIntake(t, js, pool, spec).Close()
+	dispatch := dispatchConsumerName(spec.Project)
+	current := currentName(t, pool, dispatch)
+
+	logs := &lockedBuffer{}
+	refused := freshSpec(t, logs, js)
+	refused.Connect = func(context.Context, string) (*nats.Conn, error) {
+		return nil, errors.New("the auth service refused the connection")
+	}
+	if _, err := OpenConsumers(context.Background(), js, pool, refused); err == nil {
+		t.Fatal("OpenConsumers with every dial refused opened")
+	}
+	line := oneErrorLine(t, logs, dispatch, operationConnect)
+	if line["physical"] != current {
+		t.Fatalf("the ERROR line names %v, want the current %s whose dial failed", line["physical"], current)
+	}
+	if names := consumerNames(t, stream); len(names) != 3 {
+		t.Fatalf("the stream holds %v, want the first boot's three consumers and nothing created", names)
+	}
+}
+
 // The fixed-name spy (`TestNoConsumerNameIsCreatedTwice`): across a project's first boot, a second
 // boot, a repositories change, a consumer deleted outside the daemon and the boot that makes it
 // again, and two daemons booting at once on one database and stream, the server is sent no create

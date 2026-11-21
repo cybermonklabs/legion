@@ -41,9 +41,26 @@ import (
 // nameNotSettledLine is the message of the ERROR line a failed name step writes (durableNames.failed).
 const nameNotSettledLine = "intake: a durable consumer's physical name could not be settled"
 
-// operationUpdate is the daemon's own step beside consumernames' operations: the update of a
-// selected consumer's configuration at each boot and each repositories change.
-const operationUpdate consumernames.Operation = "update"
+// operationUpdate, operationConnect and operationInfo are the daemon's own steps beside
+// consumernames' operations: the update of a selected consumer's configuration at each boot and
+// each repositories change, the dial of one fresh name's connection (durableNames.on), and a read
+// of one fresh name's info on it (durableServer.Info).
+const (
+	operationUpdate  consumernames.Operation = "update"
+	operationConnect consumernames.Operation = "connect"
+	operationInfo    consumernames.Operation = "info"
+)
+
+// readFailure is a dial or an info read of one physical name that failed, which the ERROR line
+// names by its own step (durableNames.failed) rather than by the call it failed under.
+type readFailure struct {
+	op       consumernames.Operation
+	physical string
+	err      error
+}
+
+func (r *readFailure) Error() string { return r.err.Error() }
+func (r *readFailure) Unwrap() error { return r.err }
 
 // errCheckpointWithoutRecord is a logical name whose checkpoint the daemon keeps and whose
 // selection record is missing (missingRecord).
@@ -170,12 +187,12 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	name := GenerationConnection(physical)
 	conn, err := d.connect(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("connect %s: %w", name, err)
+		return nil, &readFailure{op: operationConnect, physical: physical, err: fmt.Errorf("connect %s: %w", name, err)}
 	}
 	js, err := jetstream.New(conn)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("open JetStream on %s: %w", name, err)
+		return nil, &readFailure{op: operationConnect, physical: physical, err: fmt.Errorf("open JetStream on %s: %w", name, err)}
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -277,17 +294,20 @@ func (d *durableNames) info(ctx context.Context, logical string) (*jetstream.Con
 	return sel.Info, nil
 }
 
-// failed writes the ERROR line of a failed name step on logical and returns err. The step and the
-// physical name are the protocol's own when err names them (consumernames.StepError); a refusal
-// before anything was read is the admission's; otherwise they are call's and the name sel's record
-// names.
+// failed writes the ERROR line of a failed name step on logical and returns err. A failed dial or
+// info read names its own step and name (readFailure); otherwise the step and the physical name are
+// the protocol's own when err names them (consumernames.StepError); a refusal before anything was
+// read is the admission's; otherwise they are call's and the name sel's record names.
 func (d *durableNames) failed(logical string, sel consumernames.Selection, call consumernames.Operation, err error) error {
 	operation, physical := call, sel.Record.Current
 	if physical == "" && sel.Record.Op != nil {
 		physical = sel.Record.Op.Candidate
 	}
+	var read *readFailure
 	var step *consumernames.StepError
 	switch {
+	case errors.As(err, &read):
+		operation, physical = read.op, read.physical
 	case errors.As(err, &step):
 		operation, physical = step.Operation, step.Physical
 	case errors.Is(err, consumernames.ErrNoSafeStart):
@@ -417,7 +437,7 @@ func (s durableServer) Info(ctx context.Context, name string) (*jetstream.Consum
 		return nil, fmt.Errorf("%w: %s", consumernames.ErrNotFound, name)
 	}
 	if err != nil {
-		return nil, err
+		return nil, &readFailure{op: operationInfo, physical: name, err: err}
 	}
 	return consumer.CachedInfo(), nil
 }
