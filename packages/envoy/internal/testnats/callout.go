@@ -2,9 +2,10 @@ package testnats
 
 import (
 	"fmt"
-	"github.com/nats-io/nkeys"
 	"strings"
 	"testing"
+
+	"github.com/nats-io/nkeys"
 )
 
 // CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
@@ -157,8 +158,10 @@ func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
 	bound := boundOf(t)
 	for {
-		conn, connectErr := ConnectSeed(t, uri, seed, bound.dial()...)
+		options, retire := bound.dial()
+		conn, connectErr := ConnectSeed(t, uri, seed, options...)
 		if connectErr == nil {
+			retire()
 			conn.Close()
 			return
 		}
