@@ -76,11 +76,14 @@
 // Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner. Its
 // read of the event writers (oldestEventWriterSQL) first reads pg_stat_activity, one row per
 // backend of the instance, for the transaction ids this database's backends hold; when none is
-// older than the observer, which is the case whenever no write of this database has been open
-// since before the observation, that is the whole read. Only when one is older does it read
-// pg_locks, once: that copies the whole instance's lock table, each lock-manager partition's lock
-// held in shared mode while it does, so its cost grows with every lock held on the instance. A
-// Horizon observes only when a caller asks it to (Safe, Await): the relay on each dispatch_events
+// older than the observer, that is the whole read. Any transaction of this database that took
+// its transaction id before the observer's and is still open makes the read go on to pg_locks,
+// whether it writes the event log or not: a write to any table, a row lock, an open session that
+// wrote. That second read copies the whole instance's lock table, each lock-manager partition's
+// lock held in shared mode while it does, so its cost grows with every lock held on the instance:
+// on PostgreSQL 18.6, with 5,000 locks held in another database, the whole observation took 2 to
+// 6.4 ms with that read and under 0.9 ms without it (pull request #4913). A Horizon observes only
+// when a caller asks it to (Safe, Await): the relay on each dispatch_events
 // notification and, while a gap is open, at once (GapUnproven) or every 10 to 250 ms (GapHeld);
 // a references read since a cursor, the suggestion outcome sweep and the keyword fill on their
 // own reads. It runs no timer of its own, so a process whose readers are idle observes nothing,

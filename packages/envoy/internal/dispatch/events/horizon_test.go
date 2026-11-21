@@ -607,8 +607,16 @@ func TestAnObservationReadsTheEventWritersAfterItsMark(t *testing.T) {
 		answered <- answer{safe, err}
 	}()
 	deadline := time.Now().Add(10 * time.Second)
+	// The wait is for this database's waiter on the gate's own key: a waiter on an advisory lock
+	// in another database of the shared server would end it before the observation reached the
+	// gate, and the test would then pass with the two reads swapped.
 	for waiting := false; !waiting; {
-		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_locks where locktype = 'advisory' and not granted)`).Scan(&waiting); err != nil {
+		if err := database.Pool.QueryRow(ctx, `
+			select exists (select 1 from pg_locks
+				where locktype = 'advisory' and not granted
+					and database = (select oid from pg_database where datname = current_database())
+					and classid = 0 and objid = $1 and objsubid = 1)
+		`, pausedObservationLock).Scan(&waiting); err != nil {
 			t.Fatalf("read whether the observation waits on the gate: %v", err)
 		}
 		if !waiting && time.Now().After(deadline) {
