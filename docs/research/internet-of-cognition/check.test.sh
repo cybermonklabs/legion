@@ -4416,6 +4416,169 @@ case_result "a merged-in step whose proof does not grep for a sentence the step 
     "landed-proof-holds: the proof the page of the merged-in step .One definitions record. writes does not hold the sentence .Where the diff the round reads touches no runtime code, each row reads .not run \\(<the whole change" \
     "$(fixture_run "$dir" --landed)"
 
+# 149. A row whose own curl of GitHub's REST API was answered with a server error is no verdict
+# on the deliverable, whatever the gate's read of it again gets (the architect's rule of round
+# 45, on item 1 of review 6003758567: the status the row got decides, and the gate's read
+# again only where the row's record holds none). At b1b431ca the gate decided a curl that
+# exited 22 by its own read of the URL again alone, so a row answered 503 whose read again was
+# answered 200 ended exit 1, 'FAIL replay-command: f-github-read ran its command and a read
+# inside it failed: ... exited 22, and GitHub answered 200', though the row's output held
+# curl's line 'curl: (22) The requested URL returned error: 503'. curl's function now keeps
+# that line in the row's record. The case plants case 119's row with a curl of the case's own
+# first on PATH that answers the row's read with a gateway's page, that line on stderr and
+# exit 22, and the gate's read with -o, as case 122's does, with a JSON body and 200, and
+# runs --replay, which must end exit 2, cannot run, naming the row's 503 as a server error
+# and the 200 beside it, with no FAIL.
+SERVER_CASE="$WORK/github-row-server-error"
+mkdir -p "$SERVER_CASE/bin"
+cat >"$SERVER_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+if [ -n "$body" ]; then
+    printf '[{"id": 5854791039, "body": "planted by case 149"}]\n' >"$body"
+    [ -z "$dump" ] || printf 'HTTP/2 200\r\ncontent-type: application/json; charset=utf-8\r\n\r\n' >"$dump"
+    [ -z "$format" ] || printf '200'
+    exit 0
+fi
+printf '<html><body><h1>503 Service Unavailable</h1></body></html>\n'
+printf 'curl: (22) The requested URL returned error: 503\n' >&2
+exit 22
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|" "$SERVER_CASE/bin/curl"
+chmod +x "$SERVER_CASE/bin/curl"
+dir="$(fresh github-row-server-error)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+ending_result "a row whose own curl of GitHub's REST API was answered 503 cannot run, exit 2, naming the 503 as a server error and the 200 the gate's read again got, and fails no assertion" 2 \
+    "^check\\.sh cannot run --replay now: GitHub gave no answer that judges f-github-read's read of its REST API, .*exited 22, since GitHub answered 503, a server error, and when the gate read it again GitHub answered 200\$" \
+    "$(PATH="$SERVER_CASE/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+
+# 150. A read inside a script a row runs is a row's read too (the architect's rule of round 45,
+# on item 2 of review 6003758567). tc-rng-2 runs evidence/concord-build-run.sh with sh, and the
+# script reads GitHub's REST API twice under set -e, each read a curl piped into jq and grep.
+# At b1b431ca a read that got no answer left the grep nothing to match, so the script exited 1,
+# the row's record held only that sh exited 1, and source_answer, which read no line of sh,
+# ended the run exit 1, 'FAIL replay-command: f-concord-script ran its command and a read inside
+# it failed: 'sh .../concord-build-run.sh' exited 1'. The script now writes into the row's
+# record the line curl's function writes for a row's own curl, and ends with curl's status.
+# The case copies the script into the fixture's evidence and plants a row that runs tc-rng-2's
+# command, with stubs of the case's own for what the script runs before its reads (uv, the
+# venv's python and the files of the clone it reads with sed) and a curl first on PATH that
+# cannot connect to api.github.com, and runs --replay, which must end exit 2, cannot run,
+# naming the row and the curl's exit 7, with no FAIL; and the script run by hand under the
+# same stubs must end with curl's 7, not 1.
+SCRIPT_CASE="$WORK/script-read"
+SCRIPT_CLONE="$SCRIPT_CASE/clones/cognition-protocols"
+mkdir -p "$SCRIPT_CASE/bin" "$SCRIPT_CASE/work/venv/bin" "$SCRIPT_CLONE/packages/ioc-concord/src/ioc_concord" "$SCRIPT_CLONE/protocols/concord/spec"
+: >"$SCRIPT_CLONE/packages/ioc-concord/src/ioc_concord/wire.py"
+: >"$SCRIPT_CLONE/packages/ioc-concord/src/ioc_concord/engine.py"
+: >"$SCRIPT_CLONE/protocols/concord/spec/CONCORD-SPEC.md"
+: >"$SCRIPT_CASE/work/reviews.jsonl"
+printf '#!/bin/sh\nexit 0\n' >"$SCRIPT_CASE/bin/uv"
+printf '#!/bin/sh\n[ "$1" != - ] || cat >/dev/null\nexit 0\n' >"$SCRIPT_CASE/work/venv/bin/python"
+cat >"$SCRIPT_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*)
+    printf 'curl: (7) Failed to connect to api.github.com port 443 after 0 ms: Could not connect to server\n' >&2
+    exit 7
+    ;;
+esac
+exec REAL_CURL "$@"
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|" "$SCRIPT_CASE/bin/curl"
+chmod +x "$SCRIPT_CASE/bin/uv" "$SCRIPT_CASE/bin/curl" "$SCRIPT_CASE/work/venv/bin/python"
+jq -c 'select(.id == "tc-rng-2") | {id: "f-concord-script", requirement: "r7", source: "the case", kind: "behaviour", claim: "The library accepts a raw score without complaint.", mark: "verified", evidence: {surface: "cli"}, command, expect, output: "", note: "planted by case 150"}' "$HERE/claims.jsonl" >"$SCRIPT_CASE/row"
+[ -s "$SCRIPT_CASE/row" ] && grep -qF 'sh \"$IOC_EVID/concord-build-run.sh\"' "$SCRIPT_CASE/row" || {
+    printf 'FAIL tc-rng-2 is no row of claims.jsonl that runs evidence/concord-build-run.sh with sh, so case 150 has no command to plant\n'
+    exit 1
+}
+dir="$(fresh script-read)"
+SCRIPT_EVID="$dir/repo/docs/research/internet-of-cognition/evidence"
+cp "$HERE/evidence/concord-build-run.sh" "$SCRIPT_EVID/"
+cat "$SCRIPT_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(IOC_EVID="$SCRIPT_EVID" IOC_TC_WORK="$SCRIPT_CASE/work" IOC_CLONES="$SCRIPT_CASE/clones" PATH="$SCRIPT_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+script_status="$(cd "$SCRIPT_CASE/work" && IOC_CLONES="$SCRIPT_CASE/clones" PATH="$SCRIPT_CASE/bin:$PATH" sh "$SCRIPT_EVID/concord-build-run.sh" >/dev/null 2>&1; printf '%s' "$?")"
+script_case="a read of GitHub inside the script tc-rng-2 runs that reaches no GitHub cannot run, exit 2, naming the row and the curl's exit, fails no assertion, and the script ends with curl's status"
+script_want="^check\\.sh cannot run --replay now: GitHub gave no answer that judges f-concord-script's read of its REST API, so the row's failure is no verdict on the deliverable: the row's curl of https://api\\.github\\.com/repos/cybermonklabs/legion/pulls/3522/reviews exited 7 with no HTTP answer"
+if ! case_read "$script_case" "$out" "$script_want"; then
+    :
+elif [ "$RUN_STATUS" = 2 ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$script_want" && [ "$script_status" = 7 ]; then
+    case_passed "$script_case"
+else
+    case_failed "$script_case" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')last line: $RUN_LINE; the script run by hand exited $script_status"
+fi
+
+# 151. A row whose curl of the Dispatch API hands its body to python3 is read by the curl's
+# record, whichever of the two wrote its line first (the Minor of review 6003758567 at
+# check.sh:2392). Three rows of claims.jsonl, c-types-2, c-handoff-feed-1 and c-terms-3, pipe a
+# curl of DISPATCH_URL into python3. At b1b431ca source_answer took the first line of the
+# record that names a source, and took python3's for a read of Dispatch whenever the row's
+# command holds DISPATCH_URL, so a python3 that failed on the body before curl exited decided
+# the row by its own output, which names no urllib error: a gateway's 502 ended exit 1, 'FAIL
+# replay-command: ... python3 ... exited 1'. The case plants a row that pipes a curl of the
+# Dispatch API, at an address of the case's own, into a python3 that reads the first line of
+# the body as JSON, and puts first on PATH a curl of the case's own that answers the row's
+# read with the first line of a gateway's page, waits until python3's line stands in the
+# row's record, prints curl's line of a 502 and exits 22, and answers the gate's read with -o
+# with that page and 502. --replay must end exit 2, cannot run, naming the row, Dispatch and
+# the 502 as a server error, with no FAIL.
+PIPE_CASE="$WORK/dispatch-pipe"
+PIPE_URL=http://dispatch.case151.invalid
+mkdir -p "$PIPE_CASE/bin"
+cat >"$PIPE_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" DISPATCH_ADDRESS/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+if [ -n "$body" ]; then
+    printf '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>\r\n' >"$body"
+    [ -z "$dump" ] || printf 'HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/html\r\n\r\n' >"$dump"
+    [ -z "$format" ] || printf '502'
+    exit 0
+fi
+printf '<html>\r\n'
+tries=0
+while [ "$tries" -lt 100 ] && ! grep -q "$(printf '\t')python3 " "${__IOC_FAILED:-/nonexistent-ioc}" 2>/dev/null; do
+    sleep 0.1
+    tries=$((tries + 1))
+done
+printf 'curl: (22) The requested URL returned error: 502\n' >&2
+exit 22
+STUB
+sed -i -e "s|REAL_CURL|'$(command -v curl)'|" -e "s|DISPATCH_ADDRESS|$PIPE_URL|" "$PIPE_CASE/bin/curl"
+chmod +x "$PIPE_CASE/bin/curl"
+cat >"$PIPE_CASE/command" <<'CMD'
+curl -sS --fail-with-body -H @"$IOC_DISPATCH_HEADER" "$DISPATCH_URL/api/v1/references?to=dispatch://INFRA-460/artifact/glossary-md" | python3 -c 'import json,sys;print(json.loads(sys.stdin.readline())["edges"][0]["node"]["ref"])'
+CMD
+jq -cn --arg c "$(cat "$PIPE_CASE/command")" '{id: "f-dispatch-pipe-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The glossary is cited by a node.", mark: "verified", evidence: {surface: "cli"}, command: $c, expect: {contains: "dispatch://"}, output: "", note: "planted by case 151"}' >"$PIPE_CASE/row"
+dir="$(fresh dispatch-pipe)"
+cat "$PIPE_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+ending_result "a row whose curl of the Dispatch API, answered 502, feeds a python3 that failed first is read by the curl: it cannot run, exit 2, naming the row, Dispatch and the 502 as a server error, and fails no assertion" 2 \
+    "^check\\.sh cannot run --replay now: Dispatch gave no answer that judges f-dispatch-pipe-read's read of its API, .*exited 22, since Dispatch answered 502, a server error\$" \
+    "$(DISPATCH_URL="$PIPE_URL" PATH="$PIPE_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

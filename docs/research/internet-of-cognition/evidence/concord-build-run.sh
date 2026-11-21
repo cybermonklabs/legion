@@ -12,6 +12,32 @@ CP=$IOC_CLONES/cognition-protocols
 PY=./venv/bin/python
 sec() { printf '\n\n########## %s\n' "$1"; }
 
+# The two reads of GitHub's REST API below go through this function, which runs curl as
+# written. When curl fails, it writes into the record __IOC_FAILED names, which check.sh
+# sets on the row that runs this script, the line check.sh's function of curl writes for a
+# row's own curl: curl's status, no declared status, curl and its arguments, and curl's own
+# line, "curl: (22) The requested URL returned error: 503", so check.sh reads the read as the
+# row's (its source_answer); run by hand, it writes none. It keeps curl's status in
+# CURL_FAILED, and curl_end ends the script with it after the pipeline, never with the 1 of
+# the grep after curl.
+CURL_FAILED=$(mktemp "${TMPDIR:-/tmp}/concord-build-run.XXXXXX")
+trap 'rm -f -- "$CURL_FAILED" "$CURL_FAILED.err"' EXIT
+curl() {
+    curl_status=0
+    command curl "$@" 2>"$CURL_FAILED.err" || curl_status=$?
+    cat -- "$CURL_FAILED.err" >&2
+    [ "$curl_status" -ne 0 ] || return 0
+    printf '%s\n' "$curl_status" >"$CURL_FAILED"
+    [ -z "${__IOC_FAILED:-}" ] ||
+        printf '%s\t-\t%s\t%s\n' "$curl_status" "$(printf '%s ' curl "$@" | tr '\n\t' '  ')" \
+            "$(sed -n '/^curl: (/{s/[[:cntrl:]]/ /g;p;q;}' "$CURL_FAILED.err" | cut -c1-240 | grep . || echo -)" >>"$__IOC_FAILED"
+    return "$curl_status"
+}
+curl_end() {
+    [ ! -s "$CURL_FAILED" ] || exit "$(cat -- "$CURL_FAILED")"
+    exit 1
+}
+
 printf '%s\n' "CONCORD library run, INFRA-3134 r7. Every command below is shown before its output."
 printf '%s\n' "IOC_CLONES=$IOC_CLONES"
 printf '%s\n' "cognition-protocols commit: $(git -C "$CP" rev-parse HEAD)"
@@ -98,11 +124,11 @@ printf '%s\n' ''
 jq -r 'select(.body|test("[Tt]hermonuclear pair at")) | [(.pr|tostring),(.id|tostring),.commit,.submitted] as $m | (.body|split("\n")[]) | select(test("[Tt]hermonuclear pair at")) | ($m|join("\t")) + "\t" + .' reviews.jsonl \
  | awk -F'\t' '{ l=$5; d=""; q=""; if (match(l, /[Dd]eep[- ]review[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); d=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (match(l, /[Cc]ode[- ]quality[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); q=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (d != "" && q != "" && d != q) printf "%s\t%s\t%s\t%s\tdeep=%s\tquality=%s\n", $1,$2,substr($3,1,12),$4,d,q }'
 
-sec '$ curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -n "thermonuclear pair at this head"'
-curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -n 'thermonuclear pair at this head'
+sec '$ curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -n "thermonuclear pair at this head"'
+curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -n 'thermonuclear pair at this head' || curl_end
 
-sec '$ curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -o "dispatch results --issue INFRA-[0-9]*"'
-curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -o 'dispatch results --issue INFRA-[0-9]*'
+sec '$ curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -o "dispatch results --issue INFRA-[0-9]*"'
+curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -o 'dispatch results --issue INFRA-[0-9]*' || curl_end
 
 sec '$ does our review record hold a satisfaction rating or an anchor pair for either grader?'
 printf '%s\n' '$ jq -r '"'"'select(.body|test("[Tt]hermonuclear pair at")) | .body'"'"' reviews.jsonl | grep -nE "raw_reject|raw_ideal|satisfaction[_ ]threshold|0-100 scale|normali[sz]ed score"'

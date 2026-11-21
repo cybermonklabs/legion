@@ -140,22 +140,27 @@
 # "document ... not found" for a reference fails citation-dispatch, for the record of a
 # step that is not landed fails landed-proof, and for the judgement or a record under
 # check leaves the text empty, which every assertion over it then fails by its floor or
-# its committed rows. The live-read rule covers the gate's own reads. A row's
-# own failed read of a live source, GitHub or Dispatch, is read by one rule of its own
-# (source_answer), since only an answer from the source judges the deliverable: a curl of
-# GitHub's REST API or of the Dispatch API, which the gate reads once more itself at the URL
-# and with the header file the curl's record names; a dispatch command, by the first line it
+# its committed rows. The live-read rule covers the gate's own reads. A row's own failed
+# read of a live source, GitHub or Dispatch, is read by one rule of its own (source_answer),
+# since only an answer from the source judges the deliverable: a curl of GitHub's REST API or
+# of the Dispatch API, by the status the row got, curl's own error line, which the curl's
+# record holds, and by one read of the gate's own of the URL, with the header file the record
+# names, for the source's message, and for the status where the record holds none; a curl
+# inside a script a row runs, as evidence/concord-build-run.sh's two reads of GitHub are, by
+# the same record, which the script leaves; a dispatch command, by the first line it
 # printed; and a python3 of a row whose command reads DISPATCH_URL, by the last urllib or
-# transport error its output holds. A read that got no answer, a server error (5xx), a rate limit, and an
-# answer about the reader's credential (a 401, or a 403 that names authentication, a
-# permission or a token rather than a rate limit) are no verdict on the deliverable: the row
-# prints no FAIL and the mode cannot run, of the kind source, naming the row, the source, the
-# read and the line that shows it, exit 2, or exit 1 after an earlier FAIL, by the precedence
-# above ("The GitHub tokens stand on no command line" below). Any other answer, such as a 404
-# or Dispatch's NOT_FOUND, is the source's answer about the record, and the row fails, naming
-# it; so does a row's failed read of anything else. The one live read that is no input is the
-# report of each published page's live address, which reports an address that does not
-# answer rather than stopping, as the Verification document asks of it.
+# transport error its output holds, where the record holds no curl of a source beside it. A
+# read that got no answer, a server error (5xx) or a rate limit the row got, whatever a later
+# read answers, and an answer about the reader's credential (a 401, or a 403 that names
+# authentication, a permission or a token rather than a rate limit, or that a read again
+# answers below 400) are no verdict on the deliverable: the row prints no FAIL and the mode
+# cannot run, of the kind source, naming the row, the source, the read and the line that
+# shows it, exit 2, or exit 1 after an earlier FAIL, by the precedence above ("The GitHub
+# tokens stand on no command line" below). Any other answer, such as a 404 or Dispatch's
+# NOT_FOUND, is the source's answer about the record, and the row fails, naming it; so does a
+# row's failed read of anything else. The one live read that is no input is the report of
+# each published page's live address, which reports an address that does not answer rather
+# than stopping, as the Verification document asks of it.
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
@@ -410,29 +415,35 @@
 # hour, and a replay from a clean clone runs longer: at 882b668c one ran 3723 s, and the five
 # rows that sent the file written at its start failed together after the hour. The pod's
 # helper answers from a bundle its daemon refreshes in place, so a file written again
-# carries a live token. A row whose curl of GitHub's REST API fails is read once more by the
-# gate itself, at the URL and with the header file that curl's record names (source_answer),
-# since the row's own pipeline reads GitHub's answer, and its failure line names the status
-# and the first line of GitHub's message. Only an answer about the record judges the row:
-# a refusal for GitHub's rate limit, an answer about the reader's credential, as a 401 for a
-# token that expired, and a server error (5xx) are no verdict on the deliverable, and each
-# ends the mode, cannot run, of the kind source. So does an outage, a read that got no HTTP
+# carries a live token. A row whose curl of GitHub's REST API fails is read by the status
+# its curl got, curl's own line, "curl: (22) The requested URL returned error: 503", which
+# the curl's record holds, and once more by the gate itself, at the URL and with the header
+# file that record names (source_answer), since the row's own pipeline reads GitHub's
+# answer, so that its failure line names the first line of GitHub's message. Only an answer
+# about the record judges the row: a refusal for GitHub's rate limit, an answer about the
+# reader's credential, as a 401 for a token that expired, and a server error (5xx) the row
+# got are no verdict on the deliverable, whatever the gate's read again gets, and each ends
+# the mode, cannot run, of the kind source. So does an outage, a read that got no HTTP
 # answer: a row's curl that exited with any status but 22, the one --fail-with-body gives for
 # GitHub's HTTP error, such as a transport error (6, 7, 28, 35, 52 or 56), whatever the
-# gate's read again gets, and a read of the gate's own that gets no HTTP status at all. Its
-# line names the row, the URL, the status the row's curl exited with and what the gate's read
-# got, and no FAIL is printed. A row's curl of the Dispatch API runs with --fail-with-body
-# too, sending the Dispatch header file, and is read again by the same rule. No line the gate
-# prints and no output a row records holds a token: a failure names a header file by its
-# path at most. The files go with the scratch, which the EXIT trap removes however the run
-# ends, and check.test.sh's case 117 holds both: a replay of the rows that send them, with a
-# token of the case's own, prints the token nowhere and leaves no header file behind. Case
-# 118 holds that a row meets the files written again, case 119 that a failed read of
-# GitHub's REST API names GitHub's answer, and that a 401 and a refusal for its rate limit
-# cannot run, case 121 that a read that reaches no GitHub cannot run, case 122 that a row's
-# read that got no HTTP answer cannot run though the gate's read again is answered, and case
-# 125 that a read again answered 502 cannot run. Cases 123 and 124 hold the same rule for a
-# row's read of Dispatch: through the dispatch command, by curl and through python3's urllib.
+# gate's read again gets, and a read of the gate's own that gets no HTTP status where the
+# row's record holds none. Its line names the row, the URL, the status the row's curl exited
+# with and what the gate's read got, and no FAIL is printed. A row's curl of the Dispatch
+# API runs with --fail-with-body too, sending the Dispatch header file, and is read by the
+# same rule. No line the gate prints and no output a row records holds a token: a failure
+# names a header file by its path at most. The files go with the scratch, which the EXIT
+# trap removes however the run ends, and check.test.sh's case 117 holds both: a replay of
+# the rows that send them, with a token of the case's own, prints the token nowhere and
+# leaves no header file behind. Case 118 holds that a row meets the files written again,
+# case 119 that a failed read of GitHub's REST API names GitHub's answer, and that a 401 and
+# a refusal for its rate limit cannot run, case 121 that a read that reaches no GitHub
+# cannot run, case 122 that a row's read that got no HTTP answer cannot run though the gate's
+# read again is answered, case 125 that a read again answered 502 cannot run, case 149 that
+# a row's curl answered 503 cannot run though the gate's read again is answered 200, and
+# case 150 that a read inside tc-rng-2's script that reaches no GitHub cannot run. Cases 123
+# and 124 hold the same rule for a row's read of Dispatch: through the dispatch command, by
+# curl and through python3's urllib, and case 151 that a row whose curl of Dispatch feeds a
+# python3 is read by the curl.
 #
 # The evidence it reads:
 #
@@ -1981,7 +1992,9 @@ prepare_env() {
 # pipeline, an output redirection that fails before ;, && or || and so stops its command
 # before the function runs, what a program does with code it is given, such as awk's
 # system() or a program run with the arguments xargs's input adds, and what a script a
-# row runs does inside it, whose status reaches the row only through that script's own.
+# row runs does inside it, whose status reaches the row only through that script's own,
+# but for a read of GitHub or Dispatch, which the script records as a row's curl is recorded,
+# as evidence/concord-build-run.sh records its two reads of GitHub (source_answer).
 # A script's path is held to a literal file or one under $IOC_EVID, ending in .sh, and
 # any other path is refused. A row written on purpose to defeat the runner is outside
 # what the gate checks, whatever it uses: one that deletes, overwrites, redirects into or
@@ -2044,8 +2057,8 @@ run_recorded() {
     #
     # Every program the command runs records its own status when it fails, as one line of
     # <output-file>.failed with four fields, separated by tabs: the status, the status the
-    # row declared for it, the program and its arguments, and the first line it printed, each
-    # of the second and the fourth - where there is none. Each program the row names in
+    # row declared for it, the program and its arguments, and the line of its own it printed,
+    # each of the second and the fourth - where there is none. Each program the row names in
     # command position by a bare word is wrapped in a shell function of that name, which runs
     # the real command and records its status, and each program variable points at a shim
     # that does the same. A function and a shim see their own status wherever the program
@@ -2053,12 +2066,17 @@ run_recorded() {
     # subshell, a loop or a substitution. That is what bash's ERR trap does not do, for a
     # stage that is not a pipeline's last and for a command before && or ||, and what
     # PIPESTATUS does not do, since it holds the statuses of one pipeline without its
-    # commands' text. The function of dispatch alone keeps the first line its program
-    # printed: the dispatch command prints a refusal on stdout, which every row pipes into
-    # sed, grep or awk, so the row's output holds none of it, and only that line tells
-    # Dispatch's answer about the record from no answer (source_answer). It writes what
-    # dispatch prints into a file beside the record and then onto its own stdout, so the
-    # row's pipeline reads every byte it read before, once dispatch has exited.
+    # commands' text. The functions of dispatch and curl alone keep a line their program
+    # printed. The dispatch command prints a refusal on stdout, which every row pipes into
+    # sed, grep or awk, so the row's output holds none of it, and only its first line tells
+    # Dispatch's answer about the record from no answer (source_answer); the function writes
+    # what dispatch prints into a file beside the record and then onto its own stdout, so the
+    # row's pipeline reads every byte it read before, once dispatch has exited. curl prints
+    # the status the source answered in its own line on stderr alone, "curl: (22) The
+    # requested URL returned error: 503", and a row may run several curls, so its function
+    # keeps the first line curl printed on stderr that starts "curl: (", the status of that
+    # read beside its URL (source_answer); it writes what curl prints on stderr into a file
+    # beside the record and then onto its own stderr, once curl has exited.
     local command="$1" out="$2" script name
     script="$out.sh"
     : >"$out.failed"
@@ -2073,6 +2091,10 @@ run_recorded() {
             [ -n "$name" ] || continue
             if [ "$name" = dispatch ]; then
                 printf '%s\n' 'dispatch() { local __ioc_o="$__ioc_failed.$BASHPID.dispatch" __ioc_s __ioc_said=""; command dispatch "$@" >"$__ioc_o"; __ioc_s=$?; command cat -- "$__ioc_o"; IFS= read -r __ioc_said <"$__ioc_o"; command rm -f -- "$__ioc_o"; __ioc_said="${__ioc_said//[[:cntrl:]]/ }"; __ioc_said="${__ioc_said:0:240}"; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" dispatch "$@"; return "$__ioc_s"; }'
+                continue
+            fi
+            if [ "$name" = curl ]; then
+                printf '%s\n' 'curl() { local __ioc_o="$__ioc_failed.$BASHPID.curl" __ioc_s __ioc_said=""; command curl "$@" 2>"$__ioc_o"; __ioc_s=$?; command cat -- "$__ioc_o" >&2; while IFS= read -r __ioc_said && [[ "$__ioc_said" != "curl: ("* ]]; do :; done <"$__ioc_o"; [[ "$__ioc_said" == "curl: ("* ]] || __ioc_said=""; command rm -f -- "$__ioc_o"; __ioc_said="${__ioc_said//[[:cntrl:]]/ }"; __ioc_said="${__ioc_said:0:240}"; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" curl "$@"; return "$__ioc_s"; }'
                 continue
             fi
             printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
@@ -2318,25 +2340,35 @@ github_headers_fresh() {
 # failure is no verdict on the deliverable: ... GitHub answered 401: Bad credentials". Any
 # other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's FAIL line. Both
 # are empty when no read of a source failed, or when one failed and printed nothing this
-# rule reads. A source's reads are three, each found by its record (run_recorded):
+# rule reads. A source's reads are three, each found by its record (run_recorded), and a
+# python3's is read only where the record holds no curl or dispatch command of a source,
+# whose own line names the read the python3 was handed:
 #
 #   - A curl of https://api.github.com/ or of DISPATCH_URL, by the URL its record holds.
 #     Each such curl of a row runs with --fail-with-body, which exits 22 when the source
 #     answered with an HTTP error, so any other exit, such as a transport error (6, 7, 28,
-#     35, 52 or 56), is a read that got no answer, whatever comes after. A row's curl hands
-#     the body to the row's pipeline and writes into the row's output only its own line,
-#     "curl: (22) The requested URL returned error: 401", so the gate makes one read of its
-#     own of that URL with the header file the curl sent (-H @<file>): a read again that gets
-#     no HTTP status, curl's -w '%{http_code}' printing 000 or nothing, is no answer either,
-#     and the line names curl's exit and the first line it printed on stderr. A status is
-#     named with the body's message, GitHub's message or the code and the error of
-#     Dispatch's error JSON, as "GitHub answered 401: Bad credentials" or "Dispatch answered
-#     404 NOT_FOUND: not found". A 5xx is a server error. A 429, and GitHub's 403 whose
-#     message names a rate limit or a secondary rate limit or whose x-ratelimit-remaining
-#     header is 0, is a rate limit, named with the limit GitHub's headers give. A 401,
-#     Dispatch's 403, which it answers a request whose credential lacks a scope or a project,
-#     and GitHub's 403 whose message matches GITHUB_CREDENTIAL, as "Resource not accessible
-#     by integration", are the reader's credential. Any other status is an answer.
+#     35, 52 or 56), is a read that got no answer, whatever comes after. A status the source
+#     answered is the one the row got: curl's own line, "curl: (22) The requested URL
+#     returned error: 503", which curl's function keeps in the record beside the URL. A curl
+#     inside a script a row runs leaves the same line, written by the script itself, as
+#     evidence/concord-build-run.sh writes it for its two reads of GitHub, so that read is
+#     the row's too, and its line stands in the record before the script's own. The row's
+#     curl hands the body to the row's pipeline, so the gate makes one read of its own of
+#     that URL with the header file the curl sent (-H @<file>), for the source's message,
+#     and for the status where the record holds none: there a read again that gets no HTTP
+#     status, curl's -w '%{http_code}' printing 000 or nothing, is no answer either, and the
+#     line names curl's exit and the first line it printed on stderr. A status is named with
+#     the body's message, GitHub's message or the code and the error of Dispatch's error
+#     JSON, as "GitHub answered 401: Bad credentials" or "Dispatch answered 404 NOT_FOUND:
+#     not found", and the read again's beside it when that read got another. A 5xx is a
+#     server error, whatever the read again gets. A 429, and a 403 whose read again is
+#     answered 429, or by GitHub with a 4xx whose message names a rate limit or a secondary
+#     rate limit or whose x-ratelimit-remaining header is 0, is a rate limit, named with the
+#     limit GitHub's headers give. A 401, Dispatch's 403, which it answers a request whose
+#     credential lacks a scope or a project, GitHub's 403 whose message matches
+#     GITHUB_CREDENTIAL, as "Resource not accessible by integration", and a 403 the row got
+#     whose read again is answered below 400 are the reader's credential; a 403 the row got
+#     whose read again gets no status is no answer. Any other status is an answer.
 #   - A dispatch command, by the first line it printed, which its function keeps in the
 #     record, since the row's pipeline reads what it prints. DISPATCH_UNANSWERED holds the
 #     lines of no answer: "Dispatch at <url> is unreachable: ...", which the CLI of the
@@ -2363,10 +2395,12 @@ DISPATCH_CREDENTIAL='^(HTTP_40[13]: |(UNAUTHORIZED|NO_IDENTITY|TOKEN_REVOKED|OID
 DISPATCH_RATE_LIMITED='^(HTTP_429: |BROKER_TOKEN_RATE_LIMITED: )'
 GITHUB_CREDENTIAL='authenticat|authoriz|credential|permission|not accessible|token|saml|sso|rights'
 source_answer() {
-    local id="$1" out="$2" failed_status failed_declared failed_command failed_said words word
-    local source="" via="" what="" url="" header="" said="" kind="" detail="" answer="" code reread got row_got="" message="" error_code=""
-    local remaining limit reset resource body="$RUN_SCRATCH/source-answer.body" dump="$RUN_SCRATCH/source-answer.headers"
+    local id="$1" out="$2" failed_status failed_declared failed_command failed_said words word python_status=""
+    local source="" via="" what="" url="" header="" said="" kind="" detail="" answer="" code="" reread got message="" error_code=""
+    local row_code="" decide again="" how limits="" remaining="" limit="" reset="" resource=""
+    local body="$RUN_SCRATCH/source-answer.body" dump="$RUN_SCRATCH/source-answer.headers"
     local header_sent='(^| )-H @([^ ]+)' http_error='^urllib\.error\.HTTPError: HTTP Error ([0-9]{3}): ?(.*)$'
+    local curl_error='^curl: \(22\) The requested URL returned error: ([0-9]{3})'
     IOC_SOURCE_ANSWER="" IOC_SOURCE_STOP=""
     [ -s "$out.failed" ] || return 0
     while IFS=$'\t' read -r failed_status failed_declared failed_command failed_said; do
@@ -2383,20 +2417,27 @@ source_answer() {
                     break
                 fi
             done
+            [ -z "$source" ] || [ "$failed_said" = - ] || said="$failed_said"
             ;;
         "dispatch "*)
             source=Dispatch via=dispatch what="its API through the dispatch command"
             [ "$failed_said" = - ] || said="$failed_said"
             ;;
         "python3 "*)
-            grep -qF DISPATCH_URL "$out.command" 2>/dev/null && source=Dispatch via=python what="its API through python3"
+            # Read only when no curl or dispatch command of a source stands in the record,
+            # whichever of the two wrote its line first.
+            [ -n "$python_status" ] || ! grep -qF DISPATCH_URL "$out.command" 2>/dev/null || python_status="$failed_status"
             ;;
         esac
         [ -n "$source" ] && break
     done <"$out.failed"
+    if [ -z "$source" ] && [ -n "$python_status" ]; then
+        source=Dispatch via=python what="its API through python3" failed_status="$python_status"
+    fi
     case "$via" in
     curl)
         [[ "$failed_command" =~ $header_sent ]] && header="${BASH_REMATCH[2]}"
+        [[ "$said" =~ $curl_error ]] && row_code="${BASH_REMATCH[1]}"
         rm -f -- "$body" "$dump"
         code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
         reread=$?
@@ -2409,38 +2450,57 @@ source_answer() {
                 message="$(jq -r 'if type == "object" and (.error | type) == "string" then .error | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
             fi
             answer="$source answered $code${error_code:+ $error_code}${message:+: $message}"
-            case "$code" in
-            5??) kind=server ;;
-            401) kind=credential ;;
-            403 | 429)
-                IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
-                    END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
-                if [ "$code" = 429 ] || { [ "$source" = GitHub ] && { [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ]; }; }; then
-                    kind=rate
-                    [ -z "$limit" ] ||
-                        answer="$answer; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
-                elif [ "$source" = Dispatch ] || [[ "${message,,}" =~ $GITHUB_CREDENTIAL ]]; then
-                    kind=credential
-                fi
-                ;;
-            esac
+            IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
+                END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
+            [ -z "$limit" ] ||
+                limits="; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
         else
-            got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
-            kind=unanswered
+            code="" got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
         fi
+        # The status the row got decides, and the gate's read again only where the row's record
+        # holds none; a read again that got another status stands beside the row's.
+        decide="${row_code:-$code}" how="and when the gate read it again"
+        if [ -n "$row_code" ]; then
+            how="since"
+            if [ "$row_code" != "$code" ]; then
+                again=", and the gate's read of it again $got"
+                [ -z "$code" ] || again=", and when the gate read it again $answer"
+                answer="$source answered $row_code"
+            fi
+        fi
+        case "$decide" in
+        5??) kind=server ;;
+        401) kind=credential ;;
+        429) kind=rate ;;
+        403)
+            if [ "$code" = 429 ] || { [ "$source" = GitHub ] && [[ "$code" == 4?? ]] && { [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ]; }; }; then
+                kind=rate
+            elif [ "$source" = Dispatch ] || [[ "${message,,}" =~ $GITHUB_CREDENTIAL ]] || { [ -n "$row_code" ] && [[ "$code" == [1-3]?? ]]; }; then
+                kind=credential
+            elif [ -z "$code" ]; then
+                kind=unanswered
+            fi
+            ;;
+        "") kind=unanswered ;;
+        esac
         # The row's curl runs with --fail-with-body, which exits 22 when the source answered
         # with an HTTP error, so any other status is a read of the row's that got no HTTP
         # answer, and what the gate's read got after it judges nothing the row read.
-        [ "$failed_status" = 22 ] || {
+        if [ "$failed_status" != 22 ]; then
             kind=unanswered
-            row_got=" with no HTTP answer"
-        }
-        case "$kind" in
-        unanswered) detail="the row's curl of $url exited $failed_status$row_got, and the gate's read of it again $got" ;;
-        server) detail="the row's curl of $url exited 22, and when the gate read it again $answer, a server error" ;;
-        credential) detail="the row's curl of $url exited 22, and when the gate read it again $answer" ;;
-        rate) detail="$answer" ;;
-        esac
+            detail="the row's curl of $url exited $failed_status with no HTTP answer, and the gate's read of it again $got"
+        else
+            case "$kind" in
+            unanswered)
+                [ -n "$again" ] || again=", and the gate's read of it again $got"
+                detail="the row's curl of $url exited 22${row_code:+, since $answer}$again"
+                ;;
+            server) detail="the row's curl of $url exited 22, $how $answer, a server error$again" ;;
+            credential) detail="the row's curl of $url exited 22, $how $answer$again" ;;
+            rate) detail="$answer$limits$again" ;;
+            "") answer="$answer$again" ;;
+            esac
+        fi
         ;;
     dispatch)
         if [[ "$said" =~ $DISPATCH_RATE_LIMITED ]]; then
