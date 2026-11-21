@@ -105,19 +105,16 @@ func (h *heldStack) setReplicas(stream string, replicas int) {
 	h.awaitStreamLeaders()
 }
 
-// deleteStream deletes stream as the operator under a hold of no steps, which it then releases.
-func (h *heldStack) deleteStream(stream string) {
+// requireStreamAbsent reads stream as the operator and requires the server's `stream not found`.
+func (h *heldStack) requireStreamAbsent(stream string) {
 	h.t.Helper()
-	ctx := context.Background()
-	id := h.s.Prepare(h.t, holdrecord.WorkflowStreamsUpdate)
-	h.s.HoldWithoutTheSteps(h.t, id)
-	nc, err := h.s.ConnectOperator(ctx)
+	nc, err := h.s.ConnectOperator(context.Background())
 	require.NoError(h.t, err)
+	defer nc.Close()
 	js, err := jetstream.New(nc)
 	require.NoError(h.t, err)
-	require.NoError(h.t, js.DeleteStream(ctx, stream), "delete %s", stream)
-	nc.Close()
-	h.s.Release(h.t, id)
+	_, err = js.Stream(context.Background(), stream)
+	require.ErrorIs(h.t, err, jetstream.ErrStreamNotFound, "read %s", stream)
 }
 
 // The streams commands (t-e-58, review H3; option A): the operator's released grant reads only,
@@ -134,7 +131,9 @@ func TestHoldTheStreamsCommands(t *testing.T) {
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	settings := streamset.Settings{Replicas: 3}
-	h.deleteStream(streamset.MeasureStream)
+	// The seed makes the protected streams alone (streamset.EnsureStreams), so ENVOY_MEASURE is
+	// absent, and the update is its one maker.
+	h.requireStreamAbsent(streamset.MeasureStream)
 	bucket := kvStreamPrefix + bus.RoleClaimBucket
 	h.setReplicas(bucket, 2)
 
@@ -294,24 +293,30 @@ func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 	args := []string{"census", "--family", "session", "--dispatch-database-file", "/run/dispatch-db", "--daemon-database", "P=/run/daemon-db"}
 
-	// The first census sets its hold and stops at its convert check; the session family's cutover
-	// row is then written done under that hold.
-	code, _, _ := h.streamsRunWith(stub, noStores, args...)
+	// The first census sets its hold and stops at its convert check, which streams.Census refuses
+	// with a zero report, so it prints none; the session family's cutover row is then written done
+	// under that hold.
+	code, stdout, _ := h.streamsRunWith(stub, noStores, args...)
 	require.Equal(t, 1, code, "the census before the family is converted")
+	require.NotContains(t, stdout, "CLEAN", "a census refused at its convert check printed a clean report")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
 	require.NoError(t, err)
 	held := append([]string{"census", "--hold", id}, args[1:]...)
 
-	code, _, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, Stores: noStores}, held...)
+	// A census that stops before streams.Census answers prints no report: no "CLEAN" beside its
+	// UNKNOWN.
+	code, stdout, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, Stores: noStores}, held...)
 	require.Equal(t, 2, code, "a census with no reader of the fresh names")
 	require.Contains(t, stderr, ErrNoFreshNamesReader.Error())
+	require.NotContains(t, stdout, "CLEAN", "an UNKNOWN census printed a clean report")
 	failing := func(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
 		return nil, errors.New("the dispatch store cannot be read")
 	}
-	code, _, stderr = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: failing, Stores: noStores}, held...)
+	code, stdout, stderr = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: failing, Stores: noStores}, held...)
 	require.Equal(t, 2, code, "a census whose fresh-names reader fails")
 	require.Contains(t, stderr, "the dispatch store cannot be read")
+	require.NotContains(t, stdout, "CLEAN", "an UNKNOWN census printed a clean report")
 	require.NotContains(t, h.journalCommands(id), CommandStreamsCensus+" done")
 
 	var gotFamilies, gotDaemons []string
@@ -320,10 +325,27 @@ func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 		gotFamilies, gotDispatch, gotDaemons = families, dispatch, daemons
 		return map[string][]string{"session": {}}, nil
 	}
-	code, _, _ = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: reader, Stores: noStores}, held...)
+	code, stdout, _ = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: reader, Stores: noStores}, held...)
 	require.Zero(t, code, "the census with a reader of the fresh names")
+	require.Contains(t, stdout, "CLEAN", "control: the census that ran prints its report")
 	require.Equal(t, []string{"session"}, gotFamilies)
 	require.Equal(t, "/run/dispatch-db", gotDispatch)
 	require.Equal(t, []string{"P=/run/daemon-db"}, gotDaemons)
 	require.Contains(t, h.journalCommands(id), CommandStreamsCensus+" done")
+}
+
+// A streams run's changes reach the postcheck for the protected streams alone: a made protected
+// stream is recreated, and the made ENVOY_MEASURE, the one declared stream the hold does not
+// protect (streamset.MeasureStream), is left out. The postcheck compares only what step 1 read, so
+// a change it is handed to ENVOY_MEASURE stops every update that makes it UNKNOWN. A raised stream
+// and a consumer's removal are not a stream's make.
+func TestHoldTheMeasureStreamIsNotPostchecked(t *testing.T) {
+	roles := kvStreamPrefix + bus.RoleClaimBucket
+	changes := streamChanges(streams.Report{Changes: []streams.Finding{
+		{Stream: streamset.MeasureStream, What: "made"},
+		{Stream: roles, What: "made"},
+		{Stream: bus.Stream, What: "raised"},
+		{Stream: bus.Stream, Consumer: "old", What: "removed"},
+	}})
+	require.Equal(t, map[string]Change{roles: {Kind: ChangeRecreated}}, changes)
 }

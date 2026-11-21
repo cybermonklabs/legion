@@ -139,17 +139,7 @@ type StreamsDeps struct {
 // StreamsCommandOn is StreamsCommand with deps in place of the broker, Secret Manager and hub its
 // flags name.
 func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, deps StreamsDeps) int {
-	now := deps.Now
-	if now == nil {
-		now = time.Now
-	}
-	e := env{
-		records: func(ctx context.Context, _ options, signing bool) (*holdrecord.Client, error) {
-			return deps.Records(ctx, signing)
-		},
-		hub: func(ctx context.Context, _ options) (*Operator, error) { return deps.Operator(ctx) },
-		now: now,
-	}
+	e := HoldDeps{Records: deps.Records, Operator: deps.Operator, Now: deps.Now}.env()
 	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: e, readers: deps.CensusReaders})
 }
 
@@ -239,7 +229,15 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		row, err := records.Row(ctx)
 		return row.Phase, err
 	}
+	// result is the word's report, and reported is true once streams.Update or streams.Census
+	// answered with one: a run that stops before, at its admission, its set, its connect or a
+	// reader, or that either word refuses with a zero report (its phase or convert check), prints
+	// no report, so no zero report's CLEAN stands beside its refusal or its UNKNOWN.
+	madeReport := func(r streams.Report, err error) bool {
+		return err == nil || len(r.Changes)+len(r.Failures)+len(r.Unknown) > 0
+	}
 	var result streams.Report
+	var reported bool
 	c := HeldCommand{HoldID: o.holdID, Reason: o.reason, MintersReport: o.MintersReport}
 	switch o.word {
 	case "update":
@@ -247,7 +245,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Absent = ProtectedStreams()
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
 			r, err := streams.Update(ctx, nc, settings, held)
-			result = r
+			result, reported = r, madeReport(r, err)
 			return streamChanges(r), nil, leftBy(r, streamsRefusal(r, err))
 		}
 	case "census":
@@ -301,7 +299,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				},
 				RecordedFreshNames: fresh,
 			})
-			result = r
+			result, reported = r, madeReport(r, err)
 			changes := streamChanges(r)
 			write := func(stream string, n uint64) {
 				change := changes[stream]
@@ -323,8 +321,10 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		}
 	}
 	_, err = RunHeld(ctx, records, op, c, e.now, stdout)
-	for _, line := range result.Lines() {
-		fmt.Fprintln(stdout, line)
+	if reported {
+		for _, line := range result.Lines() {
+			fmt.Fprintln(stdout, line)
+		}
 	}
 	if err != nil {
 		return 0, err
@@ -389,11 +389,13 @@ func streamsRefusal(r streams.Report, err error) error {
 }
 
 // streamChanges is what a streams run did to each protected stream, for the postcheck: a stream it
-// made is recreated, with no write of its own; one it raised or put back is kept.
+// made is recreated, with no write of its own; one it raised or put back is kept. ENVOY_MEASURE,
+// which update makes and the hold does not protect (streamset.MeasureStream), is not the
+// postcheck's: step 1 reads only the protected streams.
 func streamChanges(r streams.Report) map[string]Change {
 	changes := map[string]Change{}
 	for _, f := range r.Changes {
-		if f.Consumer == "" && f.What == "made" {
+		if f.Consumer == "" && f.What == "made" && isProtectedStream(f.Stream) {
 			changes[f.Stream] = Change{Kind: ChangeRecreated}
 		}
 	}

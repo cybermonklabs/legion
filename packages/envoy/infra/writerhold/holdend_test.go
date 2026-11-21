@@ -112,9 +112,10 @@ func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	code, _, _ = h.streamsRun(nil, "update", "--hold", released)
 	require.Equal(t, 1, code, "an update after the hold's release")
 	h.putRowBack(before)
-	code, _, stderr := h.streamsRun(nil, "update", "--hold", released)
+	code, stdout, stderr := h.streamsRun(nil, "update", "--hold", released)
 	require.Equal(t, 1, code, "an update after the hold's release, the held row put back")
 	require.Contains(t, stderr, "the hold has ended: hold release is done")
+	require.NotContains(t, stdout, "CLEAN", "a refused update printed a clean report")
 	require.NotContains(t, h.journalCommands(released), CommandStreamsUpdate+" intent")
 	h.putRowBack(after)
 
@@ -124,7 +125,7 @@ func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, h.s.Records.AppendStopLeft(ctx, aborted, CommandStreamsUpdate, "the row's stop", "ENVOY_MEASURE made"))
 	before = h.rowText()
-	code, stdout, _ := h.run(actionAbort, "--hold", aborted, "--reason", "the update left a change")
+	code, stdout, _ = h.run(actionAbort, "--hold", aborted, "--reason", "the update left a change")
 	require.Zero(t, code, "abort after a stopped update")
 	require.Contains(t, stdout, "ENVOY_MEASURE made")
 	after = h.rowText()
@@ -137,8 +138,10 @@ func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	// The control: a hold of the same workflow that has not ended admits the update.
 	open := h.s.Prepare(t, holdrecord.WorkflowStreamsUpdate)
 	h.s.HoldWithoutTheSteps(t, open)
-	code, _, _ = h.streamsRun(nil, "update", "--hold", open)
+	code, stdout, _ = h.streamsRun(nil, "update", "--hold", open)
 	require.Zero(t, code, "control: the update in a hold that has not ended")
+	require.Contains(t, stdout, "streams update done in hold", "control: the update in a hold that has not ended")
+	require.Contains(t, stdout, "CLEAN", "control: the update that ran prints its report")
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
 }
 

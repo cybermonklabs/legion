@@ -22,10 +22,12 @@
 // it reads each bucket's stream under the operator's released grant, says that every one exists,
 // and exits 0.
 //
-// `backup` runs outside a hold, with the row released: it snapshots each bucket's stream into a
-// directory of its own, with a manifest of each archive's sha256 and stream state, on the
-// operator's released grant, which holds the snapshot requests and nothing that writes. `restore
-// --from` validates that manifest before anything else and restores each named bucket from it.
+// `backup` is a held command too, the first of a buckets-recreate or buckets-restore hold: with
+// --workflow recreate|restore it prepares and sets that hold, or with --hold it runs in one. It
+// snapshots each bucket's stream into a directory of its own, with a manifest of each archive's
+// sha256 and stream state, on the held grant, since a snapshot names its own deliver subject.
+// `restore --from` validates that manifest before anything else and restores each named bucket
+// from it, in the same hold.
 //
 // One machine with no auth service, broker or hold (the single-node compose file) makes its
 // missing buckets with `create --break-glass`: as the environment's NATS user, creating only

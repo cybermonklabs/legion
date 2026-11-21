@@ -535,29 +535,19 @@ func TestHoldNothingTrustedIsInNATS(t *testing.T) {
 	s := holdtest.Start(t)
 	target := "$KV." + bus.SessionConsumersBucket + ".hold"
 
-	// A listener sets up what the attacks read: the notification stream, a pull consumer on it
-	// that never has a message, and a record of the session bucket.
-	setup, err := connectListener(s)
-	require.NoError(t, err)
-	js, err := jetstream.New(setup.Conn)
-	require.NoError(t, err)
-	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects(), Storage: jetstream.MemoryStorage})
-	require.NoError(t, err)
-	_, err = js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{Durable: "attack", FilterSubject: "notifications.agent.never", AckPolicy: jetstream.AckNonePolicy})
-	require.NoError(t, err)
-	sessions, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.SessionBucket, Storage: jetstream.MemoryStorage})
-	require.NoError(t, err)
-	_, err = sessions.PutString(ctx, "ses_attack", "registered")
-	require.NoError(t, err)
-	setup.Close()
-
-	// The first hold: the operator, under held, makes the bucket and writes key hold as the
-	// retired design kept the hold; and the hold's records in Postgres.
+	// The first hold: the operator, under held, makes what the attacks read, the notification
+	// stream and the session bucket (no answer but the held operator's holds a stream create,
+	// natsgrant.ForCallout), and makes the bucket of key hold and writes it as the retired design
+	// kept the hold; and the hold's records in Postgres.
 	moveRow(t, s, natsgrant.OperatorPhasePrepare, "h-nats")
 	moveRow(t, s, natsgrant.OperatorPhaseHeld, "h-nats")
 	op, err := connectOperator(s)
 	require.NoError(t, err)
 	opJS, err := jetstream.New(op.Conn)
+	require.NoError(t, err)
+	_, err = opJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects(), Storage: jetstream.MemoryStorage})
+	require.NoError(t, err)
+	_, err = opJS.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.SessionBucket, Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
 	bucket, err := opJS.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.SessionConsumersBucket, Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
@@ -571,6 +561,20 @@ func TestHoldNothingTrustedIsInNATS(t *testing.T) {
 	_, err = s.Records.PutCutover(ctx, "session", "done", "h-nats")
 	require.NoError(t, err)
 	moveRow(t, s, natsgrant.OperatorPhaseReleased, "h-nats")
+
+	// A listener sets up the rest of what the attacks read, as its grant allows: a pull consumer on
+	// the notification stream that never has a message, and a record of the session bucket.
+	setup, err := connectListener(s)
+	require.NoError(t, err)
+	js, err := jetstream.New(setup.Conn)
+	require.NoError(t, err)
+	_, err = js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{Durable: "attack", FilterSubject: "notifications.agent.never", AckPolicy: jetstream.AckNonePolicy})
+	require.NoError(t, err)
+	sessions, err := js.KeyValue(ctx, bus.SessionBucket)
+	require.NoError(t, err)
+	_, err = sessions.PutString(ctx, "ses_attack", "registered")
+	require.NoError(t, err)
+	setup.Close()
 
 	type trusted struct {
 		tables   []string
