@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record <file>
-#   [--since <earlier record>] [--listener <machine>=<url>]...
+#   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
+#   [--token-file <path>] [--inbox-prefix <prefix>]
 #
 # Says whether any reader or writer of the bus still uses the old form of a name the rename moved
 # (an issue event named by its key alone, an agent's or a role's name with no project, a kept lane
@@ -13,22 +14,29 @@
 #
 # What it reads, all of it read-only:
 #
-#   - Each listener's /metrics, its envoy_listener_legacy_subjects_total samples (every label set)
-#     and its start-time gauge envoy_listener_start_time_seconds. The listeners in the cluster are
-#     found by what they run, not by name: every container, in any namespace, of an image whose path
-#     ends legion/envoy that runs the image's own entrypoint (envoy-listener; a command of
-#     envoy-listener counts too, and any other command is the Dispatch server, the broker or a
-#     helper). Each is read through the API server's pod proxy,
-#     /api/v1/namespaces/<ns>/pods/<pod>:<PORT, else 9020>/proxy/metrics. A listener outside the
-#     cluster, such as the VM hub's, is named with --listener <machine>=<url> and read at
-#     <url>/metrics. Every listener bound to its durable on the bus (listener-<machine>,
-#     bus.ListenerDurable) must be one of those: one that is not is UNKNOWN by name, so a listener
-#     nobody named is never left out of the count.
+#   - Each listener's envoy_listener_legacy_subjects_total samples (every label set: an interest a
+#     registration named, a role a claim named, and a role a publish, the role lane or a holder
+#     lookup named) and its start-time gauge envoy_listener_start_time_seconds. The listeners in the
+#     cluster are found by what they run, not by name: every container, in any namespace, of an
+#     image whose path ends legion/envoy that runs the image's own entrypoint (envoy-listener; a
+#     command of envoy-listener counts too, and any other command is the Dispatch server, the broker
+#     or a helper). Each is read from its pod's log: the listener logs the two metrics, as /metrics
+#     serves them, on a line "listener legacy subjects" every minute (cmd/listener
+#     startLegacySubjectsLog), and the gate takes the newest from the last five minutes, which must
+#     be at most three minutes older than the reading. The log and not /metrics, because the
+#     operator may read every listener pod's log and may not reach Dispatch's listener's /metrics:
+#     the API server's pod proxy is refused in that namespace, and the listener's NetworkPolicy
+#     admits its port from Dispatch's own pods alone. A listener outside the cluster, such as the
+#     VM hub's, is named with --listener <machine>=<url> and read at <url>/metrics, over https unless
+#     --insecure is given. Every listener with its durable on the bus (listener-<machine>,
+#     bus.ListenerDurable), bound now or not, must be one of those: one that is not is UNKNOWN by
+#     name, so a listener nobody named, or one offline at the reading, is never left out of the
+#     count while its durable lasts.
 #   - Over NATS, from a one-off Job in namespace envoy that connects as the in-cluster listener
-#     does (lib/legacy-subjects-gate-nats.sh): the stream's info, every consumer of the stream, the
-#     stream's subjects under notifications.dispatch.issue.>, notifications.agent.>,
-#     notifications.envoy.exceptions.notifications.agent.> and notifications.envoy.kept.>, and every
-#     record of the interest store envoy_interests.
+#     does (lib/legacy-subjects-gate-nats.sh): who the server says the connection is, the stream's
+#     info, every consumer of the stream, the stream's subjects under notifications.dispatch.issue.>,
+#     notifications.agent.>, notifications.envoy.exceptions.notifications.agent.> and
+#     notifications.envoy.kept.>, and every record of the interest store envoy_interests.
 #
 # What holds the gate shut:
 #
@@ -40,55 +48,76 @@
 #   - an interest record holding an old-form topic other than its session's own agent subject,
 #     which the listener writes into every record itself until the old form is refused;
 #   - at a second reading: a listener whose count rose since the first reading, a first reading
-#     that was not clean, or less than the retention between the two.
+#     that was not clean, or less than the retention between the two (for each listener, between
+#     the two moments its counter was read).
 #
 # The old form is the gate's own rule (lib/legacy-subjects-gate-forms.jq, old_form), so the gate
 # stays right once the code that reads the old form is deleted.
 #
 # What it cannot see is UNKNOWN, by name, and UNKNOWN is never GATE OPEN: a surface it could not
 # read or that answered nothing (no listener, no Legion daemon consumer, no issue or agent subject
-# on the stream, no interest record: a production bus always holds them), a listener that is not
-# running, a listener build that serves no old-form counter, a listener that restarted between the
-# readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a listener
-# of the first reading that is gone, and a listener outside the cluster that serves no start-time
-# gauge, since nothing else shows its restart.
+# on the stream, no interest record: a production bus always holds them), a refused read named by
+# its request, a list that changed between the pages it was read in, an answer that is no JSON
+# object, a listener that is not running, a listener build that logs or serves no old-form counter,
+# a listener that restarted between the readings (its pod's restart count or its start-time gauge
+# moved, or it is a new pod), a listener of the first reading that is gone, a listener outside the
+# cluster that serves no start-time gauge, since nothing else shows its restart, and at a second
+# reading: a stream that is not the first reading's (its envoy_stream_id changed), a stream that
+# does not hold the whole window (its first message is younger than the window, less an hour), and
+# readings further apart than a listener's durable outlives its listener.
 #
-# The Job: namespace envoy, the ServiceAccount, NATS URL, NATS seed file and the volume holding that
-# file of the listener Deployment envoy/envoy-listener as it is deployed (read at each run, so the
-# Job connects with whatever credential the listener holds), the nats-box image the deployment pins
-# for its own NATS Jobs, run as nobody (65534) with every capability dropped, backoffLimit 0,
-# activeDeadlineSeconds 300 and ttlSecondsAfterFinished 600; labels app.kubernetes.io/name and
-# created-by legacy-subjects-gate and owner <your login>. The gate waits for it to finish, reads its
-# log, deletes it and reads back that no Job or pod of its name is left; one it could not delete is
-# UNKNOWN and named with the command that deletes it. A listener Deployment that connects with no
-# NATS seed file (NATS_NKEY_SEED_FILE) is UNKNOWN: the gate dials NATS only with the listener's seed.
+# The Job: namespace envoy, the ServiceAccount, NATS URL and credential of the listener Deployment
+# envoy/envoy-listener as it is deployed (read at each run, so the Job connects with whatever
+# credential the listener holds): its NATS seed file (NATS_NKEY_SEED_FILE) and the volume holding
+# it, or, with --token-file <path>, the listener's projected NATS token at that path in the
+# Deployment and the volume holding it, which a hub that is not static takes in place of a seed;
+# with --inbox-prefix <prefix>, every nats call of the Job takes that inbox prefix, the only one
+# such a hub's grant lets the identity subscribe. It runs the nats-box image the deployment pins
+# for its own NATS Jobs, as nobody (65534) with every capability dropped, a scratch directory in
+# memory, backoffLimit 0, activeDeadlineSeconds 300 and ttlSecondsAfterFinished 600; labels
+# app.kubernetes.io/name and created-by legacy-subjects-gate and owner <your login>. The gate
+# waits for it to finish, reads its log, deletes it and reads back that no Job or pod of its name
+# is left; one it could not delete is UNKNOWN and named with the command that deletes it. The Job's
+# log holds what the gate judges and no more: of an interest record, its session id and its
+# topics. The cluster keeps a container's log in its logging backend as it keeps the listener's
+# own, which logs every topic it delivers, so the Job adds no kind of text the namespace does not
+# already log.
 #
-# It prints one line per surface, `READ`, `PASS`, `GATE SHUT` or `UNKNOWN`, the Job's creation and
-# deletion, and the verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading,
-# `GATE SHUT` (exit 1) when anything shut it, `UNKNOWN` (exit 3) otherwise when anything was not
-# read, and at a clean first reading `FIRST READING`, naming when to read again (exit 4). It writes
-# the reading to --record in every case, a file that must not exist yet; a clean second reading's
-# record is a clean first reading for the next window. A usage error exits 2 and reads nothing.
+# It prints the identity the NATS reads ran as (`IDENTITY`), one line per surface, `READ`, `PASS`,
+# `GATE SHUT` or `UNKNOWN`, the Job's creation and deletion, and the verdict alone on the last
+# line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit 1) when anything shut it,
+# `UNKNOWN` (exit 3) otherwise when anything was not read, and at a clean first reading `FIRST
+# READING`, naming when to read again (exit 4). It writes the reading to --record in every case, a
+# file that must not exist yet; a clean second reading's record is a clean first reading for the
+# next window. A usage error exits 2 and reads nothing.
 #
 # It needs bash, kubectl (a context for the cluster that runs the listeners and the hub bridge,
-# signed in as an account that may list pods in every namespace, read pods/proxy, read the
-# envoy-listener Deployment, and create, read, read the logs of and delete Jobs and pods in envoy; a
-# developer box's account holds those), jq, curl, base64 and date.
+# signed in as an account that may list pods in every namespace, read the logs of the listener
+# pods in each namespace that runs one, read the envoy-listener Deployment, and create, read, read
+# the logs of and delete Jobs and pods in envoy: a developer box's account holds list through its
+# container.viewer role, and the rest through its edit role in envoy and its pods/log read in
+# dispatch), jq, curl, base64 and date.
 set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-gate.sh: $1" >&2
-  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]..." >&2
+  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--token-file <path>] [--inbox-prefix <prefix>]" >&2
   echo "  <kube-context> is the kubectl context of the cluster that runs the listeners and the hub bridge" >&2
   echo "  <file> is where this reading is written; it must not exist" >&2
   echo "  <earlier record> is the first reading's --record, read at least the stream's retention (72 h) before" >&2
-  echo "  <machine>=<url> names a listener outside the cluster: its ENVOY_MACHINE_ID and its http(s)://host[:port]" >&2
+  echo "  <machine>=<url> names a listener outside the cluster: its ENVOY_MACHINE_ID and its https://host[:port]" >&2
+  echo "  --insecure takes an http:// listener URL, whose answer anyone on the way could read or change" >&2
+  echo "  <path> is where the listener Deployment mounts its projected NATS token, for a hub that is not static" >&2
+  echo "  <prefix> is the inbox prefix the listener identity's grant subscribes, for a hub that is not static" >&2
   exit 2
 }
 
 context=""
 record=""
 since=""
+insecure=0
+token_file=""
+inbox_prefix=""
 outside=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -96,6 +125,9 @@ while [ "$#" -gt 0 ]; do
     --record) [ "$#" -ge 2 ] || usage "--record takes a value"; record=$2; shift 2 ;;
     --since) [ "$#" -ge 2 ] || usage "--since takes a value"; since=$2; shift 2 ;;
     --listener) [ "$#" -ge 2 ] || usage "--listener takes a value"; outside+=("$2"); shift 2 ;;
+    --insecure) insecure=1; shift ;;
+    --token-file) [ "$#" -ge 2 ] || usage "--token-file takes a value"; token_file=$2; shift 2 ;;
+    --inbox-prefix) [ "$#" -ge 2 ] || usage "--inbox-prefix takes a value"; inbox_prefix=$2; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
@@ -103,14 +135,18 @@ done
 [ -n "$record" ] || usage "--record <file> is required: a reading the gate does not keep cannot be compared"
 [ ! -e "$record" ] || usage "--record $record exists; the gate writes a new file and overwrites none"
 for entry in ${outside[@]+"${outside[@]}"}; do
-  [[ $entry =~ ^[A-Za-z0-9._-]+=https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || usage "--listener $entry is not <machine>=http(s)://host[:port]"
+  [[ $entry =~ ^[A-Za-z0-9._-]+=https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || usage "--listener $entry is not <machine>=https://host[:port]"
+  [[ $entry =~ =https:// ]] || [ "$insecure" = 1 ] ||
+    usage "--listener $entry is plain http: anyone on the way could read or change the count the gate opens on; give its https URL, or --insecure to take it as it is"
 done
+[ -z "$token_file" ] || [[ $token_file =~ ^/[A-Za-z0-9._/-]+$ ]] || usage "--token-file $token_file is not an absolute path"
+[ -z "$inbox_prefix" ] || [[ $inbox_prefix =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--inbox-prefix $inbox_prefix is not a NATS subject of literal tokens"
 for tool in kubectl jq curl base64 date; do
   command -v "$tool" >/dev/null 2>&1 || usage "$tool is required and is not on PATH"
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-readonly here context record since
+readonly here context record since insecure token_file inbox_prefix
 readonly judge="$here/lib/legacy-subjects-gate-judge.jq"
 readonly job_script="$here/lib/legacy-subjects-gate-nats.sh"
 # The nats-box image the deployment pins for its own NATS Jobs (envoy-cluster/Pulumi.prod.yaml
@@ -119,6 +155,8 @@ readonly nats_box="mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece
 readonly job_namespace=envoy
 readonly listener_deployment=envoy-listener
 readonly job_deadline=300
+# The listener logs its counter every minute; the gate reads this much of each listener's log.
+readonly log_window=5m
 
 # listener_container selects the containers that run the listener: an image whose path ends
 # legion/envoy, running the image's own entrypoint or a command of envoy-listener. The pods and the
@@ -130,8 +168,8 @@ earlier=null
 if [ -n "$since" ]; then
   [ -r "$since" ] || usage "--since $since cannot be read"
   earlier=$(jq -c . "$since" 2>/dev/null) || usage "--since $since is no JSON"
-  jq -e '.gate == "legacy-subjects-gate" and .version == 1 and (.finished_at | type) == "number"' <<<"$earlier" >/dev/null ||
-    usage "--since $since is no legacy-subjects-gate reading"
+  jq -e '.gate == "legacy-subjects-gate" and .version == 2 and (.finished_at | type) == "number"' <<<"$earlier" >/dev/null ||
+    usage "--since $since is no legacy-subjects-gate reading of this version (2)"
   [ "$(jq -r .context <<<"$earlier")" = "$context" ] ||
     usage "--since $since read the cluster $(jq -r .context <<<"$earlier"), not $context"
 fi
@@ -191,28 +229,30 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
       | {ns: $p.metadata.namespace, pod: $p.metadata.name, uid: $p.metadata.uid, container: $c.name,
          running: ($s.state.running != null), state: ((($s.state // {}) | keys | first) // "not started"),
          restarts: ($s.restartCount // null),
-         machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null),
-         port: ([$c.env[]? | select(.name == "PORT") | .value // empty] | first // "9020")}]' \
+         machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null)}]' \
     "$work/pods.json" >"$work/listeners.json" 2>"$work/pods.err"; }; then
   pods_error="the cluster's pods could not be listed: $(first_line "$work/pods.err")"
   echo '[]' >"$work/listeners.json"
 fi
 
+# Each running listener's newest "listener legacy subjects" log line: {ok, text, at}, the metrics
+# text and the second it was read at, or {ok: false, error}.
 : >"$work/pod-reads.jsonl"
 count=$(jq length "$work/listeners.json")
 for ((i = 0; i < count; i++)); do
   entry=$(jq -c ".[$i]" "$work/listeners.json")
   ns=$(jq -r .ns <<<"$entry")
   pod=$(jq -r .pod <<<"$entry")
-  port=$(jq -r .port <<<"$entry")
+  container=$(jq -r .container <<<"$entry")
   read_json='{"ok": false, "error": "not running"}'
   if [ "$(jq -r .running <<<"$entry")" = true ]; then
-    if ! [[ $port =~ ^[0-9]{1,5}$ ]]; then
-      read_json=$(jq -cn --arg port "$port" '{ok: false, error: "its PORT \($port) is no port number"}')
-    elif kc get --raw "/api/v1/namespaces/$ns/pods/$pod:$port/proxy/metrics" >"$work/metrics" 2>"$work/metrics.err"; then
-      read_json=$(jq -cn --rawfile text "$work/metrics" '{ok: true, text: $text}')
+    if kc -n "$ns" logs "$pod" -c "$container" --since="$log_window" >"$work/log" 2>"$work/log.err"; then
+      read_json=$(jq -R -c 'fromjson? | select(type == "object" and .msg == "listener legacy subjects")' "$work/log" |
+        jq -cs --arg window "$log_window" 'if length == 0
+          then {ok: false, error: "its log holds no \"listener legacy subjects\" line from the last \($window): its build predates that line, or it is not logging it"}
+          else last | {ok: true, text: (.metrics | strings // ""), at: (.at | numbers // null)} end')
     else
-      read_json=$(jq -cn --arg error "$(first_line "$work/metrics.err")" '{ok: false, error: $error}')
+      read_json=$(jq -cn --arg error "$(first_line "$work/log.err")" '{ok: false, error: "its log could not be read: \($error)"}')
     fi
   fi
   jq -c --argjson read "$read_json" '. + {read: $read}' <<<"$entry" >>"$work/pod-reads.jsonl"
@@ -227,7 +267,7 @@ for entry in ${outside[@]+"${outside[@]}"}; do
   if status=$(curl -sS --max-time 15 -o "$work/metrics" -w '%{http_code}' "$url/metrics" 2>"$work/metrics.err") && [ "$status" = 200 ]; then
     read_json=$(jq -cn --rawfile text "$work/metrics" '{ok: true, text: $text}')
   else
-    read_json=$(jq -cn --arg error "${status:+HTTP $status }$(first_line "$work/metrics.err")" '{ok: false, error: $error}')
+    read_json=$(jq -cn --arg error "${status:+HTTP $status }$(first_line "$work/metrics.err")" '{ok: false, error: "its /metrics could not be read: \($error)"}')
   fi
   jq -cn --arg name "$name" --arg url "$url" --argjson read "$read_json" '{name: $name, url: $url, read: $read}' >>"$work/outside-reads.jsonl"
 done
@@ -239,21 +279,22 @@ job_error=""
 if ! kc -n "$job_namespace" get deployment "$listener_deployment" -o json >"$work/deployment.json" 2>"$work/deployment.err"; then
   job_error="the listener Deployment $job_namespace/$listener_deployment could not be read: $(first_line "$work/deployment.err")"
 else
-  jq -c "$listener_container"'
+  jq -c --arg token "$token_file" "$listener_container"'
     .spec.template.spec as $s
     | [$s.containers[] | listener_container] as $listeners
     | ($listeners | first // {}) as $c
     | ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null) as $urls
-    | ([$c.env[]? | select(.name == "NATS_NKEY_SEED_FILE") | .value // empty] | first // null) as $seed
-    | (if $seed == null then null else ([$c.volumeMounts[]? | . as $m | select($seed | startswith(($m.mountPath | rtrimstr("/")) + "/"))] | first) end) as $mount
+    | (if $token != "" then $token else ([$c.env[]? | select(.name == "NATS_NKEY_SEED_FILE") | .value // empty] | first // null) end) as $file
+    | (if $file == null then null else ([$c.volumeMounts[]? | . as $m | select($file | startswith(($m.mountPath | rtrimstr("/")) + "/"))] | first) end) as $mount
     | (if $mount == null then null else ([$s.volumes[]? | select(.name == $mount.name)] | first) end) as $volume
-    | {listeners: ($listeners | length), sa: ($s.serviceAccountName // null), urls: $urls, seed: $seed, mount: $mount, volume: $volume}' \
+    | {listeners: ($listeners | length), sa: ($s.serviceAccountName // null), urls: $urls,
+       credential: (if $token != "" then "token" else "seed" end), file: $file, mount: $mount, volume: $volume}' \
     "$work/deployment.json" >"$work/identity.json"
   missing=$(jq -r '[if .listeners != 1 then "one listener container (it has \(.listeners))" else empty end,
       if .sa == null then "a ServiceAccount" else empty end,
       if .urls == null then "NATS_URLS" else empty end,
-      if .seed == null then "a NATS seed file (NATS_NKEY_SEED_FILE): the gate dials NATS only with the listener seed" else empty end,
-      if .seed != null and .mount == null then "a volume mount holding \(.seed)" else empty end,
+      if .file == null then "a NATS seed file (NATS_NKEY_SEED_FILE): name the listener'"'"'s projected NATS token with --token-file once the hub is not static" else empty end,
+      if .file != null and .mount == null then "a volume mount holding \(if .credential == "token" then "the token file" else "the seed file" end) \(.file)" else empty end,
       if .mount != null and .volume == null then "the volume \(.mount.name)" else empty end] | join("; ")' "$work/identity.json")
   if [ -n "$missing" ]; then
     job_error="the listener Deployment $job_namespace/$listener_deployment lacks $missing"
@@ -263,9 +304,10 @@ else
     owner=${owner%-}
     jq -n --arg name "$job" --arg namespace "$job_namespace" --arg owner "${owner:-unknown}" \
       --arg image "$nats_box" --rawfile script "$job_script" --argjson deadline "$job_deadline" \
-      --slurpfile identity "$work/identity.json" '
+      --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" '
       $identity[0] as $id
       | {"app.kubernetes.io/name": "legacy-subjects-gate", "created-by": "legacy-subjects-gate", owner: $owner} as $labels
+      | "legacy-subjects-gate-work" as $scratch
       | {apiVersion: "batch/v1", kind: "Job",
          metadata: {name: $name, namespace: $namespace, labels: $labels},
          spec: {backoffLimit: 0, activeDeadlineSeconds: $deadline, ttlSecondsAfterFinished: 600,
@@ -274,11 +316,14 @@ else
              securityContext: {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534,
                seccompProfile: {type: "RuntimeDefault"}},
              containers: [{name: "read", image: $image, command: ["sh", "-c", $script],
-               env: [{name: "NATS_URL", value: $id.urls}, {name: "NATS_NKEY", value: $id.seed}],
-               volumeMounts: [$id.mount + {readOnly: true}],
+               env: ([{name: "NATS_URL", value: $id.urls},
+                      (if $id.credential == "token" then {name: "NATS_TOKEN_FILE", value: $id.file} else {name: "NATS_NKEY", value: $id.file} end),
+                      {name: "WORK_DIR", value: "/work"}]
+                     + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)),
+               volumeMounts: [$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}],
                resources: {requests: {cpu: "250m", memory: "512Mi"}, limits: {cpu: "250m", memory: "512Mi"}},
                securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}],
-             volumes: [$id.volume]}}}}' >"$work/job.json"
+             volumes: [$id.volume, {name: $scratch, emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]}}}}' >"$work/job.json"
     if ! kc -n "$job_namespace" create -f "$work/job.json" -o name >"$work/create.out" 2>"$work/create.err"; then
       job_error="the Job could not be created: $(first_line "$work/create.err")"
       job=""
@@ -331,7 +376,19 @@ jq -n \
     pods_error: (if $pods_error == "" then null else $pods_error end),
     pods: $pods, outside: $outside,
     job: {ok: ($job_ok == 1), error: (if $job_error == "" then null else $job_error end), lines: $lines}}' >"$work/input.json"
-jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json"
+# A judgement that fails on what it was given (a fault in the judge itself) is a reading that could
+# not be judged: UNKNOWN, with a line and a record naming the failure, never a bare jq exit.
+if ! jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json" 2>"$work/judge.err"; then
+  jq -n --arg context "$context" --argjson started "$started_at" --argjson finished "$finished_at" \
+    --argjson earlier "$earlier" --arg error "$(first_line "$work/judge.err")" '
+    "the judgement could not read what the gate read: \($error | gsub("[[:cntrl:]]"; "?"))" as $why
+    | {verdict: "unknown", window: 259200, lines: ["UNKNOWN: " + $why],
+       record: {gate: "legacy-subjects-gate", version: 2, context: $context, started_at: $started,
+         finished_at: $finished, read_at: ($started | todate), verdict: "unknown",
+         compared_with: (if $earlier == null then null else $earlier.read_at end),
+         identity: null, stream: null, listeners: [], consumers_old: [], subjects_old: [], interests_old: [],
+         shut: [], unknown: [$why]}}' >"$work/judgement.json"
+fi
 
 jq -r '.lines[]' "$work/judgement.json"
 if [ "$job" != "" ] && [ "$job_deleted" = 0 ]; then

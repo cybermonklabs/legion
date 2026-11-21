@@ -626,6 +626,13 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
+	// A message the lane takes is a send its publisher made on NATS: one whose topic names its
+	// role in the old form is counted here, once, as the lane takes it (store.Registry.ReadRole),
+	// and not again where a retried resolution, the session relay or a takeover pass reads the
+	// same topic (roleOfLaneTopic). No caller waits on the lane for an answer to warn.
+	if lane, ok := strings.CutPrefix(item.Topic, contracts.RoleTopicPrefix); ok {
+		cfg.registry.ReadRole(lane)
+	}
 	if forward, ok := resolveRoleForward(cfg, item); ok {
 		cfg.roleForwards.enqueue(forward)
 	}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -256,6 +258,87 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A role named in its old form, the name alone, wherever the listener reads it to send to its
+// holder or to look the holder up - a publish to the role's lane, a message the role lane takes on
+// NATS, and GET /v1/roles/<role> - is counted (kind="role_read"), as a claim in the old form is
+// counted (kind="role"): a publisher that only sends to a role is still on the old form, and its
+// sends would stop resolving once the old form is refused, so the count is what
+// legacy-subjects-gate.sh reads to see it. The publish is answered with the warning the claim and
+// registration routes give an old form, naming the new one. The same role in its new form is
+// counted and warned nowhere.
+func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
+	const role = "lead-reviewer"
+	const holder = "ses_role_read_holder"
+	harness := newListenerDeliveryHarness(t)
+	counter := &legacyKinds{}
+	counting, err := store.Open(t.Context(), harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	if err != nil {
+		t.Fatalf("open a counting registry: %v", err)
+	}
+	waitForRegistry(t, counting)
+	if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register the holder: %v", err)
+	}
+	if _, err := counting.SetRole(holder, "test-machine", role, false); err != nil {
+		t.Fatalf("claim %s: %v", role, err)
+	}
+	startStandIn(t, testnats.URL(t), holder)
+
+	state := withPublishRoute(t, &listenerDeps{client: harness.client, registry: counting, sessions: harness.sessions})
+	publish := publishHandler(state, logging.New("test"))
+	laneConfig := harness.config
+	laneConfig.registry = counting
+	laneConfig = wireTestRoleForwarder(t, laneConfig)
+	lane := coreNATSDeliveryHandler(laneConfig)
+
+	// readEach reads the role under topic through each of the three readers, and answers the
+	// publish's warnings.
+	readEach := func(topic, path string) []string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		publish.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish",
+			strings.NewReader(`{"topic":"`+topic+`","message":"please review","source":"agent"}`)))
+		var answer struct {
+			Holder   string    `json:"holder"`
+			Warnings *[]string `json:"warnings"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the publish to %s: %v", topic, err)
+		}
+		if recorder.Code != http.StatusOK || answer.Holder != holder {
+			t.Fatalf("a publish to %s answered %d %s, want 200 naming %s", topic, recorder.Code, recorder.Body.String(), holder)
+		}
+
+		recorder = httptest.NewRecorder()
+		roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET /v1/roles/%s answered %d %s, want 200", path, recorder.Code, recorder.Body.String())
+		}
+
+		lane(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(topic, "role-read-"+path))})
+		laneConfig.roleForwards.settled(t)
+		if answer.Warnings == nil {
+			return nil
+		}
+		return *answer.Warnings
+	}
+
+	if warnings := readEach(contracts.RoleSubject(contracts.NoProject, role), contracts.NoProject+"."+role); warnings != nil {
+		t.Fatalf("the new form's publish carries warnings %q, want the key left out", warnings)
+	}
+	if got := counter.counted(); len(got) != 0 {
+		t.Fatalf("the new form was counted %q, want nothing", got)
+	}
+
+	current := contracts.NoProject + "." + role
+	if warnings, want := readEach(contracts.RoleTopicPrefix+role, role), []string{role + " is the old form of " + current + "; name " + current}; !slices.Equal(warnings, want) {
+		t.Fatalf("the old form's publish warns %q, want %q", warnings, want)
+	}
+	if got, want := counter.counted(), []string{"role_read", "role_read", "role_read"}; !slices.Equal(got, want) {
+		t.Fatalf("the old form, read by the publish route, GET /v1/roles/<role> and the role lane, was counted %q, want %q", got, want)
 	}
 }
 

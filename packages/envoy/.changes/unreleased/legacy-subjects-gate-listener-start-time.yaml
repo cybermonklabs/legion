@@ -5,8 +5,12 @@ body: |-
   The listener serves its process's start on `/metrics` as `envoy_listener_start_time_seconds`, in
   Unix seconds, from its first scrape. Every counter on the page counts from that moment, so two
   scrapes of a counter belong to one process only while this sample is the same in both; for a
-  listener outside a cluster nothing else shows a restart. `scripts/legacy-subjects-gate.sh`, new,
-  reads every listener's `envoy_listener_legacy_subjects_total` beside it, every consumer of the
-  stream, the stream's subjects and the interest store, twice at least 72 hours apart, and prints
-  `GATE OPEN` only when no old-form name is in use anywhere: the reading to take before the old form
-  is refused.
+  listener outside a cluster nothing else shows a restart. Every minute the listener also logs the
+  old-form counter and the start-time gauge, as `/metrics` serves them, on a `listener legacy
+  subjects` line. A role named in its old form, the name alone, where the listener reads it for a
+  send or a lookup (the publish route, the role lane, `GET /v1/roles/<role>`) is counted under
+  `envoy_listener_legacy_subjects_total{kind="role_read"}`, and a publish to it is answered with
+  `warnings` naming the new form. `scripts/legacy-subjects-gate.sh`, new, reads every listener's
+  counter (a listener in a cluster from that log line), every consumer of the stream, the stream's
+  subjects and the interest store, twice at least 72 hours apart, and prints `GATE OPEN` only when
+  no old-form name is in use anywhere: the reading to take before the old form is refused.

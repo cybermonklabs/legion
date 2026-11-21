@@ -79,6 +79,24 @@ func (r *Registry) ClaimedRole(role string) (name, warning string) {
 	return name, role + " is the old form of " + current + "; claim " + current
 }
 
+// ReadRole reads a role that a publish to its lane, a message on the role lane or a holder lookup
+// (GET /v1/roles/<role>) names, in either form (contracts.CanonicalRole), and answers the role's
+// name, which its claim record is keyed by, with a warning for the old form, "<old> is the old form
+// of <project>.<name>; name <project>.<name>", counted (kind="role_read"). A role in the new form
+// answers its name and no warning, and an empty name, which names no role, is not counted. It is
+// ClaimedRole's count for every other reader of a role name: a publisher that only sends to a
+// role, never claims one, is still on the old form, and its sends stop resolving once the old form
+// is refused.
+func (r *Registry) ReadRole(role string) (name, warning string) {
+	project, name, legacy := contracts.CanonicalRole(role)
+	if !legacy || name == "" {
+		return name, ""
+	}
+	r.countLegacy("role_read")
+	current := project + "." + name
+	return name, role + " is the old form of " + current + "; name " + current
+}
+
 // countLegacy counts one old-form name of kind, when the registry was opened with a counter.
 func (r *Registry) countLegacy(kind string) {
 	if r.legacySubjects != nil {

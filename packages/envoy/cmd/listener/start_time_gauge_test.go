@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -36,6 +37,54 @@ func TestTheStartTimeGaugeIsTheProcessStart(t *testing.T) {
 	second := startListenerProcess(t, binary, uri, "start-time-gauge-second")
 	if again := startTimeSample(t, second); again < answered {
 		t.Fatalf("the second process reports envoy_listener_start_time_seconds = %d, before %d, when the first had already answered: the sample is not its own process's start", again, answered)
+	}
+}
+
+// A listener logs its old-form counter and its start-time gauge, as /metrics serves them, on a
+// line of its own ("listener legacy subjects", attribute metrics) with the Unix second it read
+// them at (attribute at), once as it starts and every minute after. legacy-subjects-gate.sh reads
+// a listener in a cluster from that line of its pod's log: the operator who runs the gate may read
+// each listener pod's log, and may not reach Dispatch's listener's /metrics (no pod proxy in that
+// namespace, and a NetworkPolicy admitting its port from Dispatch's pods alone). The line's start
+// sample is the one /metrics serves, and its counter is declared with its TYPE line, which the
+// gate requires of a build that counts old-form names at all.
+func TestTheListenerLogsItsOldFormCounterAndStart(t *testing.T) {
+	uri := testnats.URL(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	before := time.Now().Unix()
+	listener := startListenerProcess(t, binary, uri, "legacy-subjects-log")
+	scraped := startTimeSample(t, listener)
+	listener.WaitForOutput(t, `"msg":"`+legacySubjectsLogLine+`"`)
+
+	type logLine struct {
+		Msg     string `json:"msg"`
+		At      int64  `json:"at"`
+		Metrics string `json:"metrics"`
+	}
+	var logged []logLine
+	for line := range strings.SplitSeq(listener.Output.String(), "\n") {
+		var entry logLine
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == legacySubjectsLogLine {
+			logged = append(logged, entry)
+		}
+	}
+	if len(logged) == 0 {
+		t.Fatalf("no line of the listener's output is a JSON %q line:\n%s", legacySubjectsLogLine, listener.Output.String())
+	}
+	first := logged[0]
+	if first.At < before || first.At > time.Now().Unix() {
+		t.Fatalf("the line's at = %d, want the moment it was logged, between %d and now", first.At, before)
+	}
+	if !strings.Contains(first.Metrics, "# TYPE "+legacySubjectsMetric+" counter\n") {
+		t.Fatalf("the line's metrics carry no TYPE line naming %s a counter:\n%s", legacySubjectsMetric, first.Metrics)
+	}
+	if fromLog := oneStartTimeSample(t, first.Metrics); fromLog != scraped {
+		t.Fatalf("the line's %s = %d, want /metrics' %d", startTimeMetric, fromLog, scraped)
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(first.Metrics), "\n") {
+		if !strings.Contains(line, legacySubjectsMetric) && !strings.Contains(line, startTimeMetric) {
+			t.Fatalf("the line's metrics carry %q, which is neither metric", line)
+		}
 	}
 }
 
