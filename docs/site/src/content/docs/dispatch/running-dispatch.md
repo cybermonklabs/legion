@@ -726,13 +726,19 @@ server ignores a write's `Idempotency-Key`, so while both run a write whose answ
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can
 reach the other version. At one replica the Deployment's `Recreate` already stops the old pod
 first; above one replica, scale to zero before the new version starts. Releases after it roll
-again. Rolling it back brings the hazard back the other way: a tab still open, and a `dispatch`
-client that saw this version keep keys in the last five minutes, retry a write whose answer was
-lost against the earlier server, which runs it again. So fix it forward, as above; if you must roll
-back, stop this version first, knowing a write in flight at that moment may land twice. Once a
-later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
-this version also stops broadcasts: the earlier version's broadcast send reads and writes that
-table, so every broadcast send fails while the rest of that version keeps working. A tab opened
+again. Rolling it back brings the hazard back the other way: a tab still open, and every
+`dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
+write whose answer was lost against the earlier server, which runs it again. So fix it forward,
+as above; if you must roll back, stop this version first, knowing a write in flight at that
+moment may land twice. Rolling back to a build whose keyed layer passes a caller it cannot
+resolve on to the handler, rather than answering that caller itself, brings the double write back
+too, for as long as that build serves: a `dispatch` command that sends a failed write again
+without reading `/healthz` can have that build run it once with no key and again under its key.
+Once your sessions run such a command, do not roll Dispatch back past `b1c42d1d7d` (the first
+build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
+Once a later release has dropped the broadcast send's old key table (migration `0141`),
+rolling back past this version also stops broadcasts: the earlier version's broadcast send reads and
+writes that table, so every broadcast send fails while the rest of that version keeps working. A tab opened
 before the deploy needs a reload: its event route is gone and it shows
 **Live updates unavailable**, and its broadcast body still carries a field the new server refuses.
 

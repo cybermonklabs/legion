@@ -649,6 +649,13 @@ pods, a write blocked for a third of a second completed the moment the page sent
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
 
+## A fake HTTP server whose client gives up on requests
+
+A fake `httptest` server whose handler fails the test on a request body it cannot read stops with `Shutdown` before `Close` when its client sends requests the test does not wait for, as the Cloud SQL connector does when it gives up on a refresh.
+With `Close` alone, the stop can close a connection whose request headers the server has read but whose handler has not started: the handler then runs on the closed connection, reads the body as `use of closed network connection`, and fails the test for nothing the code under test did, as `TestTheWriterTokenFileIsReadAgainAtEachExchange` failed in CI's daemon-go (job 136636895793).
+`stopServing` in `packages/daemon/internal/sessionproxy/connector_test.go` is that stop, and its comment says why it calls `Shutdown` before `Close` and where net/http checks Shutdown's mark; `TestStopServingRunsNoHandlerOnAConnectionItCloses` beside it fails with `Close` alone.
+A fake whose handler fails the test on every request keeps `Close` alone, so a request whose headers the server has read by then still fails the test.
+
 ## A test that starts jj or git names a working directory
 
 jj searches upward from the directory it runs in for the closest `.jj` and opens that repository, and it has no ceiling option.
