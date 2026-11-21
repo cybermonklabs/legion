@@ -2187,6 +2187,7 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
+BROWSER_MP_OUTSIDE = "Drive the outside driver through a stand-in edge"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
@@ -3169,6 +3170,14 @@ GATES = [
          "the build that publishes that image: its labels, platforms and action pins decide the "
          "bytes of the image dispatch-browser.yaml's shard and alone jobs pin"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
+        # The outside driver's test runs on envoy-client's relay socket stand-in and its subscribe
+        # answer, which are test modules of that package, not its sources envoy_client_dep reads.
+        ("packages/envoy-client/test/relay-socket-stand-in.ts",
+         f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)} runs packages/dispatch/e2e/__tests__/"
+         "outside-edge.test.ts, whose e2e/__tests__/outside-edge-stand-in.ts imports it"),
+        ("packages/envoy-client/test/subscribe-answer.ts",
+         f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)} runs packages/dispatch/e2e/__tests__/"
+         "outside-edge.test.ts, whose e2e/__tests__/outside-edge-stand-in.ts imports it"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)

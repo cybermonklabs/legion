@@ -18,7 +18,8 @@ import { harnessPorts } from "./harness-ports";
 // (the credential requests waiting on an approver, and the expired ones nobody dismissed),
 // `GET /v1/grants` (the live grants of a person's sessions and those the person approved) and
 // `GET /v1/person-signins` (the machines one person signed in on); `GET /v1/launcher-credentials`
-// (the machine logins one person may revoke), which the machine-login page lists; the two routes
+// (the machine logins one person may revoke), which the machine-login page lists, and
+// `POST /v1/launcher-credentials/{id}/revoke-by-approver`, its revoke of one; the two routes
 // that page drives: `POST /v1/machine-logins/lookup` (the login a typed code selects) and
 // `POST /v1/credential-requests/{id}/approve|deny` (that login's decision, carrying the code
 // again); `POST /v1/credential-requests/{id}/dismiss`, which the Inbox's Dismiss of an expired
@@ -263,6 +264,27 @@ const server = Bun.serve({
           .map(({ listedFor: _, ...row }) => row),
       };
       return Response.json(body);
+    }
+    // A revoke of one of them, as the broker's revoke-by-approver takes it: a row listed for the
+    // approver the body names leaves every list; any other id is unknown to that approver.
+    const revoked = /^\/v1\/launcher-credentials\/([^/]+)\/revoke-by-approver$/.exec(url.pathname);
+    if (request.method === "POST" && revoked !== null) {
+      const credentialID = decodeURIComponent(revoked[1] ?? "");
+      const { approver } = (await request.json()) as { approver?: string };
+      const found = state.launcherCredentials.find(
+        (row) => row.credential_id === credentialID && row.listedFor === approver
+      );
+      if (found === undefined) {
+        return brokerError(404, "NOT_FOUND", "no machine login of that approver has that id");
+      }
+      state = {
+        ...state,
+        launcherCredentials: state.launcherCredentials.filter(
+          (row) => row.credential_id !== credentialID
+        ),
+      };
+      const answer: StateResponse = { state: "revoked" };
+      return Response.json(answer);
     }
     // The RFC 8414 document, public on the real broker too: Dispatch reads
     // `grant_types_supported` from it and serves the machine-code page only while it names the

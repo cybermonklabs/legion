@@ -145,6 +145,7 @@
         "@axe-core/playwright": "^4.14.0",
         "@biomejs/biome": "^2.3.14",
         "@happy-dom/global-registrator": "^20.14.0",
+        "@legion/cipher-client": "workspace:*",
         "@legion/envoy-client": "workspace:*",
         "@legion/test-fixtures": "workspace:*",
         "@mswjs/interceptors": "0.45.11",

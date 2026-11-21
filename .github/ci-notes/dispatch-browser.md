@@ -773,7 +773,8 @@ two steps: the image's pull, which has no budget and counts at the 120 s the vis
 counts its pull of the same digest at (the time a browser step spent before its stack's
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
-2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
+2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min, and the outside driver's step adds its
+16 min (its own section below): 32 min 15 s -> 33 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
@@ -873,6 +874,33 @@ Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=o
 e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
 step before built the dashboard; B serves A's build, which this spec does not tell apart.
 Its Postgres is a second one the harness starts from the same image.
+
+## What the outside driver's step runs and its budget
+
+packages/dispatch/e2e/__tests__/outside-edge.test.ts: the outside driver
+(e2e/acceptance/outside-edge.ts) run once per case against one stack of the harness under
+DISPATCH_E2E_SIGNIN=google, whose server answers at a second origin with passkey sign-in on,
+and an edge stand-in on envoy-client's relay socket stand-in
+(e2e/__tests__/outside-edge-stand-in.ts). Its stack rows need the dashboard the dashboard step
+built and a Postgres, which the harness starts from the image this job pulled; with neither
+DISPATCH_E2E_PG_IMAGE nor DISPATCH_E2E_PG_BIN they skip, which is why the step exports one. Its
+control rows run the driver against an outside origin stand-in
+(e2e/__tests__/outside-edge-origin-stand-in.ts) and need Chromium, and skip where it is not
+installed. It runs in this job because this job already holds a built dashboard, Chromium and
+that image.
+
+Its budget is its rows' own limits, not its readings. The readings come from one developer box:
+at a load average of 650 to 850 on 2026-11-20 the stack child, one stack and six driver runs,
+took 89 s and 247 s; at about 1160 on 2026-11-21, with one more `t5` run and the control rows,
+the stack child took 227 s, the slowest control run 21.58 s, and `bun run test:harness
+e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts` 302 s. 302 s x
+1.15 = 347 s would give 6 min, but packages/dispatch/e2e/__tests__/bounded-subprocess.ts bounds
+the stack child at three times its largest reading, 750 s, and the rows wait 780 s for it, so a
+6-minute step would kill a stuck stack before the bound names it. The file's other rows run one
+after another beside that row: the input rows and the control rows took about 100 s together,
+and the longest control row's own limit is 105 s, less than the stack's green 227 s. 780 s and
+100 s -> 15 min, and one more for the step's own start: 16 min. It costs nothing on a green run,
+which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone
 

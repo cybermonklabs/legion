@@ -70,10 +70,20 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `outsideEdgeStack`, against 247 s: the largest of the runs of `outside-edge-stack.ts` in which
+ *   every step goes through, 89 s and 247 s, each one stack and six runs of the outside driver,
+ *   on a developer box at a load average of about 850 on 2026-11-20, with the stack's Postgres
+ *   out of DISPATCH_E2E_PG_BIN. 247 s x 3 = 741 s, so twelve and a half minutes. A later run of
+ *   it, on 2026-11-21 at a load average of about 1160 with one more `t5` run, took 227 s.
+ * - `outsideEdgeBrowser`, against 21.58 s: the largest of the 11 runs of the outside driver that
+ *   start Chromium against `outside-edge-origin-stand-in.ts` in `outside-edge.test.ts`, six of them
+ *   at once, on that developer box at a load average of about 1160 on 2026-11-21. 21.58 s x 3 =
+ *   64.74 s, so 75 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
+ * laptop as in CI: a `short` child after 60 s, a driver run against the stand-in origin after
+ * 75 s, a listing after 6 minutes, the generation after 6.5 minutes, the outside driver's stack
+ * after 12.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
  * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
  * fires before the row's limit and the failure names the child. The lane runs in the
  * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
@@ -88,8 +98,11 @@
  * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
  * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
  * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips
- * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of
- * `ci.yaml` names either.
+ * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and the
+ * `dispatch-ui` job names neither. `outside-edge.test.ts`'s stack rows skip on the same rule
+ * there, and run in `.github/workflows/dispatch-browser.yaml`'s two-process job, which names the
+ * image: that step's 14-minute budget is set above their 780 000 ms row limit, so a stuck stack
+ * fails there by its own name before the step is killed.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -108,6 +121,11 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** `outside-edge-stack.ts`, which starts one stack and runs the outside driver against it. */
+  outsideEdgeStack: 750_000,
+  /** One run of the outside driver that starts Chromium against a stand-in origin and nothing
+   *  else: no stack, no Go build. */
+  outsideEdgeBrowser: 75_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
