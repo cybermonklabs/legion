@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -510,5 +512,175 @@ func TestTheEraseListsAnAncestorsExcerptItLeaves(t *testing.T) {
 	if !listed(erasure, "leave public.document_blocks", "[block:"+outer+"]", "excerpt") {
 		t.Errorf("the listing of the erase of %s names no row left for the excerpt of %s, which still holds the erased text:\n%s",
 			seeded.inner, outer, strings.Join(erasure.Listing, "\n"))
+	}
+}
+
+// requireRowsCounted holds one table's line of what the erase removed or rewrote (Erasure.Rows,
+// Erasure.RedactedRows) to want rows, 0 being no line.
+func requireRowsCounted(t *testing.T, counted []ErasedRows, what, table string, want int64) {
+	t.Helper()
+	var got int64
+	for _, rows := range counted {
+		if rows.Table == table {
+			got = rows.Rows
+		}
+	}
+	if got != want {
+		t.Errorf("the erase counts %d %s row(s) of %s, want %d: %+v", got, what, table, want, counted)
+	}
+}
+
+// R5: the keyword fill writes a row of the keyword table (search_text_versions) for each version
+// of a comment's text, its body the text and its vector the text's lexemes, and those rows derive
+// from the comment. The erased comment reads one word, which a vector spells as written, and the
+// table holds two versions of it. Another person's comment repeats the word, and so do a version
+// of an issue message and one of an ask: each is that item's text. No erase takes a message or an
+// ask, neither being a node of the store, so their rows are what holds the derivation to the node
+// and not to the kind. The listing names each of the erased comment's versions as a row the run
+// deletes, in event_seq order, and each of the three others as a row it leaves, by its key and the
+// columns holding the word. After the run the erased comment has no version, the three others read
+// byte for byte as they did, and no other row of the table holds the word in its body or its
+// vector.
+func TestTheEraseDeletesACommentsKeywordVersionsAndLeavesOtherItemsThatRepeatItsWord(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const word = "quokka7lighthouse"
+	if _, err := database.Pool.Exec(ctx, `update comments set body = $2 where id = $1::uuid`, seeded.comment, word); err != nil {
+		t.Fatalf("write the comment's body: %v", err)
+	}
+	other, otherEvent := writeIssueComment(t, database, "", model.Actor{Kind: "user", ID: "bob"}, "Bob repeats it: "+word)
+	writeKeywordVersion(t, database.Pool, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 1,
+		body: "A first draft: " + word})
+	writeKeywordVersion(t, database.Pool, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 2, body: word})
+	others := []keywordVersion{
+		{kind: "ask", id: "00000000-0000-4000-8000-0000000000a5", issue: "CORE-1", project: "CORE", seq: 1,
+			body: "Should we ship " + word + "? yes no"},
+		{kind: commentNodeKind, id: other, issue: "CORE-1", project: "CORE", seq: 1, event: otherEvent, body: "Bob repeats it: " + word},
+		{kind: "message", id: "00000000-0000-4000-8000-0000000000e5", issue: "CORE-1", project: "CORE", seq: 1,
+			body: "A message quotes it: " + word},
+	}
+	before := make([]string, len(others))
+	for index, version := range others {
+		writeKeywordVersion(t, database.Pool, version)
+		before[index] = keywordVersionRow(t, database, version.kind, version.id, version.seq)
+	}
+	if held := keywordVersionsHolding(t, database, word); len(held) != 2+len(others) {
+		t.Fatalf("before the erase %d keyword version(s) hold the word, want the erased comment's two and one of each other item, so this test would prove nothing: %q",
+			len(held), held)
+	}
+
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	first := slices.Index(listing.Listing, "    delete search_text_versions comment "+seeded.comment+" event_seq 1")
+	second := slices.Index(listing.Listing, "    delete search_text_versions comment "+seeded.comment+" event_seq 2")
+	if first < 0 || second < first {
+		t.Errorf("the listing does not name the erased comment's two keyword versions, in event_seq order, as rows the run deletes:\n%s",
+			strings.Join(listing.Listing, "\n"))
+	}
+	for _, version := range others {
+		if !listed(listing, "leave public.search_text_versions (kind, id, event_seq)=("+version.kind+","+version.id+",1) body, search") {
+			t.Errorf("the listing does not name the keyword version of %s %s as a row the run leaves holding the word:\n%s",
+				version.kind, version.id, strings.Join(listing.Listing, "\n"))
+		}
+	}
+	if listed(listing, "leave public.search_text_versions", seeded.comment) {
+		t.Errorf("the listing names a keyword version of the erased comment as a row that derives from another node:\n%s",
+			strings.Join(listing.Listing, "\n"))
+	}
+
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase --confirm %s: %v", listing.Digest, err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	requireRowsCounted(t, erasure.Rows, "deleted", "search_text_versions", 2)
+	if rows := keywordVersionsOf(t, database, commentNodeKind, seeded.comment); rows != 0 {
+		t.Errorf("after the erase the keyword table holds %d version(s) of the erased comment, want none", rows)
+	}
+	want := make([]string, len(others))
+	for index, version := range others {
+		if after := keywordVersionRow(t, database, version.kind, version.id, version.seq); after != before[index] {
+			t.Errorf("the erase changed the keyword version of %s %s:\nbefore %s\nafter  %s", version.kind, version.id, before[index], after)
+		}
+		want[index] = "(" + version.kind + "," + version.id + ",1) body search: " + version.body
+	}
+	if held := keywordVersionsHolding(t, database, word); !slices.Equal(held, want) {
+		t.Errorf("after the erase the keyword versions holding the word are %q, want those of the three other items alone, %q", held, want)
+	}
+}
+
+// R5: an issue's keyword versions (search_text_versions) each hold in their vector the issue's key
+// and title and the words of the version of its spec they name, and the words of a block of the
+// spec there derive from that block. The erase of a block takes the versions of its spec it stood
+// in holding its text, and writes again the vector of each of the issue's keyword versions that
+// names one, by the expression the keyword fill writes it with, which then reads no markdown for
+// that version. The block reads one word, which a vector spells as written: version 2 of the spec
+// holds it, version 1 does not, and the issue has a keyword version naming each. The listing names
+// the one at version 2 as a vector the run rewrites and the one at version 1 not at all; after the
+// run the first holds none of the word and still holds the issue's title, and the other reads byte
+// for byte as it did.
+func TestTheBlockEraseRewritesTheKeywordVectorsOfItsIssueAtTheVersionsItDeletes(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const word, title = "zebra9quarantine", "Rotate the signing keys"
+	artifact := seeded.document.artifactID
+	if _, err := database.Pool.Exec(ctx, `update artifacts set is_primary = true where id = $1::uuid`, artifact); err != nil {
+		t.Fatalf("make %s CORE-1's spec: %v", seeded.document.refKey, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update issues set title = $1 where key = 'CORE-1'`, title); err != nil {
+		t.Fatalf("title CORE-1: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1::uuid, 2, $2, '[{"kind":"user","id":"alice"}]')`, artifact, "Written before the store existed.\n\n"+word); err != nil {
+		t.Fatalf("write version 2 of the spec: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_texts (artifact_id, block_id, version, text) values ($1::uuid, 'inner', 2, $2)`,
+		artifact, word); err != nil {
+		t.Fatalf("write the inner block's text at version 2: %v", err)
+	}
+	for _, version := range []int32{1, 2} {
+		writeKeywordVersion(t, database.Pool, keywordVersion{kind: "issue", id: "CORE-1", issue: "CORE-1", project: "CORE",
+			seq: version, body: title, specArtifact: artifact, specVersion: version})
+	}
+	atOne := keywordVersionRow(t, database, "issue", "CORE-1", 1)
+	if held := keywordVersionsHolding(t, database, word); len(held) != 1 || !strings.HasPrefix(held[0], "(issue,CORE-1,2) search:") {
+		t.Fatalf("before the erase the keyword versions holding the word are %q, want CORE-1's at version 2 alone, so this test would prove nothing", held)
+	}
+
+	erasure, err := confirmedErase(t, database, refs.BlockNodeKind, seeded.inner, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase %s: %v", seeded.inner, err)
+	}
+	if !erasure.Applied || len(erasure.Versions) != 1 || erasure.Versions[0].Version != 2 {
+		t.Fatalf("the erase of %s answered applied %t and the versions %+v, want version 2 of the spec ended: %q",
+			seeded.inner, erasure.Applied, erasure.Versions, erasure.Blockers)
+	}
+	if !listed(erasure, "rewrite search_text_versions.search of issue CORE-1 event_seq 2") {
+		t.Errorf("the listing does not name CORE-1's keyword version at version 2 as a vector the run rewrites:\n%s",
+			strings.Join(erasure.Listing, "\n"))
+	}
+	if listed(erasure, "search_text_versions", "CORE-1", "event_seq 1") || listed(erasure, "leave public.search_text_versions") {
+		t.Errorf("the listing names CORE-1's keyword version at version 1, which the block did not stand in, or one it leaves:\n%s",
+			strings.Join(erasure.Listing, "\n"))
+	}
+	requireRowsCounted(t, erasure.RedactedRows, "rewritten", "search_text_versions", 1)
+	var heldWord, heldTitle bool
+	if err := database.Pool.QueryRow(ctx, `
+		select position($1 in search::text) > 0, search @@ plainto_tsquery('english', $2)
+		from search_text_versions where kind = 'issue' and id = 'CORE-1' and event_seq = 2`, word, title).Scan(&heldWord, &heldTitle); err != nil {
+		t.Fatalf("read CORE-1's keyword version at version 2 after the erase: %v", err)
+	}
+	if heldWord || !heldTitle {
+		t.Errorf("after the erase CORE-1's keyword version at version 2 holds the erased word: %t, and the title's words: %t; want none of the one and all of the other",
+			heldWord, heldTitle)
+	}
+	if after := keywordVersionRow(t, database, "issue", "CORE-1", 1); after != atOne {
+		t.Errorf("the erase changed CORE-1's keyword version at version 1, which the block did not stand in:\nbefore %s\nafter  %s", atOne, after)
+	}
+	if held := keywordVersionsHolding(t, database, word); len(held) != 0 {
+		t.Errorf("after the erase the keyword versions %q still hold the erased word", held)
 	}
 }

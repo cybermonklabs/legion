@@ -238,6 +238,12 @@ type Introspection struct {
 	// MaxProjects projects its trade asked for, each one its person could see then; for a
 	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
+	// Restricted is whether the token's person is a restricted member, who sees only the projects
+	// the token lists, in every state of every project; false is a full member, whose list limits
+	// only the private projects it sees, or a token that names no person. Absent, which is every
+	// token an earlier broker minted and a machine login's own token, reads as restricted at every
+	// reader (IsRestricted), so no reader widens what a token sees on a claim nobody decided.
+	Restricted *bool `json:"restricted,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
 	// machine login's own token holds Scope.
@@ -251,4 +257,9 @@ type Introspection struct {
 	// It is what makes a stolen token useless: whoever reads this answer checks the caller's
 	// proof against it.
 	Thumbprint string `json:"jkt,omitempty"`
+}
+
+// IsRestricted is answer's Restricted with an absent claim read as restricted.
+func (answer Introspection) IsRestricted() bool {
+	return answer.Restricted == nil || *answer.Restricted
 }

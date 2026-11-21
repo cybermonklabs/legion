@@ -13,6 +13,7 @@ export * from "./envelope";
 export * from "./envoy-session";
 export * from "./going";
 export * from "./legion-roles";
+export * from "./private-slack";
 export * from "./related-forms";
 export * from "./repo";
 export * from "./slack";

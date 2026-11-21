@@ -39,8 +39,18 @@ export const RelayHeader = {
   delivered: "Envoy-Delivered",
   /** When the stream stored the message: RFC 3339 with nanoseconds, UTC. */
   storedAt: "Envoy-Stored-At",
-  /** `true` only on the first frame after the relay restarted below the stream's first sequence. */
+  /**
+   * `true` on the first frame after messages the session had not taken were lost: the relay
+   * restarted below the stream's first sequence, or the listener dropped frames it held
+   * (`gapReason`).
+   */
   gap: "Envoy-Gap",
+  /**
+   * Why a frame's gap lost messages, beside `Envoy-Gap: true`: `privacy_hold` (`RelayGapReason`)
+   * when the listener dropped frames it held while their project's privacy could not be read.
+   * Absent on a retention gap.
+   */
+  gapReason: "Envoy-Gap-Reason",
   /**
    * `1` on the listener's connection probe, which is no frame: a core request on this session's
    * relay subject with this header alone and no body, sent when someone sends to the session. Any
@@ -49,6 +59,17 @@ export const RelayHeader = {
    * resume point (`receive` answers it before the decode).
    */
   probe: "Envoy-Probe",
+} as const;
+
+/** The values of `Envoy-Gap-Reason` this client words a notice of its own for. */
+export const RelayGapReason = {
+  /** The listener dropped frames it held while their project's privacy could not be read. */
+  privacyHold: "privacy_hold",
+  /**
+   * The edge listener withheld GitHub events of a repository the session's projects do not hold,
+   * while it could not read which repositories those are: withheld by rule, not lost.
+   */
+  repositoryWithheld: "repository_withheld",
 } as const;
 
 /**
@@ -111,8 +132,10 @@ export interface RelayFrame {
   readonly storedAt: string;
   /** The stored time in milliseconds since the epoch. */
   readonly storedAtMs: number;
-  /** The relay restarted below the stream's first sequence just before this frame. */
+  /** Messages the session had not taken were lost just before this frame (`RelayHeader.gap`). */
   readonly gap: boolean;
+  /** The frame's `Envoy-Gap-Reason` as the listener sent it, `""` when it sent none. */
+  readonly gapReason: string;
   /** The stored message's bytes as text: the Envoy envelope JSON. */
   readonly data: string;
   /** The listener's inbox for this frame's replies. */
@@ -167,6 +190,7 @@ export function decodeRelayFrame(message: RelayMessage): DecodedRelayFrame {
       storedAt,
       storedAtMs,
       gap: headers.get(RelayHeader.gap) === "true",
+      gapReason: headers.get(RelayHeader.gapReason) ?? "",
       data: typeof message.data === "string" ? message.data : decoder.decode(message.data),
       reply,
     },
@@ -186,12 +210,12 @@ export interface ConsumerEpoch {
 
 /**
  * A notice the session is told once: messages may be missing. The relay is the one place that
- * learns of a gap, from the registration answer or a frame's `Envoy-Gap` header, so this is the
- * one place a gap notice is worded; the host renders it as it renders a failure notice
- * (`envoyNoticeText`, `gapNoticeFields`).
+ * learns of a gap, from the registration answer or a frame's `Envoy-Gap` header and its
+ * `Envoy-Gap-Reason`, so this is the one place a gap notice is worded; the host renders it as it
+ * renders a failure notice (`envoyNoticeText`, `gapNoticeFields`).
  */
 export interface ConsumerGapNotice {
-  readonly kind: "retention_gap" | "stream_recreated";
+  readonly kind: "retention_gap" | "stream_recreated" | "privacy_hold" | "repository_withheld";
   readonly message: string;
 }
 
@@ -200,6 +224,10 @@ const GAP_MESSAGES: Record<ConsumerGapNotice["kind"], string> = {
     "The notification stream no longer holds some messages published to this session while it was away: messages older than 72 hours may be missing.",
   stream_recreated:
     "Envoy's notification stream was recreated, so messages published to this session before that may be lost.",
+  privacy_hold:
+    "Envoy dropped messages it held while their project's privacy could not be read, so some project messages to this session may be missing.",
+  repository_withheld:
+    "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
 };
 
 /**
@@ -647,7 +675,15 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     }
     send(frame.reply, "received");
 
-    if (frame.gap && !gapTold) tellGap("retention_gap");
+    // A frame's gap is the retention gap unless the listener names the privacy hold, and the
+    // retention gap a registration answer told is the one its next frame repeats. A privacy
+    // hold's drop is another loss than that one, so it is told whatever the answer told.
+    if (frame.gap) {
+      if (frame.gapReason === RelayGapReason.privacyHold) tellGap("privacy_hold");
+      else if (frame.gapReason === RelayGapReason.repositoryWithheld)
+        tellGap("repository_withheld");
+      else if (!gapTold) tellGap("retention_gap");
+    }
     gapTold = false;
     if (frame.streamID !== streamID) {
       // `written` is the floor a registration answer left as well as what the session wrote
@@ -814,6 +850,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
 const GAP_NOTICE_NAMES: Record<ConsumerGapNotice["kind"], string> = {
   retention_gap: "messages may be missing",
   stream_recreated: "stream recreated",
+  privacy_hold: "project messages may be missing",
+  repository_withheld: "repository events withheld",
 };
 
 /** What a gap notice says, field by field. */

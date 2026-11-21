@@ -2,11 +2,14 @@ package bus_test
 
 import (
 	"encoding/json"
+	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -61,6 +64,60 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
+	}
+}
+
+// TestWithPrivacyRequiredEndsEveryConnectionsName: a client told the required privacy mode names
+// each connection with the suffix after whatever name it has, its own, one WithName gives in
+// either order, the role lane's and the session consumers', and the one it dials to replace a
+// closed one; a client not told it carries no suffix. The suffix is what a hub rendered private
+// admits a listener's connection by.
+func TestWithPrivacyRequiredEndsEveryConnectionsName(t *testing.T) {
+	const suffix = " privacy-required"
+	srv, uri := testnats.Start(t)
+	connections := serverConnections(t, srv)
+	for _, options := range [][]bus.ConnectOption{
+		{bus.WithPrivacyRequired(suffix), bus.WithName("envoy-listener")},
+		{bus.WithName("envoy-listener-named-first"), bus.WithPrivacyRequired(suffix)},
+		{bus.WithPrivacyRequired(suffix)},
+		{bus.WithName("envoy-all-public")},
+	} {
+		client, err := bus.Connect([]string{uri}, options...)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		t.Cleanup(client.Close)
+	}
+	lane, _, err := bus.ConnectRoleLane([]string{uri}, "machine", func(*natsgo.Msg) {}, bus.WithPrivacyRequired(suffix))
+	if err != nil {
+		t.Fatalf("open the role lane: %v", err)
+	}
+	t.Cleanup(lane.Close)
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, time.Hour, slog.Default(), bus.WithPrivacyRequired(suffix))
+	if err != nil {
+		t.Fatalf("open the session consumers' connection: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+
+	listed := connections()
+	for _, name := range []string{"envoy-listener" + suffix, "envoy-listener-named-first" + suffix, "envoy" + suffix, "envoy-all-public",
+		"envoy-role-lane" + suffix, "envoy-session-consumers" + suffix} {
+		if len(listed[name]) != 1 {
+			t.Errorf("the server lists %d connections named %q, want 1 (it lists %v)", len(listed[name]), name, slices.Sorted(maps.Keys(listed)))
+		}
+	}
+	if len(listed["envoy-all-public"+suffix]) != 0 {
+		t.Errorf("a client never told the required mode carries the suffix: %v", listed)
+	}
+
+	// The connection a client dials to replace a closed one keeps the suffix.
+	lane.Conn.Close()
+	deadline := time.Now().Add(30 * time.Second)
+	for len(connections()["envoy-role-lane"+suffix]) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the role lane's replacement connection is not listed with the suffix within 30 s: %v", connections())
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

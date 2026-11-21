@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 )
@@ -208,7 +209,11 @@ func publishedFallbackCopies(t *testing.T, deps Deps, issueKey, commentID string
 // event unpublished.
 type claimedRole struct{}
 
-func (claimedRole) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (claimedRole) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (claimedRole) Mode() roles.Mode { return roles.AllPublic }
+
+func (claimedRole) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: "role-holder"}, nil
 }
 

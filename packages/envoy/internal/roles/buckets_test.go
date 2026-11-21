@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -41,7 +42,7 @@ func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.Session
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	return roles.NewBuckets(client, roles.Windows{}), registry, sessions, js
+	return roles.NewBuckets(client, roles.Windows{}, nil, roles.AllPublic), registry, sessions, js
 }
 
 // Before any bucket exists a role has no claim; once one does, Buckets reads the claim a listener
@@ -53,7 +54,7 @@ func TestBucketsReadAClaimAsTheRegistryWroteIt(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	if claim, err := roles.NewBuckets(client, roles.Windows{}).RoleClaim(context.Background(), "reviewer"); err != nil || claim.HolderSessionID != "" {
+	if claim, err := roles.NewBuckets(client, roles.Windows{}, nil, roles.AllPublic).RoleClaim(context.Background(), contracts.NoProject, "reviewer"); err != nil || claim.HolderSessionID != "" {
 		t.Fatalf("the claim with no role bucket is %+v, %v; want none", claim, err)
 	}
 
@@ -69,17 +70,17 @@ func TestBucketsReadAClaimAsTheRegistryWroteIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stored claim: %v", err)
 	}
-	if claim, err := holders.RoleClaim(context.Background(), "reviewer"); err != nil || claim.HolderSessionID != "ses_holder" || claim.Revision != stored.Revision() {
+	if claim, err := holders.RoleClaim(context.Background(), contracts.NoProject, "reviewer"); err != nil || claim.HolderSessionID != "ses_holder" || claim.Revision != stored.Revision() {
 		t.Fatalf("the claim is %+v, %v; want ses_holder's at revision %d", claim, err, stored.Revision())
 	}
 	legacy, err := kv.Put("legacy", []byte("ses_legacy"))
 	if err != nil {
 		t.Fatalf("store a bare claim: %v", err)
 	}
-	if claim, err := holders.RoleClaim(context.Background(), "legacy"); err != nil || claim.HolderSessionID != "ses_legacy" || claim.Revision != legacy {
+	if claim, err := holders.RoleClaim(context.Background(), contracts.NoProject, "legacy"); err != nil || claim.HolderSessionID != "ses_legacy" || claim.Revision != legacy {
 		t.Fatalf("the bare claim is %+v, %v; want ses_legacy's at revision %d", claim, err, legacy)
 	}
-	if claim, err := holders.RoleClaim(context.Background(), "unclaimed"); err != nil || claim.HolderSessionID != "" {
+	if claim, err := holders.RoleClaim(context.Background(), contracts.NoProject, "unclaimed"); err != nil || claim.HolderSessionID != "" {
 		t.Fatalf("the unclaimed role's claim is %+v, %v; want none", claim, err)
 	}
 }
@@ -99,12 +100,12 @@ func TestBucketsDecodeAClaimAsTheRegistryDoesWithinTheirContext(t *testing.T) {
 	if _, err := kv.Put("nobody", []byte(`{"holder_session_id":""}`)); err != nil {
 		t.Fatalf("store a claim naming no holder: %v", err)
 	}
-	if claim, err := holders.RoleClaim(context.Background(), "nobody"); !errors.Is(err, store.ErrMalformedRoleClaim) {
+	if claim, err := holders.RoleClaim(context.Background(), contracts.NoProject, "nobody"); !errors.Is(err, store.ErrMalformedRoleClaim) {
 		t.Fatalf("a claim naming no holder read %+v, %v; want store.ErrMalformedRoleClaim", claim, err)
 	}
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := holders.RoleClaim(ended, "reviewer"); !errors.Is(err, context.Canceled) || err.Error() != "read role reviewer's claim: context canceled" {
+	if _, err := holders.RoleClaim(ended, contracts.NoProject, "reviewer"); !errors.Is(err, context.Canceled) || err.Error() != "read role reviewer's claim: context canceled" {
 		t.Fatalf("a claim read under an ended context answered %v, want the context's error naming the read", err)
 	}
 	if _, err := holders.Holder(ended, "ses_holder"); !errors.Is(err, context.Canceled) {
@@ -153,7 +154,7 @@ func TestBucketsJudgeAHolderByItsRegistrationAndNotTheBucketsAge(t *testing.T) {
 		{"windows the registration is inside", roles.Windows{Live: time.Hour, Horizon: 2 * time.Hour}, session.Live},
 		{"a gone horizon the registration is past", roles.Windows{Live: time.Minute, Horizon: 2 * time.Minute}, session.Gone},
 	} {
-		if state := roles.NewBuckets(nil, tc.windows).EntryState(entry); state != tc.want {
+		if state := roles.NewBuckets(nil, tc.windows, nil, roles.AllPublic).EntryState(entry); state != tc.want {
 			t.Fatalf("%s: the holder reads %s, want %s", tc.name, state, tc.want)
 		}
 	}

@@ -101,6 +101,23 @@ func (c *Counter) Add(delta int64, labels ...[2]string) {
 	e.value.Add(delta)
 }
 
+// Declare creates the counter's series for each label set at 0, where it has none yet, so a scrape
+// shows every series a reader alerts on from the moment the counter is registered: a missing
+// series then means a failed scrape, never a quiet process. A nil counter declares nothing.
+func (c *Counter) Declare(labelSets ...[][2]string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, labels := range labelSets {
+		key := labelKey(labels)
+		if _, ok := c.series[key]; !ok {
+			c.series[key] = &counterEntry{formatted: labelFormat(labels)}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Histogram
 // ---------------------------------------------------------------------------

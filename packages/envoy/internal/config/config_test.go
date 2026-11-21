@@ -191,6 +191,115 @@ func TestLoadRefusesASettingItsParserRefuses(t *testing.T) {
 	}
 }
 
+// ENVOY_EDGE_PROJECTS is the projects an edge listener serves, read as a broker token's own list
+// is: commas or white space between project keys, sorted, each once; unset or empty is every
+// other listener, which serves none. A list a token could never carry is refused naming the
+// variable, so a misspelt edge stays down rather than serving a project it was not meant to.
+func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
+	t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+	load := func(value string) (Service, error) {
+		t.Setenv("ENVOY_EDGE_PROJECTS", value)
+		return Load(9020)
+	}
+	for _, tc := range []struct {
+		value string
+		want  []string
+	}{
+		{"", nil},
+		{"PRIV", []string{"PRIV"}},
+		{"PRIV, INFRA", []string{"INFRA", "PRIV"}},
+		{"OEDGE PRIV", []string{"OEDGE", "PRIV"}},
+	} {
+		service, err := load(tc.value)
+		if err != nil || !slices.Equal(service.EdgeProjects, tc.want) {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: EdgeProjects %q, error %v; want %q", tc.value, service.EdgeProjects, err, tc.want)
+		}
+	}
+	for _, value := range []string{"priv", "PRIV,PRIV", "PRIV,_", "P"} {
+		if _, err := load(value); err == nil || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: error %v, want a refusal naming ENVOY_EDGE_PROJECTS", value, err)
+		}
+	}
+	fixtureenv.Unset(t, "ENVOY_EDGE_PROJECTS")
+	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
+		t.Errorf("ENVOY_EDGE_PROJECTS unset: EdgeProjects %q, error %v; want none", service.EdgeProjects, err)
+	}
+}
+
+// The listener's two privacy modes, checked at start. Each of the four incomplete forms of the
+// required mode is refused naming its variable, so a required-mode listener with an incomplete
+// configuration exits before it serves: the flag with a blank URL, the flag with no platform
+// identity to read the source as, a URL without the flag, and any value of the flag but true. Only
+// both variables absent load the all-public mode; the flag, the URL and either identity load the
+// required mode.
+func TestARequiredListenerRefusesToStartIncomplete(t *testing.T) {
+	const broker = "https://agent-secrets.example"
+	load := func(t *testing.T, values map[string]string) (Service, error) {
+		t.Helper()
+		t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+		t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+		for _, name := range []string{PrivacyRequiredEnvVar, PrivacyURLEnvVar, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"} {
+			if value, ok := values[name]; ok {
+				t.Setenv(name, value)
+			} else {
+				fixtureenv.Unset(t, name)
+			}
+		}
+		return Load(9020)
+	}
+	for _, tc := range []struct {
+		form   string
+		values map[string]string
+		names  string
+	}{
+		{"the flag with a blank URL", map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: " ", "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyURLEnvVar},
+		{"the flag with no platform identity", map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: broker}, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"},
+		{"a URL without the flag", map[string]string{PrivacyURLEnvVar: broker, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyRequiredEnvVar},
+		{"a flag that is not true", map[string]string{PrivacyRequiredEnvVar: "yes", PrivacyURLEnvVar: broker, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyRequiredEnvVar},
+	} {
+		t.Run(tc.form, func(t *testing.T) {
+			service, err := load(t, tc.values)
+			if err == nil || !strings.Contains(err.Error(), tc.names) {
+				t.Fatalf("%s: Load answered %+v, %v; want a refusal naming %s", tc.form, service, err, tc.names)
+			}
+		})
+	}
+	t.Run("both absent", func(t *testing.T) {
+		service, err := load(t, map[string]string{"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"})
+		if err != nil || service.PrivacyRequired || service.PrivacyURL != "" {
+			t.Fatalf("both absent: Load answered required %v, URL %q, %v; want the all-public mode", service.PrivacyRequired, service.PrivacyURL, err)
+		}
+	})
+	for _, identity := range []string{"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"} {
+		t.Run("the flag, the URL and "+identity, func(t *testing.T) {
+			service, err := load(t, map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: broker, identity: "set"})
+			if err != nil || !service.PrivacyRequired || service.PrivacyURL != broker {
+				t.Fatalf("with %s: Load answered required %v, URL %q, %v; want the required mode reading %s", identity, service.PrivacyRequired, service.PrivacyURL, err, broker)
+			}
+		})
+	}
+}
+
+// ENVOY_EDGE_PROJECTS set to anything but the empty string that names no project - a lone comma,
+// commas and white space, white space alone - is a misspelt edge setting, and it refuses the start
+// naming the variable rather than starting a listener with no edge rules. The empty string stays a
+// listener that is no edge.
+func TestAnEdgeProjectsValueNamingNoProjectIsRefused(t *testing.T) {
+	t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+	for _, value := range []string{",", " , ", ",,", "  "} {
+		t.Setenv("ENVOY_EDGE_PROJECTS", value)
+		if service, err := Load(9020); err == nil || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: EdgeProjects %q, error %v; want a refusal naming ENVOY_EDGE_PROJECTS", value, service.EdgeProjects, err)
+		}
+	}
+	t.Setenv("ENVOY_EDGE_PROJECTS", "")
+	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
+		t.Errorf("ENVOY_EDGE_PROJECTS empty: EdgeProjects %q, error %v; want none and no error", service.EdgeProjects, err)
+	}
+}
+
 func TestHostName(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1:9020":            "127.0.0.1",
@@ -205,5 +314,20 @@ func TestHostName(t *testing.T) {
 		if got := HostName(in); got != want {
 			t.Errorf("HostName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// ENVOY_EDGE_PROJECTS holds at most 16 project keys, as a broker token's list does: a seventeenth
+// refuses the start naming the variable, and sixteen start it.
+func TestEdgeProjectsRefuseMoreKeysThanATokenCarries(t *testing.T) {
+	keys := []string{"AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ"}
+	t.Setenv(EdgeProjectsEnvVar, strings.Join(keys, ","))
+	if _, err := loadWith(t, nil); err == nil || !strings.Contains(err.Error(), EdgeProjectsEnvVar) {
+		t.Fatalf("seventeen keys: error %v, want a refusal naming %s", err, EdgeProjectsEnvVar)
+	}
+	t.Setenv(EdgeProjectsEnvVar, strings.Join(keys[:16], ","))
+	service, err := loadWith(t, nil)
+	if err != nil || len(service.EdgeProjects) != 16 {
+		t.Fatalf("sixteen keys: EdgeProjects %q, error %v; want all sixteen", service.EdgeProjects, err)
 	}
 }

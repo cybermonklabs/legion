@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decode } from "@toon-format/toon";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -9,6 +10,7 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  gapNoticeText,
   inboundRestoredNoticeText,
   inboundUnavailable,
   NoRelaySubjectError,
@@ -35,6 +37,8 @@ interface RelayInput {
   readonly delivered?: number;
   readonly storedAt?: number;
   readonly gap?: boolean;
+  /** The frame's `Envoy-Gap-Reason`, sent only when given. */
+  readonly gapReason?: string;
   readonly streamID?: string;
   readonly eventID?: string;
   readonly reply?: string;
@@ -50,6 +54,7 @@ function relay(input: RelayInput): RelayMessage {
     "Envoy-Delivered": String(input.delivered ?? 1),
     "Envoy-Stored-At": new Date(input.storedAt ?? T0 + MINUTE).toISOString(),
     ...(input.gap === true ? { "Envoy-Gap": "true" } : {}),
+    ...(input.gapReason === undefined ? {} : { "Envoy-Gap-Reason": input.gapReason }),
   };
   return {
     data: new TextEncoder().encode(
@@ -215,6 +220,7 @@ describe("relay frames", () => {
       "Envoy-Delivered": "3",
       "Envoy-Stored-At": "2026-10-27T05:00:01.123456789Z",
       "Envoy-Gap": "true",
+      "Envoy-Gap-Reason": "privacy_hold",
     };
     const decoded = decodeRelayFrame({
       data: "{}",
@@ -231,6 +237,7 @@ describe("relay frames", () => {
         storedAt: "2026-10-27T05:00:01.123456789Z",
         storedAtMs: Date.parse("2026-10-27T05:00:01.123Z"),
         gap: true,
+        gapReason: "privacy_hold",
         data: "{}",
         reply: "_INBOX.x",
       },
@@ -1077,6 +1084,92 @@ describe("gaps", () => {
     });
 
     expect(gaps).toEqual([]);
+  });
+
+  // The listener drops a frame it held while its project's privacy could not be read, and marks
+  // the session's next frame `Envoy-Gap: true` with `Envoy-Gap-Reason: privacy_hold`. Worded as
+  // the 72-hour retention gap, the notice would tell the session the wrong loss.
+  test("a frame marked privacy_hold tells the privacy hold, not the 72-hour gap", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1 }));
+    delivery.receive(relay({ seq: 2, gap: true, gapReason: "privacy_hold" }));
+
+    expect(gaps).toEqual([
+      {
+        kind: "privacy_hold",
+        message:
+          "Envoy dropped messages it held while their project's privacy could not be read, so some project messages to this session may be missing.",
+      },
+    ]);
+  });
+
+  // A registration answer's gap is a retention gap, and the next frame's `Envoy-Gap` repeats it.
+  // A privacy hold's mark on that frame is another loss, so it is told even then.
+  test("a privacy hold's mark is told after the answer told a retention gap", () => {
+    const { delivery, gaps } = setup();
+    delivery.answered({
+      mode: "consumer",
+      subject: deliverSubject(SESSION),
+      stream_id: STREAM,
+      gap: true,
+    });
+    delivery.receive(relay({ seq: 1, gap: true, gapReason: "privacy_hold" }));
+
+    expect(gaps.map((notice) => notice.kind)).toEqual(["retention_gap", "privacy_hold"]);
+  });
+
+  test("each frame marked privacy_hold is told", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1, gap: true, gapReason: "privacy_hold" }));
+    delivery.receive(relay({ seq: 2 }));
+    delivery.receive(relay({ seq: 3, gap: true, gapReason: "privacy_hold" }));
+
+    expect(gaps.map((notice) => notice.kind)).toEqual(["privacy_hold", "privacy_hold"]);
+  });
+
+  // A reason this client does not know, from a newer listener, still says messages are missing.
+  test("a gap with a reason this client does not know is told as the retention gap", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1, gap: true, gapReason: "some_later_reason" }));
+
+    expect(gaps.map((notice) => notice.kind)).toEqual(["retention_gap"]);
+  });
+
+  test("a reason on a frame with no gap tells nothing", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1, gapReason: "privacy_hold" }));
+
+    expect(gaps).toEqual([]);
+  });
+
+  test("the privacy hold's card names its kind", () => {
+    const notice: ConsumerGapNotice = { kind: "privacy_hold", message: "held and dropped" };
+    expect(decode(gapNoticeText(notice))).toEqual({
+      envoy: { notice: "project messages may be missing", detail: "held and dropped" },
+    });
+  });
+
+  // The edge marks a gap its GitHub rule made `Envoy-Gap-Reason: repository_withheld`: events of a
+  // repository the session's projects do not hold were withheld, not lost, so the notice must not
+  // say messages may be missing. The control above (an unknown reason) keeps the retention words.
+  test("a frame marked repository_withheld tells the withheld repository, not a loss", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1, gap: true, gapReason: "repository_withheld" }));
+
+    expect(gaps).toEqual([
+      {
+        kind: "repository_withheld",
+        message:
+          "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
+      },
+    ]);
+    expect(decode(gapNoticeText(gaps[0] as ConsumerGapNotice))).toEqual({
+      envoy: {
+        notice: "repository events withheld",
+        detail:
+          "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
+      },
+    });
   });
 });
 

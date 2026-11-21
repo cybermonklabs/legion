@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -34,8 +35,8 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	t.Cleanup(hold.Release)
-	buckets := NewBuckets(client, Windows{})
-	if claim, err := buckets.RoleClaim(t.Context(), "reviewer"); err != nil || claim.HolderSessionID != "" {
+	buckets := NewBuckets(client, Windows{}, nil, AllPublic)
+	if claim, err := buckets.RoleClaim(t.Context(), contracts.NoProject, "reviewer"); err != nil || claim.HolderSessionID != "" {
 		t.Fatalf("control: before the hold the claim with no role bucket is %+v, %v; want none", claim, err)
 	}
 
@@ -59,7 +60,7 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	read := make(chan error, 1)
 	answers := hold.AnswersWithinAttempt(t, conn, "a read of the role's claim, and a second caller of b.mu,",
 		func() error {
-			_, err := buckets.RoleClaim(t.Context(), "reviewer")
+			_, err := buckets.RoleClaim(t.Context(), contracts.NoProject, "reviewer")
 			read <- err
 			return err
 		},
@@ -91,7 +92,7 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	for {
-		claim, err := buckets.RoleClaim(ctx, "reviewer")
+		claim, err := buckets.RoleClaim(ctx, contracts.NoProject, "reviewer")
 		if err == nil && claim.HolderSessionID == "" {
 			break
 		}

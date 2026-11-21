@@ -86,7 +86,7 @@ func expiryOf(answer Introspection) time.Time {
 func callerOf(answer Introspection, shape tokenShape) Caller {
 	return Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
-		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
+		Projects: slices.Clone(answer.Projects), Restricted: answer.IsRestricted(), ProjectScope: answer.ProjectScope,
 		ReadOnly: shape == shapeReadOnly,
 	}
 }

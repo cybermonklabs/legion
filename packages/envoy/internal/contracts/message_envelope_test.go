@@ -19,8 +19,8 @@ func TestAgentSendEnvelopeIsTheSessionsSendUnderItsKey(t *testing.T) {
 		Urgency:      "high",
 		ExpectsReply: ExpectsReplyRequired,
 	}
-	first := AgentSendEnvelope("ses_a", "msg-1:send", send)
-	again := AgentSendEnvelope("ses_a", "msg-1:send", send)
+	first := AgentSendEnvelope(NoProject, "ses_a", "msg-1:send", send)
+	again := AgentSendEnvelope(NoProject, "ses_a", "msg-1:send", send)
 
 	if first.Topic != "notifications.agent.ses_a" {
 		t.Errorf("topic = %q, want the session's agent subject notifications.agent.ses_a", first.Topic)
@@ -51,8 +51,8 @@ func TestAgentSendEnvelopeIsTheSessionsSendUnderItsKey(t *testing.T) {
 // host count as a minted key, so a re-send of that envelope is dropped as a repeat and another
 // send is not.
 func TestAgentSendEnvelopeMintsAKeyForASendThatNamesNone(t *testing.T) {
-	first := AgentSendEnvelope("ses_a", "", Message{Text: "hi"})
-	second := AgentSendEnvelope("ses_a", "", Message{Text: "hi"})
+	first := AgentSendEnvelope(NoProject, "ses_a", "", Message{Text: "hi"})
+	second := AgentSendEnvelope(NoProject, "ses_a", "", Message{Text: "hi"})
 	if !strings.HasPrefix(first.DedupeKey, "agent.ses_a.") || !mintedDedupeKey.MatchString(first.DedupeKey) {
 		t.Errorf("dedupe key = %q, want agent.ses_a. and a minted key", first.DedupeKey)
 	}
@@ -64,11 +64,31 @@ func TestAgentSendEnvelopeMintsAKeyForASendThatNamesNone(t *testing.T) {
 	}
 }
 
+// A send of a project is stored on the session's agent subject under that project, so the relay
+// decides it as the project's; a send of no project ("" or NoProject) stays on the form every
+// reader takes. The dedupe key is the session's either way, so the two forms are one delivery.
+func TestAgentSendEnvelopeNamesItsProjectInTheSubject(t *testing.T) {
+	for project, topic := range map[string]string{
+		"PRIV":    "notifications.agent.PRIV.ses_a",
+		NoProject: "notifications.agent.ses_a",
+		"":        "notifications.agent.ses_a",
+		"priv":    "notifications.agent.ses_a",
+	} {
+		item := AgentSendEnvelope(project, "ses_a", "k", Message{Text: "hi"})
+		if item.Topic != topic || item.DedupeKey != "agent.ses_a.k" {
+			t.Errorf("project %q: topic %q, dedupe key %q; want %q and agent.ses_a.k", project, item.Topic, item.DedupeKey, topic)
+		}
+		if got, ok := SubjectProject(item.Topic); !ok || (project == "PRIV") != (got == "PRIV") {
+			t.Errorf("project %q: the topic reads as %q, %v", project, got, ok)
+		}
+	}
+}
+
 // A sender that names no source is a session's own message, and an urgency, an expects_reply or a
 // payload it did not name is absent from the envelope on the wire, as the listener has always
 // written it.
 func TestMessageEnvelopeLeavesOutWhatTheSenderDidNotName(t *testing.T) {
-	item := AgentSendEnvelope("ses_a", "k", Message{Text: "hi"})
+	item := AgentSendEnvelope(NoProject, "ses_a", "k", Message{Text: "hi"})
 	if item.Source != "agent" {
 		t.Errorf("source = %q, want agent", item.Source)
 	}

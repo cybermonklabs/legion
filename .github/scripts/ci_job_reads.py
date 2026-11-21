@@ -1093,7 +1093,11 @@ go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
 callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
-go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/"""
+go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
+go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
+go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -2601,12 +2605,12 @@ SCRIPT_TEST_READS = [read for gate_ in SCRIPT_TEST_GATES for read in gate_.reads
 # gate decides nothing until the job's own filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
-    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
-    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
-    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
+    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:10,17 spawns it"),
+    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
+    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
 )
 
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
@@ -3270,8 +3274,9 @@ GATES = [
              "packages, less the race lane's, and its command", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
-        # test of internal/bus that needs a real server image, and the auth service's check that
-        # the deployed server lets an empty allow list through, which its guard refuses. The rest
+        # test of internal/bus that needs a real server image, the auth service's check that the
+        # deployed server lets an empty allow list through, which its guard refuses, and the edge
+        # listener's grant and start under its rendered user. The rest
         # of internal/testnats runs in the unit step; the rest of internal/bus and
         # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
         # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
@@ -3280,6 +3285,8 @@ GATES = [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
+            (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
+            (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),

@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
@@ -95,10 +94,18 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
+	// privacy is the listener's privacy mode and its reader of the privacy source
+	// (project_privacy.go); nil is the all-public mode, which every test that builds listenerDeps
+	// itself runs in.
+	privacy *listenerPrivacy
 	// dispatchPrincipal is ENVOY_DISPATCH_PRINCIPAL, Dispatch's own verified principal
 	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
 	// (sendHandler). Empty names nobody, and every send carrying one is refused.
 	dispatchPrincipal string
+	// repositories is the edge listener's reader of the repositories its projects' issues
+	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
+	// listener but an edge one.
+	repositories *edgeRepositories
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -773,7 +780,11 @@ type webhookRoute struct {
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
+//
+// In the required privacy mode the Slack route reads the privacy source at each event
+// (privacy, webhook.WithSlackPrivacy): an event of a channel one private project lists goes on that
+// project's own lane, and an event that cannot be decided is answered 503.
+func webhookRoutes(cfg *webhook.WebhookConfig, privacy *listenerPrivacy) []webhookRoute {
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
@@ -782,6 +793,9 @@ func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
+			if privacy.isRequired() {
+				return webhook.SlackHandler(slack.Secret, publisher, webhook.WithSlackPrivacy(privacy))
+			}
 			return webhook.SlackHandler(slack.Secret, publisher)
 		}})
 	}
@@ -1005,6 +1019,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// An edge listener admits a broker token alone, so it refuses to start beside any other
+	// credential, beside Dispatch's principal, beside webhooks, and without the broker-token
+	// settings (validateEdgeMode), before any of them is read below.
+	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
+		log.Fatal(err)
+	}
 	logger := logging.New(cfg.MachineID)
 	// The first lines of the log belong to the settings a deployment still carries and this
 	// listener does not read, before it does any other work, so an operator reading from the top
@@ -1052,12 +1072,19 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
+	// The all-projects callers are read beside the other credentials' settings, so a list it
+	// refuses stops the start before anything is bound.
+	allProjectsAccounts, err := resolveAllProjectsAccounts(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiAuthConfig := listenerAPIAuth{
 		token:        apiToken,
 		verifier:     apiVerifier,
 		accounts:     oidcAccounts,
 		google:       googleCallers,
 		brokers:      brokerTokenAuth,
+		edgeProjects: cfg.EdgeProjects,
 		allowedHosts: cfg.AllowedHosts,
 		logger:       logger,
 	}
@@ -1112,6 +1139,20 @@ func main() {
 
 	// Metrics registry — /metrics available during startup (like /healthz).
 	met := metrics.New()
+	// An edge listener (ENVOY_EDGE_PROJECTS) holds itself to its own NATS grant from its first
+	// connection on (edgeGrant): every connection names its inboxes under its machine's prefix, the
+	// main client reads the stream and owns none, no role lane opens, no wake report is published,
+	// and its delivery handlers keep no role message and publish no exception on a lane the grant
+	// leaves out. Every other listener has none (edge nil).
+	var edge *edgeGrant
+	if len(cfg.EdgeProjects) > 0 {
+		grant, err := newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+		if err != nil {
+			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		edge = grant
+	}
 	messagesReceived := met.NewCounter("envoy_messages_received_total", "Total messages received by the listener")
 	messagesDelivered := met.NewCounter("envoy_messages_delivered_total", "Total message delivery attempts")
 	messagesNAKed := met.NewCounter("envoy_messages_naked_total", "Total messages NAK'd for retry")
@@ -1138,6 +1179,12 @@ func main() {
 		ciLegacyHeld = met.NewGauge("envoy_ci_legacy_records_held", "CI records a head-gated listener left unsettled that the summary loop's last pass held back")
 	}
 	registerListGauges(met, &v1Deps)
+	// The listener's privacy mode: in the required mode its reader of the privacy source, which
+	// reads as the listener's own platform identity, the account its broker tokens are checked as
+	// (config.Load has refused a required mode without one). Its counters are registered at 0 in
+	// both modes.
+	privacy := newListenerPrivacy(cfg, brokerConfig.account(), allProjectsAccounts, met, logger)
+	logger.Info("listener privacy mode", slog.Bool("required", privacy.isRequired()), slog.String("source", cfg.PrivacyURL))
 
 	// Phase 3: Build HTTP mux.
 	mux := http.NewServeMux()
@@ -1164,7 +1211,7 @@ func main() {
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
 	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
-	hooks := webhookRoutes(webhookCfg)
+	hooks := webhookRoutes(webhookCfg, privacy)
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
@@ -1192,8 +1239,10 @@ func main() {
 	// Dispatch's server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this
 	// connect and after every reconnect, at the deployment's replica count and byte limit
 	// (listenerStreamOptions), and leaves as it is a stream that a newer build stamped with a
-	// higher generation (bus.ConnectOwningStream).
-	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
+	// higher generation (bus.ConnectOwningStream). An edge listener owns no stream: it reads it,
+	// and its start ends here when the server has none (connectListenerBus). In the required
+	// privacy mode its connections' names carry the suffix a hub rendered private admits it by.
+	client, err := connectListenerBus(cfg, edge, privacy.busOptions()...)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the
 		// listening line and "webhooks open", and each one can end it with a bare error: a reader
@@ -1212,11 +1261,13 @@ func main() {
 	// start is. Making stopping here instead would change that for the whole start, the NATS
 	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
-	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
-	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
-	// rather than recording spent proofs where its own replicas cannot see them.
+	// The spent-proof bucket, before anything of /v1 can be served. Every listener opens it,
+	// whether or not it takes broker tokens, so an edge listener, whose grant creates no bucket,
+	// finds the one a full listener of this build made; a listener configured to take broker
+	// access tokens on a bus that cannot open it refuses to start, naming the setting, rather than
+	// recording spent proofs where its own replicas cannot see them (brokerTokens.open).
 	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
+		log.Fatalf("open the spent-proof bucket: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1477,14 +1528,21 @@ func main() {
 	// Wake reports are published off the paths that raise them, under a lifetime of the
 	// listener's own — the shutdown ends every retry still running — and a cap on how many
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
-	// this configuration by value, so every seam of it must be set before they are built.
+	// this configuration by value, so every seam of it must be set before they are built. An edge
+	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
+	// shared listeners report every wake.
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
-	wakes := newWakeReporter(wakesCtx, client)
+	var wakes *wakeReporter
+	if edge == nil {
+		wakes = newWakeReporter(wakesCtx, client)
+	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
+		privacy:           privacy,
 		wakes:             wakes,
+		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -1533,27 +1591,16 @@ func main() {
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
-	// The role lane is a core-NATS queue subscription on a connection of its own with finite pending
-	// limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes; bus.ConnectRoleLane), in the queue
-	// group every listener shares, or this machine's group on a hub whose grant predates it. During a
-	// rolling deploy the task being replaced is a member too, and NATS hands each role message to one
-	// member of a group, so opening the lane before the durable binds forwards no message twice.
-	roleLaneClient, roleQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
+	// The role lane (startRoleLane); an edge listener opens none.
+	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger, privacy.busOptions()...)
 	if err != nil {
 		logger.Error("core role subscription failed", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", roleQueue))
-	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
-		return int64(roleLaneClient.SlowConsumers())
-	})
 	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
-	roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())
-	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
-	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
 	// Every session takes its messages from a session consumer this listener manages on a
 	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
@@ -1569,7 +1616,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, append(edge.connectOptions(), privacy.busOptions()...)...)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1584,6 +1631,18 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	// An edge listener reads the repositories its projects' issues resolve to from the broker's
+	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
+	// frame to them. It is set before the relay relays anything, which only the durable binding
+	// below starts.
+	var repositories *edgeRepositories
+	if len(cfg.EdgeProjects) > 0 {
+		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
+		relays.repositories = repositories
+	}
+	// In the required mode the relay decides each project's frame from a fresh privacy read, and
+	// holds what it cannot decide (privacy_hold.go); it is set before the relay relays anything.
+	relays.setPrivacy(privacy)
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
@@ -1610,7 +1669,7 @@ func main() {
 	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
 		client:       client,
-		roleLane:     roleLaneClient,
+		roleLane:     lane.client,
 		consumers:    delivery,
 		registry:     registry,
 		sessions:     sessions,
@@ -1626,7 +1685,9 @@ func main() {
 
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
+		privacy:             privacy,
 		dispatchPrincipal:   dispatchPrincipal,
+		repositories:        repositories,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
@@ -1734,8 +1795,23 @@ func main() {
 	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
 	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
-	// (roleWakeInterval).
+	// (roleWakeInterval). An edge listener runs none, since its grant writes no kept lane: the
+	// shared listeners' sweeps hand over the lanes of roles held at the edge too.
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
+
+	// Phase 6b0: An edge listener reads its projects' repositories again every
+	// edgeRepositoryRefresh and removes the interests of a repository that left them
+	// (runEdgeRepositories). It lists the interest bucket, so it stops with the reapers.
+	if repositories != nil {
+		edgeDone := make(chan struct{})
+		go func() {
+			defer close(edgeDone)
+			ticker := time.NewTicker(edgeRepositoryRefresh)
+			defer ticker.Stop()
+			runEdgeRepositories(kvLoopsCtx, ready, cfg.MachineID, ticker.C)
+		}()
+		kvLoopsDone = append(kvLoopsDone, edgeDone)
+	}
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
 	// holds. The deregistration route deletes the consumer of a registration it removed, and a
@@ -1781,8 +1857,11 @@ func main() {
 	// topic the Legion daemons read wakes of released issue pods from. Without it a daemon
 	// cannot tell "the listener sends no reports" from "the listener has nothing to report", so
 	// it releases nothing: this is the positive signal that lets release run at all. It shares
-	// summaryCtx, which the shutdown cancels.
-	startListenerReadyReports(summaryCtx, client, logger, listenerReadyInterval)
+	// summaryCtx, which the shutdown cancels. An edge listener reports no wake, so it says
+	// nothing here either.
+	if edge == nil {
+		startListenerReadyReports(summaryCtx, client, logger, listenerReadyInterval)
+	}
 
 	// Phase 6c: Keep transient JetStream timeouts observable without restarting
 	// the listener. Terminal watcher/consumer failures are rebuilt immediately;

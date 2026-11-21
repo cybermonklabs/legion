@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -44,7 +45,9 @@ type JetStream interface {
 type Buckets struct {
 	Windows
 
-	client JetStream
+	client  JetStream
+	privacy ProjectPrivacy
+	mode    Mode
 
 	mu       sync.Mutex
 	js       nats.JetStreamContext
@@ -52,15 +55,37 @@ type Buckets struct {
 	sessions *bus.KeyValue
 }
 
-// NewBuckets returns Buckets reading through client and judging a holder's record by windows. It
-// takes the windows rather than defaulting them, so no caller reaches the package's compiled
-// windows by forgetting to say which it means: a process judging a holder on windows its
-// deployment did not set calls a holder the listener still calls unresponsive gone, and marks
-// its event published with nothing sent. A caller that does mean the compiled windows passes a
-// zero Windows, whose own zero fields are session.LiveWindow and session.GoneHorizon.
-func NewBuckets(client JetStream, windows Windows) *Buckets {
-	return &Buckets{Windows: windows, client: client}
+// ProjectPrivacy answers whether a project is private, read within ctx: Dispatch's reader of its
+// own committed projects rows (cmd/dispatch's outboxDeps), the truth the privacy source every
+// listener reads is written from, so no stored record can change its answer. An error is an
+// answer that is not known.
+type ProjectPrivacy func(ctx context.Context, project string) (bool, error)
+
+// errNoPrivacyReader is the answer of Buckets built with no ProjectPrivacy: nothing it could read
+// says a project is public, so it holds what it would decide.
+var errNoPrivacyReader = errors.New("this reader of the role bucket reads no project's privacy")
+
+// NewBuckets returns Buckets reading through client, judging a holder's record by windows,
+// answering a project's privacy through privacy and resolving in mode. It takes the windows rather
+// than defaulting them, so no caller reaches the package's compiled windows by forgetting to say
+// which it means: a process judging a holder on windows its deployment did not set calls a holder
+// the listener still calls unresponsive gone, and marks its event published with nothing sent. A
+// caller that does mean the compiled windows passes a zero Windows, whose own zero fields are
+// session.LiveWindow and session.GoneHorizon. A nil privacy answers every project unknown.
+func NewBuckets(client JetStream, windows Windows, privacy ProjectPrivacy, mode Mode) *Buckets {
+	return &Buckets{Windows: windows, client: client, privacy: privacy, mode: mode}
 }
+
+// Private reports whether project is private, through the ProjectPrivacy Buckets was built with.
+func (b *Buckets) Private(ctx context.Context, project string) (bool, error) {
+	if b.privacy == nil {
+		return false, fmt.Errorf("project %s: %w", project, errNoPrivacyReader)
+	}
+	return b.privacy(ctx, project)
+}
+
+// Mode is the privacy mode Buckets was built with.
+func (b *Buckets) Mode() Mode { return b.mode }
 
 // openBucketHook, when set, runs before each bucket open (bucket). It is nil outside tests.
 var openBucketHook atomic.Pointer[func()]
@@ -120,12 +145,13 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 	return value, err
 }
 
-// RoleClaim reads role's claim from the role bucket within ctx, decoded as store.Registry decodes
-// one and stamped with the entry's revision as store.Registry stamps the claims it reads: a zero
-// claim without an error when there is no role bucket and when the bucket holds no claim for the
-// role.
-func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
+// RoleClaim reads role's claim under project from the role bucket within ctx, at
+// contracts.RoleClaimKey(project, role), decoded as store.Registry decodes one and stamped with
+// the entry's revision as store.Registry stamps the claims it reads: a zero claim without an
+// error when there is no role bucket and when the bucket holds no claim for the role there.
+func (b *Buckets) RoleClaim(ctx context.Context, project, role string) (store.RoleClaim, error) {
+	key := contracts.RoleClaimKey(project, role)
+	return within(ctx, "read role "+key+"'s claim", func() (store.RoleClaim, error) {
 		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
@@ -133,7 +159,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 		if err != nil {
 			return store.RoleClaim{}, err
 		}
-		entry, err := kv.Get(role)
+		entry, err := kv.Get(key)
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return store.RoleClaim{}, nil
 		}

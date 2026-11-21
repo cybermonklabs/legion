@@ -69,13 +69,9 @@ test("a Legion role names the project of its token, every other role none", () =
   }
 });
 
-test("each family's message name is read for its project", () => {
+test("each family's message name is read for its project, a GitHub name's as every token's", () => {
   for (const row of fixture.subjectProject) {
-    expect(subjectProject(row.subject), row.subject).toEqual({
-      project: row.project,
-      repo: row.repo,
-      ok: row.ok,
-    });
+    expect(subjectProject(row.subject), row.subject).toEqual({ project: row.project, ok: row.ok });
   }
 });
 

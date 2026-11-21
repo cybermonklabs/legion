@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  A relay frame's `Envoy-Gap-Reason` is read beside `Envoy-Gap`. A frame marked
+  `Envoy-Gap-Reason: privacy_hold` tells the session a gap notice of its own kind, `privacy_hold`
+  (`project messages may be missing`): the listener dropped messages it held while their
+  project's privacy could not be read, so some project messages to this session may be missing.
+  Before, every frame's gap was worded as messages older than 72 hours. A privacy hold's mark is
+  told even on the frame after a registration answer that reported a retention gap, since it is
+  another loss. A frame marked `Envoy-Gap-Reason: repository_withheld` tells a notice of its own,
+  `repository events withheld`: the edge listener withheld GitHub events of a repository the
+  session's projects do not hold, and no message was lost. A gap with no reason, or a reason this
+  client does not know, is worded as before.
+time: 2026-11-20T23:46:12Z
+custom:
+    Issue: listener-privacy-required

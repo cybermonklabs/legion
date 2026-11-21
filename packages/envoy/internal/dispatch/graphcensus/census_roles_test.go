@@ -31,7 +31,11 @@ const censusRoleHolder = "ses_census_role_holder"
 // judges that session on the windows roles.Buckets judges one on (roles.Windows).
 type censusRoles struct{ roles.Windows }
 
-func (censusRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (censusRoles) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (censusRoles) Mode() roles.Mode { return roles.AllPublic }
+
+func (censusRoles) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: censusRoleHolder}, nil
 }
 

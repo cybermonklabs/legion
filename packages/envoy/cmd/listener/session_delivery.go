@@ -261,12 +261,15 @@ type sessionDelivery struct {
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
 // whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// consumer filter are judged on (sessionDelivery.stream). options are the connection's own beside
+// its name: in edge mode, the listener's inbox prefix (edgeGrant.connectOptions).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
+// the whole start's: main ends the process with it, as it does for the live topics lane. options
+// are the listener's privacy mode's (listenerPrivacy.busOptions): in the required mode the
+// connection's name ends in the suffix a hub rendered private admits it by.
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
 		return nil, err
 	}

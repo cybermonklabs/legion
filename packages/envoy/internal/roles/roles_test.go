@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -26,7 +27,11 @@ type claims struct {
 	reads      int
 }
 
-func (c *claims) RoleClaim(context.Context, string) (store.RoleClaim, error) {
+func (c *claims) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (c *claims) Mode() roles.Mode { return roles.AllPublic }
+
+func (c *claims) RoleClaim(context.Context, string, string) (store.RoleClaim, error) {
 	c.reads++
 	if c.readErr != nil {
 		return store.RoleClaim{}, c.readErr
@@ -95,7 +100,7 @@ func TestResolveHolderReadsEachStateAndTakesNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claimed := &claims{holder: tc.holder}
-			resolution, err := roles.ResolveHolder(context.Background(), claimed, held, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), claimed, held, contracts.NoProject, "reviewer")
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -130,7 +135,7 @@ func TestResolveHolderJudgesTheHolderOnTheWindowsItIsGiven(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			held := sessions{Windows: tc.windows, entries: map[string]session.SessionEntry{"ses_holder": entry}}
-			resolution, err := roles.ResolveHolder(context.Background(), &claims{holder: "ses_holder"}, held, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), &claims{holder: "ses_holder"}, held, contracts.NoProject, "reviewer")
 			if err != nil || resolution.State != tc.want {
 				t.Fatalf("resolution %+v, %v; want %s", resolution, err, tc.want)
 			}
@@ -155,7 +160,7 @@ func TestResolveHolderNamesTheStepThatFailed(t *testing.T) {
 		{"the session", &claims{holder: "ses_holder"}, sessions{readErr: failure}, roles.SessionRead, "ses_holder", "read role holder session: no answer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, tc.sessions, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, tc.sessions, contracts.NoProject, "reviewer")
 			readErr, ok := errors.AsType[*roles.ReadError](err)
 			if !ok || readErr.Step != tc.step || readErr.Holder != tc.holder || !errors.Is(err, failure) || resolution.Holder != tc.holder {
 				t.Fatalf("resolve returned %+v, %v; want a read error at step %d about %q wrapping the failure", resolution, err, tc.step, tc.holder)
@@ -193,7 +198,7 @@ func TestResolveHolderReportsTheRevisionOfTheClaimItRead(t *testing.T) {
 		{"no claim", &claims{holder: "", revision: 7}, roles.Unclaimed, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, contracts.NoProject, "reviewer")
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -227,7 +232,7 @@ func TestResolveHolderReportsTheProcessTheClaimNames(t *testing.T) {
 		{"no claim at all", &claims{}, roles.Unclaimed, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, contracts.NoProject, "reviewer")
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -260,7 +265,7 @@ func TestResolveHolderReportsTheHandBackMarkTheClaimCarries(t *testing.T) {
 		{"no claim at all", &claims{}, roles.Unclaimed, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, "reviewer")
+			resolution, err := roles.ResolveHolder(context.Background(), tc.claims, held, contracts.NoProject, "reviewer")
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -277,7 +282,7 @@ func TestResolveHolderStartsNoReadOnceTheContextEnded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	claimed := &claims{holder: "ses_holder"}
-	resolution, err := roles.ResolveHolder(ctx, claimed, sessions{}, "reviewer")
+	resolution, err := roles.ResolveHolder(ctx, claimed, sessions{}, contracts.NoProject, "reviewer")
 	readErr, ok := errors.AsType[*roles.ReadError](err)
 	if !ok || readErr.Step != roles.ClaimRead || !errors.Is(err, context.Canceled) ||
 		err.Error() != "resolve role reviewer's holder: context canceled" {

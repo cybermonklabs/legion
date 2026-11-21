@@ -20,18 +20,16 @@
 package projectaccess
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
@@ -83,13 +81,6 @@ var (
 	// ErrListRequired is a restricted member's credential that names no project: such a person
 	// sees only the projects that name them, so their credential names which.
 	ErrListRequired = errors.New("projectaccess: a restricted member's credential names its projects")
-	// ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or
-	// 403 to it (Dispatch does not list the broker's account as one that may ask, or does not
-	// accept the token, one minted for another audience, say), or the broker unable to read it
-	// from BROKER_PROJECT_ACCESS_TOKEN_FILE at all (missing, empty or unreadable). Either is a
-	// misconfiguration and not an outage, so no caller mints or enrolls through it as it would
-	// through a failure to reach Dispatch: every check made with that credential would be wrong.
-	ErrBrokerRefused = errors.New("projectaccess: the broker's own account token was refused or could not be read")
 	// ErrUnknownMemberKind is Dispatch answering a member kind that is none of MemberFull,
 	// MemberRestricted and MemberNone. The broker cannot tell whether such a person is held to the
 	// projects that name them, so no caller reads it as any of the three, and none mints or
@@ -193,10 +184,8 @@ type Access interface {
 
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
-	base    string
-	account ciphertoken.Account
-	http    *http.Client
-	now     func() time.Time
+	read dispatchread.Reader
+	now  func() time.Time
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
@@ -217,16 +206,12 @@ type cachedKind struct {
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
-// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
-// http.DefaultClient; each call is bounded by its own 10 s whatever the client.
+// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call, through the broker's one read of
+// Dispatch (dispatchread). A nil httpClient is http.DefaultClient; each call is bounded by its own
+// 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		account: account,
-		http:    httpClient,
+		read:    dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
 		now:     time.Now,
 		answers: map[accessKey]cachedAnswer{},
 		kinds:   map[string]cachedKind{},
@@ -420,76 +405,34 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. An account token it cannot read is
-// ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked nothing: the broker's own
-// credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing
-// that token, decided by the status alone before any of the body is read: a body cut short or
-// past the bound only leaves the error without the code it names, and never turns the refusal
-// into a failure to ask, which a caller mints through. A 404 is an answer, returned as its status
-// with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
-// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
-// route, a wrong path behind an ingress) is a failure naming its code. Every other status, a
-// transport failure and a body it could not read or decode are errors naming what failed and
-// never the token.
+// get asks one route through dispatchread and decodes a 200 into into. A token of the broker's
+// own that it cannot read, or that Dispatch refuses 401 or 403, is dispatchread.ErrBrokerRefused
+// (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
+// its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
+// project route answers a project it does not hold with; any other 404 (a Dispatch that does not
+// serve the route, a wrong path behind an ingress) is a failure naming its code. Every other
+// status, a transport failure and a body it could not read or decode are errors naming what
+// failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
-	bearer, err := c.account.Read()
+	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
-		return 0, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
+		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	target := c.base + path
-	if len(query) > 0 {
-		target += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: build the request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+bearer)
-	request.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(request)
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
-	}
-	if len(body) > maxAnswerBytes {
-		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
-	}
-	switch response.StatusCode {
+	switch answer.Status {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		code := refusalCode(bytes.NewReader(body))
+		code := dispatchread.RefusalCode(answer.Body)
 		if code == projectNotFoundCode {
 			return http.StatusNotFound, nil
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
 	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(bytes.NewReader(body)))
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, dispatchread.RefusalCode(answer.Body))
 	}
-	if err := json.Unmarshal(body, into); err != nil {
+	if err := json.Unmarshal(answer.Body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil
-}
-
-// refusalCode is the code a refusal's body names, read from at most maxAnswerBytes of it: empty
-// for a body that is cut short, runs past the bound or names none, since the status has already
-// decided what the answer is and the code only adds to its error.
-func refusalCode(body io.Reader) string {
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	raw, _ := io.ReadAll(io.LimitReader(body, maxAnswerBytes))
-	_ = json.Unmarshal(raw, &refusal)
-	return refusal.Code
 }
 
 // Visible answers nil when person may see every one of projects, else a *NotVisibleError (which
@@ -581,17 +524,17 @@ func (c *Client) clock() time.Time { return c.now() }
 // ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
 // answers a kind that is none of the three; MemberFull and MemberNone answer nil, so a person
 // Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
-// ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
-// either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
-// list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
-// logs that it did so unchecked.
+// dispatchread.ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints
+// through either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it:
+// the list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes
+// on logs that it did so unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
 	kind, err := a.MemberKind(ctx, person)
 	switch {
-	case errors.Is(err, ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
+	case errors.Is(err, dispatchread.ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
 	case err != nil:
 		return fmt.Errorf("%w: %w", ErrUnchecked, err)

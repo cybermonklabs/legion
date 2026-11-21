@@ -17,6 +17,7 @@ import (
 	"authelia.com/provider/oauth2/token/jose"
 	"authelia.com/provider/oauth2/token/jwt"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -74,6 +75,14 @@ const (
 	// projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
+	// ClaimRestricted is whether the token's person is a restricted member, who sees only the
+	// projects that name them, as a bool: projectAccess writes it on every exchanged token, false
+	// only where the broker knows the person is a full member (a person's sign-in, which it
+	// verified against BROKER_SIGNIN_DOMAIN, or Dispatch's answer of projectaccess.MemberFull) and
+	// for a token that names no person, which no member list holds. A token without it (one an
+	// earlier broker minted) reads as restricted at every reader, so a reader never widens what a
+	// token sees on a claim nobody decided. An introspection answers it as Restricted.
+	ClaimRestricted = "restricted"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -745,7 +754,7 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 const claimLegacyProject = "project"
 
 // refusedByDispatch is the trade's refusal when the broker's own account token does not work
-// (projectaccess.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
+// (dispatchread.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
 // list the broker's account or does not accept its token (one minted for another audience, say),
 // or the broker could not read it from its file at all. That is a misconfiguration and not an
 // outage, so the trade is refused naming it rather than minted.
@@ -799,6 +808,10 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)
 	name, _ := session.Extra[ClaimSession].(string)
+	// One answer of the person's member kind per trade, which the restricted claim and the list's
+	// check (projectaccess.ListAllowed) share, so a trade asks Dispatch the kind once.
+	access := memberKindOnce(p.exchange.Projects)
+	session.Extra[ClaimRestricted] = memberRestricted(ctx, access, subjectTokenType, person)
 	if person == "" {
 		return nil
 	}
@@ -810,7 +823,6 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	if err != nil {
 		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
-	access := p.exchange.Projects
 	if scope == oauthwire.ProjectScopeNamed {
 		if access == nil {
 			return nil
@@ -824,7 +836,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names the project %s, which its person %s cannot see.", unseen.Project, person).WithWrap(err).WithDebugError(err)
 		case errors.Is(err, projectaccess.ErrListRequired):
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
-		case errors.Is(err, projectaccess.ErrBrokerRefused):
+		case errors.Is(err, dispatchread.ErrBrokerRefused):
 			return refusedByDispatch(err)
 		case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 			return unknownMemberKind(err)
@@ -855,7 +867,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrInvalidRequest.WithHintf("The token names a project its person cannot see: %s.", unseen.Project).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, projectaccess.ErrListRequired):
 		return oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
+	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		return refusedByDispatch(err)
 	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 		return unknownMemberKind(err)
@@ -866,6 +878,59 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	default:
 		return dispatchUnreachable(err)
 	}
+}
+
+// memberRestricted is the token's ClaimRestricted: false for a token that names no person, and for
+// a person's sign-in, which the broker verified as a full member itself; false where Dispatch
+// answers the person a full member (projectaccess.MemberFull); true for every other answer - a
+// restricted member, a person Dispatch holds no row for, a kind it could not be asked, and a broker
+// with no check configured - so a token whose person's kind is not known sees only its own list.
+func memberRestricted(ctx context.Context, access projectaccess.Access, subjectTokenType, person string) bool {
+	if person == "" || subjectTokenType == oauthwire.SubjectTokenTypePerson {
+		return false
+	}
+	if access == nil {
+		return true
+	}
+	kind, err := access.MemberKind(ctx, person)
+	return err != nil || kind != projectaccess.MemberFull
+}
+
+// oneKindAsk is a projectaccess.Access that asks Dispatch each person's member kind once, and
+// answers every later ask of the same trade from that first answer, its error included.
+type oneKindAsk struct {
+	access projectaccess.Access
+	kinds  map[string]kindAnswer
+}
+
+type kindAnswer struct {
+	kind string
+	err  error
+}
+
+// memberKindOnce wraps access for one trade, or is nil for a broker with no check configured.
+func memberKindOnce(access projectaccess.Access) projectaccess.Access {
+	if access == nil {
+		return nil
+	}
+	return &oneKindAsk{access: access, kinds: map[string]kindAnswer{}}
+}
+
+func (o *oneKindAsk) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return o.access.Access(ctx, project, person)
+}
+
+func (o *oneKindAsk) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return o.access.States(ctx, projects)
+}
+
+func (o *oneKindAsk) MemberKind(ctx context.Context, person string) (string, error) {
+	if answer, asked := o.kinds[person]; asked {
+		return answer.kind, answer.err
+	}
+	kind, err := o.access.MemberKind(ctx, person)
+	o.kinds[person] = kindAnswer{kind: kind, err: err}
+	return kind, err
 }
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,

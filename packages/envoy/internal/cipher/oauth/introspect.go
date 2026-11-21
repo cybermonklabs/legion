@@ -67,6 +67,11 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
+	// The restricted claim is answered only as the bool an exchange of this release wrote; any
+	// other stored value is left out, which every reader takes as restricted.
+	if restricted, ok := session.Extra[ClaimRestricted].(bool); ok {
+		answer.Restricted = &restricted
+	}
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
 		if answer.ProjectScope == oauthwire.ProjectScopeNamed {

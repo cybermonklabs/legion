@@ -96,7 +96,7 @@ func queueFailure(failure string, err error) string {
 // Dispatch queued are then one message under one stream id (bus.ForwardMsgID), which the stream
 // stores once.
 func queuedEnvelope(input dispatchenvoy.SendInput) contracts.Envelope {
-	return contracts.AgentSendEnvelope(input.TargetSession, input.IdempotencyKey, input.EnvelopeMessage())
+	return contracts.AgentSendEnvelope(contracts.NoProject, input.TargetSession, input.IdempotencyKey, input.EnvelopeMessage())
 }
 
 // AgentPublishRecorder is the AgentPublisher of a test process that has no NATS: the browser

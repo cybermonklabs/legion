@@ -94,7 +94,11 @@ func (r *recorder) sent(eventID string) []string {
 // session on the package's own windows, as roles.Buckets does (roles.Windows).
 type heldRoles struct{ roles.Windows }
 
-func (heldRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (heldRoles) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (heldRoles) Mode() roles.Mode { return roles.AllPublic }
+
+func (heldRoles) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: "s-heard"}, nil
 }
 

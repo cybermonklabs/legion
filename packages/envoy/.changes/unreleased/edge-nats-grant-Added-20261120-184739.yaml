@@ -1,0 +1,44 @@
+kind: Added
+body: |-
+  `natsgrant.Edge(machineID, projects)` and `core.EdgePermissions(machineID, projects)` are the NATS
+  grant of an edge listener's own user: the listener's grant, publishing in place of every
+  notification topic only `notifications.agent.>`, `notifications.role.<KEY>.>` for each project,
+  `notifications.envoy.deliver.*`, `notifications.envoy.relayreply.>` (every edge machine's relay
+  receipts), `notifications.envoy.resume.>`, and
+  `notifications.envoy.exceptions.notifications.agent.>` and
+  `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project, with no create or
+  update of the stream or of any bucket's stream and no direct get of any bucket, and subscribing
+  its own machine's inbox prefix `_INBOX_envoy_edge_<machine id>.>`, the relay subjects and its own
+  machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, and no role lane. A
+  republish, and a direct get's answer, aimed at a `$JS.API.` subject are JetStream API requests in
+  the account, the stored value as the body (an empty one aimed at a stream delete deletes the
+  stream), which is why the edge holds neither. Both refuse a machine id that is not one subject
+  token and a project list that is empty or not project keys, sorted, each once.
+  `natsgrant/testdata/edge.golden.json` pins it for machine `m` and project `PRIV`. The session
+  consumers' calls it keeps reach every consumer of the stream and hand any stored message to any
+  subscriber of a subject the stream does not carry; a delivery travels under its stream subject,
+  so it takes no JetStream API action, and its one write is a message stored by another stream of
+  the account, a bucket's stream among them, whose subjects take the deliver subject while a
+  client subscribes it; a consumer's idle heartbeat travels under the deliver subject itself, and
+  aimed at a stream delete that some client subscribes, it deletes the stream. The pull and ack
+  calls it keeps are each answered with no body on whatever reply subject it names, needing no
+  subscriber, so one aimed at a stream delete deletes that stream on nats-server 2.15.1 (2.15.3
+  refuses a reply into `$JS.API.`). The infra README's
+  "Permission sets" says how far. The NATS auth service answers an `edge-listener` entry of
+  `BROKER_NATS_SERVICES` with it, for the projects the entry lists. A listener started with
+  `ENVOY_EDGE_PROJECTS` names every inbox under that prefix, reads each bucket with stream message
+  gets (`bus.WithStreamMessageReads`), reads the stream and ends its start, naming it, when the
+  server has none, subscribes no role lane, publishes no Legion wake report, keeps no role message
+  and hands no kept lane over (a publish to an unheld role is answered 404), writes no takeover
+  record and copies no frame to a kept lane when a role moves between sessions, and publishes no
+  delivery exception on a lane its grant leaves out, counting each on
+  `envoy_edge_exceptions_withheld_total`. So at the edge a role's new holder does not receive what
+  its previous holder had not read, and a role message forwarded to an edge session that has since
+  lost the role still reaches it. Every other listener creates the spent-proof bucket
+  `envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener of
+  this build starts before an edge listener and makes the bucket the edge's start needs. No edge
+  pod serves a session until the edge mode that holds a session to its token's projects (#4810) and
+  the relay socket and its receipts (#4658) are in its build.
+time: 2026-11-20T18:47:39Z
+custom:
+    Issue: edge-nats-grant

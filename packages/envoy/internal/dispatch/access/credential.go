@@ -1,6 +1,10 @@
 package access
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/sjawhar/envoy/internal/projectscope"
+)
 
 // Credential is Dispatch's rule over a person already resolved: PersonSees is what the
 // credential's person sees (Resolve of that person at a browser), and no consumer builds one
@@ -32,14 +36,9 @@ func (c Credential) Sees(project string, private bool) bool {
 	return inList
 }
 
-// BrokerTokenAdmits is the bus's rule for a broker token (PlanC): a listed project, or, with no
-// list, any project that is not private. It is valid only for a broker token, because the broker
-// checks every listed key against the person through the membership answer at mint and at every
-// trade (no refresh token exists), and never mints an empty list for a restricted member, so a
-// lost project is dropped within BROKER_ACCESS_TOKEN_SECONDS and the answer's cache lifetime.
+// BrokerTokenAdmits is the bus's rule for a broker token, projectscope.BrokerTokenAdmits:
+// a listed project, or, with no list, any project that is not private. The rule itself lives in
+// that leaf package so the Envoy listener reads it without linking this package's store.
 func BrokerTokenAdmits(listed []string, project string, private bool) bool {
-	if len(listed) > 0 {
-		return slices.Contains(listed, project)
-	}
-	return !private
+	return projectscope.BrokerTokenAdmits(listed, project, private)
 }

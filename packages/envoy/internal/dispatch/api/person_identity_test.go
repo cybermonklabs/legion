@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 )
@@ -469,7 +470,11 @@ func (r *identityRig) publish(t *testing.T, issue string) {
 // record was written just now, so the forward resolves to that live session.
 type provedSessionHoldsTheRole struct{}
 
-func (provedSessionHoldsTheRole) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (provedSessionHoldsTheRole) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (provedSessionHoldsTheRole) Mode() roles.Mode { return roles.AllPublic }
+
+func (provedSessionHoldsTheRole) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: brokerTestSession}, nil
 }
 

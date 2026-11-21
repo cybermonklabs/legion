@@ -719,9 +719,11 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		if err := json.Unmarshal(raw, &answer); err != nil {
 			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
 		}
-		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		// A token that names no person is no restricted member's, so it carries the restricted
+		// claim false (oauth.ClaimRestricted).
+		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt, Restricted: new(false)}
 		if !reflect.DeepEqual(answer, want) {
-			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, names no person and no project, and is no restricted member's", answer, want)
 		}
 		if answer.ExpiresAt <= time.Now().Unix() {
 			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)

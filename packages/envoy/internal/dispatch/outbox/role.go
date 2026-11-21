@@ -109,11 +109,16 @@ type roleResolution struct {
 // last registration puts it in, with a holder that is not answering logged and its claim left
 // exactly as it is. It is the one resolution a batch's open (resolveRoleHolders) and the handover
 // behind a keep (handOverKept) share, so the liveness rule and that line are written once.
+//
+// role is a route's role, which names the claim it is keyed by (contracts.ParseRoleClaimKey): a
+// bare role resolves under its own project, contracts.RoleProject(role), as every claim was keyed
+// before claims named their project, so no read of the role bucket here moves.
 func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution, error) {
 	if deps.RoleClaims == nil || deps.Sessions == nil {
 		return roles.Resolution{}, errNoRoleReaders
 	}
-	resolution, err := roles.ResolveHolder(ctx, deps.RoleClaims, deps.Sessions, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	resolution, err := roles.ResolveHolder(ctx, deps.RoleClaims, deps.Sessions, project, name)
 	if err == nil && resolution.State == roles.Lapsed {
 		slog.Info("dispatch outbox: a role's holder is not answering", "role", role,
 			"holder", resolution.Holder, "holder_state", resolution.HolderState,
@@ -729,16 +734,22 @@ func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution
 // flight is handed by the keep itself (handOverKept). The keep carries no holder, so the route is
 // keyed on its role topic as the skip it replaced was, and holds back no session's later events.
 //
+// role is the role's claim key (contracts.RoleClaimKey of the copy's project and the role), and
+// the lane is keyed by that pair: a copy of PRIV and a copy of PUB for one free-form role keep
+// separate lanes, as the listener keys its own keep by the role topic, which names the project
+// (bus.KeptRoleSubject); a bare role keeps its bare key, so no lane of today moves.
+//
 // One role token is not kept for and skips as it did before the kept lane, under skipped: one no
 // claim can ever name (roles.Valid, the pattern POST /v1/roles/set refuses), since a copy kept
 // under such a token waits for a claim that cannot be made and expires unread. That is the rule
 // the listener's own keep follows (keepForNextHolder), which the two writers of a role's kept
 // lane must agree on. resolvedAt is the resolution's time, which the forward carries (forwardOf).
 func keptOrSkipped(role, skipped string, resolvedAt time.Time) *roleForward {
-	if !roles.Valid(role) {
+	project, name := contracts.ParseRoleClaimKey(role)
+	if !roles.Valid(name) {
 		return &roleForward{skip: skipped, resolvedAt: resolvedAt}
 	}
-	return &roleForward{keptFor: role, resolvedAt: resolvedAt}
+	return &roleForward{keptFor: contracts.RoleClaimKey(project, name), resolvedAt: resolvedAt}
 }
 
 // send is the router of a role destination: it sends item, routed to that destination, as forward

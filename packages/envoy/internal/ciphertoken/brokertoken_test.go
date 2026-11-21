@@ -326,7 +326,7 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 	answer.Projects = nil
 	const token = "a-public-session-token"
 	rig.broker.Says(token, answer)
-	want := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopeNamed}
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Restricted: true, ProjectScope: ciphertoken.ProjectScopeNamed}
 	for name, decide := range map[string]func() (ciphertoken.Caller, error){
 		"Verify": func() (ciphertoken.Caller, error) {
 			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
@@ -358,18 +358,23 @@ func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 }
 
 // TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under either scope, as
-// the caller's own copy: a named token's one project and a person token's list alike.
+// the caller's own copy: a named token's one project and a person token's list alike. The
+// restricted claim reaches it as the broker answered it, false for a full member's token, and an
+// answer with no claim (an earlier broker's) is restricted.
 func TestCallerCarriesTheProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
 	person := liveToken(caller.jkt, time.Hour)
 	person.ProjectScope, person.Projects = ciphertoken.ProjectScopePerson, []string{"PRIV", "PUB"}
+	full := liveToken(caller.jkt, time.Hour)
+	full.Restricted = new(false)
 	for name, c := range map[string]struct {
 		answer ciphertoken.Introspection
 		want   ciphertoken.Caller
 	}{
-		"named":  {liveToken(caller.jkt, time.Hour), ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
-		"person": {person, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, ProjectScope: ciphertoken.ProjectScopePerson}},
+		"named":  {liveToken(caller.jkt, time.Hour), ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, Restricted: true, ProjectScope: ciphertoken.ProjectScopeNamed}},
+		"person": {person, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, Restricted: true, ProjectScope: ciphertoken.ProjectScopePerson}},
+		"full":   {full, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, Restricted: false, ProjectScope: ciphertoken.ProjectScopeNamed}},
 	} {
 		token := "a-" + name + "-token-with-projects"
 		rig.broker.Says(token, c.answer)
@@ -394,7 +399,7 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 	// The scope is carried whole, as callerOf carries it for every answer: a service-only token
 	// gains nothing by it, since the one reader of the field (api.broker_token's person-scope
 	// branch) asks for a person first, and this caller has none.
-	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: "example-fleet", ProjectScope: ciphertoken.ProjectScopePerson}
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: "example-fleet", Restricted: true, ProjectScope: ciphertoken.ProjectScopePerson}
 	decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
 	if err != nil {
 		t.Fatalf("Verify refused a token naming a service and no person: %v", err)
@@ -426,7 +431,7 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	caller := newSigner(t)
 	readOnly := readOnlyToken(caller.jkt, time.Hour)
-	readOnlyCaller := ciphertoken.Caller{Session: "ses_reader", Service: "example-reader", ProjectScope: ciphertoken.ProjectScopeNone, ReadOnly: true}
+	readOnlyCaller := ciphertoken.Caller{Session: "ses_reader", Service: "example-reader", Restricted: true, ProjectScope: ciphertoken.ProjectScopeNone, ReadOnly: true}
 
 	noScope := readOnlyToken(caller.jkt, time.Hour)
 	noScope.Scope = ""
@@ -444,7 +449,7 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	personRead.ProjectScope, personRead.Projects = ciphertoken.ProjectScopePerson, nil
 	personRead.Scope = "dispatch.write read"
 	named := liveToken(caller.jkt, time.Hour)
-	namedCaller := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}
+	namedCaller := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, Restricted: true, ProjectScope: ciphertoken.ProjectScopeNamed}
 
 	rows := []struct {
 		name   string
@@ -524,6 +529,7 @@ func TestALiveTokenWithASoundProofIsAccepted(t *testing.T) {
 		Session:      "ses_a1b2c3",
 		Person:       "sjawhar",
 		Projects:     []string{"INFRA"},
+		Restricted:   true,
 		ProjectScope: ciphertoken.ProjectScopeNamed,
 	}
 	if !reflect.DeepEqual(decided, wantCaller) {
@@ -551,7 +557,7 @@ func TestAPersonScopedTokenNamesNoProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify refused a person-scoped token: %v", err)
 	}
-	want := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson}
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Restricted: true, ProjectScope: ciphertoken.ProjectScopePerson}
 	if !reflect.DeepEqual(decided, want) {
 		t.Fatalf("Verify = %+v, want the session and the person with the person scope and no project", decided)
 	}

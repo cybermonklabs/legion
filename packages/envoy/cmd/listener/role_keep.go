@@ -649,18 +649,26 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // costs one resolution and one read of the lane past its cursor.
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
-// kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set
-// refuses), which both give-up paths must agree on, and Dispatch's outbox with them
-// (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under such a token waits
-// for a claim that cannot be made and expires unread.
+// kept lane: one whose role no claim can be keyed by (roles.ValidClaimKey: a role token of the
+// pattern POST /v1/roles/set accepts, under the project a free-form role's key names), which both
+// give-up paths must agree on, and Dispatch's outbox with them (keptOrSkipped,
+// internal/dispatch/outbox/role.go), since a copy kept under such a token waits for a claim that
+// cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
 // queue - opts out on the publish route's own request field instead (keep false, read by
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
+//
+// An edge listener keeps nothing (cfg.edge) and answers errEdgeKeepsNothing: its grant publishes
+// no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
+// the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	if !roles.Valid(role) {
+	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
+	}
+	if cfg.edge != nil {
+		return keptRoleCopy{}, errEdgeKeepsNothing
 	}
 	kept, err := keepRoleMessage(cfg, role, item)
 	if err != nil {
@@ -670,9 +678,13 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	return kept, nil
 }
 
-// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
-// which it keeps nothing for.
-var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
+// errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
+// (roles.ValidClaimKey), which it keeps nothing for.
+var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
+
+// errEdgeKeepsNothing is keepForNextHolder's answer at an edge listener, which keeps nothing: its
+// grant publishes no kept role lane (natsgrant.Edge).
+var errEdgeKeepsNothing = errors.New("an edge listener keeps no role message: its grant publishes no kept role lane")
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and reports whether it was kept. reason is why, as the lane's
@@ -799,7 +811,14 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 // role inside this listener run one after the other and the sweep can tell that a role's lane is
 // being handed over here already without waiting for it (roleKeepGuards.tryHold). A handover
 // whose context ended while it waited gives that wait up and walks nothing (roleKeepGuards.hold).
+//
+// An edge listener hands no lane over (cfg.edge): a handover writes the lane's drain cursor, which
+// its grant may not publish (natsgrant.Edge). The shared listeners' sweeps hand the lane of a role
+// held at the edge to its holder's agent subject (startKeptRoleSweep), as they hand every lane.
 func drainKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) error {
+	if cfg.edge != nil {
+		return nil
+	}
 	release, taken := cfg.roleKeepDrains.hold(ctx, role)
 	if !taken {
 		return nil
@@ -977,7 +996,8 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		project, name := contracts.ParseRoleClaimKey(role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.claims(), roleHolderSessions{cfg.sessions}, project, name)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1361,7 +1381,8 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
 // roleLaneClaims keeps the bound on a claim read in one place for both lanes.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	claim, err := roleLaneClaims{cfg.claims()}.RoleClaim(ctx, project, name)
 	if err != nil {
 		return "", err
 	}

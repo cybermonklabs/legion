@@ -265,8 +265,14 @@ func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) erro
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
 // (bus.TakeoverSubject with a fresh attempt id), with the claim's time on the listener's clock. A
 // previous holder whose id no session consumer can be named for (bus.SessionConsumerName) has no
-// subject of its own to copy from, so it gets none.
+// subject of its own to copy from, so it gets none. An edge listener writes none (cfg.edge): its
+// grant publishes no takeover lane and no kept role lane (natsgrant.Edge), so its claim of a role
+// another session holds lands with no record, and no pass copies what the previous holder had not
+// read: that stays on the previous holder's own subject, which its relay sends it.
 func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous string) error {
+	if cfg.edge != nil {
+		return nil
+	}
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
 	}
@@ -286,8 +292,13 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records and
-// then hands its kept lane over (handOverTakenRole).
+// then hands its kept lane over (handOverTakenRole). An edge listener runs none (cfg.edge), as it
+// hands no kept lane over (drainKeptRole): a pass writes the kept role lane and the takeover lane,
+// which its grant publishes neither of (natsgrant.Edge).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
+	if cfg.edge != nil {
+		return
+	}
 	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
@@ -550,32 +561,32 @@ type roleOfMessage struct {
 	Role    string `json:"role"`
 }
 
-// role is the role the frame is a role message of, and whether it is one: a frame whose topic is
-// a role's topic (roleOfLaneTopic), which the listener or Dispatch's outbox forwarded to its holder
-// as the role's holder, or whose role mark names a role, which Dispatch's API sent for a route to
-// that role, read in either form (contracts.CanonicalRole), as a claim is keyed by the bare name.
+// role is the role the frame is a role message of, keyed as its claim is (store.RoleClaimKeyOf),
+// and whether it is one: a frame whose topic is a role's topic (roleOfLaneTopic), which the
+// listener or Dispatch's outbox forwarded to its holder as the role's holder, or whose role mark
+// names a role, which Dispatch's API sent for a route to that role, read in either form.
 func (m roleOfMessage) role() (string, bool) {
 	if role, ok := roleOfLaneTopic(m.Topic); ok {
 		return role, true
 	}
 	if m.Role != "" {
-		_, role, _ := contracts.CanonicalRole(m.Role)
+		role := store.RoleClaimKeyOf(m.Role)
 		return role, role != ""
 	}
 	return "", false
 }
 
-// roleOfLaneTopic is the role a role lane's topic names, in its bare form, and whether topic is a
-// role's topic: the one rule the role lane's delivery (resolveRoleForward), the session relay and a
-// takeover pass read a role topic by, since the relay and the pass must read a frame's role as the
-// lane that forwarded it did. The topic names the role in either form (contracts.CanonicalRole);
-// a claim is keyed by the bare name.
+// roleOfLaneTopic is the key of the claim a role lane's topic names (store.RoleClaimKeyOf), and
+// whether topic is a role's topic: the one rule the role lane's delivery (resolveRoleForward), the
+// session relay and a takeover pass read a role topic by, since the relay and the pass must read a
+// frame's role as the lane that forwarded it did. The topic names the role in either form: the
+// key is the bare name, or <project>.<role> for a free-form role under a project.
 func roleOfLaneTopic(topic string) (string, bool) {
 	token, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || token == "" {
 		return "", false
 	}
-	_, role, _ := contracts.CanonicalRole(token)
+	role := store.RoleClaimKeyOf(token)
 	return role, role != ""
 }
 
@@ -641,7 +652,14 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // every such frame does. A claim read or a copy that failed has the frame given back to the server
 // with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
 // copied or sent once they answer.
+//
+// An edge listener takes no frame (cfg.edge): its grant publishes no kept role lane
+// (natsgrant.Edge), so a copy would never store and the frame would be given back at every
+// delivery. The frame goes to the session as every frame does.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
+	if m.cfg.edge != nil {
+		return false
+	}
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {
 		return false

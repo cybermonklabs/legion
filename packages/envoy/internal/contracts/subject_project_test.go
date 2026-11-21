@@ -29,7 +29,6 @@ type subjectProjectFixture struct {
 	SubjectProject []struct {
 		Subject string `json:"subject"`
 		Project string `json:"project"`
-		Repo    string `json:"repo"`
 		OK      bool   `json:"ok"`
 	} `json:"subjectProject"`
 	CanonicalTopic []struct {
@@ -86,7 +85,7 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 		"builders":       {len(fixture.Builders), 7},
 		"issueProject":   {len(fixture.IssueProject), 8},
 		"roleProject":    {len(fixture.RoleProject), 10},
-		"subjectProject": {len(fixture.SubjectProject), 38},
+		"subjectProject": {len(fixture.SubjectProject), 46},
 		"canonicalTopic": {len(fixture.CanonicalTopic), 23},
 		"legacyTwin":     {len(fixture.LegacyTwin), 20},
 		"canonicalRole":  {len(fixture.CanonicalRole), 8},
@@ -138,11 +137,13 @@ func TestALegionRoleNamesItsTokensProject(t *testing.T) {
 	}
 }
 
+// Each family's name reads as its project, and a GitHub name as AnyToken, which every token sees
+// (GH-1): the fixture's acme/pub row is notifications.github.acme.pub.pull_request.4.opened, which
+// a reader of the repository mapping GH-1 removed would answer PUB.
 func TestEachFamilysNameIsReadForItsProject(t *testing.T) {
 	for _, row := range readSubjectProjectFixture(t).SubjectProject {
-		project, repo, ok := SubjectProject(row.Subject)
-		if project != row.Project || repo != row.Repo || ok != row.OK {
-			t.Errorf("SubjectProject(%q) = %q, %q, %v; want %q, %q, %v", row.Subject, project, repo, ok, row.Project, row.Repo, row.OK)
+		if project, ok := SubjectProject(row.Subject); project != row.Project || ok != row.OK {
+			t.Errorf("SubjectProject(%q) = %q, %v; want %q, %v", row.Subject, project, ok, row.Project, row.OK)
 		}
 	}
 }

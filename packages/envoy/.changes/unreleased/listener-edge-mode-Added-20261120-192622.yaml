@@ -1,0 +1,66 @@
+kind: Added
+body: |-
+  The listener has an edge mode. `ENVOY_EDGE_PROJECTS` names the projects an edge listener
+  serves (project keys, separated by commas or white space); empty is no edge, and a set value
+  that names no project, such as a lone comma, refuses the start. An edge listener admits a broker
+  token alone, and only one whose projects it all serves, of project scope `named` or `person`
+  (`EdgeAdmits`); a refusal names what the token carries and no project the edge serves. It
+  refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting,
+  `ENVOY_DISPATCH_PRINCIPAL`, the webhooks or a webhook secret, or without the broker-token
+  settings. It holds every request to the token's projects: a registration follows the session's
+  own agent subject, the topics of those projects, and the GitHub topics of one repository each
+  that the secrets broker's
+  `GET /v1/project-repositories` answer names for them, read with the listener's own account at
+  each such registration and every 30 seconds, each project's read on its own, compared ignoring
+  case. The topics the session's interest record already holds are held to the same rule at
+  every registration, and one the rule refuses is removed from the record and the session's
+  consumer and named in the answer's `warnings`. A refused registration is
+  `403 {"error","reason","refused"}` naming every refused topic, and a registration whose read
+  fails is `503 repositories_unknown`, whose text names nothing the broker answered. At relay a
+  GitHub event reaches the session only while an answer no older than 60 seconds names the
+  repository its own payload names; one that does not is acknowledged undelivered and counted in
+  `envoy_edge_github_withheld_total{reason}`, the session's interest in a repository that left
+  the answer is removed, and while no answer is fresh the next frame carries `Envoy-Gap: true`
+  with `Envoy-Gap-Reason: repository_withheld`, which a client tells from the stream's retention
+  gap, whose mark carries no reason; the mark is kept for the session, across its relay runs and
+  on its `envoy_sessions` entry for the next listener to relay it, until a frame carrying it is
+  published, and the relay writes it on the entry before it acknowledges the withheld event,
+  giving the event back for redelivery when that write fails or the entry is gone; the clear
+  after a frame removes only the mark its relay wrote. A session at the edge publishes only a
+  role subject of its project, sends and publishes only as itself (`source` `agent` and
+  `source_session` the token's session, else `403 sender_not_session`), claims and reads only
+  that project's roles, sends only to sessions whose token listed it, and reads only its
+  sessions, roles, topics and Legion agents; a role held by a session of no project of its token
+  reads to it as a role no claim holds, in a role read, a role send's answers and a claim's 409.
+  A registration at the edge first releases the claims of other projects' roles that the session
+  holds and its role claim view shows, named in the answer's `warnings`, reading the role bucket
+  while that view cannot be served, and is refused with a retryable 503 when a release fails,
+  whose text names the claim record the bus answered and the release could not read or free; it
+  renews only its projects' roles, and a claimant there is handed the kept messages of its
+  projects' roles alone.
+  A heartbeat refused 503 for want of a repository answer still renews the session's entry, also
+  when the broker never answers, and leaves an entry another listener wrote since its read as it
+  is. Every other listener serves as before.
+
+  On every listener a write of a session's `envoy_sessions` entry is conditional on the revision
+  it replaces and keeps the `repository_gap` mark that entry holds, so a registration made over a
+  stale copy of the entry no longer clears a mark another listener set.
+
+  Every listener that verifies broker tokens records the registering token's projects on the
+  session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.
+
+  A free-form role claimed under a project key, such as `PRIV.lead-reviewer`, is now that
+  project's own claim, keyed `PRIV.lead-reviewer`, beside the claim of `lead-reviewer` under no
+  project; a claim, a role lookup, a publish to `notifications.role.PRIV.lead-reviewer` and the
+  role lane all resolve it. Before, `POST /v1/roles/set` refused it 400 and a message to its lane
+  reached the holder of the bare name. Every other role name keeps the bare key it had.
+
+  A role message on a lane that names a project, for a Legion role of another project
+  (`notifications.role.PRIV.legion-infra-reviewer`), now reaches no holder: the role lane drops
+  it with the delivery exception `no_holder` and `POST /v1/messages/publish` refuses it 400, as
+  `POST /v1/roles/set` refuses the claim.
+  Before, the role lane and the publish route resolved the bare role name and reached the holder
+  of the role's own project.
+time: 2026-11-20T19:26:22Z
+custom:
+    Issue: listener-edge-mode

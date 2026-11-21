@@ -17,6 +17,12 @@ const (
 	keptPrefix      = "notifications.envoy.kept."
 )
 
+// AnyToken is a GitHub subject's project (SubjectProject): every token sees a GitHub event,
+// whatever it lists, so no record, copy or stamp is read for it and a session gets the GitHub
+// events its interests name. It is never a project key and never NoProject. The TypeScript twin is
+// ANY_TOKEN.
+const AnyToken = "*"
+
 var projectKey = regexp.MustCompile(ProjectKeyPattern)
 
 // isLiteral reports whether token names one value: it is neither empty nor a wildcard.
@@ -83,10 +89,10 @@ func roleLaneProject(rest []string) string {
 // of it, and read is handed the tokens after the family's prefix.
 type subjectProjectRow struct {
 	family string
-	read   func(rest []string) (project, repo string)
+	read   func(rest []string) string
 }
 
-func noProject([]string) (string, string) { return NoProject, "" }
+func noProject([]string) string { return NoProject }
 
 // subjectProjectRows has one row for every family the notification stream carries and for the
 // role lanes, which it does not. A family with no row reads as no project, which is never a guess
@@ -99,64 +105,67 @@ func init() {
 	subjectProjectRows = []subjectProjectRow{
 		// Dispatch's issue events: the new form names the project first, and the old form's
 		// project is its key's.
-		{family: "notifications.dispatch.issue.>", read: func(rest []string) (string, string) {
+		{family: "notifications.dispatch.issue.>", read: func(rest []string) string {
 			if project, ok := IssueProject(rest[0]); ok {
-				return project, ""
+				return project
 			}
-			return projectOfToken(rest[0]), ""
+			return projectOfToken(rest[0])
 		}},
 		// Dispatch's document and project events, each named under its project already.
-		{family: "notifications.dispatch.document.>", read: func(rest []string) (string, string) { return projectOfToken(rest[0]), "" }},
-		{family: "notifications.dispatch.project.>", read: func(rest []string) (string, string) { return projectOfToken(rest[0]), "" }},
+		{family: "notifications.dispatch.document.>", read: func(rest []string) string { return projectOfToken(rest[0]) }},
+		{family: "notifications.dispatch.project.>", read: func(rest []string) string { return projectOfToken(rest[0]) }},
 		// Dispatch's own start (startup.Subject), which is no project's.
 		{family: "notifications.dispatch.server.>", read: noProject},
 		// One session's messages: the new form names a project, the old form none.
-		{family: "notifications.agent.>", read: func(rest []string) (string, string) {
+		{family: "notifications.agent.>", read: func(rest []string) string {
 			if len(rest) >= 2 {
-				return projectOfToken(rest[0]), ""
+				return projectOfToken(rest[0])
 			}
-			return NoProject, ""
+			return NoProject
 		}},
-		{family: "notifications.role.>", read: func(rest []string) (string, string) { return roleLaneProject(rest), "" }},
+		{family: "notifications.role.>", read: roleLaneProject},
 		// The Legion daemon's lanes: <token>.controller, <token>.<issue> and <token>.wake are the
-		// deployment's, and the one wake every deployment shares is none's.
-		{family: "notifications.legion.>", read: func(rest []string) (string, string) {
+		// deployment's, as is a private project's Slack lane, <token>.slack.… (PrivateSlackSubject);
+		// the one wake every deployment shares is none's.
+		{family: "notifications.legion.>", read: func(rest []string) string {
 			if len(rest) >= 2 {
-				return legionTokenProject(rest[0]), ""
+				return legionTokenProject(rest[0])
 			}
-			return NoProject, ""
+			return NoProject
 		}},
-		// A repository's events: the project is the one Dispatch maps the repository to.
-		{family: "notifications.github.>", read: func(rest []string) (string, string) {
-			if len(rest) >= 2 {
-				return "", rest[0] + "/" + rest[1]
-			}
-			return "", ""
-		}},
+		// A repository's events, which every token sees, whatever it lists.
+		{family: "notifications.github.>", read: func([]string) string { return AnyToken }},
 		{family: "notifications.slack.>", read: noProject},
 		{family: "notifications.ghostwispr.>", read: noProject},
 		{family: "notifications.whatsapp.>", read: noProject},
 		{family: "notifications.team.>", read: noProject},
-		// A failed delivery's report is the project's of the name it reports on.
-		{family: "notifications.envoy.exceptions.>", read: func(rest []string) (string, string) {
-			project, repo, ok := SubjectProject(strings.Join(rest, "."))
+		// A failed delivery's report is the project's of the name it reports on, a GitHub name's
+		// AnyToken among them.
+		{family: "notifications.envoy.exceptions.>", read: func(rest []string) string {
+			project, ok := SubjectProject(strings.Join(rest, "."))
 			if !ok {
-				return NoProject, ""
+				return NoProject
 			}
-			return project, repo
+			return project
 		}},
 		// The listener's kept role messages and their drain cursors, each a role lane's.
-		{family: "notifications.envoy.kept.>", read: func(rest []string) (string, string) {
+		{family: "notifications.envoy.kept.>", read: func(rest []string) string {
 			if (rest[0] == "role" || rest[0] == "cursor") && len(rest) >= 2 {
-				return roleLaneProject(rest[1:]), ""
+				return roleLaneProject(rest[1:])
 			}
-			return NoProject, ""
+			return NoProject
 		}},
 		// Where a deleted session consumer stopped, which names a session and no project.
 		{family: "notifications.envoy.resume.>", read: noProject},
-		// A role a session took from another: the role's own project, as its kept lane reads it.
-		{family: "notifications.envoy.takeover.>", read: func(rest []string) (string, string) {
-			return RoleProject(rest[0]), ""
+		// A role a session took from another, named by its claim's key (RoleClaimKey) before the
+		// previous holder and the attempt: a key of one token, a role's bare name, works for the
+		// role's own project, and a key of two, a free-form role under a project, for the project
+		// it names first, as its kept lane reads it.
+		{family: "notifications.envoy.takeover.>", read: func(rest []string) string {
+			if len(rest) == 4 {
+				return projectOfToken(rest[0])
+			}
+			return RoleProject(rest[0])
 		}},
 	}
 }
@@ -175,25 +184,24 @@ func SubjectProjectFamilies() []string {
 // stream carries (bus.StreamCarriedSubjects) and for the role lanes, which the stream does not:
 // the issue, document, project and server families of notifications.dispatch (the document and
 // project families already carry the project as token 4, so neither is renamed); agent; role; the
-// legion notice and wake lanes; the exception, kept and resume lanes, each taking the project of
-// the name it wraps; and GitHub, whose project is "" with its sanitized "owner/name" in repo,
-// resolved against the private-projects bucket. Every other family the stream carries - slack,
-// whatsapp, ghostwispr, team - and any subject this build does not know answer NoProject, never
-// "unknown": a reader that cannot name a family must not be free to guess. A wildcard where a
-// project would be answers NoProject too. ok is false only for a subject that is no notification
-// topic at all (it does not begin notifications.), which no delivery carries.
-func SubjectProject(subject string) (project, repo string, ok bool) {
+// legion notice, wake and private Slack lanes; the exception, kept and resume lanes, each taking
+// the project of the name it wraps; and GitHub, which answers AnyToken: a GitHub event is a
+// message of no project that every token sees, whatever it lists. Every other family the stream
+// carries - slack, whatsapp, ghostwispr, team - and any subject this build does not know answer
+// NoProject, never "unknown": a reader that cannot name a family must not be free to guess. A
+// wildcard where a project would be answers NoProject too. ok is false only for a subject that is
+// no notification topic at all (it does not begin notifications.), which no delivery carries.
+func SubjectProject(subject string) (project string, ok bool) {
 	if !strings.HasPrefix(subject, "notifications.") {
-		return "", "", false
+		return "", false
 	}
 	for _, row := range subjectProjectRows {
 		prefix := strings.TrimSuffix(row.family, ">")
 		if len(subject) > len(prefix) && strings.HasPrefix(subject, prefix) {
-			project, repo = row.read(strings.Split(subject[len(prefix):], "."))
-			return project, repo, true
+			return row.read(strings.Split(subject[len(prefix):], ".")), true
 		}
 	}
-	return NoProject, "", true
+	return NoProject, true
 }
 
 // keptLane splits a kept lane's role or cursor name into its kind and the tokens after it, and
@@ -369,12 +377,10 @@ func RoleClaimKey(project, role string) string {
 }
 
 // ClaimProject is the project a claim of role works for, given the project the claim requested
-// ("" for none), once a claim keys on its project. Nothing calls it in this slice: while every
-// claim keys on its bare role name, the listener's POST /v1/roles/set refuses any new-form role
-// whose project is not RoleProject(role), so for a free-form role under a project
-// (PRIV.lead-reviewer) the route answers 400 where this answers PRIV. Plan C's t-c-8 wires it into
-// the route, and t-c-6 reads Dispatch's claims through it, so the two then decide a claim's
-// project one way.
+// ("" for none). The listener's POST /v1/roles/set asks it of a role named in the new form and
+// refuses a claim it refuses; a claim it allows is keyed by RoleClaimKey of that project (in
+// cmd/listener, through store.RoleClaimKeyOf), so a free-form role under a project
+// (PRIV.lead-reviewer) is that project's own claim beside the claim of the same name under none.
 //
 // A Legion role token (legion-<token>-…) works for the project its own name gives
 // (RoleProject), whatever the claim asks for: the role is that project's by construction, and a
@@ -398,6 +404,42 @@ func ClaimProject(role, requested string) (string, error) {
 		return "", fmt.Errorf("a claim of role %s asks for project %s, which is no project key", role, requested)
 	}
 	return requested, nil
+}
+
+// RoleClaimName is a claimed role's name read as the claim it names (RoleClaimOf).
+type RoleClaimName struct {
+	// Project is the project the claim works for (ClaimProject): the project the new form
+	// names for a free-form role, and the role's own (RoleProject) for a Legion role and for the
+	// old form.
+	Project string
+	// Role is the role's own name, without a project.
+	Role string
+	// Key is the key of the claim's record in the envoy_roles bucket (RoleClaimKey of Project):
+	// <project>.<role> for a free-form role under a project, and the bare name for every other.
+	Key string
+	// Legacy is true for the old form, the role alone (CanonicalRole).
+	Legacy bool
+}
+
+// RoleClaimOf reads a claimed role named in either form (CanonicalRole) as the claim it names: the
+// project the claim works for, given the project the new form names (ClaimProject; the old form
+// names none), and the key of its record (RoleClaimKey). It is the one reading of a role's name
+// every reader of one goes through: the claim route, which refuses the error, the role lane and
+// the publish route, which refuse a lane of the error (cmd/listener's roleLaneProjectError), the
+// edge's role and publish rules, and every key a holder is resolved by (store.RoleClaimKeyOf).
+// The error is ClaimProject's refusal of a Legion role named under another project; the name read
+// beside it is that role's own project and bare key, the claim such a name would reach.
+func RoleClaimOf(role string) (RoleClaimName, error) {
+	requested, name, legacy := CanonicalRole(role)
+	if legacy {
+		requested = ""
+	}
+	project, err := ClaimProject(name, requested)
+	if err != nil {
+		own := RoleProject(name)
+		return RoleClaimName{Project: own, Role: name, Key: RoleClaimKey(own, name), Legacy: legacy}, err
+	}
+	return RoleClaimName{Project: project, Role: name, Key: RoleClaimKey(project, name), Legacy: legacy}, nil
 }
 
 // ParseRoleClaimKey reads a role claim's key back to the project and role it was written from

@@ -13,9 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
 // eraseTestWindow is the bound the erase waits out after its commit in these tests, in place of
@@ -323,6 +327,106 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
 		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
 	}
+}
+
+// R5: the keyword fill writes a comment's keyword version (search_text_versions) from its event,
+// on its own, while the server serves: the comment's text in its body and its words in its
+// vector, which derive from the comment. A comment holding a word no other row holds is written
+// through the API, and the test waits for the server's own fill to write its version, which holds
+// the word (the control). The comment's erase takes that version, and no row of the table holds
+// the word afterwards. The table is then emptied, as the fill empties it for a log that was reset,
+// and the fill runs again over the whole log (textversions.FillToHorizon): the erase redacted the
+// comment's events in place, so every event decodes, and no row the fill writes again holds the
+// word. The test logs what it wrote again of the erased comment.
+func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgain(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERK","name":"Erase keywords"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	issue, _ := createEraseIssue(t, server, "ERK", "A comment that held a secret", "# Spec\n\nNothing secret is written here.\n")
+	comment := writeEraseComment(t, server, issue, "The passphrase is "+secret+" and nobody else may read it.")
+	deadline := time.Now().Add(time.Minute)
+	for len(eraseKeywordVersions(t, database, comment)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the server's keyword fill wrote no keyword version of comment %s within a minute", comment)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) == 0 {
+		t.Fatalf("before the erase no keyword version holds the secret, so this test proves nothing: comment %s's versions read %q",
+			comment, eraseKeywordVersions(t, database, comment))
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase comment:%s: applied %t, %v", comment, erasure != nil && erasure.Applied, err)
+	}
+	var report bytes.Buffer
+	erasure.Write(&report)
+	t.Logf("the erase reported:\n%s", report.String())
+	if !strings.Contains(report.String(), "    delete search_text_versions comment "+comment+" event_seq ") {
+		t.Errorf("the listing names no keyword version of comment %s as a row the run deletes:\n%s", comment, report.String())
+	}
+	if versions := eraseKeywordVersions(t, database, comment); len(versions) != 0 {
+		t.Errorf("after the erase the keyword table holds %d version(s) of comment %s, want none: %q", len(versions), comment, versions)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the erase the keyword versions %q hold the secret", held)
+	}
+
+	// The fill again, from no row, over the log the erase redacted, with the server stopped so
+	// the test's fill is the one that writes.
+	server.Terminate(t)
+	server.WaitExit(t, "SIGTERM")
+	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
+		t.Fatalf("empty the keyword table and its cursor row: %v", err)
+	}
+	if err := textversions.FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("fill the keyword table again over the log the erase redacted: %v", err)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the fill ran again the keyword versions %q hold the secret", held)
+	}
+	t.Logf("the fill wrote again %d keyword version(s) of the erased comment %s: %q",
+		len(eraseKeywordVersions(t, database, comment)), comment, eraseKeywordVersions(t, database, comment))
+}
+
+// eraseKeywordVersions is every keyword version (search_text_versions) of comment, as
+// `event_seq <n> body_from <source>: <body>`, in event_seq order.
+func eraseKeywordVersions(t *testing.T, database *store.Store, comment string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select 'event_seq ' || event_seq || ' body_from ' || body_from || ': ' || body
+		from search_text_versions where kind = 'comment' and id = $1 order by event_seq`, comment)
+	if err != nil {
+		t.Fatalf("read the keyword versions of comment %s: %v", comment, err)
+	}
+	versions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword versions of comment %s: %v", comment, err)
+	}
+	return versions
+}
+
+// eraseKeywordVersionsHolding names, by key, every keyword version whose body or vector holds
+// text, the vector read in its text form, which spells each lexeme.
+func eraseKeywordVersionsHolding(t *testing.T, database *store.Store, text string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select kind || ' ' || id || ' event_seq ' || event_seq from search_text_versions
+		where position($1 in body) > 0 or position($1 in search::text) > 0 order by kind, id, event_seq`, text)
+	if err != nil {
+		t.Fatalf("read the keyword versions holding the text: %v", err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword versions holding the text: %v", err)
+	}
+	return held
 }
 
 // eraseTestSecret is one word of letters and digits no other run writes, which a search vector

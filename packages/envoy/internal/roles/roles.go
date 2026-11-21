@@ -23,23 +23,49 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
 
-// ClaimStore is where a role's claim is read: store.Registry in the listener, Buckets in
-// Dispatch. Reading is all a resolution asks of it.
+// ClaimStore is where a role's claim is read, with the privacy of the project a claim is read
+// under and the deployment's privacy mode: cmd/listener's claim store over store.Registry, its
+// role lane's wrapper of it, and Buckets in Dispatch. Privacy is answered by the claim reader
+// itself, so no resolution can read a claim without also being able to read privacy, and there is
+// no separate privacy reader for a caller to forget or pass as nil.
 type ClaimStore interface {
-	// RoleClaim returns role's claim, read within ctx, or a zero claim without an error when the
-	// role is unclaimed.
-	RoleClaim(ctx context.Context, role string) (store.RoleClaim, error)
+	// RoleClaim returns the claim of role under project, read within ctx at
+	// contracts.RoleClaimKey(project, role), or a zero claim without an error when the role is
+	// unclaimed there.
+	RoleClaim(ctx context.Context, project, role string) (store.RoleClaim, error)
+	// Private reports whether project is private, read within ctx: the listener reads the privacy
+	// source afresh at each call, Dispatch its own committed rows. An error is an answer that is
+	// not known, which holds what it decides.
+	Private(ctx context.Context, project string) (bool, error)
+	// Mode is the deployment's privacy mode, which the store's own deployment configured.
+	Mode() Mode
 }
+
+// Mode is a deployment's privacy mode (AllPublic, Required): the listener's from
+// ENVOY_PROJECT_PRIVACY_REQUIRED (internal/config), Dispatch's from
+// DISPATCH_PROJECT_PRIVACY_REQUIRED (cmd/dispatch's outboxDeps).
+type Mode uint8
+
+const (
+	// AllPublic resolves as before either mode existed: every project is public to the holder
+	// check, so a holder's stored projects are never read.
+	AllPublic Mode = iota
+	// Required takes a holder only when its stored projects (session.SessionEntry.Projects) see
+	// the project the message is of (Sees).
+	Required
+)
 
 // SessionLookup reads a role holder's session record and judges it: the listener's session
 // registry (cmd/listener's roleHolderSessions, which adds Holder to session.SessionRegistry) and
@@ -145,8 +171,15 @@ const (
 	// read began.
 	ClaimRead Step = iota
 	// SessionRead: the holder's session record could not be read (an error other than
-	// nats.ErrKeyNotFound).
+	// nats.ErrKeyNotFound), in the all-public mode.
 	SessionRead
+	// PrivacyRead: the privacy of the project the role was asked under could not be read, so
+	// neither the fallback to the role's claim under no project nor the holder check can be
+	// decided. The message is held, never sent to the claim under no project.
+	PrivacyRead
+	// HolderRead: in the required mode, the holder's session record, whose stored projects the
+	// holder check reads, could not be read.
+	HolderRead
 )
 
 // ReadError is a resolution that failed at Step, about Holder for SessionRead. Its message is
@@ -161,8 +194,11 @@ type ReadError struct {
 }
 
 func (e *ReadError) Error() string {
-	if e.Step == SessionRead {
+	switch e.Step {
+	case SessionRead, HolderRead:
 		return "read role holder session: " + e.Err.Error()
+	case PrivacyRead:
+		return "read the project's privacy: " + e.Err.Error()
 	}
 	return e.Err.Error()
 }
@@ -201,12 +237,65 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
 }
 
-// ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims
-// (Unclaimed when there is none), then that holder's session record through sessions, and judges
-// the record by the state it puts its session in (SessionLookup.EntryState): Live when it reads
-// live, and Lapsed with that state otherwise - a holder past the live window, one past the gone
-// horizon, and one with no record at all. The claim is left exactly as it is on every one of them,
-// so a stalled holder's role and its claimed_at outlive any number of resolutions.
+// ValidClaimKey reports whether key is the key a claim can be keyed by (store.RoleClaimKeyOf):
+// a role token a claim can name (Valid), alone or, for a free-form role under a project, after
+// that project's key and a dot (contracts.RoleClaimKey, read back by contracts.ParseRoleClaimKey).
+// The listener's kept lane asks it of the claim key a give-up path holds, so a role message under
+// a key no claim can carry is kept for none.
+func ValidClaimKey(key string) bool {
+	project, role := contracts.ParseRoleClaimKey(key)
+	return Valid(role) && contracts.RoleClaimKey(project, role) == key
+}
+
+// ResolveHolder resolves the holder of role for a message of project within ctx. It reads the
+// claim of role under project (ResolveClaim), and, when that claim is unclaimed, project is not
+// NoProject and project is not the role's own (contracts.RoleProject), it asks claims.Private of
+// project: only an answer of false reads the role's claim under NoProject, the role's claim
+// every holder of a free-form role made before claims named their project. An error is a
+// *ReadError at PrivacyRead, and the message is held as for any read that did not answer - never
+// sent to the holder under NoProject on an unknown answer. A Legion role token never reaches the
+// fallback, since its project is always contracts.RoleProject(role).
+//
+// In the required mode (claims.Mode()) a holder, the one claimed under project or the one the
+// fallback finds, is taken only when its stored projects see project under the same privacy
+// answer the relay decides by (Sees); otherwise the resolution answers Unclaimed, so the
+// message goes to the kept lane and reaches a holder that can see it when one claims. A holder
+// whose record cannot be read is a *ReadError at HolderRead. In the all-public mode the holder's
+// projects are never read and it resolves as before the modes existed.
+//
+// This is the one place the fallback is written: every reader that delivers a role's message
+// (the listener's publish route, its role lane and kept lanes, Dispatch's outbox) resolves through
+// it, and a read that answers a role's holder (GET /v1/roles/<role>, the claim route) reads the
+// claim under its own project alone (ResolveClaim).
+func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, project, role string) (Resolution, error) {
+	resolved, err := ResolveClaim(ctx, claims, sessions, project, role)
+	if err != nil || resolved.State != Unclaimed || project == contracts.NoProject || project == contracts.RoleProject(role) {
+		return resolved, err
+	}
+	private, err := claims.Private(ctx, project)
+	if err != nil {
+		return Resolution{}, &ReadError{Step: PrivacyRead, Err: fmt.Errorf("read project %s's privacy for role %s's holder: %w", project, role, err)}
+	}
+	if private {
+		return resolved, nil
+	}
+	fallback, err := ResolveClaim(ctx, claims, sessions, contracts.NoProject, role)
+	if err != nil || fallback.State == Unclaimed || claims.Mode() != Required {
+		return fallback, err
+	}
+	// The holder under NoProject is held to project, the message's, and not to NoProject: the
+	// claim it holds says nothing of the projects it sees.
+	return holderSeesProject(ctx, claims, fallback, project)
+}
+
+// ResolveClaim resolves the holder of role's claim under project alone, within ctx, with no
+// fallback to the claim under NoProject: what GET /v1/roles/<project>.<role> answers. It reads the
+// claim (Unclaimed when there is none), then that holder's session record through sessions, and
+// judges the record by the state it puts its session in (SessionLookup.EntryState): Live when it
+// reads live, and Lapsed with that state otherwise - a holder past the live window, one past the
+// gone horizon, and one with no record at all. The claim is left exactly as it is on every one of
+// them, so a stalled holder's role and its claimed_at outlive any number of resolutions. In the
+// required mode its holder is held to project as ResolveHolder holds one (Sees).
 //
 // A read that fails returns a *ReadError naming its step, with the claim's holder in the
 // Resolution when one was read. Every read waits no longer than ctx, and no resolution starts
@@ -219,11 +308,11 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 // window is live on each of them, whatever its relay subscriber does, and none of them probes its
 // relay subject. Only the send route probes a session's relay subject, and its answer goes in the
 // send's own state, never in a role answer's holder_state.
-func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, role string) (Resolution, error) {
+func ResolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup, project, role string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: fmt.Errorf("resolve role %s's holder: %w", role, err)}
 	}
-	claim, err := claims.RoleClaim(ctx, role)
+	claim, err := claims.RoleClaim(ctx, project, role)
 	if err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: err}
 	}
@@ -233,10 +322,20 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 	}
 	entry, err := sessions.Holder(ctx, holder)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-		return Resolution{Holder: holder}, &ReadError{Step: SessionRead, Holder: holder, Err: err}
+		step := SessionRead
+		if claims.Mode() == Required {
+			step = HolderRead
+		}
+		return Resolution{Holder: holder}, &ReadError{Step: step, Holder: holder, Err: err}
 	}
 	// No record to read is no moment to measure the holder from: session.Gone, as session.StateOf
-	// judges an undated record, and dated by whatever the lookup still remembers.
+	// judges an undated record, and dated by whatever the lookup still remembers. In the required
+	// mode a record that does not name its key (session.SessionEntry.BoundTo: one the server
+	// stored at the holder's key, a copy of another session's record, or an earlier build's) is no
+	// record: its holder holds no role, and never the scope of the record it copies.
+	if err == nil && claims.Mode() == Required && !entry.BoundTo(holder) {
+		err = nats.ErrKeyNotFound
+	}
 	state := session.Gone
 	if err == nil {
 		state = sessions.EntryState(entry)
@@ -266,5 +365,46 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 	if state == session.Live {
 		resolved.State = Live
 	}
+	if claims.Mode() != Required {
+		return resolved, nil
+	}
+	return holderSeesProject(ctx, claims, resolved, project)
+}
+
+// holderSeesProject is resolved when its holder's stored scope sees project (Sees over the
+// entry's Projects and Restricted), and Unclaimed otherwise, so the message is kept for a holder
+// that can see it. An unknown privacy answer is a *ReadError at PrivacyRead.
+func holderSeesProject(ctx context.Context, claims ClaimStore, resolved Resolution, project string) (Resolution, error) {
+	projects, restricted := resolved.Entry.RequiredScope(resolved.Holder)
+	sees, err := Sees(ctx, claims.Private, projects, restricted, project)
+	if err != nil {
+		return Resolution{Holder: resolved.Holder}, &ReadError{Step: PrivacyRead, Holder: resolved.Holder,
+			Err: fmt.Errorf("read project %s's privacy for holder %s: %w", project, resolved.Holder, err)}
+	}
+	if !sees {
+		return Resolution{State: Unclaimed}, nil
+	}
 	return resolved, nil
+}
+
+// Sees is the required privacy mode's rule for whether a session or a caller sees project, the
+// rule the relay decides a frame by: a message of no project, and a GitHub subject's
+// (contracts.AnyToken), is everyone's; a project its token lists (listed, the registering
+// token's list) it sees in every state; and a session of a full member (restricted false: a
+// person Dispatch answered a full member, or a token naming no person) also sees every project
+// a fresh read says is public. A restricted member's session sees its list alone, in every state,
+// and so does a session whose record or token carries no restricted claim. private reads
+// project's privacy, only when the answer turns on it.
+func Sees(ctx context.Context, private func(context.Context, string) (bool, error), listed []string, restricted bool, project string) (bool, error) {
+	if project == contracts.NoProject || project == contracts.AnyToken || slices.Contains(listed, project) {
+		return true, nil
+	}
+	if restricted {
+		return false, nil
+	}
+	isPrivate, err := private(ctx, project)
+	if err != nil {
+		return false, err
+	}
+	return !isPrivate, nil
 }

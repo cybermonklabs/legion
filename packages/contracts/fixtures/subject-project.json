@@ -73,145 +73,122 @@
     {
       "subject": "notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.dispatch.issue.PRIV-1.comment.created",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
-    {
-      "subject": "notifications.dispatch.issue.*.PRIV-1.>",
-      "project": "_",
-      "repo": "",
-      "ok": true
-    },
-    { "subject": "notifications.dispatch.issue.>", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.dispatch.issue.*.PRIV-1.>", "project": "_", "ok": true },
+    { "subject": "notifications.dispatch.issue.>", "project": "_", "ok": true },
     {
       "subject": "notifications.dispatch.document.PRIV.spec.version.created",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.dispatch.project.PRIV.project.updated",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
-    { "subject": "notifications.dispatch.server.started", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.dispatch.unknown.PRIV.x", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.agent.PRIV.ses_a", "project": "PRIV", "repo": "", "ok": true },
-    { "subject": "notifications.agent._.ses_a", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.agent.ses_a", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.agent.priv.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.dispatch.server.started", "project": "_", "ok": true },
+    { "subject": "notifications.dispatch.unknown.PRIV.x", "project": "_", "ok": true },
+    { "subject": "notifications.agent.PRIV.ses_a", "project": "PRIV", "ok": true },
+    { "subject": "notifications.agent._.ses_a", "project": "_", "ok": true },
+    { "subject": "notifications.agent.ses_a", "project": "_", "ok": true },
+    { "subject": "notifications.agent.priv.ses_a", "project": "_", "ok": true },
+    { "subject": "notifications.role.PRIV.lead-reviewer", "project": "PRIV", "ok": true },
+    { "subject": "notifications.role._.lead-reviewer", "project": "_", "ok": true },
+    { "subject": "notifications.role.legion-priv-priv-1-architect", "project": "PRIV", "ok": true },
+    { "subject": "notifications.role.lead-reviewer", "project": "_", "ok": true },
+    { "subject": "notifications.legion.priv.controller", "project": "PRIV", "ok": true },
+    { "subject": "notifications.legion.priv.PRIV-1", "project": "PRIV", "ok": true },
+    { "subject": "notifications.legion.priv.wake", "project": "PRIV", "ok": true },
+    { "subject": "notifications.legion.wake", "project": "_", "ok": true },
+    { "subject": "notifications.legion.INFRA.wake", "project": "_", "ok": true },
+    { "subject": "notifications.legion.ßk.wake", "project": "_", "ok": true },
     {
-      "subject": "notifications.role.PRIV.lead-reviewer",
+      "subject": "notifications.legion.priv.slack.T1.C0PRIV00001.mention",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
-    { "subject": "notifications.role._.lead-reviewer", "project": "_", "repo": "", "ok": true },
     {
-      "subject": "notifications.role.legion-priv-priv-1-architect",
+      "subject": "notifications.legion.priv.slack.T1.C0PRIV00001.thread.1700000000_000100.mention",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
-    { "subject": "notifications.role.lead-reviewer", "project": "_", "repo": "", "ok": true },
-    {
-      "subject": "notifications.legion.priv.controller",
-      "project": "PRIV",
-      "repo": "",
-      "ok": true
-    },
-    { "subject": "notifications.legion.priv.PRIV-1", "project": "PRIV", "repo": "", "ok": true },
-    { "subject": "notifications.legion.priv.wake", "project": "PRIV", "repo": "", "ok": true },
-    { "subject": "notifications.legion.wake", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.legion.INFRA.wake", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.legion.ßk.wake", "project": "_", "repo": "", "ok": true },
     {
       "subject": "notifications.github.acme.widgets.pull_request.4.opened",
-      "project": "",
-      "repo": "acme/widgets",
+      "project": "*",
+      "ok": true
+    },
+    {
+      "subject": "notifications.github.acme.pub.pull_request.4.opened",
+      "project": "*",
       "ok": true
     },
     {
       "subject": "notifications.github.sjawhar._github.push.branch.main",
-      "project": "",
-      "repo": "sjawhar/_github",
+      "project": "*",
       "ok": true
     },
-    { "subject": "notifications.slack.T1.C1.message", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.ghostwispr.rec1.ended", "project": "_", "repo": "", "ok": true },
-    {
-      "subject": "notifications.whatsapp.15551234567.jid.message",
-      "project": "_",
-      "repo": "",
-      "ok": true
-    },
-    { "subject": "notifications.team.deploy-squad", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.slack.T1.C1.message", "project": "_", "ok": true },
+    { "subject": "notifications.ghostwispr.rec1.ended", "project": "_", "ok": true },
+    { "subject": "notifications.whatsapp.15551234567.jid.message", "project": "_", "ok": true },
+    { "subject": "notifications.team.deploy-squad", "project": "_", "ok": true },
     {
       "subject": "notifications.envoy.exceptions.notifications.agent.PRIV.ses_a",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.envoy.exceptions.notifications.role.legion-priv-priv-1-architect",
       "project": "PRIV",
-      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.exceptions.notifications.github.acme.pub.pull_request.4.opened",
+      "project": "*",
       "ok": true
     },
     {
       "subject": "notifications.envoy.exceptions.notifications.team.deploy-squad",
       "project": "_",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.envoy.kept.role.legion-priv-priv-1-architect",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.envoy.kept.role.PRIV.lead-reviewer",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
     {
       "subject": "notifications.envoy.kept.cursor.PRIV.lead-reviewer",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
-    {
-      "subject": "notifications.envoy.kept.cursor.lead-reviewer",
-      "project": "_",
-      "repo": "",
-      "ok": true
-    },
-    { "subject": "notifications.envoy.resume.ses_a", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.envoy.kept.cursor.lead-reviewer", "project": "_", "ok": true },
+    { "subject": "notifications.envoy.resume.ses_a", "project": "_", "ok": true },
     {
       "subject": "notifications.envoy.takeover.legion-priv-priv-1-architect.ses_a.0123",
       "project": "PRIV",
-      "repo": "",
       "ok": true
     },
+    { "subject": "notifications.envoy.takeover.lead-reviewer.ses_a.0123", "project": "_", "ok": true },
     {
-      "subject": "notifications.envoy.takeover.lead-reviewer.ses_a.0123",
-      "project": "_",
-      "repo": "",
+      "subject": "notifications.envoy.takeover.PRIV.lead-reviewer.ses_a.0123",
+      "project": "PRIV",
       "ok": true
     },
-    { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "repo": "", "ok": true },
-    { "subject": "agent.stream.ses_a.frames", "project": "", "repo": "", "ok": false },
-    { "subject": "", "project": "", "repo": "", "ok": false }
+    { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "ok": true },
+    { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "ok": true },
+    { "subject": "agent.stream.ses_a.frames", "project": "", "ok": false },
+    { "subject": "", "project": "", "ok": false }
   ],
   "canonicalTopic": [
     {

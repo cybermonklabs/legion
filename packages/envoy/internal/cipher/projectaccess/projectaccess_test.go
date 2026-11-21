@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -290,7 +291,7 @@ func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want ErrUnchecked: an outage mints as today, and the caller logs it", err)
 	}
 	stranger := projectaccess.New(standIn(t).URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-	if err := projectaccess.ListAllowed(t.Context(), stranger, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
+	if err := projectaccess.ListAllowed(t.Context(), stranger, "bob@example.com", nil); !errors.Is(err, dispatchread.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
 		t.Fatalf("ListAllowed(bob, none) with a bearer Dispatch refuses = %v, want ErrBrokerRefused and not ErrUnchecked", err)
 	}
 	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", []string{"PRIV"}); err != nil {
@@ -613,10 +614,10 @@ func TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") {
+		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") {
 			t.Errorf("Access answered %d = %v, want ErrBrokerRefused naming the code", status, err)
 		}
-		if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+		if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 			t.Errorf("MemberKind answered %d = %v, want ErrBrokerRefused", status, err)
 		}
 	}
@@ -630,10 +631,10 @@ func TestARefusalIsErrBrokerRefusedWhateverItsBody(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		for _, body := range projectaccesstest.RefusalBodies {
 			client := projectaccess.New(projectaccesstest.NewRefusing(t, status, body), projectaccesstest.StaticAccount("token"), nil)
-			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 				t.Errorf("Access answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
 			}
-			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 				t.Errorf("MemberKind answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
 			}
 		}

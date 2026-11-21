@@ -660,10 +660,12 @@ func bucketGrant(bucket string) []string {
 }
 
 // grantBeforeKnownSessions is the grant of a listener whose hub's grant does not carry the
-// known-session bucket: every bucket the listener opens (the legion_agents bucket included, whose
-// denied open would cost the start its own 10-second JetStream wait) except the known-session one.
+// known-session bucket: every bucket the listener opens (the legion_agents bucket, whose denied
+// open would cost the start its own 10-second JetStream wait, and the spent-proof bucket every
+// listener now opens at start, included) except the known-session one.
 func grantBeforeKnownSessions() []string {
-	return append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	grant := append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	return append(grant, bucketGrant(bus.DPoPProofBucket)...)
 }
 
 // v1OpenWithoutTheBucket is how long after it began listening a listener whose NATS user may not

@@ -99,7 +99,7 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 	listed := func(query string) []listenerwire.SessionInfo {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sessionsHandler(d.registry, d.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
+		sessionsHandler(d.registry, d.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/sessions%s: status %d, body %s", query, recorder.Code, recorder.Body.String())
 		}

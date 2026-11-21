@@ -6,9 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -140,7 +144,7 @@ func (f *roleForwarder) publish(sessionID string) {
 			}
 			forward = refreshed
 		}
-		subject := contracts.LegacyAgentSubject(forward.sessionID)
+		subject := f.cfg.roleForwardSubject(forward)
 		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
 			f.finish(forward, err)
@@ -194,6 +198,17 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 	return waitWithin(ctx, &f.pending)
 }
 
+// roleForwardSubject is the holder's agent subject a forward is published on: in the required
+// privacy mode the one under the role message's project (contracts.AgentSendTopic), so the relay
+// decides the forward as that project's frame; in the all-public mode the form it always had.
+func (cfg listenerDeliveryHandlerConfig) roleForwardSubject(forward roleForward) string {
+	if !cfg.privacy.isRequired() {
+		return contracts.LegacyAgentSubject(forward.sessionID)
+	}
+	project, _ := contracts.SubjectProject(forward.item.Topic)
+	return contracts.AgentSendTopic(project, forward.sessionID)
+}
+
 // startRoleForward is forwardRole over client: every forward is stored-only
 // (bus.Client.StartRequestStoredTo), so it counts as delivered once the stream acknowledges
 // storing it. No session holds a core subscription any more, so no holder answers a receipt: the
@@ -212,21 +227,58 @@ func startRoleForward(client *bus.Client) func(subject string, item contracts.En
 }
 
 // roleLane is the listener's role lane at shutdown: its own client (bus.ConnectRoleLane), the
-// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers.
+// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers. An edge
+// listener subscribes no role lane, so its roleLane holds the forwards alone.
 type roleLane struct {
 	client    *bus.Client
 	forwards  *roleForwarder
 	stopWatch func()
 }
 
+// startRoleLane opens the listener's role lane: a core-NATS queue subscription on a connection of
+// its own with finite pending limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes;
+// bus.ConnectRoleLane), in the queue group every listener shares, or this machine's group on a hub
+// whose grant predates it, whose messages handler takes. During a rolling deploy the task being
+// replaced is a member too, and NATS hands each role message to one member of a group, so opening
+// the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
+// errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
+//
+// An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
+// takes no share of any project's role messages. A shared listener resolves a role's holder, an
+// edge session's among them, and forwards the message to the holder's agent subject, which the
+// holder's session consumer delivers. Its lane holds the forwards alone. extra are the options of
+// the listener's privacy mode (listenerPrivacy.busOptions), which the lane's connection takes.
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, extra ...bus.ConnectOption) (roleLane, error) {
+	if edge != nil {
+		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
+		return roleLane{forwards: forwards}, nil
+	}
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, extra...)
+	if err != nil {
+		return roleLane{}, err
+	}
+	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
+	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
+		return int64(client.SlowConsumers())
+	})
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	go watchRoleLaneSlowConsumers(watchCtx, client, logger, roleLaneSlowConsumerInterval)
+	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}, nil
+}
+
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler
 // takes every role message the server already delivered and no more, then waits for the forwards it
 // handed over, the forward window after that at most, since a forward published by then has its
-// outcome within it. A forward still waiting then is logged and left to the main client's drain.
+// outcome within it. A forward still waiting then is logged and left to the main client's drain. A
+// lane with no client, an edge listener's, waits for the forwards alone.
 func (l roleLane) drain(logger *logging.Logger, timeout time.Duration) {
-	l.stopWatch()
-	if err := l.client.Drain(timeout); err != nil {
-		logger.Warn("role lane drain error", slog.String("error", err.Error()))
+	if l.stopWatch != nil {
+		l.stopWatch()
+	}
+	if l.client != nil {
+		if err := l.client.Drain(timeout); err != nil {
+			logger.Warn("role lane drain error", slog.String("error", err.Error()))
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), roleForwardTimeout)
 	defer cancel()

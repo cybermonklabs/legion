@@ -96,13 +96,13 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 // locks nothing and writes nothing.
 //
 // What derives from a node is fixed by the node, never by a search for its bytes: its tuples,
-// its projection rows and the rows that cannot exist without them, its own embedding rows and the
-// events about it, for a block its own document's versions, editing state, search rows and
-// windows and the excerpts cut from it, and for a comment the editing state of every document
-// whose margin record holds its body (marginDocuments). A row anywhere else that holds the same
-// bytes derives from another node - another issue's spec quoting a comment's `Yes`, another
-// person's comment, a sibling block of the same document - and is that node's text: the run lists
-// it (readLeft) and changes nothing in it.
+// its projection rows and the rows that cannot exist without them, its own embedding rows and
+// keyword versions and the events about it, for a block its own document's versions, editing
+// state, search rows and windows and the excerpts cut from it, and for a comment the editing state
+// of every document whose margin record holds its body (marginDocuments). A row anywhere else
+// that holds the same bytes derives from another node - another issue's spec quoting a comment's
+// `Yes`, another person's comment, a sibling block of the same document - and is that node's text:
+// the run lists it (readLeft) and changes nothing in it.
 func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	var read erasedRead
 	if err := tx.QueryRow(ctx, `select supertag from graph_nodes where kind = $1 and id = $2`,
@@ -790,9 +790,10 @@ func (e *Erasure) readLiveTexts(ctx context.Context, tx pgx.Tx, read erasedRead)
 // run replaces that document's history. The rest of what the erase writes is owed no owner row,
 // since none of its other writers takes one: an event payload already written (the outbox's
 // record of what it published takes no owner row), a tuple, which is appended once and never
-// written again, the term statistics, the display trees, and the node's own row. It reads no
-// graph_nodes, graph_tuples or events row, so lockOwnersThenNode reads it before it holds
-// anything.
+// written again, the keyword versions, whose writer, the keyword fill, the run holds back by its
+// cursor row instead (textversions.HoldFillBack), the term statistics, the display trees, and the
+// node's own row. It reads no graph_nodes, graph_tuples or events row, so lockOwnersThenNode reads
+// it before it holds anything.
 func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, error) {
 	owners, err := nodeOwners(ctx, tx, e.Kind, e.ID)
 	if err != nil {

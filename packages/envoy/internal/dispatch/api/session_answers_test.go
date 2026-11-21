@@ -182,7 +182,11 @@ func (f *answersFixture) credit(t *testing.T, session string) {
 // every role route pending, which would leave a routed event unpublished.
 type unclaimedRoles struct{ roles.Windows }
 
-func (unclaimedRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (unclaimedRoles) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (unclaimedRoles) Mode() roles.Mode { return roles.AllPublic }
+
+func (unclaimedRoles) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{}, nil
 }
 

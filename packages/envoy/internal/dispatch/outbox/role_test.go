@@ -43,7 +43,11 @@ const roleHolder = "role-holder"
 // as roles.Buckets does (roles.Windows).
 type heldRoles struct{ roles.Windows }
 
-func (heldRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (heldRoles) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (heldRoles) Mode() roles.Mode { return roles.AllPublic }
+
+func (heldRoles) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: roleHolder}, nil
 }
 
@@ -68,7 +72,11 @@ var errRoleBucketUnreachable = errors.New("the role bucket is unreachable")
 // release is never reached, a resolution that read no claim releasing none.
 type unreadableRoleClaims struct{}
 
-func (unreadableRoleClaims) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (unreadableRoleClaims) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (unreadableRoleClaims) Mode() roles.Mode { return roles.AllPublic }
+
+func (unreadableRoleClaims) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{}, errRoleBucketUnreachable
 }
 
@@ -145,7 +153,7 @@ func (r *roleRig) deps() Deps {
 // depsJudgedBy is deps whose role-route holders are judged by windows, as cmd/dispatch judges
 // them by the two the deployment gave its listeners (roleHolderWindows, cmd/dispatch/main.go).
 func (r *roleRig) depsJudgedBy(windows roles.Windows) Deps {
-	holders := roles.NewBuckets(r.client, windows)
+	holders := roles.NewBuckets(r.client, windows, nil, roles.AllPublic)
 	return Deps{Store: r.database, Publisher: r.client, Broker: r.broker, RoleClaims: holders, Sessions: holders,
 		KeptLanes: r.client}
 }

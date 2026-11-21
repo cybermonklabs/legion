@@ -193,7 +193,11 @@ var unresponsiveClaim = roleClaimStub{
 // unclaimedRoles is the store in which no role is claimed.
 var unclaimedRoles = roleClaimStub{}
 
-func (s roleClaimStub) RoleClaim(context.Context, string) (envoystore.RoleClaim, error) {
+func (s roleClaimStub) Private(context.Context, string) (bool, error) { return false, nil }
+
+func (s roleClaimStub) Mode() roles.Mode { return roles.AllPublic }
+
+func (s roleClaimStub) RoleClaim(context.Context, string, string) (envoystore.RoleClaim, error) {
 	return envoystore.RoleClaim{HolderSessionID: s.holder}, nil
 }
 

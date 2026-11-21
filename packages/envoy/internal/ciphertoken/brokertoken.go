@@ -183,6 +183,12 @@ type Caller struct {
 	// person could see then, nil for none. A read-only caller (ReadOnly) names none, since it
 	// writes none. Sorted, each once.
 	Projects []string
+	// Restricted is whether the token's person is a restricted member, who sees only Projects in
+	// every state of every project (oauthwire.Introspection.IsRestricted): true for an answer
+	// that carries no restricted claim, which every token an earlier broker minted is, so a reader
+	// never widens what such a token sees. False is a full member, whose list limits only the
+	// private projects it sees, or a token that names no person.
+	Restricted bool
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
 	// to its person" from every other answer, and an absent or misspelt scope must not read as

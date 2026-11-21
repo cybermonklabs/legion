@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The listener has a required privacy mode: `ENVOY_PROJECT_PRIVACY_REQUIRED=true` with
+  `ENVOY_PROJECT_PRIVACY_URL`, the secrets broker's base URL. In it each decision that a
+  project's privacy changes reads the broker's `GET /v1/project-privacy` again, and a read that
+  fails or gives no whole answer counts every project as private. A frame of a project reaches a
+  session whose token lists the project, or a full member's session when the project is public;
+  while the read is unknown the listener holds the frame for up to 120 s and marks the session's
+  next frame `Envoy-Gap-Reason: privacy_hold`, once per hold, when it drops held frames. The
+  send, publish, role and subscribe routes refuse a project the caller does not see
+  (`403 project_not_listed`), and the read routes show only the sessions, roles, topics and
+  agents it sees. A Slack event of a private project's channel goes on that project's own lane.
+  `GET /v1/privacy-readiness` answers Dispatch whether the listener reads the source. In the
+  required mode every session object, and the registration's answer, carries the token's
+  `projects`, and no log line carries a message's text. A full member's session sees every
+  public project; a restricted member's sees only its token's list. With both variables unset
+  the listener reads nothing and every project is public, as before; an incomplete setting
+  refuses startup.
+time: 2026-11-21T00:58:04Z
+custom:
+    Issue: listener-privacy-required

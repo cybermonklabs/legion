@@ -378,25 +378,29 @@ type Config struct {
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
 	// is private, whether a person may see it, what kind of member a person is, and which Slack
-	// channels a private project's owner named (internal/cipher/projectaccess), an absolute
-	// http(s) URL, read without the slashes it ends in. The token exchange asks it about the
-	// projects a token names; a session's enrollment, about the projects its list names; each
-	// release and airlock connection of a secret carrying a dispatch-project tag, about that
-	// project and the credential's person; a project-channels secret asked for by a credential
-	// naming a private project, about that project's channels; the approval page, the pending
-	// lists and each decision, about the projects a request touches; and the model judge,
-	// about whether a request is a private project's. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
-	// or not at all: with neither, the broker asks Dispatch nothing. It then refuses every secret
-	// carrying a dispatch-project tag (project-unchecked) and serves every other secret as
-	// before; a token that names no project, and an operator entry's token, whose project that
-	// operator's own setting chose, are minted as before; a person's trade that names a project,
-	// and a session enrollment that names projects, are refused, since nothing could say that
-	// person may see them.
+	// channels a private project's owner named (internal/cipher/projectaccess), and which
+	// repositories a project's issues resolve to, the answer GET /v1/project-repositories relays
+	// to an edge listener (internal/cipher/projectrepos), an absolute http(s) URL, read without
+	// the slashes it ends in. The token exchange asks it about the projects a token names; a
+	// session's enrollment, about the projects its list names; each release and airlock
+	// connection of a secret carrying a dispatch-project tag, about that project and the
+	// credential's person; a project-channels secret asked for by a credential naming a private
+	// project, about that project's channels; the approval page, the pending lists and each
+	// decision, about the projects a request touches; the model judge, about whether a request is
+	// a private project's; and an edge listener, about its project's repositories. Set with
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
+	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
+	// and serves every other secret as before; a token that names no project, and an operator
+	// entry's token, whose project that operator's own setting chose, are minted as before; a
+	// person's trade that names a project, and a session enrollment that names projects, are
+	// refused, since nothing could say that person may see them; and every edge listener's read
+	// of a project's repositories is 503 REPOSITORIES_UNKNOWN.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
-	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
-	// asks and not at boot, through ciphertoken.AccountToken, which reads the file again once what
-	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	// ServiceAccount token for that Dispatch, minted for Dispatch's audience, which both of the
+	// broker's clients of that Dispatch present. Read when the broker asks and not at boot,
+	// through ciphertoken.AccountToken, which reads the file again once what it last read is 30
+	// seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
 	ProjectAccessTokenFile string
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
@@ -414,8 +418,10 @@ type Config struct {
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
-	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
-	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
+	// agent secret mints an access token for, and each anthropic-federation agent secret mints
+	// the identity token of for Anthropic's token exchange, whitespace-separated
+	// <SECRET NAME>=<account email> entries, such as
+	// GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
 	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
 	// secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
@@ -426,7 +432,8 @@ type Config struct {
 	// secrets, since only the secret's name is the key.
 	//
 	// This setting, and not a secret's stored value, is what chooses the account a
-	// google-service-account secret mints for (secrets.GoogleServiceAccount.Accounts, which the
+	// google-service-account or anthropic-federation secret mints for
+	// (secrets.GoogleServiceAccount.Accounts and secrets.AnthropicFederation.Accounts, which the
 	// broker fills from it): the broker holds roles/iam.serviceAccountTokenCreator on every
 	// account bound here, so a stored value alone choosing the account would let whoever may
 	// create an agent secret store another person's service account in a secret of their own,
@@ -434,8 +441,8 @@ type Config struct {
 	// where this binding and the stored value name the same account; either missing or the two
 	// disagreeing is refused before any call reaches Google.
 	//
-	// Unset, no secret is bound and every google-service-account mint is refused with
-	// secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
+	// Unset, no secret is bound and every google-service-account and anthropic-federation mint is
+	// refused with secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
@@ -444,6 +451,26 @@ type Config struct {
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
 	ServiceAccountSecrets map[string]string
+	// BROKER_DIRECTORY_URL: the base URL of the Directory API the broker reads each group's
+	// members at (internal/cipher/groups), an absolute https URL, or http to a loopback host for a
+	// run on one machine, since the reader account's token goes to it; read without the slashes it
+	// ends in. Unset, it is Google's own, https://admin.googleapis.com; a test sets it to its
+	// stand-in. The broker calls it only when a served secret names a group, as its owner or in
+	// its requesters, and only its members.list, with the token of the reader account
+	// BROKER_DIRECTORY_ACCOUNT names.
+	DirectoryURL string
+	// BROKER_DIRECTORY_ACCOUNT: the reader account, the one Google service account whose token the
+	// broker reads group members with (internal/cipher/groups): a user-managed account, by its
+	// email, that holds Workspace's Groups Reader role and no other, and on which the broker's own
+	// credential holds roles/iam.serviceAccountTokenCreator. The broker mints its access token at
+	// IAM Service Account Credentials' generateAccessToken with the one scope
+	// admin.directory.group.member.readonly, spending its own credential, and sends that token to
+	// the Directory API alone: the Admin SDK refuses a pod's own metadata-server token. Unset, the
+	// broker reads no group, and every group a secret names admits nobody. Load refuses an address
+	// that is no user-managed service account's, a Google-managed service agent, and an account
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds to a secret, since a grant of that secret would release
+	// the token the group read uses.
+	DirectoryAccount string
 	// BROKER_SERVICES: the registered services, whitespace-separated name=<service account>
 	// entries, such as legion-daemon=system:serviceaccount:legion:legion-worker. A name (lowercase
 	// letters, digits and hyphens, at most 64, not shared) is what a secret's owner tag may name; the
@@ -620,11 +647,13 @@ type Config struct {
 	// turns Google identity tokens on at all.
 	GoogleOIDCIssuer string
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
-	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
-	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs a Google
-	// caller, a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES, since
-	// with neither no token for it could ever be accepted; API callers need no VM service. The
+	// for a caller listed in BROKER_API_ACCOUNTS, for an edge listener a google: entry of
+	// BROKER_NATS_SERVICES names, and at the RFC 8693 token exchange, where it is a subject token
+	// (urn:envoy:params:oauth:token-type:google-identity). Its issuer is BROKER_GOOGLE_OIDC_ISSUER,
+	// Google's own unless a dev stack says otherwise. Needs a Google caller, a google: entry in
+	// BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in
+	// BROKER_NATS_SERVICES, since with none no token for it could ever be accepted; and any such
+	// caller without it refuses the start. API callers and edge listeners need no VM service. The
 	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
@@ -755,15 +784,26 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
-	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
-	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
-	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
-	// no audience is refused at start naming it. A session presents its broker access token and
-	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
-	// three seed files.
+	// listener, edge-listener, daemon or measure; * for the kind's whole grant, - for the projects
+	// the account's exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one,
+	// every entry read once at load (ParseNATSServices). An edge listener's entry,
+	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
+	// its grant is built for and GET /v1/project-repositories answers that account about, whether
+	// or not the broker runs the auth service: BROKER_NATS_SERVICES set alone, every entry an edge
+	// listener's, starts no auth service and needs no NATS audience, and any other kind of entry
+	// needs the URLs and seeds. An edge listener's account needs the issuer its identity token
+	// comes from, as a BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a
+	// Kubernetes account, BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that
+	// audience's Google caller; an entry without its issuer refuses the start, naming the entry.
+	// The auth service answers an edge listener's connection with natsgrant.Edge for the projects
+	// its entry lists. BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes
+	// token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs;
+	// BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must carry,
+	// verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry,
+	// an edge listener's included, whose kind of token has no audience is refused at start naming
+	// it. A session presents its broker access token and needs neither. All unset, or
+	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
+	// service; any other set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -899,10 +939,10 @@ const noUIToken = "the broker's approval routes take the calling service's own K
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
 // Dispatch the broker asked and issued in, which it still does not do. What it reads there now it
 // reads under settings of its own: the model judge's read of whether an issue is open and whom a
-// Legion pod's issue is assigned to, and the token exchange's read of whether a person may see a
-// project. So a deployment that still sets one of the five is configured for a Dispatch the broker
-// never writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there with two projected ServiceAccount tokens of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
+// Legion pod's issue is assigned to, and the project reads of whether a person may see a project
+// and which repositories a project's issues resolve to. So a deployment that still sets one of the
+// five is configured for a Dispatch the broker never writes to and a credential it never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there with two projected ServiceAccount tokens of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its project reads, whether a person may see a project and which repositories a project's issues resolve to, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -950,8 +990,9 @@ var removedVars = []struct{ name, reason string }{
 type NATSCallout struct {
 	URLs                                   []string
 	SeedFile, IssuerSeedFile, XKeySeedFile string
-	// Services is BROKER_NATS_SERVICES as given, which natscallout.ParseServices reads at start.
-	Services                    string
+	// Services is BROKER_NATS_SERVICES, each entry read once at load (ParseNATSServices): the
+	// one reading the auth service, the API's edge listeners and every check of Load take.
+	Services                    []NATSService
 	K8sAudience, GoogleAudience string
 }
 
@@ -1278,8 +1319,8 @@ var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<na
 // parseServiceAccounts does, and a Google account vmAccountRefusal refuses, which is the rule
 // BROKER_VM_SERVICES holds every Google account to. An account of neither form is ErrAccountForm.
 // Every setting that names a caller's account reads it here (BROKER_API_ACCOUNTS, and
-// BROKER_NATS_SERVICES through internal/cipher/natscallout), so no setting admits an account
-// another refuses.
+// BROKER_NATS_SERVICES through ParseNATSServices), so no setting admits an account another
+// refuses.
 func ParseAccount(setting, text, account string) (Account, error) {
 	switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
 	case tagged:
@@ -1489,14 +1530,16 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // because the named-caller routes it reaches act on the caller's word: the approval relays take the
 // deciding person's name from the caller, so the person's pod could decide any request in any
 // person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
-// NATS auth service (internal/cipher/natscallout) would then answer a connection of the person's
-// pod with that entry's service grant. It reads each entry's account with CutNATSServiceEntry, the
-// reading natscallout.ParseServices makes too, which holds the account to ParseAccount's form at
-// the boot. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair
-// names (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
-// holds. A person's pod login enrols under no session name (enroll.Service.podUnderTokenLogin), so
-// a pair moves no enrollment of it, but the session names the token exchange binds for the account
-// would cross: the other account could take the person's, and the person's pod the other account's.
+// person's pod would then be answered as that entry's service: by the NATS auth service
+// (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
+// GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
+// each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
+// which holds the account to ParseAccount's form. It refuses a mapped account that either side of
+// a BROKER_SESSION_ACCOUNT_PAIRS pair names (cfg.SessionAccountPairs), because a pair lets one
+// account take the session names the other holds. A person's pod login enrols under no session
+// name (enroll.Service.podUnderTokenLogin), so a pair moves no enrollment of it, but the session
+// names the token exchange binds for the account would cross: the other account could take the
+// person's, and the person's pod the other account's.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1515,10 +1558,8 @@ func mappedAccountRefusal(cfg *Config) error {
 		exchangePeople[entry.Account] = entry.Person
 	}
 	natsEntries := make(map[string]string)
-	for _, text := range strings.Fields(cfg.NATS.Services) {
-		if _, account, ok := CutNATSServiceEntry(text); ok {
-			natsEntries[account] = text
-		}
+	for _, entry := range cfg.NATS.Services {
+		natsEntries[entry.Account] = entry.Text
 	}
 	pairs := make(map[string]string)
 	for _, pair := range cfg.SessionAccountPairs {
@@ -1568,7 +1609,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant and, for an edge-listener entry, also by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
@@ -2235,6 +2276,31 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
+	// Optional, and held to its form when given: a value no call could be made to would boot and
+	// then leave every group unread, and a group read sends the reader account's token to it, so it
+	// is held to the sign-in issuer's rule (signInIssuerOK): https, or http to a loopback host for
+	// a run on one machine. The value is not printed.
+	if cfg.DirectoryURL = strings.TrimRight(strings.TrimSpace(getenv("BROKER_DIRECTORY_URL")), "/"); cfg.DirectoryURL != "" {
+		if !signInIssuerOK(cfg.DirectoryURL) {
+			return Config{}, errors.New("BROKER_DIRECTORY_URL must be an absolute https URL, or http to a loopback host")
+		}
+	}
+	// The reader account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
+	// (parseServiceAccountSecrets), for the same reasons, and kept apart from them: a grant of a
+	// secret bound to it would release the token every group's members are read with.
+	if cfg.DirectoryAccount = strings.TrimSpace(getenv("BROKER_DIRECTORY_ACCOUNT")); cfg.DirectoryAccount != "" {
+		if !secrets.ValidServiceAccountEmail(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", cfg.DirectoryAccount)
+		}
+		if googleServiceAgentPattern.MatchString(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names a Google-managed service agent, got %q: Google's own services run as it and the broker must not be able to mint its token; name a user-managed reader account of your own", cfg.DirectoryAccount)
+		}
+		for _, name := range slices.Sorted(maps.Keys(cfg.ServiceAccountSecrets)) {
+			if cfg.ServiceAccountSecrets[name] == cfg.DirectoryAccount {
+				return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names %s, which BROKER_SERVICE_ACCOUNT_SECRETS binds to the secret %s: the directory account is bound to a secret, and a grant of that secret would release the token the group read uses; name a reader account no secret binds", cfg.DirectoryAccount, name)
+			}
+		}
+	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))
 	if cfg.GoogleOIDCAudience == "" {
 		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS", "BROKER_SIGNIN_DEVICE_AUDIENCE"} {
@@ -2352,11 +2418,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
 	}
-	// The audience is for a Google caller of either kind, and needs one: with neither, the broker
-	// would read Google's keys at boot and then accept no Google identity token at all.
-	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 {
-		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES; with neither, no Google identity token for that audience could ever be accepted")
-	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
 	if err != nil {
 		return Config{}, err
@@ -2408,6 +2469,22 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
 		return Config{}, err
+	}
+	// An edge listener is a caller of the API too (GET /v1/project-repositories), whether or not
+	// the auth service runs, so its entry needs the issuer whose identity token its account
+	// presents, as a BROKER_API_ACCOUNTS entry of the same kind does, and a Google one is a Google
+	// caller of BROKER_GOOGLE_OIDC_AUDIENCE.
+	kubernetesEdge, googleEdge := cfg.NATS.edgeListenerEntries()
+	if kubernetesEdge != "" && cfg.K8sOIDCIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q names a Kubernetes service account as an edge listener, which needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens it presents", kubernetesEdge)
+	}
+	if googleEdge != "" && cfg.GoogleOIDCAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q names a Google service account as an edge listener, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its Google identity token must carry", googleEdge)
+	}
+	// The audience is for a Google caller of any kind, and needs one: with none, the broker
+	// would read Google's keys at boot and then accept no Google identity token at all.
+	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 && googleEdge == "" {
+		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES; with none, no Google identity token for that audience could ever be accepted")
 	}
 	// The registration route's two settings, read after every other audience of the cluster
 	// issuer's tokens, so the registration audience is compared with each of them.

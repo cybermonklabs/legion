@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -112,7 +113,7 @@ func TestARestrictedMembersSessionMustNameItsProjects(t *testing.T) {
 // access, and one whose Dispatch does not answer, enrol a session naming no project exactly as
 // before, a restricted member's included, and refuse one naming a project, which could not be
 // checked (ErrProjectsUnchecked). A Dispatch that refuses the broker's own account is a deployment
-// that has not listed the broker, not an outage (projectaccess.ErrBrokerRefused): no session is
+// that has not listed the broker, not an outage (dispatchread.ErrBrokerRefused): no session is
 // enrolled through it, not even one naming no project.
 func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 	t.Run("no client", func(t *testing.T) {
@@ -139,7 +140,7 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		svc := newService(t)
 		dispatch := withProjects(t, svc)
 		svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-refused"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, projectaccess.ErrBrokerRefused) && !strings.Contains(err.Error(), "refused the broker") {
+		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-refused"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, dispatchread.ErrBrokerRefused) && !strings.Contains(err.Error(), "refused the broker") {
 			t.Fatalf("a session naming no project while Dispatch refuses the broker's account = %v; want ErrProjectsUnchecked saying Dispatch refused the broker", err)
 		}
 	})

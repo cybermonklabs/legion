@@ -60,8 +60,10 @@ func MessageEnvelope(m Message, topic, dedupeKey string) Envelope {
 	}
 }
 
-// AgentSendEnvelope is the envelope of a direct message to targetSession as the stream stores it:
-// on the session's own topic, in the form every reader takes (LegacyAgentSubject), under
+// AgentSendEnvelope is the envelope of a direct message of project to targetSession as the stream
+// stores it: on the session's own topic under the project, AgentSubject(project, targetSession),
+// when project is a project key, and in the form every reader takes (LegacyAgentSubject) for a
+// message of no project ("" or NoProject), which reads as no project either way; under
 // AgentSendDedupeKey(targetSession, idempotencyKey), with a key minted here for a send that names
 // none, which only a re-send of that very envelope repeats (MintedDedupeKeyPattern).
 //
@@ -72,9 +74,20 @@ func MessageEnvelope(m Message, topic, dedupeKey string) Envelope {
 // its known-session store holds the session. That copy then reaches the session's host as the
 // send would have, under the same topic and dedupe key, so the stream and the host take a copy
 // whose send did land as that same message again rather than a second one.
-func AgentSendEnvelope(targetSession, idempotencyKey string, m Message) Envelope {
+func AgentSendEnvelope(project, targetSession, idempotencyKey string, m Message) Envelope {
 	if idempotencyKey == "" {
 		idempotencyKey = id.New()
 	}
-	return MessageEnvelope(m, LegacyAgentSubject(targetSession), AgentSendDedupeKey(targetSession, idempotencyKey))
+	return MessageEnvelope(m, AgentSendTopic(project, targetSession), AgentSendDedupeKey(targetSession, idempotencyKey))
+}
+
+// AgentSendTopic is the subject a direct message of project to targetSession is stored on:
+// AgentSubject(project, targetSession) for a project key, and LegacyAgentSubject(targetSession)
+// for a message of no project, which reads as no project in either form and which every reader
+// takes (AgentSendEnvelope).
+func AgentSendTopic(project, targetSession string) string {
+	if projectKey.MatchString(project) {
+		return AgentSubject(project, targetSession)
+	}
+	return LegacyAgentSubject(targetSession)
 }

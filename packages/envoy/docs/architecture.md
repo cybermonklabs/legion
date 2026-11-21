@@ -153,6 +153,12 @@ the window out; a soft claim replaces the holder, it does not release the claim.
 Dispatch reads `ENVOY_SESSION_LIVE_WINDOW` and `ENVOY_SESSION_GONE_HORIZON` too and judges a role
 route's holder by them (`roles.Windows`, `cmd/dispatch`'s `roleHolderWindows`), so a deployment
 gives its listeners and its Dispatch server the same two values.
+It reads `DISPATCH_PROJECT_PRIVACY_REQUIRED` beside its listeners' `ENVOY_PROJECT_PRIVACY_REQUIRED`
+(`roles.Mode`, `cmd/dispatch`'s `projectPrivacyMode`): set to `true`, a role route's holder is
+taken only when the projects of the holder's token see the event's project, and unset, as before
+the mode existed. Where a holder turns on whether a project is private, Dispatch reads that from
+its own `projects` rows at the decision (`committedProjectPrivacy`), and a key no row holds counts
+as private.
 
 `ENVOY_SESSION_MAX_AGE` sets the `envoy_sessions` bucket's `MaxAge`; unset, the listener leaves the
 bucket's own. A gone horizon longer than that age reads a record the bucket expired as `gone`

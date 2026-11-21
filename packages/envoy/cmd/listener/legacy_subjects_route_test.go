@@ -128,13 +128,13 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	}
 }
 
-// In this slice a claim's key is the bare role name, which is the claim of the project the name
-// itself gives (contracts.RoleProject), so a role named in the new form under any other project is
-// refused with 400, naming both projects, as the merge base refused every dotted role: a Legion
-// role under another project's key, and a free-form role (lead-reviewer) under a project, whose
-// claim would otherwise land on the `_` claim of its bare name and take it from its holder while
-// the caller believes it holds that project's. The same role under its own project, and its bare
-// name, are claimed. t-c-8 lifts this for a free-form role once a claim keys on its project.
+// A role named in the new form under a project it cannot work for is refused with 400, naming
+// both projects (contracts.ClaimProject): a Legion role under any project but the one its own name
+// gives, _ among them, since its claim is that project's and a caller under another would believe
+// it holds a claim it does not. A free-form role (lead-reviewer) under a project is no such claim:
+// it is that project's own, keyed <project>.<role> (store.RoleClaimKeyOf), beside the claim of the
+// same name under no project, which keeps its bare key and its holder. The Legion role under its
+// own project, and each bare name, are claimed as before.
 func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 	const sessionID = "ses_role_project"
 	rig := newSessionConsumerRig(t)
@@ -148,8 +148,6 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 	for _, refused := range []struct{ role, name, own, asked string }{
 		{"PRIV.legion-zz-controller", "legion-zz-controller", "ZZ", "PRIV"},
 		{"_.legion-zz-controller", "legion-zz-controller", "ZZ", "_"},
-		{"PRIV.lead-reviewer", "lead-reviewer", "_", "PRIV"},
-		{"INFRA.reviewer", "reviewer", "_", "INFRA"},
 	} {
 		answer := claim(refused.role)
 		body := answer.Body.String()
@@ -160,10 +158,23 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 			t.Fatalf("after the refused claim %s, %s is held by %q, want nobody", refused.role, refused.name, holder)
 		}
 	}
-	for _, role := range []string{"ZZ.legion-zz-controller", "legion-zz-controller", "_.lead-reviewer", "lead-reviewer"} {
+	for role, key := range map[string]string{
+		"ZZ.legion-zz-controller": "legion-zz-controller",
+		"legion-zz-controller":    "legion-zz-controller",
+		"_.lead-reviewer":         "lead-reviewer",
+		"lead-reviewer":           "lead-reviewer",
+		"PRIV.lead-reviewer":      "PRIV.lead-reviewer",
+		"INFRA.reviewer":          "INFRA.reviewer",
+	} {
 		if answer := claim(role); answer.Code != http.StatusOK {
 			t.Fatalf("claim %s answered %d %s, want 200", role, answer.Code, answer.Body.String())
 		}
+		if holder, err := rig.deps.registry.RoleHolder(key); err != nil || holder != sessionID {
+			t.Fatalf("after the claim %s, the claim keyed %s is held by %q (%v), want %s", role, key, holder, err, sessionID)
+		}
+	}
+	if holder, err := rig.deps.registry.RoleHolder("reviewer"); err != nil || holder != "" {
+		t.Fatalf("after the claim INFRA.reviewer, the claim of reviewer under no project is held by %q (%v), want nobody", holder, err)
 	}
 }
 
@@ -196,9 +207,9 @@ func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
 	}
 }
 
-// A role's claim is keyed by its bare name in this slice, whichever form named it
-// (store.Registry.ClaimedRole), so every reader of a role name must resolve it to that bare name
-// before it looks the claim up: a send to the role's lane in the new form, and GET
+// A role's claim is keyed by its bare name whichever form named it, for a role of no project and
+// for a Legion role (store.RoleClaimKeyOf), so every reader of a role name must resolve it to that
+// key before it looks the claim up: a send to the role's lane in the new form, and GET
 // /v1/roles/<role>. A reader that takes the name as it stands looks up "_.lead-reviewer", which
 // no claim is keyed by, so the publish is answered 202 kept with no holder and the message
 // reaches nobody.

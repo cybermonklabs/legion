@@ -1026,6 +1026,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_SESSION_GONE_HORIZON": "-1m"}, "ENVOY_SESSION_GONE_HORIZON")
 		},
+		// The mode the outbox resolves a role route's holder in (outboxDeps, roles.NewBuckets).
+		"DISPATCH_PROJECT_PRIVACY_REQUIRED": outboxDepsTakeTheMode,
 		"ENVOY_TOKEN": func(t *testing.T) {
 			// The bearer the Envoy listener receives when a signed-in human's GET /api/v1/agents
 			// reads its sessions.

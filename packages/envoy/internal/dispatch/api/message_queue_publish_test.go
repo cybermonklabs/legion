@@ -79,7 +79,7 @@ func (body listenerSendBody) storedBy(t *testing.T, got contracts.Envelope) cont
 	if err != nil {
 		t.Fatalf("the send's expects_reply %s: %v", body.ExpectsReply, err)
 	}
-	want := contracts.AgentSendEnvelope(body.TargetSession, body.IdempotencyKey, contracts.Message{
+	want := contracts.AgentSendEnvelope(contracts.NoProject, body.TargetSession, body.IdempotencyKey, contracts.Message{
 		Source: body.Source, Text: body.Message, Payload: body.Payload, Urgency: body.Urgency, ExpectsReply: expectsReply,
 	})
 	want.EventID, want.SourceEventID, want.IssuedAt, want.TraceID = got.EventID, got.SourceEventID, got.IssuedAt, got.TraceID
