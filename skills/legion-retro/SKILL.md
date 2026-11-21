@@ -30,10 +30,11 @@ that hold with a WAITING line naming the defect and the answer you wait on. The 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the
-   tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
-   version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
-   the approved head for every `before_merge` check, and the body's `Checks` block carries each.
+1. **Read the evidence**: the issue, its checks (`dispatch results --issue <issue>`), the pull
+   request, the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the
+   review at the version your task's `Handoff:` line names (`--phase review --version <n>`). A pass
+   must stand at the approved head for every `before_merge` check, and the body's `Checks` block
+   carries each.
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs, and its CI job
      is its evidence (`skill://legion-worker/references/ci-checks.md`). In cybermonklabs/legion a
      surface may also be the daemon's real-process tests, a live proof under `scripts/e2e/`, or a
