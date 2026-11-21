@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { afterAll, afterEach, beforeAll, test as bunTest, expect } from "bun:test"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -9,9 +9,11 @@ import {
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
+  type SessionAnswersCache,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import type { Subprocess } from "bun"
 import { buildBundles } from "../scripts/build"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
@@ -22,15 +24,20 @@ import { buildBundles } from "../scripts/build"
 const packageRoot = resolve(import.meta.dir, "..")
 let bundle = ""
 let bundleDirectory = ""
+/** The directory of the hooks' timing files (`runHook`), kept until the file ends: a case's
+ *  cleanup reads them for the refreshers its hooks named. */
+let timingDirectory = ""
 
 beforeAll(async () => {
   bundleDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-bundle-"))
+  timingDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-timing-"))
   await buildBundles(bundleDirectory)
   bundle = join(bundleDirectory, "session-hook.js")
 }, 60_000)
 
 afterAll(async () => {
   await rm(bundleDirectory, { recursive: true, force: true })
+  await rm(timingDirectory, { recursive: true, force: true })
 })
 
 const SESSION = "11111111-2222-4333-8444-555555555555"
@@ -44,14 +51,60 @@ const BEFORE_TOKEN = fixtureSecret("dsp")
 // Each row's `60_000`, its hang guard and its afterEach's, is the package test script's own
 // `--timeout` (`bun test --timeout=60000`, package.json), given to each row so a run of this file
 // alone has it too. It is a number at each row, not a named constant, because Biome formats a
-// `test(…)` call whose last argument is a number as a test call and any other as a plain call. It
-// decides no verdict: each row waits for the event it needs (a refresher's outcome written and its
-// lock gone, a pid gone, a file another process writes) and decides on what that event shows.
-// Fixed bounds of 15 s and 20 s decided rows before: on a box at a load of 766, one row's first
-// refresher wrote no outcome within the 15 s that row waited for it.
+// `test(…)` call whose last argument is a number as a test call and any other as a plain call.
+// Each row waits for the event it needs (a refresher's outcome written and its lock gone, a
+// process ended, a file another process writes) and decides on what that event shows. A row's
+// body waits for at most one refresher's start-up, and its afterEach for at most one more (the
+// refreshers its last hooks started, which run side by side), so the guard decides a row only
+// when one refresher's start-up alone takes most of that minute: with the start of each refresher
+// held 30 s, every row passes. Fixed bounds of 15 s and 20 s decided rows before: on a box at a
+// load of 766, one row's first refresher wrote no outcome within the 15 s that row waited for it.
 
 const cleanup: (() => Promise<void>)[] = []
+
+/** The row running now: whether it ended (its afterEach began), and the end of its body. */
+let row: { ended: boolean; settled: Promise<void> } | undefined
+
+/** Each row of this file: `bun:test`'s `test`, keeping the row's body for its afterEach. A body
+ *  whose row timed out goes on until what it awaits settles, and then stops at its next hook or
+ *  wait (`rowGoesOn`); its failure there is no verdict, Bun having given the row's, and the
+ *  afterEach waits for it before the cleanup, so no body runs or fails beside the rows after it. */
+function test(name: string, body: () => Promise<void>, timeout: number): void {
+  bunTest(
+    name,
+    () => {
+      const current = { ended: false, settled: Promise.resolve() }
+      row = current
+      const run = body().catch((error: unknown) => {
+        if (!current.ended) throw error
+      })
+      current.settled = run.catch(() => {})
+      return run
+    },
+    timeout,
+  )
+}
+
+/** Throws once the row running now ended, so a body that timed out starts and waits for nothing
+ *  more. */
+function rowGoesOn(): void {
+  if (row?.ended === true) throw new Error("the row ended before this step")
+}
+
+/** Each hook the row running now started, and the end of its run. */
+const startedHooks: { readonly process: Subprocess; readonly settled: Promise<void> }[] = []
+
 afterEach(async () => {
+  if (row !== undefined) {
+    row.ended = true
+    // A hook still running when its row ended is the row's to end; once each has, the body
+    // settles too.
+    for (const hook of startedHooks) hook.process.kill("SIGKILL")
+    await Promise.all(startedHooks.map((hook) => hook.settled))
+    await row.settled
+    row = undefined
+  }
+  startedHooks.length = 0
   for (const step of cleanup.splice(0).reverse()) await step()
 })
 
@@ -137,7 +190,7 @@ function answer(id: string, text: string, minutesAgo: number): SessionAnswer {
 }
 
 /** A scratch HOME, Dispatch state directory, Claude config directory and TMPDIR for one case.
- *  They go once every refresher the case's hooks started has exited: one still running writes
+ *  They go once every refresher the case's hooks started has ended: one still running writes
  *  into them, and one not yet past its start-up makes them again. Each case's own cleanup (a gate
  *  opened) runs first, since `scratch` comes before any hook. */
 async function scratch(): Promise<{
@@ -165,6 +218,7 @@ async function scratch(): Promise<{
 async function refresherFinished(state: string, since: number): Promise<void> {
   const directory = join(state, "sessions", SESSION)
   for (;;) {
+    rowGoesOn()
     const outcome = await readFile(join(directory, "answers-refresh.json"), "utf8").then(
       (text): { finished_at: number } => JSON.parse(text),
       () => undefined,
@@ -186,49 +240,143 @@ async function refresherFinished(state: string, since: number): Promise<void> {
  *  tells nobody of, so the wait polls it on the real clock. The case's own timeout is the only
  *  bound. */
 async function fileWritten(file: string): Promise<void> {
-  while (!existsSync(file)) await Bun.sleep(20)
-}
-
-/** Whether process `pid`, or with `-pid` any process of the group `pid` leads, still runs:
- *  `kill(pid, 0)` sends no signal and fails with ESRCH once no such process is left. One that
- *  exited still answers until it is reaped: a refresher's parent is its hook, which exits soon
- *  after its deadline, and the process that takes the hook's orphans reaps them. */
-function running(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
-    throw error
+  while (!existsSync(file)) {
+    rowGoesOn()
+    await Bun.sleep(20)
   }
 }
 
-/** The pid of each refresher a hook started since the last wait for them ended, as the hook names
- *  it in its timing file (`refresher`). A hook starts its refresher detached and exits, so this is
- *  how a case knows of it at all. */
-const refreshers: number[] = []
+/** `file`'s text, or undefined when there is no such file. */
+async function textOf(file: string): Promise<string | undefined> {
+  return readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+}
 
-/** Waits until no refresher a hook started still runs, then forgets their pids, which the kernel
- *  may give to other processes once they ended. A refresher tells nobody it ended, so the wait
- *  polls each one's pid on the real clock; one that ended answers at once. The row's hang guard
- *  is the only bound. */
+/** A process a case knows of: its pid, and when it started (the 22nd field of
+ *  `/proc/<pid>/stat`, clock ticks since boot), which a later process given the same pid does
+ *  not share. */
+interface StartedProcess {
+  readonly pid: number
+  readonly started: string | null
+}
+
+/** `PF_EXITING` in a process's flags, the 9th field of `/proc/<pid>/stat`: it is in its exit. */
+const PF_EXITING = 0x4
+/** SIGKILL's bit in the signals pending for a process, the 31st field of `/proc/<pid>/stat`. */
+const SIGKILL_PENDING = 1 << 8
+
+/** What `/proc/<pid>/stat` holds for `pid` now, each field counted after the command in
+ *  parentheses, which may itself hold spaces; undefined once no process has that pid. */
+function procStat(
+  pid: number,
+): { state: string; flags: number; started: string; pending: number } | undefined {
+  let stat: string
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+  } catch (error) {
+    if (!existsSync("/proc/self/stat")) {
+      throw new Error(
+        "this host has no /proc, which this file reads to tell whether a process ended",
+      )
+    }
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT" || code === "ESRCH") return undefined
+    throw error
+  }
+  // Field 3, the state, onwards: field n is at n - 3.
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+  return {
+    state: fields[0] as string,
+    flags: Number(fields[6]),
+    started: fields[19] as string,
+    pending: Number(fields[28]),
+  }
+}
+
+/** Whether `known` has ended: no process has its pid, or that process is a zombie, is in its
+ *  exit, holds a SIGKILL it has not yet run to take, or is another process given the pid since
+ *  (another start). Read from /proc rather than by `kill(pid, 0)`, which answers for a zombie
+ *  and for that other process. A process a group kill reached reads as ended from the kill on,
+ *  whether or not the kernel has run it since. */
+function ended(known: StartedProcess): boolean {
+  if (known.started === null) throw new Error(`no start was read for process ${known.pid}`)
+  const stat = procStat(known.pid)
+  return (
+    stat === undefined ||
+    stat.state === "Z" ||
+    stat.state === "X" ||
+    stat.started !== known.started ||
+    (stat.flags & PF_EXITING) !== 0 ||
+    (stat.pending & SIGKILL_PENDING) !== 0
+  )
+}
+
+/** The timing file of each hook a case started since the last wait for its refreshers ended. */
+const hookTimings: string[] = []
+
+/** The refreshers the hooks of `hookTimings` named in their timing files. A hook names its
+ *  refresher as soon as it started it, so one ended before it exited still told; one with no
+ *  file was ended before it started any. */
+async function namedRefreshers(): Promise<StartedProcess[]> {
+  const named: StartedProcess[] = []
+  for (const file of hookTimings) {
+    const text = await textOf(file)
+    if (text === undefined) continue
+    const { refresher }: Pick<HookTiming, "refresher"> = JSON.parse(text)
+    if (refresher !== null) named.push(refresher)
+  }
+  return named
+}
+
+/** Waits until every refresher the case's hooks named has ended, then forgets them. A refresher
+ *  tells nobody it ended, so the wait polls each one's /proc entry on the real clock; one that
+ *  ended answers at once. The row's hang guard is the only bound. */
 async function refreshersEnded(): Promise<void> {
-  while (refreshers.some(running)) await Bun.sleep(20)
-  refreshers.length = 0
+  const named = await namedRefreshers()
+  while (named.some((refresher) => !ended(refresher))) {
+    rowGoesOn()
+    await Bun.sleep(20)
+  }
+  hookTimings.length = 0
 }
 
-/** The start of a `!` token command that first writes the pid of its shell to `file`, whole
- *  (through a rename), so a case knows the command started and which process group is its own:
- *  envoy-config runs the shell detached, as the leader of a group of its own. */
-function commandMark(file: string): string {
-  return `echo $$ > '${file}.part' && mv '${file}.part' '${file}'; `
+/** Waits until one refresher the case's hooks named holds the session's lock (its pid in
+ *  `answers-refresh.lock`) and every other one they named has ended, having lost the lock to it.
+ *  From then until that refresher ends, no hook starts one, and none the hooks named can take the
+ *  lock after it. */
+async function refresherHoldsLock(state: string): Promise<void> {
+  const lock = join(state, "sessions", SESSION, "answers-refresh.lock")
+  for (;;) {
+    rowGoesOn()
+    const named = await namedRefreshers()
+    const pid = Number((await textOf(lock)) ?? "")
+    const holder = named.find((refresher) => refresher.pid === pid && !ended(refresher))
+    if (holder !== undefined && named.every((other) => other === holder || ended(other))) return
+    if (named.every(ended)) {
+      throw new Error("every refresher the hooks started ended, and none took the lock")
+    }
+    await Bun.sleep(20)
+  }
 }
 
-/** Waits until a command started with `commandMark(file)` has started, and gives back the pid of
- *  its shell, which leads its process group. */
-async function commandStarted(file: string): Promise<number> {
+/** The start of a `!` token command that leaves a process behind: a subshell, started in the
+ *  background, that runs while `home` exists (the case's scratch removes it), and whose pid the
+ *  command writes to `file`, whole (through a rename). envoy-config runs the command as the leader
+ *  of a process group of its own, which the subshell is in, and kills that group once the command
+ *  exits; with no such kill the subshell outlives the command. */
+function leftBehind(file: string, home: string): string {
+  return `(while [ -d '${home}' ]; do sleep 0.02; done) >/dev/null 2>&1 & echo $! > '${file}.part' && mv '${file}.part' '${file}'; `
+}
+
+/** Waits until a command started with `leftBehind(file, …)` has started, and gives back the
+ *  process it left behind, read while that command still waits on the case: before any group
+ *  kill could reach it. */
+async function leftBehindStarted(file: string): Promise<StartedProcess> {
   await fileWritten(file)
-  return Number(await readFile(file, "utf8"))
+  const pid = Number(await readFile(file, "utf8"))
+  return { pid, started: procStat(pid)?.started ?? null }
 }
 
 /** A `--preload` for a hook that writes `signal` once its process has started, then holds the
@@ -263,12 +411,12 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
 
 /** What the hook measured of itself, written to `ENVOY_ANSWERS_TIMING_FILE`, in ms after its
  *  process started: when its code began, when it printed (null: it failed before), and when it
- *  exited; and the pid of the refresher it started (null: it started none). */
+ *  exited; and the refresher it started (null: it started none). */
 interface HookTiming {
   readonly began: number
   readonly printed: number | null
   readonly ended: number
-  readonly refresher: number | null
+  readonly refresher: StartedProcess | null
 }
 
 interface HookRun {
@@ -278,14 +426,18 @@ interface HookRun {
   readonly timing: HookTiming
 }
 
-async function runHook(
+/** How many hooks the file started, which names each one's timing file. */
+let hookCount = 0
+
+function runHook(
   env: Record<string, string>,
   input: Record<string, unknown>,
   options: { readonly preload?: string } = {},
 ): Promise<HookRun> {
-  const directory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-timing-"))
-  cleanup.push(() => rm(directory, { recursive: true, force: true }))
-  const timingFile = join(directory, "timing.json")
+  rowGoesOn()
+  hookCount += 1
+  const timingFile = join(timingDirectory, `hook-${hookCount}.json`)
+  hookTimings.push(timingFile)
   const preload = options.preload === undefined ? [] : ["--preload", options.preload]
   const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
     env: {
@@ -298,14 +450,24 @@ async function runHook(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [exitCode, stdout, stderr] = await Promise.all([
-    run.exited,
-    new Response(run.stdout).text(),
-    new Response(run.stderr).text(),
-  ])
-  const timing: HookTiming = JSON.parse(await readFile(timingFile, "utf8"))
-  if (timing.refresher !== null) refreshers.push(timing.refresher)
-  return { exitCode, stdout, stderr, timing }
+  const finished = (async (): Promise<HookRun> => {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      run.exited,
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+    ])
+    const timing: HookTiming = JSON.parse(await readFile(timingFile, "utf8"))
+    return { exitCode, stdout, stderr, timing }
+  })()
+  // A handler of its own, so a run whose row ended before it did fails nothing after that row.
+  startedHooks.push({
+    process: run,
+    settled: finished.then(
+      () => {},
+      () => {},
+    ),
+  })
+  return finished
 }
 
 /** The hook's print deadline as the design states it, in ms after its process started: 800 ms,
@@ -407,33 +569,24 @@ function contextOf(run: HookRun, event: string): string {
   return context
 }
 
-/** Runs `startup` hooks, four at most, until one has left what Dispatch answers in `answers.json`
- *  for the hooks after it, and gives back what was saved. Each run is held to what the design
- *  allows a hook reading a list that adds nothing: it prints nothing, its read having landed on
- *  an empty list, or it prints the failure line naming the wait its read was given. A hook whose
- *  read missed that wait also exits soon after printing, which the read it left behind need not
- *  beat, so on a loaded host one run does not always fill the cache. */
-async function fillAnswersCache(
-  env: Record<string, string>,
-  home: string,
+/** Writes `answers.json` as a read of `dispatchUrl` that answered `items` leaves it, in the read's
+ *  own type (`SessionAnswersCache`), for a case about what a hook does with a list read before: a
+ *  hook's own read writes it only when it lands within the wait the hook gives it, which a loaded
+ *  host does not always allow. */
+async function answersRead(
   state: string,
-): Promise<{ readonly items: readonly SessionAnswer[] }> {
-  const file = join(state, "sessions", SESSION, "answers.json")
-  const attempts = 4
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const run = await runHook(env, sessionStart("startup", home))
-    expect(run.exitCode).toBe(0)
-    if (run.stdout !== "") {
-      expect(allowedOutcome(contextOf(run, "SessionStart"), [], READ_MISSED_LEAST_WAIT)).toBe(
-        "failure",
-      )
-    }
-    const saved = await readFile(file, "utf8")
-      .then((text): { items: SessionAnswer[] } => JSON.parse(text))
-      .catch(() => undefined)
-    if (saved !== undefined) return saved
+  dispatchUrl: string,
+  items: readonly SessionAnswer[],
+): Promise<void> {
+  const directory = join(state, "sessions", SESSION)
+  await mkdir(directory, { recursive: true })
+  const cache: SessionAnswersCache = {
+    dispatch_url: dispatchUrl,
+    read_at: new Date().toISOString(),
+    total: items.length,
+    items,
   }
-  throw new Error(`no hook left what Dispatch answered in ${file} within ${attempts} runs`)
+  await writeFile(join(directory, "answers.json"), JSON.stringify(cache))
 }
 
 test("puts the list into context at every SessionStart source and at SubagentStart, read for the session the input names", async () => {
@@ -520,7 +673,7 @@ test("with Dispatch hanging, answers by the hook's deadline with the list a hook
 
 test("with Dispatch hanging after a read gave an empty list, the failure line names the wait rather than nothing", async () => {
   const dispatch = standinDispatch()
-  dispatch.route = { kind: "list", items: [] }
+  dispatch.route = { kind: "hang" }
   const { home, state } = await scratch()
   const env = {
     HOME: home,
@@ -528,13 +681,9 @@ test("with Dispatch hanging after a read gave an empty list, the failure line na
     DISPATCH_URL: dispatch.base,
     DISPATCH_TOKEN,
   }
-  // The hang the case is about starts only once the empty list Dispatch holds is in the cache:
-  // a hook whose read missed its wait prints the failure line and saves nothing, so the read is
-  // repeated until it lands.
-  const cache = await fillAnswersCache(env, home, state)
-  expect(cache.items).toEqual([])
+  // The empty list Dispatch held, as the read that gave it left it in answers.json.
+  await answersRead(state, dispatch.base, [])
 
-  dispatch.route = { kind: "hang" }
   const context = contextOf(await runHook(env, sessionStart("resume", home)), "SessionStart")
   const waited =
     /^\[Dispatch: people's answers from the last 72 hours could not be read \(Dispatch did not answer within (\d+) ms\); run `dispatch answers`\.\]$/.exec(
@@ -713,19 +862,17 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
 }, 60_000)
 
-test("a `!` token command runs outside the hook: a quick one gives the bearer, a slow one cannot hold the hook", async () => {
+test("a quick `!` token command runs outside the hook and gives the bearer, and the next hook carries the list its refresher read", async () => {
   const dispatch = standinDispatch()
   const items = [answer("ask-4", "Token from a command.", 1)]
   dispatch.route = { kind: "list", items }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-  const envoyJson = join(config, "envoy.json")
-  const bearer = `Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`
-
   await writeFile(
-    envoyJson,
+    join(config, "envoy.json"),
     JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: `!printf ${COMMAND_TOKEN}` } }),
   )
+
   const quickSince = Date.now()
   const quick = await runHook(env, sessionStart("startup", home))
   // The command runs in the refresher, a second bun process: the design carries its list when it
@@ -734,31 +881,37 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   allowedOutcome(contextOf(quick, "SessionStart"), items, refresherMissed(quick))
   expectWithinDeadline(quick)
   await refresherFinished(state, quickSince)
-  expect(dispatch.requests).toEqual([bearer])
-  // Either way the next hook carries the list the refresher read with the command's token.
-  const nextSince = Date.now()
+  expect(dispatch.requests).toEqual([`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`])
+  // Either way the next hook carries the list the refresher read with the command's token. The
+  // refresher this hook starts reads with the token its command prints, as the slow command's
+  // case shows; the case's scratch waits for its end.
   const next = await runHook(env, sessionStart("clear", home))
   expect(contextOf(next, "SessionStart")).toContain("Token from a command.")
-  await refresherFinished(state, nextSince)
-  expect(dispatch.requests).toEqual([bearer, bearer])
+}, 60_000)
 
-  // The slow command waits until the test opens the gate, so no refresher lands by a deadline.
+test("a slow `!` token command cannot hold the hook, and its refresher still reads with the token it printed and leaves nothing running", async () => {
+  const dispatch = standinDispatch()
+  const items = [answer("ask-4", "Token from a command.", 1)]
+  dispatch.route = { kind: "list", items }
+  const { home, state, config, tmp } = await scratch()
+  const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
+  await answersRead(state, dispatch.base, items)
+
+  // The command leaves a process behind, then waits until the test opens the gate, so no
+  // refresher lands by a deadline.
   const gate = join(home, "gate")
+  const left = join(home, "left-behind")
   await writeFile(
-    envoyJson,
+    join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf late`,
+        token: `!${leftBehind(left, home)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf late`,
       },
     }),
   )
+  cleanup.push(() => writeFile(gate, ""))
   const slowSince = Date.now()
-  // Before the scratch directory goes, the slow command's refresher ends.
-  cleanup.push(async () => {
-    await writeFile(gate, "")
-    await refresherFinished(state, slowSince)
-  })
   const hanging = await runHook(env, sessionStart("resume", home))
   const context = contextOf(hanging, "SessionStart")
   // The list read before stands in, naming why this read gave none.
@@ -767,23 +920,25 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   expect(context).toContain("Token from a command.")
   expectWithinDeadline(hanging)
 
-  // With no list read before, the failure line says why none was read now.
+  // With no list read before, the failure line says why none was read now. The refresher the hook
+  // above started holds the session's lock by then, so this hook starts none.
+  await refresherHoldsLock(state)
   await rm(join(state, "sessions", SESSION, "answers.json"))
   const uncached = await runHook(env, sessionStart("compact", home))
   expect(contextOf(uncached, "SessionStart")).toBe(
     sessionAnswersFailureLine(notFinishedReason(uncached)),
   )
   expectWithinDeadline(uncached)
-  expect(dispatch.requests).toHaveLength(2)
+  expect(uncached.timing.refresher).toBeNull()
+  expect(dispatch.requests).toEqual([])
 
-  // The slow command still ends, and its refresher reads with the token it printed.
+  // The slow command still ends, its refresher reads with the token it printed, and envoy-config
+  // killed the command's process group, the process it left behind with it.
+  const behind = await leftBehindStarted(left)
   await writeFile(gate, "")
   await refresherFinished(state, slowSince)
-  expect(dispatch.requests).toEqual([
-    bearer,
-    bearer,
-    `Bearer late /api/v1/agents/${SESSION}/answers`,
-  ])
+  expect(dispatch.requests).toEqual([`Bearer late /api/v1/agents/${SESSION}/answers`])
+  expect(ended(behind)).toBe(true)
   expect(await readdir(tmp)).toEqual([])
 }, 60_000)
 
@@ -793,15 +948,15 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   dispatch.route = { kind: "list", items }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-  // The command marks its start, then waits until the test opens the gate.
+  // The command leaves a process behind, then waits until the test opens the gate.
   const gate = join(home, "gate")
-  const started = join(home, "command-started")
+  const left = join(home, "left-behind")
   await writeFile(
     join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!${commandMark(started)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+        token: `!${leftBehind(left, home)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -813,27 +968,25 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(first)
   // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
   // end after the hook did).
-  const firstCommand = await commandStarted(started)
+  const behind = await leftBehindStarted(left)
 
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  expect(running(-firstCommand)).toBe(false)
+  // envoy-config killed the command's process group, the process it left behind with it.
+  expect(ended(behind)).toBe(true)
   expect(dispatch.requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`])
 
+  // The next hook carries the list that refresher read. Its own refresher runs the command again,
+  // which waits until the case's cleanup opens the gate, so it lands by no deadline; the slow
+  // command's case shows such a refresher's end, and the case's scratch waits for this one's.
   await rm(gate)
-  await rm(started)
-  const secondSince = Date.now()
   const second = await runHook(env, sessionStart("resume", home))
   const context = contextOf(second, "SessionStart")
   expect(context.split("\n")[1]).toStartWith("As read at ")
   expect(context.split("\n")[1]).toEndWith(`; this read failed: ${notFinishedReason(second)}.`)
   expect(context).toContain("Read with a slow command's token.")
   expectWithinDeadline(second)
-  await writeFile(gate, "")
-  await refresherFinished(state, secondSince)
-  const secondCommand = await commandStarted(started)
-  expect(running(-secondCommand)).toBe(false)
 }, 60_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
@@ -867,18 +1020,13 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
     envoyJson,
     JSON.stringify({ dispatch: { serverUrl: now.base, token: "!sleep 3; printf now-token" } }),
   )
-  const since = Date.now()
-  cleanup.push(() => refresherFinished(state, since))
   const hanging = await runHook(env, sessionStart("resume", home))
   expect(contextOf(hanging, "SessionStart")).toBe(
     sessionAnswersFailureLine(notFinishedReason(hanging)),
   )
   expectWithinDeadline(hanging)
-
-  // The refresher reads the Dispatch named now, with the token its command printed.
-  await refresherFinished(state, since)
-  expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
-  expect(before.requests).toHaveLength(1)
+  // The refresher this hook started reads the Dispatch named now, as the case of a refresher
+  // started after one read `before` shows; the case's scratch waits for its end.
 }, 60_000)
 
 test("a refresher started for the Dispatch envoy.json named before never hands its list to a hook for the Dispatch it names now", async () => {
@@ -908,7 +1056,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!${commandMark(started)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+        token: `!: > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
       },
     }),
   )
@@ -918,7 +1066,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
 
   // The refresher resolves envoy.json before its command runs: once the command runs, it reads
   // `before` whatever envoy.json names next.
-  await commandStarted(started)
+  await fileWritten(started)
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`
@@ -945,9 +1093,42 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   )
   expect(context).not.toContain(user)
   expect(context).not.toContain(secret)
-  // The refresher this hook started reads the Dispatch named now.
+  // The refresher this hook started reads the Dispatch named now, as the next case shows; the
+  // case's scratch waits for its end.
+}, 60_000)
+
+test("a refresher started after one read the Dispatch envoy.json named before reads the Dispatch it names now, with the token its own command printed", async () => {
+  const before = standinDispatch()
+  const beforeItems = [answer("ask-x", "Read from the Dispatch before.", 1)]
+  before.route = { kind: "list", items: beforeItems }
+  const now = standinDispatch()
+  now.route = { kind: "list", items: [] }
+  const { home, state, config, tmp } = await scratch()
+  const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
+  // What a refresher that read `before` leaves: the list in answers.json, and its outcome, here
+  // finished a minute from now so the hook below takes it as its own refresher's.
+  await answersRead(state, before.base, beforeItems)
+  await refresherOutcome(
+    state,
+    before.base,
+    renderSessionAnswers(beforeItems, { now: Date.now(), total: 1 }) as string,
+  )
+  await writeFile(
+    join(config, "envoy.json"),
+    JSON.stringify({ dispatch: { serverUrl: now.base, token: "!printf now-token" } }),
+  )
+
+  const context = contextOf(await runHook(env, sessionStart("resume", home)), "SessionStart")
+  expect(context).toBe(
+    sessionAnswersFailureLine(
+      `the refresher read ${before.base}, not the Dispatch envoy.json names now`,
+    ),
+  )
+  // The refresher that hook started reads the Dispatch named now, never `before`. The wait is the
+  // refresher's own end: the outcome planted above is dated a minute ahead.
   await refreshersEnded()
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
+  expect(before.requests).toEqual([])
 }, 60_000)
 
 test("a token command that fails gives the hook its error, not a Dispatch envoy.json no longer names", async () => {
@@ -984,7 +1165,31 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   expect([failed, sessionAnswersFailureLine(notFinishedReason(starting))]).toContain(
     contextOf(starting, "SessionStart"),
   )
-  await refreshersEnded()
+  expect(dispatch.requests).toEqual([])
+  // The refresher the waiting hook started runs the failing command too; the next case shows what
+  // such a refresher leaves, and the case's scratch waits for its end.
+}, 60_000)
+
+test("a token command that fails reads no Dispatch and leaves nothing in TMPDIR", async () => {
+  const dispatch = standinDispatch()
+  dispatch.route = { kind: "list", items: [answer("ask-f", "Never read: the token failed.", 1)] }
+  const { home, state, config, tmp } = await scratch()
+  const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
+  const envoyJson = join(config, "envoy.json")
+  await writeFile(
+    envoyJson,
+    JSON.stringify({ dispatch: { serverUrl: dispatch.base, token: "!echo boom >&2; exit 3" } }),
+  )
+
+  const since = Date.now()
+  const run = await runHook(env, sessionStart("startup", home))
+  // The hook carries its refresher's failure line, or names the command as unfinished when its
+  // refresher lands after its deadline.
+  expect([
+    sessionAnswersFailureLine(`${envoyJson}: dispatch.token's command exited with status 3`),
+    sessionAnswersFailureLine(notFinishedReason(run)),
+  ]).toContain(contextOf(run, "SessionStart"))
+  await refresherFinished(state, since)
   expect(dispatch.requests).toEqual([])
   expect(await readdir(tmp)).toEqual([])
 }, 60_000)
@@ -1036,6 +1241,7 @@ test("with envoy.json unreadable, a list read from another Dispatch never stands
   expect(context).not.toContain("As read at")
   expectWithinDeadline(run)
   // No refresher started for a configuration that names no Dispatch.
+  expect(run.timing.refresher).toBeNull()
   expect(other.requests).toHaveLength(1)
 }, 60_000)
 
@@ -1071,11 +1277,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
     }),
   )
   // The refresher the hook below starts runs the gated command, so it outlives its hook: the case
-  // opens the gate, and its scratch waits for that refresher's end before its directories go,
-  // since a refresher that finishes after them writes its outcome back into a removed directory.
-  // The wait is the refresher's own end, not `refresherFinished`: the outcome planted above is
-  // dated a minute ahead, so that wait would hold at once on a refresher that had not even
-  // started.
+  // opens the gate, and its scratch waits for that refresher's end.
   cleanup.push(() => writeFile(gate, ""))
   const run = await runHook(env, sessionStart("resume", home))
   const context = contextOf(run, "SessionStart")
@@ -1093,18 +1295,20 @@ test("hooks started together run a slow token command once", async () => {
   dispatch.route = { kind: "list", items: [answer("ask-6", "One run.", 1)] }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
+  // The command counts its runs, then waits until the test opens the gate.
   const runs = join(home, "runs")
+  const gate = join(home, "gate")
   await writeFile(
     join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!printf 'run\\n' >> '${runs}'; sleep 1.5; printf ${DISPATCH_TOKEN}`,
+        token: `!printf 'run\\n' >> '${runs}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
+  cleanup.push(() => writeFile(gate, ""))
 
-  const since = Date.now()
   const hooks = await Promise.all([
     runHook(env, sessionStart("startup", home)),
     runHook(env, {
@@ -1123,7 +1327,12 @@ test("hooks started together run a slow token command once", async () => {
     }),
   ])
   for (const hook of hooks) expect(hook.exitCode).toBe(0)
-  await refresherFinished(state, since)
+  // The gate opens once one refresher the hooks started holds the lock and every other one has
+  // ended: each tried for the lock while the command ran, however late its hook or its own
+  // start-up was, so a second run of the command is a refresher that ran it without the lock.
+  await refresherHoldsLock(state)
+  await writeFile(gate, "")
+  await refreshersEnded()
   expect(await readFile(runs, "utf8")).toBe("run\n")
   expect(dispatch.requests).toHaveLength(1)
   expect(await readdir(tmp)).toEqual([])
@@ -1165,11 +1374,7 @@ test("a hook whose start-up took past 800 ms still gives Dispatch its least wait
   // On a quiet host the read lands and the list is carried. On a loaded one the stand-in can miss
   // even the 150 ms least wait, and the design then allows the failure line; what it never allows
   // is a read given no wait at all, which this case exists to catch ("within 0 ms").
-  const outcome = allowedOutcome(
-    contextOf(run, "SessionStart"),
-    items,
-    /^Dispatch did not answer within (1[5-9]\d|[2-9]\d\d|\d{4,}) ms$/,
-  )
+  const outcome = allowedOutcome(contextOf(run, "SessionStart"), items, READ_MISSED_LEAST_WAIT)
   expect(run.timing.began).toBeGreaterThanOrEqual(820)
   expectWithinDeadline(run)
   // A read that missed its wait may not have reached the stand-in before the hook exited.
