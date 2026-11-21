@@ -19,27 +19,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // PasskeyRule is the sign-in rule of a deployment whose people from outside sign in with a passkey
 // (cmd/dispatch: DISPATCH_SIGNIN_PASSKEY=1): Google signs in Domain's people alone, as full members,
 // as DomainRule does, and a restricted member signs in only with a passkey at the outside origin
-// (Passkeys). It is the OutsideRule it embeds but for Google: AdmitsRestricted, which the passkey
-// ceremonies, the hourly confirmation of a passkey's sign-in and every credential acting for a
-// restricted member ask, reads the access lists and refuses an address on a domain the Workspace
-// owns, as OutsideRule's does; Person, BootLog, DomainHint and OffersAccountChooser are
-// DomainRule's, so no Google account outside the Workspace signs in.
+// (Passkeys). It is the OutsideRule it embeds but for BootLog and WorkspaceAddress:
+// AdmitsRestricted, which the passkey ceremonies, the hourly confirmation of a passkey's sign-in and
+// every credential acting for a restricted member ask, reads the access lists and refuses an
+// address on a domain the Workspace owns; Person is DomainRule's, so no Google account outside the
+// Workspace signs in.
 type PasskeyRule struct {
 	OutsideRule
 }
 
 var _ SignInRule = PasskeyRule{}
-
-// Person is DomainRule.Person: Google signs in the Workspace's people alone.
-func (r PasskeyRule) Person(ctx context.Context, claims oidc.Claims) (SignedIn, error) {
-	return r.DomainRule.Person(ctx, claims)
-}
 
 // BootLog logs the issuer, client and Workspace domain Google signs people in for, the Workspace's
 // other domains, and that restricted members sign in with a passkey.
@@ -47,29 +41,12 @@ func (r PasskeyRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in with Google for a Workspace domain, and the people outside it that a project names with a passkey", "issuer", issuer, "client_id", clientID, "domain", r.Domain, "workspace_domains", r.WorkspaceDomains, "passkey", true)
 }
 
-// DomainHint is DomainRule's: only the domain's people sign in with Google.
-func (r PasskeyRule) DomainHint() bool {
-	return r.DomainRule.DomainHint()
-}
-
-// OffersAccountChooser is DomainRule's: a Google refusal names an account of no project's, so its
-// link stays plain.
-func (r PasskeyRule) OffersAccountChooser() bool {
-	return r.DomainRule.OffersAccountChooser()
-}
-
-// GoogleAtOutsideOrigin is DomainRule's: a person from outside signs in at the outside origin
-// with a passkey, never with Google.
-func (r PasskeyRule) GoogleAtOutsideOrigin() bool {
-	return r.DomainRule.GoogleAtOutsideOrigin()
-}
-
 // WorkspaceAddress reports whether email is an address on a domain the Workspace owns (Domain, one
-// of WorkspaceDomains, or a subdomain of either), which AdmitsRestricted refuses
-// (ErrWorkspaceAddress) without reading the lists: the owner's link is refused for it, and the
-// Access tab offers none (api: the invitable list).
+// of WorkspaceDomains, or a subdomain of either: the package's WorkspaceAddress), which
+// AdmitsRestricted refuses (ErrWorkspaceAddress) without reading the lists: the owner's link is
+// refused for it, and the Access tab offers none (api: the invitable list).
 func (r PasskeyRule) WorkspaceAddress(email string) bool {
-	return r.ofTheWorkspace(model.CanonicalLogin(email))
+	return WorkspaceAddress(model.CanonicalLogin(email), r.Domain, r.WorkspaceDomains)
 }
 
 // The refusals of the passkey ceremonies beside the store's (store.ErrInvitationUnknown and the

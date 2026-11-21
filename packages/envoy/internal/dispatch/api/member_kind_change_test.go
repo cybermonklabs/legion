@@ -31,27 +31,30 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// A member the hourly confirmation restricts loses what a restricted member does not read at once,
-// not at their next sign-in: the confirmation's write of people.member_kind announces itself on
-// store.AccessChangedChannel as it commits, which every process's room sync and live delivery hub
-// hear, as they hear an access list's change.
+// A member whose member kind becomes restricted loses what a restricted member does not read at
+// once, not at their next sign-in: the people store's write of people.member_kind announces itself
+// on store.AccessChangedChannel as it commits, which every process's room sync and live delivery
+// hub hear, as they hear an access list's change.
 
-// kindChangeEmail is a Workspace member's address on a domain the Workspace does not list, so an
-// account that leaves the Workspace keeps it as a restricted member while some project names it.
+// kindChangeEmail is the address of the member whose member kind the tests change.
 const kindChangeEmail = "alice@second.example"
 
 // restrictableRig is the server main serves a member of example.com's Workspace signed in with
-// Google under outside sign-in (identity.OutsideRule), at kindChangeEmail: cookie identity
-// confirming the membership with a fake Google at least hourly, the API, the live socket and the
-// document socket Register mounts, and the document service's room sync on a listener of its own.
-// PUB is a public project whose list does not name the member, and LISTED one whose list does.
+// Google at kindChangeEmail, under the rule that admits restricted members by their listing
+// (identity.OutsideRule): cookie identity confirming the membership with a fake Google at least
+// hourly, the API, the live socket and the document socket Register mounts, and the document
+// service's room sync on a listener of its own. PUB is a public project whose list does not name
+// the member, and LISTED one whose list does.
 type restrictableRig struct {
 	database *store.Store
 	pool     *oidctest.Issuer
-	mux      *http.ServeMux
-	server   *httptest.Server
-	sockets  *servedSockets
-	cookie   *http.Cookie
+	people   *store.PgPeopleStore
+	// refreshToken is the refresh token the member's sign-in recorded.
+	refreshToken string
+	mux          *http.ServeMux
+	server       *httptest.Server
+	sockets      *servedSockets
+	cookie       *http.Cookie
 }
 
 // newRestrictableRig signs the member in as a full member, as the sign-in callback does, with the
@@ -65,7 +68,7 @@ func newRestrictableRig(t *testing.T, heartbeat time.Duration) *restrictableRig 
 	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "example.com")
 	const redirect = "https://dispatch.example/auth/callback"
 	rig.pool.SignInAs(map[string]any{"sub": "member-subject", "email": kindChangeEmail, "email_verified": true, "hd": "example.com"})
-	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
+	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce")
 	if err != nil {
 		t.Fatalf("start the sign-in: %v", err)
 	}
@@ -79,6 +82,7 @@ func newRestrictableRig(t *testing.T, heartbeat time.Duration) *restrictableRig 
 	if err := people.SignInSubject(ctx, kindChangeEmail, "member-subject", signIn.RefreshToken, model.MemberFull); err != nil {
 		t.Fatalf("record the sign-in: %v", err)
 	}
+	rig.people, rig.refreshToken = people, signIn.RefreshToken
 	generation, err := sessions.EnsureSession(ctx, kindChangeEmail)
 	if err != nil {
 		t.Fatalf("establish the session: %v", err)
@@ -123,15 +127,12 @@ func newRestrictableRig(t *testing.T, heartbeat time.Duration) *restrictableRig 
 	return rig
 }
 
-// leaveTheWorkspace has Google move the member's account out of the Workspace, so its next refresh
-// carries no hd, and dates their last confirmation two hours back, so the next request or
-// heartbeat that resolves their cookie runs the hourly confirmation: the outside rule keeps them
-// signed in as a restricted member, since LISTED's list names them.
-func (rig *restrictableRig) leaveTheWorkspace(t *testing.T) {
+// restrict writes the member's row as a restricted member's, as the people store records a change
+// of member kind (ConfirmSubject), under the account and refresh token the sign-in recorded.
+func (rig *restrictableRig) restrict(t *testing.T) {
 	t.Helper()
-	rig.pool.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
-	if _, err := rig.database.Pool.Exec(context.Background(), `update people set confirmed_at = now() - interval '2 hours' where email = $1`, kindChangeEmail); err != nil {
-		t.Fatalf("date the confirmation two hours back: %v", err)
+	if err := rig.people.ConfirmSubject(context.Background(), kindChangeEmail, "member-subject", rig.refreshToken, rig.refreshToken, model.MemberRestricted); err != nil {
+		t.Fatalf("record %s as a restricted member: %v", kindChangeEmail, err)
 	}
 }
 
@@ -140,7 +141,7 @@ func (rig *restrictableRig) leaveTheWorkspace(t *testing.T) {
 func (rig *restrictableRig) requireStillSignedInRestricted(t *testing.T) {
 	t.Helper()
 	if kind := storedKind(t, rig.database, kindChangeEmail); kind != string(model.MemberRestricted) {
-		t.Fatalf("people.member_kind of %s after the confirmation = %q, want restricted", kindChangeEmail, kind)
+		t.Fatalf("people.member_kind of %s after the change = %q, want restricted", kindChangeEmail, kind)
 	}
 	whoami, err := http.NewRequest(http.MethodGet, rig.server.URL+"/api/v1/whoami", nil)
 	if err != nil {
@@ -154,21 +155,19 @@ func (rig *restrictableRig) requireStillSignedInRestricted(t *testing.T) {
 	body, _ := io.ReadAll(answered.Body)
 	_ = answered.Body.Close()
 	if answered.StatusCode != http.StatusOK || !strings.Contains(string(body), `"member_kind":"restricted"`) {
-		t.Fatalf("GET /api/v1/whoami with the cookie after the confirmation: %d %s, want 200 as a restricted member, still signed in", answered.StatusCode, body)
+		t.Fatalf("GET /api/v1/whoami with the cookie after the change: %d %s, want 200 as a restricted member, still signed in", answered.StatusCode, body)
 	}
 }
 
 // A full member holds a document socket open on a document of PUB, a public project whose list
-// does not name them; LISTED's list does. Google then moves their account out of the Workspace,
-// and the hourly confirmation that the socket's heartbeat runs (whileCallerResolves, by the cookie
-// alone) keeps them signed in as a restricted member, who reads LISTED and not PUB. Their cookie
-// still resolves, so no heartbeat closes the socket; the confirmation's announcement does, with
-// the close code of a socket whose person no longer reads its room (4412), and the reconnect is
-// refused.
+// does not name them; LISTED's list does. Their row then becomes a restricted member's, who reads
+// LISTED and not PUB. Their cookie still resolves, so no heartbeat closes the socket; the write's
+// announcement does, with the close code of a socket whose person no longer reads its room
+// (4412), and the reconnect is refused.
 //
-// Control: the confirmation writes the member kind and announces nothing. The socket stays open
-// past the window, and the test fails saying so.
-func TestADocumentSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *testing.T) {
+// Control: the write of the member kind announces nothing. The socket stays open past the window,
+// and the test fails saying so.
+func TestADocumentSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 	const heartbeat = 250 * time.Millisecond
 	rig := newRestrictableRig(t, heartbeat)
 	encoded, err := json.Marshal(map[string]string{"project": "PUB", "title": "A public document", "spec": "The spec."})
@@ -198,15 +197,15 @@ func TestADocumentSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *tes
 	peer.appendParagraph(t, "typed while a full member")
 	peer.barrier(t)
 
-	rig.leaveTheWorkspace(t)
-	lapsed := time.Now()
+	rig.restrict(t)
+	restricted := time.Now()
 	const window = 10 * time.Second
 	select {
 	case <-peer.connection().Ended:
-		t.Logf("the document socket closed %s after the confirmation lapsed (heartbeat %s)", time.Since(lapsed).Round(time.Millisecond), heartbeat)
+		t.Logf("the document socket closed %s after the member was restricted (heartbeat %s)", time.Since(restricted).Round(time.Millisecond), heartbeat)
 	case <-time.After(window):
-		t.Fatalf("the document socket of PUB stayed open %s after the hourly confirmation lapsed (member_kind %q, %d refreshes): the confirmation that restricted its person closed nothing",
-			window, storedKind(t, rig.database, kindChangeEmail), rig.pool.Refreshes())
+		t.Fatalf("the document socket of PUB stayed open %s after its person was restricted (member_kind %q): the change closed nothing",
+			window, storedKind(t, rig.database, kindChangeEmail))
 	}
 	if code := peer.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
 		t.Errorf("the document socket closed with %d, want %d, the close of a socket whose person no longer reads its room", code, contracts.DocumentAdmissionRevokedCloseCode)
@@ -223,14 +222,13 @@ func TestADocumentSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *tes
 
 // A full member's live socket carries an events subscription, which reads its reader again only at
 // an event that can move what it sees (movesSight); a change of member kind appends none. So once
-// the hourly confirmation, which the socket's heartbeat runs, restricts them, the heartbeat finds
-// their member kind changed and closes the socket with 1008, as it does for a token whose list
-// narrowed: the page opens a new one, which reads LISTED and not PUB. Until then the socket outlives
-// several heartbeats.
+// their row becomes a restricted member's, the socket's heartbeat finds their member kind changed
+// and closes the socket with 1008, as it does for a token whose list narrowed: the page opens a new
+// one, which reads LISTED and not PUB. Until then the socket outlives several heartbeats.
 //
 // Control: the heartbeat compares no member kind. The socket stays open, carrying the full
 // member's reader, and the test fails waiting for the close.
-func TestALiveSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *testing.T) {
+func TestALiveSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 	rig := newRestrictableRig(t, time.Second)
 	header := http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", header).servedBy(rig.database).read()
@@ -240,9 +238,9 @@ func TestALiveSocketClosesOnceTheHourlyConfirmationRestrictsItsPerson(t *testing
 		t.Fatalf("the fake Google was asked %d times within the hour, want 0", refreshes)
 	}
 
-	rig.leaveTheWorkspace(t)
+	rig.restrict(t)
 	if closed := client.closeError(t, 10*time.Second); closed.Code != gws.ClosePolicyViolation {
-		t.Fatalf("the live socket closed with %d %q once the hourly confirmation restricted its person, want 1008", closed.Code, closed.Text)
+		t.Fatalf("the live socket closed with %d %q once its person was restricted, want 1008", closed.Code, closed.Text)
 	}
 	rig.requireStillSignedInRestricted(t)
 }
@@ -363,17 +361,17 @@ func (f *failingOnceIdentity) Login(*http.Request) (string, error) {
 
 // A full member holds a live delivery view, a timeline, which shows every pull request whose issue
 // its reader sees: PUB's, a public project whose list does not name them, among them; PRIV's list
-// names them. The hourly confirmation then restricts them (ConfirmSubject, the write it makes for
-// an account that left the Workspace), and a restricted member reads only the projects that name
-// them. From the confirmation's commit the hub reads dave again, so acme/widgets#7, a pull request
-// of PUB's issue written after the confirmation, reaches his page in no frame. acme/secret#8, a
-// pull request of PRIV's issue written after it, does: the read that names it has read
-// acme/widgets#7's row as well, and would name it too were it made for the full member dave was.
-// The test ends on that frame, and fails when no frame names it.
+// names them. Their row then becomes a restricted member's (ConfirmSubject, the write the people
+// store makes for a change of member kind), and a restricted member reads only the projects that
+// name them. From that write's commit the hub reads dave again, so acme/widgets#7, a pull request
+// of PUB's issue written after it, reaches his page in no frame. acme/secret#8, a pull request of
+// PRIV's issue written after it, does: the read that names it has read acme/widgets#7's row as
+// well, and would name it too were it made for the full member dave was. The test ends on that
+// frame, and fails when no frame names it.
 //
-// Control: the confirmation announces nothing. The hub keeps the full member's reader it had, and
-// the next delta sends dave acme/widgets#7, which the test names.
-func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsItsReader(t *testing.T) {
+// Control: the write announces nothing. The hub keeps the full member's reader it had, and the
+// next delta sends dave acme/widgets#7, which the test names.
+func TestADeliveryViewStopsCarryingAProjectOnceItsReaderIsRestricted(t *testing.T) {
 	const dave = "dave@example.com"
 	ctx := context.Background()
 	seed := seedPrivateProject(t)
@@ -393,14 +391,14 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
 	conn.snapshot(t, 5*time.Second, "t")
 	rig.waitListening(t)
-	// The connection's own re-check runs before the confirmation below, so only the confirmation's
-	// announcement can read dave again.
+	// The connection's own re-check runs before the write below, so only the write's announcement
+	// can read dave again.
 	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
 		return note.what == "readers rechecked"
 	})
 
 	if err := people.ConfirmSubject(ctx, dave, "dave-subject", "refresh-dave", "refresh-dave-confirmed", model.MemberRestricted); err != nil {
-		t.Fatalf("dave's hourly confirmation as a restricted member: %v", err)
+		t.Fatalf("record dave as a restricted member: %v", err)
 	}
 	public := hubPR(7, now.Add(-time.Hour))
 	public.IssueKey = new(seed.issue[seedPublic])
@@ -418,7 +416,7 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 		case frame := <-conn.frames:
 			ids, raw := framePullRequests(frame)
 			if slices.Contains(ids, "acme/widgets#7") {
-				t.Fatalf("dave, restricted by his hourly confirmation, was sent acme/widgets#7, a pull request of PUB: %.300s", raw)
+				t.Fatalf("dave, restricted, was sent acme/widgets#7, a pull request of PUB: %.300s", raw)
 			}
 			if slices.Contains(ids, "acme/secret#8") {
 				return

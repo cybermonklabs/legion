@@ -15,15 +15,15 @@ import (
 // in the agent shape with its owner, its projects, sorted, and private_projects, the keys of that
 // list the caller must treat as private: a private project, and one the credential no longer sees
 // whatever its visibility. A dsp_ token that lists nothing answers exactly the bytes it answered
-// before the list existed (R9). The deployment signs in people from outside its domain, the rule a
-// restricted member's token is held to (signInOutside), so bob's token acts while a project's
-// list names him: PUB's does throughout, and his token lists PRIV alone.
+// before the list existed (R9). The deployment admits restricted members, the rule a restricted
+// member's token is held to (admitsRestricted), so bob's token acts while a project's list names
+// him: PUB's does throughout, and his token lists PRIV alone.
 //
 // Controls, each run on its own: personalTokenActor without its read of the token's projects, and
 // carol's row answers no projects; private_projects computed from visibility alone, and bob's row
 // answers no private_projects.
 func TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate(t *testing.T) {
-	seed := seedPrivateProjectWith(t, testServerOptions{signInOutside: true})
+	seed := seedPrivateProjectWith(t, testServerOptions{admitsRestricted: true})
 	whoami := func(who, token string) (string, map[string]json.RawMessage) {
 		t.Helper()
 		response := agentRequest(t, seed.handler, http.MethodGet, "/api/v1/whoami", nil, token)

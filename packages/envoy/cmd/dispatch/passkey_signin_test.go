@@ -42,7 +42,7 @@ type passkeyRig struct {
 // holding PRIV, owned by alice, whose list names outsiderEmail directly.
 func newPasskeyRig(t *testing.T, overrides map[string]string) *passkeyRig {
 	t.Helper()
-	values := map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "", "DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin}
+	values := map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin}
 	maps.Copy(values, overrides)
 	r := &passkeyRig{outsideSignIn: newOutsideSignIn(t, values)}
 	signedIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{
@@ -61,7 +61,7 @@ func (r *passkeyRig) serverWith(t *testing.T, overrides map[string]string) (http
 	t.Helper()
 	values := map[string]string{
 		"DISPATCH_SIGNIN_ISSUER": googleIssuer, "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
-		"DISPATCH_SIGNIN_OUTSIDE": "", "DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin,
+		"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin,
 	}
 	maps.Copy(values, overrides)
 	boot := resolveWith(t, values)
@@ -460,7 +460,9 @@ func TestADelistedPersonLosesSignInAndPasskeysAtTheHourlyCheck(t *testing.T) {
 
 // TestTheOutsideOriginServesNoGoogleSignIn (R5): at the outside origin GET /auth/start and GET
 // /auth/callback answer 404, as a path no route serves; at the canonical origin /auth/start still
-// sends the browser to Google.
+// sends the browser to Google. TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff is the same
+// row with passkey sign-in turned off, and TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet
+// with it never set.
 //
 // Control: serve the Google sign-in at both origins (googleSignInHere passing every request), and
 // the outside origin's /auth/start answers 302 and the row fails.
@@ -510,9 +512,9 @@ func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:
-// only DISPATCH_SIGNIN_OUTSIDE=1 signs anyone in with Google there. Its GET /auth/whoami's 401
-// still names the passkey sign-in, so its page offers no Google link that answers that 404. The
-// canonical origin still sends the browser to Google, and its 401 names no sign-in.
+// no deployment signs anyone in with Google there. Its GET /auth/whoami's 401 still names the
+// passkey sign-in, so its page offers no Google link that answers that 404. The canonical origin
+// still sends the browser to Google, and its 401 names no sign-in.
 //
 // Control: refuse Google at the outside origin only while passkey sign-in is on (googleSignInHere
 // reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails; name the
@@ -659,8 +661,7 @@ func TestTurningPasskeysOffEndsEveryRestrictedCredential(t *testing.T) {
 // TestTurningPasskeysOffTellsThePersonWhy (E-I5's rollback): with DISPATCH_SIGNIN_PASSKEY unset on
 // the same database, the passkey member's cookie is refused 401 NO_IDENTITY with reason
 // OUTSIDE_SIGNIN_OFF and their address as login, at every request, so the sign-in page says
-// Dispatch no longer signs them in, as it says to a Google account from outside once
-// DISPATCH_SIGNIN_OUTSIDE is off.
+// Dispatch no longer signs them in.
 //
 // Control: tell a passkey's row only by whether its sign-in stands (DomainRule.SignedOutReason
 // reading endedRestricted alone), and the 401 names no reason and the row fails.
@@ -772,6 +773,24 @@ func TestPasskeyWhoamiNamesThePasskeySignIn(t *testing.T) {
 	requirePlainNoIdentity(t, "whoami at the canonical origin with no cookie", call(r.handler, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
 }
 
+// TestTheOutsideOriginsWhoamiNamesThePasskeySignInWithPasskeysOff: the outside origin serves no
+// Google sign-in whatever the passkey setting (googleSignInHere), so its whoami 401 names the
+// passkey sign-in with DISPATCH_SIGNIN_PASSKEY turned off on a database that had it on, as with it
+// on, and its page offers no Google link that answers 404 there; at the canonical origin the 401 is
+// the one Dispatch always answered.
+//
+// Control: name the passkey sign-in only while passkey sign-in is on (whoamiSignIn reading
+// Passkeys), and the outside origin's 401 names no sign-in and the row fails.
+func TestTheOutsideOriginsWhoamiNamesThePasskeySignInWithPasskeysOff(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	outside := call(off, passkeyOrigin, http.MethodGet, "/auth/whoami", nil)
+	if outside.Code != http.StatusUnauthorized || !strings.Contains(outside.Body.String(), `"sign_in":"passkey"`) {
+		t.Fatalf("whoami at the outside origin with passkeys off and no cookie: %d %s, want 401 naming the passkey sign-in", outside.Code, outside.Body.String())
+	}
+	requirePlainNoIdentity(t, "whoami at the canonical origin with passkeys off and no cookie", call(off, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
+}
+
 // TestPasskeyCeremonyRefusesAnotherOriginsPage: a ceremony posted by a page of another origin,
 // the canonical one included, is 403 at the outside origin and begins nothing.
 //
@@ -791,13 +810,13 @@ func TestPasskeyCeremonyRefusesAnotherOriginsPage(t *testing.T) {
 }
 
 // TestPasskeySettingsRefusals: DISPATCH_SIGNIN_PASSKEY=1 refuses startup without the domain,
-// without the outside origin, beside DISPATCH_SIGNIN_OUTSIDE=1, under IAP identity and beside header
-// identity, each naming the setting; any value but 1 refuses too.
+// without the outside origin, under IAP identity and beside header identity, each naming the
+// setting; any value but 1 refuses too.
 //
-// Control: drop the refusal of both outside sign-ins (checkSignInSettings), and the boot with both
-// set starts and the row fails naming them.
+// Control: drop the refusal of a passkey sign-in with no outside origin (checkSignInSettings), and
+// the boot without DISPATCH_OUTSIDE_ORIGIN starts and the row fails naming it.
 func TestPasskeySettingsRefusals(t *testing.T) {
-	google := map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_SIGNIN_OUTSIDE": ""}
+	google := map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com"}
 	with := func(extra map[string]string) map[string]string {
 		values := maps.Clone(google)
 		maps.Copy(values, extra)
@@ -805,7 +824,6 @@ func TestPasskeySettingsRefusals(t *testing.T) {
 	}
 	refusedWith(t, with(map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_SIGNIN_DOMAIN": "", "DISPATCH_SIGNIN_GROUP": ""}), "DISPATCH_SIGNIN_PASSKEY needs DISPATCH_SIGNIN_DOMAIN")
 	refusedWith(t, with(map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1"}), "DISPATCH_SIGNIN_PASSKEY needs DISPATCH_OUTSIDE_ORIGIN")
-	refusedWith(t, with(map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_SIGNIN_OUTSIDE": "1"}), "DISPATCH_SIGNIN_PASSKEY and DISPATCH_SIGNIN_OUTSIDE are both set")
 	refusedWith(t, with(map[string]string{"DISPATCH_SIGNIN_PASSKEY": "yes", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin}), "DISPATCH_SIGNIN_PASSKEY must be 1 or unset")
 	refusedWith(t, map[string]string{
 		"DISPATCH_IDENTITY": "iap", "DISPATCH_IAP_AUDIENCE": "/projects/1/global/backendServices/2", "DISPATCH_SIGNIN_DOMAIN": "example.com",

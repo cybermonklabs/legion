@@ -33,9 +33,8 @@ export interface AuthenticatedUser {
 
 /** `sign_in` on `GET /auth/whoami`'s `401 NO_IDENTITY` (`AUTH_NO_IDENTITY`) where the origin's one
  *  sign-in is a passkey: Dispatch's outside origin, whatever its passkey setting
- *  (`DISPATCH_SIGNIN_PASSKEY`), unless `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in
- *  with Google there. The sign-in page there offers the passkey ceremony and no Google link.
- *  Every other 401 carries no `sign_in`. */
+ *  (`DISPATCH_SIGNIN_PASSKEY`), since that origin serves no Google sign-in. The sign-in page there
+ *  offers the passkey ceremony and no Google link. Every other 401 carries no `sign_in`. */
 export const AUTH_SIGN_IN_PASSKEY = "passkey";
 
 /**

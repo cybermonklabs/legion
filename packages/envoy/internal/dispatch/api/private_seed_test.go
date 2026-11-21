@@ -93,14 +93,14 @@ func seedPrivateProject(t *testing.T) privateSeed {
 // takes broker-issued tokens from a stub broker, so a seed's session can act under a credential
 // that proves it (asSession), and, unless options names one, writes the private-projects record
 // through acceptingBus, as a deployment that holds a private project has a hub that takes it: a
-// mapping into PRIV writes that record before it commits. The deployment signs in people from
-// outside its domain (signInOutside), as one that holds a restricted member does: bob is one, and
+// mapping into PRIV writes that record before it commits. The deployment admits restricted
+// members (admitsRestricted), as one that holds a restricted member does: bob is one, and
 // his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
 	broker := ciphertokentest.NewStubBroker(t)
 	options.brokerTokens = stubBrokerTokens(t, broker)
-	options.signInOutside = true
+	options.admitsRestricted = true
 	if options.busProjects == nil {
 		options.busProjects = acceptingBus{}
 	}

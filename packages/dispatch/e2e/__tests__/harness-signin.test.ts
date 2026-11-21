@@ -219,13 +219,10 @@ describe("DISPATCH_E2E_SIGNIN", () => {
       const read = async (env: Record<string, string>) => {
         const given = await serverEnvironment({ ...googleServerInputs, ...env });
         expect(given).toMatchObject(signIn);
-        // Boot refuses outside Google sign-in beside passkey sign-in, so the reading fails if
-        // run-server.sh hands the server both.
         for (const absent of [
           "DISPATCH_DEV_SIGNIN",
           "DISPATCH_DEV_SIGNIN_SHARED_KEY",
           "DISPATCH_SIGNIN_GROUP",
-          "DISPATCH_SIGNIN_OUTSIDE",
         ]) {
           expect(given).not.toHaveProperty(absent);
         }

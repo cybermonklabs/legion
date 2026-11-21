@@ -30,7 +30,7 @@ import (
 func TestARestrictedMembersBrokerTokenSeesOnlyItsListWhateverTheDeploymentHolds(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while every project is public", true: "once a project is private"}[private], func(t *testing.T) {
-			rig := newBrokerTokenRigOn(t, testServerOptions{signInOutside: true})
+			rig := newBrokerTokenRigOn(t, testServerOptions{admitsRestricted: true})
 			caller := newBrokerCaller(t)
 			const named, person = "a-restricted-members-token-of-one-project", "a-restricted-members-person-token-of-one-project"
 			rig.broker.Says(named, liveNamedToken(caller.jkt))

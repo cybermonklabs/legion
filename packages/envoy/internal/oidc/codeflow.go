@@ -166,41 +166,20 @@ func (f *CodeFlow) Discovered() bool { return f.discovery.done() }
 // fail, logging a failure at ERROR at most once a minute.
 func (f *CodeFlow) Run(ctx context.Context) { f.discovery.run(ctx) }
 
-// AuthOptions are what one sign-in asks of the issuer beyond the flow's own settings.
-type AuthOptions struct {
-	// DomainHint names the flow's hosted domain as hd, a hint for Google's account chooser that
-	// the callback does not rely on. A caller that signs in accounts outside the domain too
-	// leaves it false, so Google offers every account the browser holds.
-	DomainHint bool
-	// SelectAccount asks Google to show its account chooser (prompt=select_account) beside the
-	// consent a refresh token needs, for a person who signed in with an account Dispatch refused
-	// and starts again to pick another: without it, a browser holding one Google session is sent
-	// straight back with that same account.
-	SelectAccount bool
-}
-
 // AuthURL is where a browser starts the sign-in: the issuer's authorization endpoint asking for a
 // code to be sent to redirectURL with state, and an ID token carrying nonce. A domain-mode flow
 // also asks Google for offline access with consent, since Google returns a refresh token only for
-// access_type=offline and, after the first exchange, only with prompt=consent; and, as options
-// ask, names the domain as hd and asks for the account chooser too (prompt=select_account
-// consent). A flow with no hosted domain, a sign-in pool's, asks for neither. It fails with
-// ErrIssuerUnavailable while the issuer is not discovered.
-func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string, options AuthOptions) (string, error) {
+// access_type=offline and, after the first exchange, only with prompt=consent; and it names the
+// domain as hd, a hint for Google's account chooser that the callback does not rely on. It fails
+// with ErrIssuerUnavailable while the issuer is not discovered.
+func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string) (string, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
 		return "", err
 	}
 	asks := append(redirectTo(redirectURL), gooidc.Nonce(nonce))
 	if f.hostedDomain != "" {
-		prompt := "consent"
-		if options.SelectAccount {
-			prompt = "select_account consent"
-		}
-		asks = append(asks, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", prompt))
-		if options.DomainHint {
-			asks = append(asks, oauth2.SetAuthURLParam("hd", f.hostedDomain))
-		}
+		asks = append(asks, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.SetAuthURLParam("hd", f.hostedDomain))
 	}
 	return issuer.config.AuthCodeURL(state, asks...), nil
 }

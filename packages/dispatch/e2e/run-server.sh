@@ -57,12 +57,13 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # Under `google` the issuer stands in for Google: the server admits the Workspace
 # domain DISPATCH_E2E_SIGNIN_DOMAIN (DISPATCH_SIGNIN_DOMAIN, which
 # DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets it take from an issuer other than
-# Google's, under the DISPATCH_TEST_HOOKS=1 below); it answers at a second origin,
-# DISPATCH_OUTSIDE_ORIGIN, the dashboard origin's scheme and port under the host
-# DISPATCH_E2E_SIGNIN_OUTSIDE_HOST; and there, with passkey sign-in on
-# (DISPATCH_SIGNIN_PASSKEY=1), a person from outside the domain whom a project's
-# access list names enrolls a passkey through the owner's link and signs in with
-# it as a restricted member. Every input a mode names is required.
+# Google's, under the DISPATCH_TEST_HOOKS=1 below), and no Google account outside
+# it; it answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard
+# origin's scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST; and
+# there, with passkey sign-in on (DISPATCH_SIGNIN_PASSKEY=1), a person from outside
+# the domain whom a project's access list names enrolls a passkey through the
+# owner's link and signs in with it as a restricted member. Every input a mode
+# names is required.
 case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
@@ -434,8 +435,8 @@ done
 # against, the only Host the router serves under dev sign-in, the origin of the
 # sign-in's /auth/callback, and the Playwright config's baseURL. Under google
 # DISPATCH_OUTSIDE_ORIGIN is the second one, and a request whose Host is its host
-# is answered as that origin: its callback and the Origin its writes must carry
-# are that origin's. Dev sign-in also refuses a DATABASE_URL whose host is not
+# is answered as that origin: the Origin its writes must carry is that origin's,
+# and it serves no Google sign-in. Dev sign-in also refuses a DATABASE_URL whose host is not
 # loopback or a unix socket, and any DISPATCH_SIGNIN_* setting.
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 

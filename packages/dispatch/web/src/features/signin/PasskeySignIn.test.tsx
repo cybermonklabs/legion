@@ -182,9 +182,8 @@ test("a browser that cannot use a passkey is told so on the sign-in page", async
 });
 
 // The outside origin names the passkey sign-in in every 401, with passkey sign-in off too, so its
-// page never offers the Google link, which answers 404 there. The one exception is
-// DISPATCH_SIGNIN_OUTSIDE=1, which serves Google there and whose 401 names no sign-in. With
-// passkey sign-in off the ceremony answers 404, and the press says so.
+// page never offers the Google link, which answers 404 there. With passkey sign-in off the
+// ceremony answers 404, and the press says so.
 test("at an outside origin with passkey sign-in off, the page offers no Google link and the press says passkeys sign nobody in", async () => {
   const user = userEvent.setup();
   const browser = installFakePasskeys();

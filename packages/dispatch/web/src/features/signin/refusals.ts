@@ -121,8 +121,7 @@ export function ceremonyRefusal(error: unknown, ceremony: Ceremony): CeremonyRef
     if (known !== undefined) return known;
     // A deployment with passkey sign-in off answers these routes 404, as the company's own
     // address does. Its outside origin offers the passkey alone with the setting off too (whoami's
-    // `sign_in`, unless DISPATCH_SIGNIN_OUTSIDE=1 serves Google there), so a sign-in there meets
-    // this as well.
+    // `sign_in`), so a sign-in there meets this as well.
     if (error.status === 404) {
       return {
         message:

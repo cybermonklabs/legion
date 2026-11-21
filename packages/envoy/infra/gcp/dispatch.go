@@ -204,30 +204,21 @@ type DispatchArgs struct {
 	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
 	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
 	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
-	// inputs set its host must also be one weborigin.GoogleRedirectHost takes: the Google client
-	// then lists its callback, or, with signInPasskey, the host is the passkey's relying party ID,
-	// a domain name. Unset renders nothing.
+	// inputs set its host must also be one weborigin.PasskeyHost takes, a public domain name, since
+	// people from outside sign in there with a passkey whose relying party is that host; Dispatch
+	// serves no Google sign-in there, so the Google client lists no callback of it. Unset renders
+	// nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
-	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
-	// signInDomain sign in as a restricted member while some project's owner or access list names
-	// its email directly. It needs the sign-in inputs and is no member of their group, so a
-	// deployment that sets them leaves it unset and renders what it always rendered.
-	SignInOutside bool `pulumi:"signInOutside,optional"`
 	// SignInPasskey renders DISPATCH_SIGNIN_PASSKEY=1, which turns on Dispatch's passkey sign-in at
 	// outsideOrigin for people from outside the company: the passkey's relying party is that origin
 	// and its relying party ID that origin's host, so it needs outsideOrigin and renders right after
 	// DISPATCH_OUTSIDE_ORIGIN. It needs the sign-in inputs too, though it is no member of their
 	// group: a person from outside enrolls a passkey with an invitation a project owner makes while
-	// signed in through Google, so without them nobody could invite anyone. It replaces the Google
-	// sign-in of people from outside that signInOutside turns on, so it is refused beside
-	// signInOutside. It is refused beside iapAudience, since IAP signs a person in, and in the
-	// sandbox, which serves no https origin. With it the Google client lists no
-	// <outsideOrigin>/auth/callback, which Dispatch then answers 404; outsideOrigin's host is still
-	// held to weborigin.GoogleRedirectHost, which keeps it a domain name, never an IP address, as a
-	// relying party ID must be. A deployment that sets it lists every other domain its Workspace
-	// owns in signInWorkspaceDomains: Dispatch takes an address on a domain left out for an outside
-	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
-	// not end. Unset renders nothing.
+	// signed in through Google, so without them nobody could invite anyone. It is refused beside
+	// iapAudience, since IAP signs a person in, and in the sandbox, which serves no https origin. A
+	// deployment that sets it lists every other domain its Workspace owns in signInWorkspaceDomains:
+	// Dispatch takes an address on a domain left out for an outside person's, so a Workspace account
+	// there could hold a passkey, which Workspace offboarding does not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
@@ -239,11 +230,11 @@ type DispatchArgs struct {
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
 	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
 	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
-	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, signInOutside,
-	// outsideOrigin and signInPasskey are taken without the tailnet inputs, natsInCluster is
-	// required, as it is in the sandbox, and allowedNamespaces is not, since the entrance admits its
-	// own traffic. Unset, Dispatch is reached as it always was: at the front door's name or, in the
-	// sandbox, inside its cluster.
+	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, outsideOrigin and
+	// signInPasskey are taken without the tailnet inputs, natsInCluster is required, as it is in the
+	// sandbox, and allowedNamespaces is not, since the entrance admits its own traffic. Unset,
+	// Dispatch is reached as it always was: at the front door's name or, in the sandbox, inside its
+	// cluster.
 	PublicOrigin string `pulumi:"publicOrigin,optional"`
 	// IapAudience turns on the IAP door: a browser reaches Dispatch through Identity-Aware Proxy
 	// on the deployment's load balancer, and Dispatch names its person from the signed header IAP
@@ -256,9 +247,8 @@ type DispatchArgs struct {
 	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
 	// claim to; it is refused beside signInClientId, signInClientSecret, signInWorkspaceDomains,
-	// signInOutside, signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches
-	// Dispatch through it alone. Unset renders none of the three variables, and Dispatch keeps its
-	// default identity.
+	// signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches Dispatch through
+	// it alone. Unset renders none of the three variables, and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
@@ -744,10 +734,10 @@ type Dispatch struct {
 // from args, since it may be another resource's output.
 // With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
 // cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
-// tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains, signInOutside and
-// signInPasskey are empty, since nothing reads them. signInWorkspaceDomains and signInOutside are
-// set only with signInOn, outsideOrigin is "" when its input is unset, where the component renders
-// no second origin, and signInPasskey is set only with outsideOrigin and signInOn.
+// tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains and signInPasskey are
+// empty, since nothing reads them. signInWorkspaceDomains is set only with signInOn, outsideOrigin
+// is "" when its input is unset, where the component renders no second origin, and signInPasskey
+// is set only with outsideOrigin and signInOn.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
@@ -769,7 +759,7 @@ type dispatchSettings struct {
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
-	signInOutside, signInPasskey                bool
+	signInPasskey                               bool
 	signInWorkspaceDomains                      []string
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
@@ -1108,7 +1098,6 @@ func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
-		{"signInOutside", args.SignInOutside},
 		{"signInPasskey", args.SignInPasskey},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
 		{"publicOrigin", args.PublicOrigin != ""},
@@ -1255,22 +1244,19 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset and publicOrigin is unset,
 // which is what asks for the mode: no front door is built and no origin is served, so a sign-in
-// input, signInWorkspaceDomains and signInOutside among them, would ask an OAuth provider to
-// redirect to an in-cluster http:// address, signInPasskey would sign people in at a second origin
-// the sandbox cannot have, outsideOrigin would add an origin for outside sign-in to a Dispatch
-// where browser sign-in is refused, and the app's own policy is its only ingress; what any
-// Dispatch without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is
-// refused by its own name rather than accepted and quietly dropped. The sign-in inputs are refused
-// here, before the sign-in group's own checks, so one sent to a sandbox is refused for being sent
-// at all and not for the rest of its group being missing.
+// input, signInWorkspaceDomains among them, would ask an OAuth provider to redirect to an
+// in-cluster http:// address, signInPasskey would sign people in at a second origin the sandbox
+// cannot have, outsideOrigin would add an origin for outside sign-in to a Dispatch where browser
+// sign-in is refused, and the app's own policy is its only ingress; what any Dispatch without a
+// front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is refused by its own name
+// rather than accepted and quietly dropped. The sign-in inputs are refused here, before the sign-in
+// group's own checks, so one sent to a sandbox is refused for being sent at all and not for the
+// rest of its group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
 			return core.InputErrorf(in.input, dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
-	}
-	if args.SignInOutside {
-		return core.InputErrorf("signInOutside", dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if len(args.SignInWorkspaceDomains) > 0 {
 		return core.InputErrorf("signInWorkspaceDomains", dispatchSandboxSignInRefusal, "signInWorkspaceDomains", "signInWorkspaceDomains")
@@ -1339,13 +1325,13 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
 // the signed header's hd claim to by the membership rule its own sign-in uses, and which it
 // refuses to boot without under IAP. And it refuses the Google client (signInClientId,
-// signInClientSecret), signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP
-// signs a person in and a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of
-// its own, by Google or by passkey, and serves no second origin for outside sign-in. Each is
-// refused by its own name, signInPasskey before outsideOrigin, which a consumer sets for it, and
-// all of them before the sign-in group's own checks, which the IAP door does not run, so a client
-// input sent beside IAP is refused for being sent at all. The audience's own value may be another
-// resource's output, so it is judged once it resolves (dispatchIAPAudience).
+// signInClientSecret), signInWorkspaceDomains, signInPasskey and outsideOrigin: IAP signs a person
+// in and a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of its own, by
+// Google or by passkey, and serves no second origin for outside sign-in. Each is refused by its own
+// name, signInPasskey before outsideOrigin, which a consumer sets for it, and all of them before the
+// sign-in group's own checks, which the IAP door does not run, so a client input sent beside IAP is
+// refused for being sent at all. The audience's own value may be another resource's output, so it
+// is judged once it resolves (dispatchIAPAudience).
 func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.PublicOrigin == "" {
 		return core.InputErrorf("iapAudience", "iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
@@ -1354,7 +1340,6 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	for _, in := range []dispatchInput{
 		{"signInClientId", args.SignInClientId != ""},
 		{"signInClientSecret", args.SignInClientSecret != nil},
-		{"signInOutside", args.SignInOutside},
 	} {
 		if in.set {
 			return core.InputErrorf(in.input, signIn, in.input, in.input)
@@ -1457,10 +1442,9 @@ func refuseDispatchWorkspaceDomains(domains []string) error {
 // owner names it in a refusal ("the front door's", "publicOrigin's"). It must be a web origin
 // weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
 // the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
-// already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
-// takes: without signInPasskey the Google client must then list <outsideOrigin>/auth/callback,
-// and with it, where Dispatch answers that path 404 and the client lists no callback there, the
-// host is the passkey's relying party ID, which must be a domain name, never an IP address. That
+// already is, and, with the sign-in inputs set, that its host is one weborigin.PasskeyHost takes,
+// since people from outside sign in there with a passkey whose relying party is that host, a
+// registrable domain name and never an IP address (Dispatch serves no Google sign-in there); that
 // function's refusals it prefixes with "outsideOrigin's ".
 func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
@@ -1480,7 +1464,7 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 	if !signInOn {
 		return origin.String(), nil
 	}
-	if err := weborigin.GoogleRedirectHost(host); err != nil {
+	if err := weborigin.PasskeyHost(host); err != nil {
 		return "", core.InputErrorf("outsideOrigin", "outsideOrigin's %w", err)
 	}
 	return origin.String(), nil
@@ -1748,9 +1732,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchWorkspaceDomains(args.SignInWorkspaceDomains); err != nil {
 			return dispatchSettings{}, err
 		}
-	} else if args.SignInOutside {
-		return dispatchSettings{}, core.InputErrorf("signInOutside", "signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
-			dispatchGroupClause("sign-in", signInGroup))
 	} else if len(args.SignInWorkspaceDomains) > 0 {
 		return dispatchSettings{}, core.InputErrorf("signInWorkspaceDomains", "signInWorkspaceDomains needs browser sign-in: it names the other domains of the Google Workspace that signInDomain names, which Dispatch reads only with Google sign-in; set the sign-in inputs, or unset signInWorkspaceDomains%s",
 			dispatchGroupClause("sign-in", signInGroup))
@@ -1758,9 +1739,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for, and
 	// a person from outside enrolls a passkey with an invitation a project owner makes while signed
 	// in through Google, so it needs the sign-in inputs too; their clause names each one still unset.
-	// It replaces the Google sign-in of people from outside that signInOutside turns on, so the two
-	// are refused together. The sandbox and the IAP door have refused it above, each by a rule of
-	// its own.
+	// The sandbox and the IAP door have refused it above, each by a rule of its own.
 	if args.SignInPasskey {
 		if outsideOrigin == "" {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
@@ -1768,9 +1747,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !signInOn {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey%s",
 				dispatchGroupClause("sign-in", signInGroup))
-		}
-		if args.SignInOutside {
-			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey is refused beside signInOutside: passkey sign-in replaces the Google sign-in of people from outside the company that signInOutside turns on; unset signInOutside, or unset signInPasskey")
 		}
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
@@ -1915,7 +1891,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// The domain and each Workspace domain render trimmed, which is what Dispatch reads of them
 	// (dispatchDomainName, workspaceDomainRule).
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
-	s.signInOutside = args.SignInOutside
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
 	if len(args.SignInWorkspaceDomains) > 0 {

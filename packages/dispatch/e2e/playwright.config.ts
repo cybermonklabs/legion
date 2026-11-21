@@ -83,11 +83,11 @@ const stubSpecs = /\.stub\.e2e\.ts$/;
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
 // signs in through dev sign-in, runs only without it.
 const signInSpecs = /\/signin\.multiprocess\.e2e\.ts$/;
-// The one spec of DISPATCH_E2E_SIGNIN=google (e2e/harness-signin.ts), whose servers sign people
+// The two specs of DISPATCH_E2E_SIGNIN=google (e2e/harness-signin.ts), whose servers sign people
 // in through the dev OIDC issuer standing in for Google at their canonical origin, and with a
-// passkey at their outside origin: it runs only then, and alone then (`outsideSignInProjects`
-// below), and every project of every other mode ignores it.
-const outsideSignInSpecs = /\/outside-passkey\.e2e\.ts$/;
+// passkey at their outside origin: they run only then, and alone then (`outsideSignInProjects`
+// below), and every project of every other mode ignores them.
+const outsideSignInSpecs = /\/outside-(sign-in|passkey)\.e2e\.ts$/;
 if (harnessProcessCount === 2 && process.env.PLAYWRIGHT_BASE_URL) {
   throw new Error(
     "DISPATCH_E2E_PROCESSES=2 runs against two Dispatch servers of this run's own behind the " +

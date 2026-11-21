@@ -25,30 +25,28 @@ var (
 	// ErrSignInSuperseded means another account's sign-in has already taken the address since
 	// this one recorded its subject, so the cookie this sign-in would issue must not be given out.
 	ErrSignInSuperseded = errors.New("another account signed in to this address meanwhile")
-	// ErrNotListed means a Google account outside the sign-in domain is named by no project's
-	// access list (OutsideRule), so it may not sign in.
+	// ErrNotListed means a restricted member, a person from outside the sign-in domain, is named by
+	// no project's access list (OutsideRule.AdmitsRestricted), so they may not act.
 	ErrNotListed = errors.New("no Dispatch project's access list names this account")
-	// ErrMembershipUnreadable means the access lists could not be read to decide whether an
-	// account outside the domain may sign in (OutsideRule): no refusal, so a caller keeps any
-	// sign-in the account already holds and fails only the request.
+	// ErrMembershipUnreadable means the access lists could not be read to decide whether a
+	// restricted member may act (OutsideRule.AdmitsRestricted): no refusal, so a caller keeps any
+	// sign-in the person already holds and fails only the request.
 	ErrMembershipUnreadable = errors.New("the access lists could not be read")
-	// ErrOutsideSignInOff means the rule signs in nobody from outside its domain (GroupRule,
-	// DomainRule: a deployment with neither DISPATCH_SIGNIN_OUTSIDE=1 nor DISPATCH_SIGNIN_PASSKEY=1),
-	// so a restricted member it is asked about (RestrictedAdmission) is not admitted.
+	// ErrOutsideSignInOff means the rule admits nobody from outside its domain (GroupRule,
+	// DomainRule: a deployment that admits no restricted member), so a restricted member it is
+	// asked about (RestrictedAdmission) is not admitted.
 	ErrOutsideSignInOff = errors.New("this deployment signs in nobody from outside its Google Workspace domain")
 )
 
 // RestrictedAdmission is the one question every credential acting for a restricted member asks
-// at each use: whether the sign-in rule would sign in email, an account outside the Workspace,
-// now. A SignInRule answers it, so a restricted member's personal token and a token the secrets
-// broker issued naming them (cmd/dispatch hands the router its rule, the API asks it) are held
-// to exactly the rule that admits their sign-in, and to no second copy of it.
+// at each use: whether the sign-in rule admits email, a person from outside the Workspace, now. A
+// SignInRule answers it, so a restricted member's personal token and a token the secrets broker
+// issued naming them (cmd/dispatch hands the router its rule, the API asks it) are held to exactly
+// the rule that admits the member, and to no second copy of it.
 type RestrictedAdmission interface {
-	// AdmitsRestricted answers nil while the rule would sign in email as a restricted member,
-	// judged by the address alone (the account's Workspace domain is not known here, and a
-	// restricted member's is never the rule's), else the refusal its Person gives such an
-	// account: ErrOutsideSignInOff under a rule that signs in nobody from outside,
-	// ErrNotInDomain, ErrWorkspaceAddress or ErrNotListed under OutsideRule, and an error
+	// AdmitsRestricted answers nil while the rule admits email as a restricted member, judged by
+	// the address alone, else why not: ErrOutsideSignInOff under a rule that admits nobody from
+	// outside, ErrNotInDomain, ErrWorkspaceAddress or ErrNotListed under OutsideRule, and an error
 	// matching ErrMembershipUnreadable, which is no refusal, when the lists cannot be read.
 	AdmitsRestricted(ctx context.Context, email string) error
 }
@@ -63,18 +61,17 @@ type SignedIn struct {
 
 // SignInRule is who may sign in to Dispatch and how Dispatch treats their sign-in: GroupRule for
 // the members of a Cognito sign-in pool's group, DomainRule for the people of a Google Workspace
-// domain, or OutsideRule for those people and the Google accounts outside the domain that an
-// access list names. cmd/dispatch's signInRule chooses one from boot's settings, once, and every
-// other package consults the value it returns rather than branching on which settings are set.
+// domain, or PasskeyRule for those people beside the restricted members an access list names, who
+// sign in with a passkey.
+// cmd/dispatch's signInRule chooses one from boot's settings, once, and every other package
+// consults the value it returns rather than branching on which settings are set.
 type SignInRule interface {
 	// Person names the person a verified ID token signs in under this rule, with their member
-	// kind, and checks they may use Dispatch; it reads only the claims of the rule's own issuer,
-	// and ctx bounds any read the rule makes (OutsideRule's access lists). The email is
-	// lowercased, and a refusal that has one returns it so the refusal can name them. An error
-	// matching ErrMembershipUnreadable is no refusal: the rule could not decide.
+	// kind, and checks they may use Dispatch; it reads only the claims of the rule's own issuer.
+	// The email is lowercased, and a refusal that has one returns it so the refusal can name them.
 	Person(ctx context.Context, claims oidc.Claims) (SignedIn, error)
-	// RestrictedAdmission asks Person's question of a restricted member by address alone, for a
-	// credential that acts for one.
+	// RestrictedAdmission asks whether the rule admits a restricted member, by address alone, for
+	// a credential that acts for one.
 	RestrictedAdmission
 	// RefusalLogFields names the slog fields a sign-in refusal's log line carries. Callers append
 	// "reason", err to what this returns.
@@ -84,20 +81,6 @@ type SignInRule interface {
 	Subject(claims oidc.Claims) string
 	// BootLog logs that boot is signing people in under this rule through issuer as clientID.
 	BootLog(issuer, clientID string)
-	// DomainHint says whether a sign-in's start names the rule's Workspace domain to the issuer
-	// as hd (oidc.CodeFlow.AuthURL), which narrows Google's account chooser to the domain and
-	// decides nothing: Person reads the token's own claims.
-	DomainHint() bool
-	// OffersAccountChooser says whether the page refusing a sign-in under this rule links to
-	// /auth/start?prompt=select_account, which asks Google for its account chooser, so a browser
-	// holding one Google session can pick another account rather than be sent straight back with
-	// the one just refused.
-	OffersAccountChooser() bool
-	// GoogleAtOutsideOrigin says whether the issuer's sign-in (/auth/start, /auth/callback) is
-	// served at the outside origin too (cmd/dispatch: DISPATCH_OUTSIDE_ORIGIN). Only OutsideRule's
-	// Google accounts from outside sign in there; under every other rule the outside origin answers
-	// those routes as a path no route serves (routes.googleSignInHere).
-	GoogleAtOutsideOrigin() bool
 	// CanRefresh says whether stored, the subject a membership's row records
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.

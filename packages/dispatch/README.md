@@ -402,7 +402,8 @@ It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets.
 
 `DISPATCH_E2E_SIGNIN=google` signs people in as a deployment that signs in with Google and takes
 people from outside with a passkey does: the same issuer stands in for Google, and each server
-admits the Workspace domain `example.com` (`DISPATCH_SIGNIN_DOMAIN`). Each server answers at a
+admits the Workspace domain `example.com` (`DISPATCH_SIGNIN_DOMAIN`) and no Google account outside
+it. Each server answers at a
 second origin, `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`), beside its canonical
 `http://127.0.0.1:<port>`, and passkey sign-in is on there (`DISPATCH_SIGNIN_PASSKEY=1`): a person
 outside the domain whom a project's access list names enrolls a passkey through the link the
@@ -410,12 +411,13 @@ project's owner makes on its Access tab, and signs in with it as a restricted me
 signs in nobody of its own: a spec queues each person, with the claims Google gives that account,
 at the issuer's `POST /_dev/sign-in-as`. The person's device is Chromium's virtual authenticator,
 which the spec adds through the page's CDP session (`WebAuthn.addVirtualAuthenticator`); the mode's
-one project is `chromium`. Only `e2e/outside-passkey.e2e.ts` runs then, with one server process or
-two:
+one project is `chromium`. Only `e2e/outside-sign-in.e2e.ts`, which finds a Google account outside
+the domain refused and no Google sign-in at the second origin, and `e2e/outside-passkey.e2e.ts`
+run then, with one server process or two:
 
 ```bash
 DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslmode=disable' \
-  DISPATCH_E2E_SIGNIN=google bun run e2e -- --project=chromium outside-passkey
+  DISPATCH_E2E_SIGNIN=google bun run e2e -- --project=chromium outside-sign-in outside-passkey
 ```
 
 Any `DISPATCH_E2E_SIGNIN` other than `oidc`, `google` or unset is refused, and `bun run

@@ -7,12 +7,12 @@ body: |-
   frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no
   page of another site frames the enrollment page or the passkey sign-in. `GET /auth/whoami`'s
   `401 NO_IDENTITY` at `DISPATCH_OUTSIDE_ORIGIN` carries `"sign_in":"passkey"` with passkey
-  sign-in off too, so the outside origin's sign-in page never offers a Google sign-in, unless
-  `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there. The owner's link
-  (`POST /api/v1/projects/{key}/access/people/{email}/invitations`) answers `made_at` beside `url`
-  and `expires_at`, and the owner's access answer lists `open_invitations`, `[{email, made_at,
-  expires_at}]` for each link of the project that can still enroll someone, with no token, so the
-  Access tab drops a link it shows once something ended it, from this tab or another.
+  sign-in off too, so the outside origin's sign-in page never offers a Google sign-in. The owner's
+  link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`) answers `made_at` beside
+  `url` and `expires_at`, and the owner's access answer lists `open_invitations`, `[{email,
+  made_at, expires_at}]` for each link of the project that can still enroll someone, with no
+  token, so the Access tab drops a link it shows once something ended it, from this tab or
+  another.
 time: 2026-11-21T03:02:32Z
 custom:
     Issue: passkeys-web

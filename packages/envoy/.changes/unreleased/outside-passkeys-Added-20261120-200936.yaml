@@ -30,14 +30,12 @@ body: |-
   access answer carries `passkeys`, each with `made_by` and its link's `project`, `invitable` and
   `listed_by_another_owner`. Dispatch relays a passkey member's approvals to the broker under the
   outside origin as the approving account's issuer (`people.sub_issuer`, migration
-  `20261120165538`). At the
-  outside origin `/auth/start` and `/auth/callback` now answer 404 unless
-  `DISPATCH_SIGNIN_OUTSIDE=1`, the outside origin is its host however a client writes the default
-  port or trailing dots, and the passkey routes answer 404 at `DISPATCH_SERVER_URL`. While the
-  setting is off, a passkey member's cookie is refused `401 NO_IDENTITY` with `reason`
-  `OUTSIDE_SIGNIN_OFF`, and their tokens are refused; turned on again, both work again. Boot
-  refuses the setting beside `DISPATCH_SIGNIN_OUTSIDE=1`, without `DISPATCH_SIGNIN_DOMAIN` or
-  `DISPATCH_OUTSIDE_ORIGIN`, and under IAP or header identity.
+  `20261120165538`). At the outside origin `/auth/start` and `/auth/callback` answer 404 with the
+  setting on or off, the outside origin is its host however a client writes the default port or
+  trailing dots, and the passkey routes answer 404 at `DISPATCH_SERVER_URL`. While the setting is
+  off, a passkey member's cookie is refused `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF`,
+  and their tokens are refused; turned on again, both work again. Boot refuses the setting without
+  `DISPATCH_SIGNIN_DOMAIN` or `DISPATCH_OUTSIDE_ORIGIN`, and under IAP or header identity.
 time: 2026-11-20T20:09:36Z
 custom:
     Issue: outside-passkeys

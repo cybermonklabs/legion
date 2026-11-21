@@ -882,13 +882,15 @@ Its Postgres is a second one the harness starts from the same image.
 
 One server signs people in through the same issuer standing in for Google
 (DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts) and answers at a second origin with
-passkey sign-in on, and its one spec enrolls a passkey on Chromium's virtual authenticator
-through the owner's link, for a person from outside the domain whom an access list names,
-and signs them in with it there as a restricted member. The steps before built the
-dashboard, the server and the issuer. Its Postgres is a third one the harness starts from
-the same image: this job has no job-level DATABASE_URL, and a run of one stack given neither
-a database nor an image starts its server with no database, which e2e/run-server.sh refuses.
-Measured once,
+passkey sign-in on. Its two specs: one refuses a Google account outside the domain at the
+canonical origin while an access list names it, signs a member of the domain in there, and
+finds no Google sign-in at the second origin; the other enrolls a passkey on Chromium's
+virtual authenticator through the owner's link, for a person from outside the domain whom an
+access list names, and signs them in with it there as a restricted member. The steps before
+built the dashboard, the server and the issuer. Its Postgres is a third one the harness
+starts from the same image: this job has no job-level DATABASE_URL, and a run of one stack
+given neither a database nor an image starts its server with no database, which
+e2e/run-server.sh refuses. Measured once,
 in full-lane run 43875720942 (job 133328121115), on the `services:` Postgres the job had
 then: 6 s, 13:42:10 to 13:42:16. The sign-in step above, which starts its own Postgres
 the same way, took 14 s in run 44684874945 (job 136116810172). 14 s x 1.15 = 17 s -> the

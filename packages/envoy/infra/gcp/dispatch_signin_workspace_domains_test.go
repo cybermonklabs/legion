@@ -27,9 +27,9 @@ func withWorkspaceDomains(base func() *gcp.DispatchArgs, domains ...string) func
 
 // With the sign-in inputs set, signInWorkspaceDomains renders DISPATCH_SIGNIN_WORKSPACE_DOMAINS,
 // its entries comma-joined in the order given, as Dispatch reads them: right after
-// DISPATCH_SIGNIN_DOMAIN, the domain they stand beside, or after DISPATCH_SIGNIN_OUTSIDE when
-// signInOutside is set. An internationalized entry renders as the consumer wrote it, in Unicode or
-// as its A-labels, since Dispatch takes both. That an unset list renders nothing in any mode is
+// DISPATCH_SIGNIN_DOMAIN, the domain they stand beside. An internationalized entry renders as the
+// consumer wrote it, in Unicode or as its A-labels, since Dispatch takes both. That an unset list
+// renders nothing in any mode is
 // TestDispatchPodWithoutOutsideInputsIsUnchanged's: every committed pod golden is unchanged.
 func TestDispatchSignInWorkspaceDomainsRenderWithSignIn(t *testing.T) {
 	for _, row := range []struct {
@@ -39,7 +39,6 @@ func TestDispatchSignInWorkspaceDomainsRenderWithSignIn(t *testing.T) {
 		{"beside the front door", "DISPATCH_SIGNIN_DOMAIN", "example.net,example.org", withWorkspaceDomains(dispatchArgs, dispatchWorkspaceDomains...)},
 		{"beside publicOrigin", "DISPATCH_SIGNIN_DOMAIN", "example.net,example.org", withWorkspaceDomains(dispatchPublicOriginArgs, dispatchWorkspaceDomains...)},
 		{"beside passkey sign-in", "DISPATCH_SIGNIN_DOMAIN", "example.net,example.org", withWorkspaceDomains(dispatchPasskeyArgs, dispatchWorkspaceDomains...)},
-		{"beside signInOutside", "DISPATCH_SIGNIN_OUTSIDE", "example.net,example.org", withWorkspaceDomains(dispatchOutsideArgs, dispatchWorkspaceDomains...)},
 		{"one entry", "DISPATCH_SIGNIN_DOMAIN", "example.net", withWorkspaceDomains(dispatchArgs, "example.net")},
 		{"internationalized entries", "DISPATCH_SIGNIN_DOMAIN", "bücher.example,xn--bcher-kva.example.net",
 			withWorkspaceDomains(dispatchArgs, "bücher.example", "xn--bcher-kva.example.net")},

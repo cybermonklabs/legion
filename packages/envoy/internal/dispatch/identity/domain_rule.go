@@ -32,17 +32,15 @@ func (r DomainRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, err
 	return SignedIn{Email: email}, googleRefusal(email, claims, err)
 }
 
-// AdmitsRestricted is ErrOutsideSignInOff: DomainRule signs in nobody from outside the domain, so
-// no restricted member's credential acts under it (a deployment that turned
-// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off). OutsideRule, which embeds this rule (as
-// PasskeyRule embeds OutsideRule), answers for itself.
+// AdmitsRestricted is ErrOutsideSignInOff: DomainRule admits nobody from outside the domain, so no
+// restricted member's credential acts under it. OutsideRule, which embeds this rule, answers for
+// itself.
 func (r DomainRule) AdmitsRestricted(_ context.Context, email string) error {
 	return fmt.Errorf("%s: %w", email, ErrOutsideSignInOff)
 }
 
-// googleRefusal words a refusal of oidc.WorkspaceLogin or oidc.VerifiedLogin for email as
-// Dispatch's own: ErrNoPerson, ErrNoEmail, ErrNotInDomain or ErrEmailNotVerified, naming email
-// when there is one.
+// googleRefusal words a refusal of oidc.WorkspaceLogin for email as Dispatch's own: ErrNoPerson,
+// ErrNoEmail, ErrNotInDomain or ErrEmailNotVerified, naming email when there is one.
 func googleRefusal(email string, claims oidc.Claims, err error) error {
 	switch {
 	case errors.Is(err, oidc.ErrNoSubject):
@@ -71,23 +69,6 @@ func (r DomainRule) Subject(claims oidc.Claims) string {
 // BootLog logs the issuer, client and Workspace domain boot is signing people in under.
 func (r DomainRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in with Google for a Workspace domain", "issuer", issuer, "client_id", clientID, "domain", r.Domain)
-}
-
-// DomainHint is true: the domain's people alone sign in, so Google's account chooser is narrowed
-// to the domain.
-func (r DomainRule) DomainHint() bool {
-	return true
-}
-
-// OffersAccountChooser is false: a refusal under the domain alone keeps its plain link to
-// /auth/start.
-func (r DomainRule) OffersAccountChooser() bool {
-	return false
-}
-
-// GoogleAtOutsideOrigin is false: the domain's people sign in at the canonical origin alone.
-func (r DomainRule) GoogleAtOutsideOrigin() bool {
-	return false
 }
 
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row
@@ -133,12 +114,12 @@ func endSubject(ctx context.Context, people auth.PeopleStore, email string, read
 
 // SignedOutReason is SignedOutOutsideOff for a restricted member whose sign-in no longer stands
 // (endedRestricted), or whose account is a passkey's (auth.PersonMembership.Issuer): DomainRule
-// admits nobody from outside the domain, so only a deployment that once signed people from
-// outside in (OutsideRule, PasskeyRule) holds such a row. Its next hourly confirmation under this
-// rule ends a Google account's sign-in, while a passkey's cookie is refused at its next use with
-// nothing written (Membership.confirmPasskey), so its row still reads as standing and is told by
-// its account instead. Everyone else is told no reason, so a deployment that never set
-// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY answers as it always has.
+// admits nobody from outside the domain, so only a deployment that once admitted restricted
+// members (PasskeyRule, or an earlier build's Google outside rule) holds such a row. Its next
+// hourly confirmation under this rule ends a Google account's sign-in, while a passkey's cookie is
+// refused at its next use with nothing written (Membership.confirmPasskey), so its row still reads
+// as standing and is told by its account instead. Everyone else is told no reason, so a deployment
+// that never admitted one answers as it always has.
 func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
 	membership, found, err := people.Membership(ctx, email)
 	if err != nil || !found || membership.Kind != model.MemberRestricted {

@@ -38,17 +38,17 @@ var ErrSignInUnavailable = errors.New("the sign-in issuer cannot be reached")
 // read by the sign-in rule that no longer admits them (SignInRule.SignedOutReason), and spelled as
 // AUTH_SIGNED_OUT_REASONS in packages/contracts/src/dispatch-api-limits.ts spells them.
 const (
-	// SignedOutNotListed: the person signed in from outside the sign-in domain, and no project's
-	// access list names them any more (OutsideRule).
+	// SignedOutNotListed: the person was a restricted member, from outside the sign-in domain, and
+	// no project's access list names them any more (OutsideRule).
 	SignedOutNotListed = "NOT_LISTED"
-	// SignedOutOutsideOff: the person signed in from outside the sign-in domain as a restricted
-	// member, and the server signs nobody from outside in any more (DomainRule: a deployment that
-	// turned DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off).
+	// SignedOutOutsideOff: the person was a restricted member, from outside the sign-in domain, and
+	// the server admits nobody from outside any more (DomainRule: a deployment that no longer
+	// admits restricted members).
 	SignedOutOutsideOff = "OUTSIDE_SIGNIN_OFF"
-	// SignedOutWorkspaceAddress: the person signed in from outside the sign-in domain as a
-	// restricted member, and their address is now on a domain the Google Workspace owns
-	// (OutsideRule: DISPATCH_SIGNIN_DOMAIN, a domain DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists, or a
-	// subdomain of one), which signs in only as a Workspace account (ErrWorkspaceAddress).
+	// SignedOutWorkspaceAddress: the person was a restricted member, from outside the sign-in
+	// domain, and their address is now on a domain the Google Workspace owns (OutsideRule:
+	// DISPATCH_SIGNIN_DOMAIN, a domain DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists, or a subdomain of
+	// one), which signs in only as a Workspace account (ErrWorkspaceAddress).
 	SignedOutWorkspaceAddress = "WORKSPACE_ADDRESS"
 )
 
@@ -198,9 +198,10 @@ func WriteError(w http.ResponseWriter, err error) {
 }
 
 // WriteErrorSigningIn is WriteError, with signIn, when not empty, added to a 401 NO_IDENTITY as
-// `sign_in`: how the page at the request's origin signs a person in, "passkey" at the outside
-// origin whatever its passkey setting (GET /auth/whoami), so its sign-in page offers no Google
-// sign-in there, unless DISPATCH_SIGNIN_OUTSIDE=1 signs people from outside in with Google there.
+// `sign_in`: how the page at the request's origin signs a person in. GET /auth/whoami names
+// "passkey" at the outside origin whatever DISPATCH_SIGNIN_PASSKEY says, since that origin serves
+// no Google sign-in either way; with passkey sign-in off its ceremonies answer 404, which the
+// dashboard's sign-in page words as sign-in turned off at this address.
 func WriteErrorSigningIn(w http.ResponseWriter, err error, signIn string) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
