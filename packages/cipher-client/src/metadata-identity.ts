@@ -1,6 +1,7 @@
 // packages/cipher-client/src/metadata-identity.ts
 
 import { Agent, request } from "node:http";
+import type { LookupFunction } from "node:net";
 import { errorClass } from "@legion/contracts/log-text";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GOOGLE } from "./wire";
@@ -61,8 +62,19 @@ interface MetadataAnswer {
   readonly body: string;
 }
 
+/** What {@link metadataIdentity} takes beside its audience and environment. */
+export interface MetadataIdentityOptions {
+  /** Resolves the metadata server's host, as `node:net` resolves a host it dials; the system's
+   *  resolver (`dns.lookup`) by default. Only a test replaces it. */
+  readonly lookup?: LookupFunction | undefined;
+}
+
 /** One GET through {@link agent}, answering the body as text, or throwing what went wrong. */
-function get(url: string, signal: AbortSignal | undefined): Promise<MetadataAnswer> {
+function get(
+  url: string,
+  signal: AbortSignal | undefined,
+  lookup: LookupFunction | undefined
+): Promise<MetadataAnswer> {
   const { promise, resolve, reject } = Promise.withResolvers<MetadataAnswer>();
   const call = request(
     url,
@@ -72,6 +84,7 @@ function get(url: string, signal: AbortSignal | undefined): Promise<MetadataAnsw
       headers: { "Metadata-Flavor": "Google" },
       timeout: TIMEOUT_MS,
       ...(signal === undefined ? {} : { signal }),
+      ...(lookup === undefined ? {} : { lookup }),
     },
     (answer) => {
       const chunks: Buffer[] = [];
@@ -108,7 +121,8 @@ function get(url: string, signal: AbortSignal | undefined): Promise<MetadataAnsw
  */
 export function metadataIdentity(
   audience: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: MetadataIdentityOptions = {}
 ): TokenSource {
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
@@ -116,7 +130,7 @@ export function metadataIdentity(
       const named = `the metadata server ${serverNamed(env)}`;
       let answer: { status: number; body: string };
       try {
-        answer = await get(url, signal);
+        answer = await get(url, signal, options.lookup);
       } catch (error) {
         // By its class: the runtime's message repeats the host it was handed.
         throw new Error(`${named} could not be reached: ${errorClass(error)}`);
