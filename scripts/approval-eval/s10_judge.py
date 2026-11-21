@@ -189,7 +189,9 @@ BUN = "/usr/local/bin/bun"
 
 
 class Stopped(Exception):
-    """The run stops: it writes nothing more, and the same command resumes the stage."""
+    """The run stops, and the same command resumes the stage. It writes nothing more for the
+    request in flight, but for an outcome built whole whose read-back stopped: `judge_all` keeps
+    that one as `PENDING_FILE`."""
 
 
 # ---------- flags and the admission ----------
@@ -795,9 +797,10 @@ def read_back(context, line, outcome):
 
 def judge_all(context, stage, code, skill):
     """Every request of the inventory its outcome, in its order: a request whose outcome an earlier
-    run built and could not read back is that outcome (`PENDING_FILE`); a request a run started and
-    did not finish is `started`; and every other is judged. Each outcome is read back before it is
-    committed; a read-back that does not run keeps the outcome as pending and stops the run."""
+    run built and could not read back is that outcome (`PENDING_FILE`), refused unless it names that
+    request as the inventory does; a request a run started and did not finish is `started`; and
+    every other is judged. Each outcome is read back before it is committed; a read-back that does
+    not run keeps the outcome as pending and stops the run."""
     missing = {f"{CODE_DIRECTORY}/{name}": data for name, data in code.items()
                if not stage.has(f"{CODE_DIRECTORY}/{name}")}
     if missing:
@@ -812,6 +815,12 @@ def judge_all(context, stage, code, skill):
         pending = request_path(line["askId"], PENDING_FILE)
         if stage.has(pending):
             outcome = json.loads(stage.read(pending))
+            # No outcome is committed in the place of another request's.
+            held = outcome if isinstance(outcome, dict) else {}
+            differ = [f"its {key} is {held.get(key)!r}, and the inventory's {line[key]!r}"
+                      for key in ("askId", "issueKey", "group", "cases") if held.get(key) != line[key]]
+            if differ:
+                raise CannotRun(f"{pending} is no outcome of the request it is kept for: {'; '.join(differ)}")
         elif stage.has(request_path(line["askId"], STARTED_FILE)):
             outcome = deviation(line, "started", STARTED_REASON)
         else:

@@ -372,9 +372,11 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // workspace's parent directory is on the issue's volume, which a role can swap for a fifo, and a
 // plain os.RemoveAll of the aside then opens that fifo plainly and waits for a writer for as long
 // as none comes, holding the outbox's turn. So the aside is removed through rolefile.RemoveTree,
-// which answers ENOTDIR at once: Remove returns, refusing, and the fifo is left as it was. The
-// parent is swapped as the store lock is let go, which is after the git worktree entry's removal
-// and before the aside's deletion.
+// which answers ENOTDIR without waiting: Remove returns, refusing, and the fifo is left as it was.
+// The parent is swapped as the store lock is let go, which is after the git worktree entry's
+// removal and before the aside's deletion. Remove's answer is waited for with no span of its own
+// (testwait.Receive), so a removal that waits on the fifo fails the row by name before the test
+// binary's deadline, and the jj and git runs before it are as slow as the host makes them.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
@@ -382,13 +384,9 @@ func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 		t.Fatalf("Provision: %v", err)
 	}
 	parent := filepath.Dir(working.Dir)
-	// The bound guards the aside's removal alone, so it starts at the swap: the jj and git Remove
-	// runs under the lock before it are as slow as the host is, with nothing blocking them.
-	swapped := make(chan struct{})
 	var once sync.Once
 	lock := &unlockWatch{onUnlock: func() {
 		once.Do(func() {
-			defer close(swapped)
 			if err := os.Rename(parent, parent+".moved"); err != nil {
 				t.Error(err)
 			}
@@ -399,24 +397,9 @@ func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
-	var armed, bound = (<-chan struct{})(swapped), (<-chan time.Time)(nil)
-	for answered := false; !answered; {
-		select {
-		case err := <-done:
-			answered = true
-			if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
-				t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
-			}
-		case <-armed:
-			armed, bound = nil, time.After(30*time.Second)
-		case <-bound:
-			// Open the fifo for writing so the blocked open returns and Remove's goroutine ends.
-			if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-				_ = writer.Close()
-			}
-			<-done
-			t.Fatalf("Remove was still opening %s 30s after its parent became a fifo: a workspace parent swapped for a fifo blocks the aside's removal", parent)
-		}
+	err = testwait.Receive(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
+	if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
+		t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 	}
 	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
