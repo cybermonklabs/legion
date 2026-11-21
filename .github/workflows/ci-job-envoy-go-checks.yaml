@@ -183,6 +183,9 @@ jobs:
       - name: Required-input test for airlock-check.sh k7 (no stack or network)
         run: bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
+      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+        run: bash scripts/judge-check.test.sh
+        working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
@@ -194,6 +197,9 @@ jobs:
         working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
+        working-directory: packages/envoy
+      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
+        run: bash scripts/restore-dispatch-dump.test.sh
         working-directory: packages/envoy
       - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
         run: bash scripts/listener-deploy-probe.test.sh

@@ -195,6 +195,67 @@ for wrong in DOTFILES_DIR:wrong-dotfiles XDG_CONFIG_HOME:wrong-xdg PATH:wrong-pa
   label="that refusal names ${wrong%%:*}"; check test "${output#*"setup: ${wrong%%:*}"}" != "$output"
 done
 
+# --- k8a's broker start, read out of airlock-check.sh and run on its own: broker_env copies the
+# environment of a stand-in for the stack's broker, whose BROKER_DATABASE_URL holds a password,
+# and k8a_start_broker starts a stand-in broker on it under `timeout`. Every argument list of that
+# start (a stand-in env first on PATH records its own, as env -i would have carried the copy) and
+# the stand-in broker's own arguments hold no password, and the stand-in broker's environment is
+# exactly the copy and the overrides, no variable of this test's own among them.
+start_dir="$work/broker-start"
+mkdir -p "$start_dir/bin"
+real_env="$(command -v env)"
+cat >"$start_dir/bin/env" <<EOF
+#!/usr/bin/env bash
+printf 'env %s\n' "\$*" >>"$start_dir/argv"
+exec ${real_env} "\$@"
+EOF
+cat >"$start_dir/broker" <<EOF
+#!/usr/bin/env bash
+tr '\0' ' ' </proc/\$\$/cmdline >"$start_dir/broker-cmdline"
+tr '\0' '\n' </proc/\$\$/environ | sed 's/=.*//' | sort >"$start_dir/broker-environ"
+echo "fake broker: fatal: \$BROKER_AIRLOCK_RULES_FILE is refused" >&2
+exit 1
+EOF
+chmod +x "$start_dir/bin/env" "$start_dir/broker"
+# The stand-in's environment is exactly these three; the real env starts it, not the recording one.
+"$real_env" -i PATH="$start_dir/bin:/usr/bin:/bin" BROKER_DATABASE_URL='postgres://broker:not-a-secret@127.0.0.1:5999/db' \
+  STAND_IN=1 sleep 60 &
+stand_in=$!
+# broker_env reads the stand-in's environment once it is sleep's, not env's before it execs sleep;
+# a stand-in that is not sleep by the end of the wait ends the test, naming what it is.
+stand_in_cmdline() { tr '\0' ' ' <"/proc/$stand_in/cmdline" 2>/dev/null; }
+for _ in $(seq 1 50); do
+  [[ "$(stand_in_cmdline)" == sleep* ]] && break
+  sleep 0.1
+done
+[[ "$(stand_in_cmdline)" == sleep* ]] ||
+  { printf 'FAIL: the stand-in broker is not sleep after 5 s: %s\n' "$(stand_in_cmdline)"; exit 1; }
+eval "$(grep -m1 '^contains() {' "$script_dir/airlock-check.sh")"
+# with_broker_env is lib/exec-env.sh's, which airlock-check.sh sources, as this test does.
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$script_dir/lib/exec-env.sh"
+for function in broker_env k8a_start_broker; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+# shellcheck disable=SC2034 # WORK_DIR and BROKER_BIN are read by k8a_start_broker, eval'd above
+STACK_LOG="$start_dir/stack.log" WORK_DIR="$start_dir" BROKER_BIN="$start_dir/broker"
+printf '  broker 1: api 127.0.0.1:1, proxy 127.0.0.1:2, pid %s, log x\n' "$stand_in" >"$STACK_LOG"
+status=0
+PATH="$start_dir/bin:$PATH" k8a_start_broker "$start_dir/rules.json" label || status=$?
+kill "$stand_in" 2>/dev/null || true
+output="$(cat "$start_dir/argv" "$start_dir/broker-cmdline" 2>/dev/null || true)"
+label="k8a's broker start puts the stack broker's password in no process's arguments"
+passed=false
+[[ "$status" -eq 0 && -s "$start_dir/broker-cmdline" ]] && ! grep -q not-a-secret "$start_dir/broker-cmdline" &&
+  ! grep -qs not-a-secret "$start_dir/argv" && passed=true
+check "$passed"
+output="$(cat "$start_dir/broker-environ" 2>/dev/null || true)"
+want_environ="$(printf '%s\n' BROKER_AIRLOCK_LISTEN_ADDR BROKER_AIRLOCK_RULES_FILE BROKER_DATABASE_URL BROKER_LISTEN_ADDR BROKER_METRICS_LISTEN_ADDR BROKER_PUBLIC_URL PATH STAND_IN | sort)"
+label="k8a's broker start gives the broker exactly the stack broker's environment and its overrides"
+check test "$output" = "$want_environ"
+
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"
   exit 1

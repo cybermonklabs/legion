@@ -117,7 +117,8 @@
 # the stack is the AWS-shaped one above. One set without the other is a usage error (exit 2).
 #
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
-# that server through psql, and without it, it starts the dispatch-pg container through
+# that server through psql, which is given the URL without its password and the password in
+# PGPASSWORD (scripts/lib/pg-url.sh), and without it, it starts the dispatch-pg container through
 # dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
 # stand's report and the broker's JSON log with jq, so a box without jq fails once Postgres is up
 # and the six builds have run.
@@ -125,6 +126,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 POSTGRES_CONTAINER="dispatch-pg"
 
@@ -247,7 +250,7 @@ DB_NAME="dev_broker_$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]'
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   POSTGRES_URL="${POSTGRES_SERVER}/${DB_NAME}${POSTGRES_QUERY}"
   POSTGRES_WHERE="the server DEV_BROKER_POSTGRES_URL names"
-  admin_psql() { psql "$DEV_BROKER_POSTGRES_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+  admin_psql() { pg_url_run "$DEV_BROKER_POSTGRES_URL" psql -v ON_ERROR_STOP=1 -q "$@"; }
 else
   POSTGRES_URL="postgres://postgres:dispatch@127.0.0.1:55432/${DB_NAME}?sslmode=disable"
   POSTGRES_WHERE="the shared $POSTGRES_CONTAINER container, left running ('docker stop $POSTGRES_CONTAINER' tears it down)"
@@ -306,14 +309,14 @@ echo "dev-broker: created isolated database $DB_NAME" >&2
 # A dbname= in DEV_BROKER_POSTGRES_URL's query string overrides the URL's own database, which
 # would point the broker, and its migrations, at a database this run neither created nor drops.
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
-  connected="$(psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
+  connected="$(pg_url_run "$POSTGRES_URL" psql -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
   if [ "$connected" != "$DB_NAME" ]; then
     echo "dev-broker: refused: the broker's database URL connects to '$connected', not this run's $DB_NAME; drop any dbname= from DEV_BROKER_POSTGRES_URL's query string" >&2
     exit 1
   fi
 fi
 # The banner names the database without any password the URL carries.
-DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
 # --- Build the broker, the local issuer, the stand-ins, and the clients a second shell drives it
 # with. Each entry is <binary>=<command directory under cmd/>. ---

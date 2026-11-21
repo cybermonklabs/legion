@@ -962,6 +962,12 @@ it is restored, whether or not the restore succeeded. `DISPATCH_CORPUS_CONTAINER
 holds the database, it prints the URL and restores nothing; `docker rm -f -v <container>` deletes the
 copy and its data volume.
 
+`corpus-copy.sh` restores the dump with `restore-dispatch-dump.sh <dump-file> [database-name]`,
+which restores one dump on any server: into a database of its own on the server
+`DISPATCH_ADMIN_URL` names (default: `dispatch-pg`'s), after which it prints that database's
+`DATABASE_URL`. The printed URL leaves out any password `DISPATCH_ADMIN_URL` carries, which its
+operator already holds, and keeps the default's fixed dev password `dispatch`.
+
 `search-smoke.sh` prints what a searcher sees for each query in a file
 (`search-smoke-queries.txt` is one): it starts `envoy-dispatch` against the copy, built from this
 checkout or named with `--binary`, and prints each answer as one line of totals, a `took_ms` line,

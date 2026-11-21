@@ -31,8 +31,10 @@
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
 # one; that the pod session's enrolment id is written beside its key where
 # AGENT_SECRETS_KEY_DIR names it; that the session's renewer runs against the API front with that
-# key directory and the pod's token file; that a usage error exits 2; and that the cleanup stops
-# every process the run started, the renewer among them, and drops the database it created.
+# key directory and the pod's token file; that a usage error exits 2; that the cleanup stops
+# every process the run started, the renewer among them, and drops the database it created; and
+# that the password DEV_BROKER_POSTGRES_URL carries reaches every psql call in PGPASSWORD alone,
+# in no argument, and no banner line.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -62,11 +64,18 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Fake psql: records every call to DEV_AIRLOCK_TEST_PSQL_CALLS, which both dev-broker.sh's
-# and dev-airlock.sh's admin calls land in, and answers `select current_database()` with the
-# database the URL in its first argument connects to, as libpq does. ---
+# and dev-airlock.sh's admin calls land in, and the PGPASSWORD each call was given, one line per
+# call, to DEV_AIRLOCK_TEST_PSQL_PASSWORDS when that is set, and answers `select
+# current_database()` with the database the URL in its first argument connects to, as libpq
+# does. ---
 cat >"${fake_bin_dir}/psql" <<'EOF'
 #!/usr/bin/env bash
 printf 'psql %s\n' "$*" >>"${DEV_AIRLOCK_TEST_PSQL_CALLS:?}"
+if [[ -n "${PGPASSWORD+set}" ]]; then
+  printf 'PGPASSWORD=%s\n' "$PGPASSWORD"
+else
+  printf 'PGPASSWORD unset\n'
+fi >>"${DEV_AIRLOCK_TEST_PSQL_PASSWORDS:-/dev/null}"
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1
   path=${url%%\?*}
@@ -258,9 +267,12 @@ chmod +x "$out"
 EOF
 chmod +x "${fake_bin_dir}/go"
 
-readonly admin_url='postgres://tester@127.0.0.1:5999/postgres?sslmode=disable'
+# The server every run is told to use, with a password in its query string: every psql call must
+# name the server without it and carry it in PGPASSWORD, and no banner line may print it.
+readonly admin_url='postgres://tester@127.0.0.1:5999/postgres?sslmode=disable&password=s3cret%40canary'
 readonly log="${temporary_dir}/run.log"
 readonly psql_calls="${temporary_dir}/psql-calls"
+readonly psql_passwords="${temporary_dir}/psql-passwords"
 readonly curl_calls="${temporary_dir}/curl-calls"
 readonly stands_calls="${temporary_dir}/stands-calls"
 readonly renew_calls="${temporary_dir}/renew-calls"
@@ -273,12 +285,14 @@ readonly pids_file="${temporary_dir}/pids"
 run_stack() {
   : >"$log"
   : >"$psql_calls"
+  : >"$psql_passwords"
   : >"$curl_calls"
   : >"$stands_calls"
   : >"$renew_calls"
   : >"$pids_file"
   PATH="${fake_bin_dir}:${PATH}" TMPDIR="$run_tmpdir" DEV_BROKER_POSTGRES_URL="$admin_url" \
-    DEV_AIRLOCK_TEST_PSQL_CALLS="$psql_calls" DEV_AIRLOCK_TEST_CURL_CALLS="$curl_calls" \
+    DEV_AIRLOCK_TEST_PSQL_CALLS="$psql_calls" DEV_AIRLOCK_TEST_PSQL_PASSWORDS="$psql_passwords" \
+    DEV_AIRLOCK_TEST_CURL_CALLS="$curl_calls" \
     DEV_AIRLOCK_TEST_STANDS_CALLS="$stands_calls" DEV_AIRLOCK_TEST_PIDS="$pids_file" \
     KUBERNETES_SERVICE_HOST=34.118.224.1 \
     DEV_AIRLOCK_TEST_RENEW_CALLS="$renew_calls" \
@@ -617,6 +631,31 @@ if ! grep -qF "drop database if exists ${airlock_db};" "$psql_calls"; then
 fi
 printf 'PASS: stopping the run stops every one of the %d processes it started and drops the database it created (%s)\n' \
   "${#started_pids[@]}" "$airlock_db"
+
+# The URL's password reached every psql call, dev-broker.sh's and this run's own, in PGPASSWORD
+# alone: each call names the server without it - this run's create and drop of its own database
+# among them - and was given it in PGPASSWORD, and no argument of any call the run recorded holds
+# it in either spelling. Both banners name their database without it.
+psql_count="$(grep -c '^psql ' "$psql_calls" || true)"
+bare_count="$(grep -c '^psql postgres://tester@127\.0\.0\.1:5999/[a-z0-9_]*?sslmode=disable -' "$psql_calls" || true)"
+own_count="$(grep -cxE "psql postgres://tester@127\.0\.0\.1:5999/postgres\?sslmode=disable -v ON_ERROR_STOP=1 -q -c (create database|drop database if exists) ${airlock_db};" "$psql_calls" || true)"
+password_count="$(grep -cxF 'PGPASSWORD=s3cret@canary' "$psql_passwords" || true)"
+if [[ "$psql_count" -eq 0 || "$bare_count" -ne "$psql_count" || "$own_count" -ne 2 || "$password_count" -ne "$psql_count" ]] ||
+  grep -q 's3cret' "$psql_calls" "$curl_calls" "$stands_calls" "$renew_calls"; then
+  cat "$psql_calls" "$psql_passwords" >&2
+  echo "FAIL: the URL's password must reach each psql call in PGPASSWORD alone and no argument of any call (${psql_count} psql calls, ${bare_count} naming the server without it, ${own_count} of this run's create and drop, ${password_count} given it in PGPASSWORD)" >&2
+  exit 1
+fi
+printf 'PASS: the URL'"'"'s password reaches each of the %d psql calls, dev-broker.sh'"'"'s and this run'"'"'s own, in PGPASSWORD alone, and no argument of any call\n' \
+  "$psql_count"
+database_lines="$(grep -c '^  database: ' "$log" || true)"
+leaking_lines="$(grep -c '^  database: .*s3cret' "$log" || true)"
+if [[ "$database_lines" -ne 2 || "$leaking_lines" -ne 0 ]]; then
+  grep '^  database: ' "$log" >&2 || true
+  echo "FAIL: the two banners must each name their database without the URL's password (${database_lines} database lines, ${leaking_lines} holding it)" >&2
+  exit 1
+fi
+printf 'PASS: both banners, dev-broker.sh'"'"'s and this run'"'"'s, name their database without the URL'"'"'s password\n'
 
 # --- The negative controls and the idle limit, which the checks turn on from the command line. ---
 run_stack --keep-values --no-kind --idle-seconds 60 --one-broker --judge-skip-checks
