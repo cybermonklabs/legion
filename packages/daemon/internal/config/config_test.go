@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/consumernames"
+
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -241,6 +243,7 @@ func defaultsFor(port int) Config {
 		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
+		ConsumerNames:        consumernames.ModeFixed,
 		Hooks:                DefaultHooks(),
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
 		// none of: the plugin's own defaults, which the backstop's floor is computed from.
