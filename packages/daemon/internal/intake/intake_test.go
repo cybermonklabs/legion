@@ -1109,8 +1109,8 @@ func TestADispatchIssueDeployedEventIsNoFact(t *testing.T) {
 
 // The daemon opens no durable on Dispatch's announcement that every server process serves a build
 // (notifications.dispatch.server.started): no build wakes a production check any more, so the
-// subject is nobody's. A boot opens the Dispatch, GitHub and listener-wake durables and no
-// fourth; a durable an older daemon left on the stream is neither read nor deleted.
+// subject is nobody's. A boot opens the Dispatch, GitHub, listener-wake and listener-ready
+// durables and no other; a durable an older daemon left on the stream is neither read nor deleted.
 func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
@@ -1119,7 +1119,7 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	want := []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project)}
+	want := []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project), readyConsumerName(spec.Project)}
 	if got := lagNames(consumers.Lag(context.Background())); !slices.Equal(got, want) {
 		t.Fatalf("the boot's consumers = %q, want %q", got, want)
 	}
@@ -1147,8 +1147,8 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", []byte(`{`))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
 	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
 	time.Sleep(3 * spec.AckWait)
 	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
@@ -1186,22 +1186,26 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
 
-// One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own
-// project's: another project's event is acknowledged and never reaches a handler, as the shipped
-// daemon drops it (events.ts: a subject key outside the configured projects returns).
-func TestConsumeAcknowledgesAnotherProjectsDispatchEventWithoutApplyingIt(t *testing.T) {
+// One NATS stream carries every Dispatch project's issue events. A daemon's Dispatch consumer
+// filters its own project's alone (notifications.dispatch.issue.<project>.>), so another project's
+// event is never delivered to it and never reaches a handler: with another project's event stored
+// between two of its own, the consumer delivers its own two and nothing else.
+func TestAnotherProjectsDispatchEventNeverReachesTheConsumer(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Project = "LEGION"
-	stop := startConsume(t, js, spec, pool, writeHandler("foreign", nil))
+	stop := startConsume(t, js, spec, pool, writeHandler("own", nil))
 	defer stop()
 
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), sent)
-	if got := writeCount(t, pool); got != 0 {
-		t.Fatalf("handler writes for another project's event = %d, want 0", got)
+	own := strings.ReplaceAll(string(capturedIssueUpdatedEnvelope(t)), "CAPTURE-3", "LEGION-3")
+	publish(t, js, "notifications.dispatch.issue.LEGION.LEGION-3.issue.updated", []byte(own))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	last := publish(t, js, "notifications.dispatch.issue.LEGION.LEGION-3.issue.updated", []byte(own))
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+	if delivered := consumerInfo(t, stream, dispatchConsumerName(spec.Project)).Delivered.Consumer; delivered != 2 {
+		t.Fatalf("the LEGION consumer delivered %d messages, want its own 2 and never CAPTURE's", delivered)
 	}
 }
 
@@ -1332,8 +1336,8 @@ func TestConsumeDeduplicatesOneEventAcrossDeliveries(t *testing.T) {
 	defer stop()
 
 	message := capturedIssueUpdatedEnvelope(t)
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", message)
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", message)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", message)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", message)
 	testwait.Eventually(t, "one deduplicated write", func() bool { return writeCount(t, pool) == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
@@ -1356,7 +1360,7 @@ func TestConsumeNaksRollbackAndAppliesRedeliveryOnce(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, handler)
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "redelivery committed once", func() bool { return calls.Load() >= 2 && writeCount(t, pool) == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
@@ -1368,11 +1372,11 @@ func TestConsumeRestartResumesAfterAcknowledgedMessage(t *testing.T) {
 	spec := consumerSpec(&lockedBuffer{})
 	stop := startConsume(t, js, spec, pool, writeHandler("restart", nil))
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "first committed message", func() bool { return writeCount(t, pool) == 1 })
 	stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 	stop = startConsume(t, js, spec, pool, writeHandler("restart", nil))
 	defer stop()
 	testwait.Eventually(t, "durable consumer resumes after ack", func() bool { return writeCount(t, pool) == 2 })
@@ -1387,7 +1391,7 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json"))
 
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
@@ -1487,7 +1491,7 @@ func TestConsumeCommitsRefusalAndAcknowledges(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, writeHandler("refusal", &Refusal{Status: 409, Code: "DESIGN_GATE_CLOSED", Message: "approve version 3"}))
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "refusal committed", func() bool { return writeCount(t, pool) == 1 && strings.Count(logs.String(), "committed refusal") == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }

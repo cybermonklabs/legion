@@ -255,12 +255,12 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	js := testJetStream(t)
 	stop := startConsume(t, js, pool, engine, nil)
 	defer stop()
-	publishCaptured(t, js, "notifications.dispatch.issue.CAPTURE-4.artifact.version", "../intake/testdata/dispatch/artifact-version.json")
+	publishCaptured(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.artifact.version", "../intake/testdata/dispatch/artifact-version.json")
 	testwait.Eventually(t, "captured version closes gate", func() bool {
 		gate := gateState(t, pool, "CAPTURE-4")
 		return gate.LatestVersion == 2 && gate.ApprovedVersion != nil && *gate.ApprovedVersion == 1
 	})
-	publishCaptured(t, js, "notifications.dispatch.issue.CAPTURE-4.artifact.approved", "../intake/testdata/dispatch/artifact-approved.json")
+	publishCaptured(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.artifact.approved", "../intake/testdata/dispatch/artifact-approved.json")
 	testwait.Eventually(t, "captured approval opens gate", func() bool {
 		gate := gateState(t, pool, "CAPTURE-4")
 		return gate.LatestVersion == 2 && gate.ApprovedVersion != nil && *gate.ApprovedVersion == 2

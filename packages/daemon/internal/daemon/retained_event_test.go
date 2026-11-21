@@ -135,7 +135,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				repo := "acme/widgets"
 				resolved = &repo
 			}
-			ack, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION-300.issue.updated",
+			ack, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION.LEGION-300.issue.updated",
 				retainedIssueEnvelope(t, root.Key, 102, 2, "backlog", map[string]string{"kind": "session", "id": "outside-session"}, resolved))
 			if err != nil {
 				t.Fatal(err)
@@ -209,7 +209,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION-301.issue.updated",
+	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION.LEGION-301.issue.updated",
 		retainedIssueEnvelope(t, "LEGION-301", 103, 4, "todo", map[string]string{"kind": "user", "id": "a-person"}, nil)); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 		t.Fatal(err)
 	}
 	resolved := "acme/widgets"
-	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION-310.issue.updated",
+	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION.LEGION-310.issue.updated",
 		retainedIssueEnvelope(t, "LEGION-310", 110, 5, "todo", map[string]string{"kind": "user", "id": "a-person"}, &resolved)); err != nil {
 		t.Fatal(err)
 	}

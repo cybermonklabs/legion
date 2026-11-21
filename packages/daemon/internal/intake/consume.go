@@ -240,8 +240,8 @@ type Consumers struct {
 	// wake is the durable on the Envoy listener's wake reports for this project (wakeSubject): a
 	// message published to a role topic of a released pod of this project, and a message sent to
 	// the agent subject of a released session of it. ready is the durable on the one wake subject
-	// every daemon shares (legionWakeSubject), which carries the listener's own `listener_ready`
-	// and, from a listener of a release before the project's wake subject, every report.
+	// every daemon shares (legionWakeSubject), which carries the listener's own `listener_ready`;
+	// a role or agent report still found there is acknowledged with no fact (decodeMessage).
 	wake  jetstream.Consumer
 	ready jetstream.Consumer
 
@@ -271,9 +271,14 @@ const (
 // since, including what lands while the listing is read. A consumer that exists keeps its name,
 // its position and the policy that created it, and takes the rest of this boot's configuration,
 // its one filter included: nats-server updates a consumer's filter in place and keeps its ack
-// floor, so the Dispatch consumer of an earlier release (on the issue family), the GitHub consumer
-// (one filter per repository) and the wake consumer (on the shared wake subject) each move onto
-// their one filter with no gap and no replay. A consumer that applied messages before and is now
+// floor and its position, so the Dispatch consumer of an earlier release (on the issue family) and
+// the GitHub consumer (one filter per repository) move onto their one filter with no gap and no
+// replay. The wake consumer of the release before this one hears both wake subjects, the shared
+// one and the project's own; this boot drops the shared one in place. That loses nothing only once
+// every listener reports role and agent wakes on project subjects and no role or agent report of
+// the project is left unread on the shared subject past the consumer's ack floor (plan C's
+// stored-wake read, scripts/stored-wake-read.sh), which is why this build deploys after that read.
+// A consumer that applied messages before and is now
 // missing starts at the last one it applied (openConsumer), except the ready consumer, which
 // starts at its own creation: it carries the listener's liveness report, which says nothing about
 // the past, and a start at an older position would hand this daemon every report the shared

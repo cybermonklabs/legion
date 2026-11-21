@@ -440,7 +440,7 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 	}
 	// Another project's daemon already published to the shared stream before this one ever opens
 	// its consumer.
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.OTHER-1.issue.updated", []byte(`{"seq":1,"type":"issue.updated","payload":{"status":"todo"}}`)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.OTHER.OTHER-1.issue.updated", []byte(`{"seq":1,"type":"issue.updated","payload":{"status":"todo"}}`)); err != nil {
 		t.Fatalf("publish another project's event: %v", err)
 	}
 

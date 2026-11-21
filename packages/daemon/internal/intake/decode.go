@@ -133,6 +133,14 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
 		fact, err = decodeListenerWake(envelope.EventID, envelope.Payload)
+		// The shared subject carries the listener's liveness alone once every listener reports
+		// role and agent wakes on each project's own subject; a role or agent report still found
+		// there is a listener's that has not moved, may name another project's role or session, and
+		// is acknowledged with no fact. The ready consumer is the only one of this daemon's that
+		// hears the shared subject, so no role or agent wake reaches the daemon through it.
+		if wake, isWake := fact.(ListenerWake); isWake && subject == legionWakeSubject && wake.Kind != ListenerWakeReady {
+			fact = nil
+		}
 	case strings.HasPrefix(subject, subjectforms.IssueTopicPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -195,9 +203,8 @@ func (e envoyEnvelope) factID() string {
 }
 
 // legionWakeSubject is the one wake subject every daemon shares, the ready consumer's filter
-// (OpenConsumers): the Envoy listener reports its own liveness (`listener_ready`) there, and a
-// listener of a release before the projects' wake subjects reports every wake there too, which the
-// daemon decodes as it decodes one on its project's own subject.
+// (OpenConsumers): the Envoy listener reports its own liveness (`listener_ready`) there, and the
+// daemon reads nothing else from it (decodeMessage).
 const legionWakeSubject = "notifications.legion.wake"
 
 // isProjectWakeSubject says whether subject is project's own wake subject (wakeSubject), where the

@@ -758,7 +758,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 	}
 	client.mu.Unlock()
 	repo := "zeta/tools"
-	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION-501.issue.updated",
+	if _, err := js.Publish(ctx, "notifications.dispatch.issue.LEGION.LEGION-501.issue.updated",
 		retainedIssueEnvelope(t, failing.Key, 501, 1, "todo", map[string]string{"kind": "user", "id": "a-person"}, &repo)); err != nil {
 		t.Fatal(err)
 	}

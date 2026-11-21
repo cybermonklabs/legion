@@ -1126,7 +1126,7 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 	if labeled == string(captured) {
 		t.Fatal("the captured event has no empty labels to hand the issue over with")
 	}
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE-3.issue.updated", []byte(labeled)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", []byte(labeled)); err != nil {
 		t.Fatalf("publish captured Dispatch event: %v", err)
 	}
 	testwait.Eventually(t, "captured event admission", func() bool {
