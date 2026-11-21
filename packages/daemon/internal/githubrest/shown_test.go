@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // A sha, a word or a login a GitHub answer names prints only in the shape GitHub gives it: a
@@ -15,7 +16,7 @@ import (
 // answer wrote.
 func TestAMemberOfGitHubsAnswerPrintsOnlyInItsShape(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	echoed := "ghs_" + "0123456789abcdefghijklmnopqrstuvwxyz"
+	echoed := githubtest.InstallationToken(t.Name())
 	for _, c := range []struct {
 		name, got, want string
 	}{

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -20,9 +21,8 @@ import (
 // the answer's record), and none of what the stand-in wrote; a kind that is plain words still prints
 // as it came, quoted (plain). Captures projectaccess.answer-words/<case>.
 func TestAnUnknownMemberKindNamesDispatchsWordsAsTheRuleReadsThem(t *testing.T) {
-	// The account token is GitHub-shaped, ghs_ and 36 characters, written in two parts so no line
-	// of this file reads as a credential to a scanner.
-	const account = "ghs_" + "0123456789abcdefghijklmnopqrstuvwxyz"
+	// The account token is GitHub-shaped, ghs_ and 36 characters.
+	account := githubtest.InstallationToken(t.Name())
 	for _, c := range []struct {
 		name string
 		kind func(echoed string) string

@@ -8,17 +8,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // The rows of the members of Dispatch's answers the load test decodes into plain strings and
 // keeps or prints: whatever answers in Dispatch's place names a member that echoes the bearer the
-// request carried (a GitHub-shaped token, written in two parts so no line of this file reads as a
-// credential to a scanner) and quotes a URL with made-up credentials in it (redacttest.Code), and
-// what the load test prints, or writes to a file, holds none of either. Each row asserts that
-// first, so a row of a reverted site fails on an assertion that names the secret.
+// request carried (a GitHub-shaped token, githubtest.InstallationToken) and quotes a URL with
+// made-up credentials in it (redacttest.Code), and what the load test prints, or writes to a file,
+// holds none of either. Each row asserts that first, so a row of a reverted site fails on an
+// assertion that names the secret.
 
-const memberBearer = "ghs_" + "0123456789abcdefghijklmnopqrstuvwxyz"
+var memberBearer = githubtest.InstallationToken("loadtest member")
 
 // memberUUID is an id in Dispatch's shape, for the members a row keeps clean.
 const memberUUID = "0f8fad5b-d9cb-469f-a165-70867728950e"

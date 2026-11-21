@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -42,9 +43,9 @@ func echoProof(proof string) string { return "proof " + proof + " refused; " + r
 
 const shownEcho = "proof " + redact.Redacted + " refused; " + redacttest.Shown
 
-// launcherProof is the proof the stand-in helper signs the operator's routes with, GitHub-shaped,
-// written in two parts so no line of this file reads as a credential to a scanner.
-const launcherProof = "ghs_" + "0123456789abcdefghijklmnopqrstuvwxyz"
+// launcherProof is the proof the stand-in helper signs the operator's routes with, GitHub-shaped
+// (githubtest.InstallationToken).
+var launcherProof = githubtest.InstallationToken("launcher proof")
 
 // echoBroker stands in for the broker: each route answers 200 with what the test makes of the
 // Proof header the request carried, and any other route 404 (the settings call among them, so a

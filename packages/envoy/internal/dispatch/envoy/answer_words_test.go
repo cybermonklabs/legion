@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -22,9 +23,8 @@ import (
 // secrets, and it still names the title's own words (title-echo). An id and a title the rule
 // prints as they came are kept as they came (plain). Captures envoy.answer-words/<read>/<case>.
 func TestAListenersSessionAnswerKeepsNoWordItEchoes(t *testing.T) {
-	// The bearer is GitHub-shaped, ghs_ and 36 characters, written in two parts so no line of this
-	// file reads as a credential to a scanner.
-	const bearer = "ghs_" + "0123456789abcdefghijklmnopqrstuvwxyz"
+	// The bearer is GitHub-shaped, ghs_ and 36 characters.
+	bearer := githubtest.InstallationToken(t.Name())
 	reads := []struct {
 		name, route, member string
 		answer              func(id, title string) any
