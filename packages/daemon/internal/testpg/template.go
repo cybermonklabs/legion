@@ -157,12 +157,17 @@ func Main(prefix string, run func() int) int {
 	return code
 }
 
-// dropSlots holds the drops in flight to two of the admin pool's four connections. A clone takes
-// one of those connections too, and a `drop database … with (force)` forces a checkpoint and
-// waits for it: with every slot on drops — a package whose parallel subtests each clone one
-// database queues one drop per subtest that ends — the next clone waits for a checkpoint on its
-// own clock, which is the cost dropInBackground exists to move off it.
-var dropSlots = make(chan struct{}, 2)
+// adminConns is the admin pool's size, whatever pool size LEGION_TEST_PG_DSN sets (adminConfig):
+// the pool is this file's own bookkeeping, sized against dropSlots, not a pool a test opens. On a
+// large machine every package that clones opens one at once on one server, so it stays small.
+const adminConns = 4
+
+// dropSlots holds the drops in flight to half the admin pool's adminConns connections. A clone
+// takes one of those connections too, and a `drop database … with (force)` forces a checkpoint
+// and waits for it: with every connection on drops — a package whose parallel subtests each clone
+// one database queues one drop per subtest that ends — the next clone waits for a checkpoint on
+// its own clock, which is the cost dropInBackground exists to move off it.
+var dropSlots = make(chan struct{}, adminConns/2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
@@ -190,23 +195,19 @@ func dropInBackground(name string) {
 // the memoisation this file exists for, which is what the test of it counts.
 //
 // The admin database's URL and the template's are testdb.DatabaseURL's, as each clone's is
-// (Clone), with the pool keys testdb.PoolBounded gives the pools on them, and this file makes no
-// rewrite of its own: those helpers' comments say what they refuse.
+// (Clone), and this file makes no rewrite of its own: that helper's comment says what it refuses.
+// The template's pool takes the pool keys testdb.PoolBounded gives it; the admin pool takes none
+// of them and holds adminConns connections (adminConfig).
 // The template's URL is made before the `create database`, so a refused rewrite leaves no
 // database behind.
 func prepare(dsn string) error {
 	shared.server = dsn
-	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
+	config, err := adminConfig(dsn)
 	if err != nil {
 		return err
 	}
-	// Drops run concurrently on this pool. Sized by the CPU count, on a large machine the
-	// packages testing against one server at once would exceed its connection limit.
-	if adminURL, err = testdb.PoolBounded(dsn, adminURL); err != nil {
-		return err
-	}
 	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, adminURL)
+	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open the admin pool: %w", err)
 	}
@@ -246,4 +247,21 @@ func prepare(dsn string) error {
 		return fmt.Errorf("close the template database to connections: %w", err)
 	}
 	return nil
+}
+
+// adminConfig is the admin pool's configuration on the server dsn names: that server's postgres
+// database through testdb.DatabaseURL, which takes out every pool key the DSN sets, and
+// adminConns connections, so dropSlots' count holds whatever pool size the DSN sets for the tests'
+// own pools.
+func adminConfig(dsn string) (*pgxpool.Config, error) {
+	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
+	if err != nil {
+		return nil, err
+	}
+	config, err := pgxpool.ParseConfig(adminURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse the admin database URL: %w", err)
+	}
+	config.MaxConns = adminConns
+	return config, nil
 }
