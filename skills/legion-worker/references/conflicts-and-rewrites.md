@@ -8,7 +8,7 @@ The implementer merges the base into the issue branch only when GitHub reports i
 
 A tree is a root issue and the issues beneath it. When another tree's open pull request changes files yours changes, the two race: the second to merge meets a conflict. Before you race it, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. In `implementing`, commit your own edits first and point the bookmark at them (`jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @-`), so the merge carries them; if jj refuses the move, stop and tell the architect. In any other phase, commit nothing but the merge (`skill://legion-worker/references/handoff-and-completion.md`, "When your phase ends"). Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. List the commits the bookmark lacks (`jj -R "$LEGION_WORKSPACE" log -r 'legion/<KEY>..@-'`): in `implementing` only your own, in any other phase none; else push nothing and tell the architect, since the merge leaves such a commit off the branch and the disk. In `implementing`, commit your own edits first and point the bookmark at them (`jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @-`), so the merge carries them; if jj refuses the move, stop and tell the architect. In any other phase, commit nothing but the merge (`skill://legion-worker/references/handoff-and-completion.md`). Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
@@ -16,16 +16,16 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
    jj -R "$LEGION_WORKSPACE" rebase -r @ -o <merge>
    ```
 
-   `jj new --no-edit` prints the merge's change id, `<merge>`, and leaves `@` where it is; the rebase puts `@`, with whatever it holds, on top of the merge, so nothing in it leaves the disk or enters the merge.
+   `jj new --no-edit` prints the merge's change id, `<merge>`; the rebase puts `@`, with whatever it holds, on top of the merge, so none of it leaves the disk or enters the merge.
 
-   Write `<message>` in the repository's own commit convention, read from the repository itself: its commit-message check (a commitlint configuration or the workflow that lints commits) where it has one, else its recent commits on the base. Where it uses Conventional Commits, that is a listed type and the merge in words, such as `chore(<scope>): merge <base> into <branch>`; where neither shows a convention, the merge in words alone, such as `Merge <base> into <branch>`. Never a fixed prefix of this skill's own: a check that lints every commit of the pull request refuses a type its list does not hold, and `merge` is in no Conventional Commits list. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-2. Resolve any conflict in `@`. Then list what `@` holds beyond the merge: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there; any other path is another role's write, or an edit of yours outside `implementing`. Move your resolutions into the merge, which changes no file on disk:
+   Write `<message>` in the repository's own commit convention, read from the repository itself: its commit-message check (a commitlint configuration or the workflow that lints commits) where it has one, else its recent commits on the base. Where it uses Conventional Commits, that is a listed type and the merge in words, such as `chore(<scope>): merge <base> into <branch>`; where neither shows a convention, the merge in words alone, such as `Merge <base> into <branch>`. Never a fixed prefix of this skill's own: a check that lints every commit of the pull request refuses a type its list does not hold, and `merge` is in no Conventional Commits list.
+2. Resolve any conflict in `@`. Then list what `@` holds beyond the merge: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there; any other path is another role's write, or an edit of yours outside `implementing`. Move your resolutions into the merge:
 
    ```bash
    jj -R "$LEGION_WORKSPACE" squash --into @- <your resolution paths…>
    ```
 
-   Skip it when there is nothing to resolve. `@-` is then the merge, with its message and your resolutions, which step 4 pushes. When `@` still holds a path, leave it there, tell the architect each such path and `@`'s change id, and run your role prompt's turn-start rule before your next commit. `@` has no description, so the daemon's adoption of the working copy before it sends a role a phase task keeps it as `@` (the adoption puts a new change on a described `@` only), and the next role that commits sets it aside at its turn start.
+   Skip it when there is nothing to resolve. `@-` is then the merge, with its message and your resolutions, which step 4 pushes. When `@` still holds a path, leave it there, tell the architect each such path and `@`'s change id, and run your role prompt's turn-start rule before your next commit. `@` has no description, so the daemon's adoption before a phase task keeps it as `@`, and the next role that commits sets it aside at its turn start.
 
    When one path holds both your resolution and an edit the merge must not carry, push nothing, and tell the architect.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round. A finding's class is the defect it named wherever the head holds it, not the one line it cited: search the whole head, not the lines the merge changed alone.
