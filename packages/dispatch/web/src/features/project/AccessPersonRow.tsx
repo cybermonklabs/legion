@@ -1,5 +1,5 @@
 import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
 import { projectAccessQuery } from "../../api/queries";
@@ -118,6 +118,9 @@ export function AccessPersonRow({
   const queryClient = useQueryClient();
   const [invitation, setInvitation] = useState<InvitationAnswer | undefined>(undefined);
   const [copied, setCopied] = useState(false);
+  // The link the row holds, by its made_at, and whether a read of the access list has begun since
+  // it landed (`armed`): only such a read can say the link is gone.
+  const watched = useRef<{ readonly madeAt: string; armed: boolean } | undefined>(undefined);
   const invite = useKeyedWrite<InvitationAnswer, void>({
     inline: true,
     label: () => `Make a link for ${email} on ${project}`,
@@ -125,9 +128,11 @@ export function AccessPersonRow({
     // The link shown stays until a new one lands: a press Dispatch refuses ends nothing.
     onSuccess: (answer) => {
       if (answer === null) return;
+      watched.current = { armed: false, madeAt: answer.made_at };
       setInvitation(answer);
       setCopied(false);
-      // A read already out began before the link existed: it is cancelled, and a new one starts.
+      // A read that lists the link begins after it landed: Dispatch's client lets a read already
+      // out finish and then reads again (`DispatchQueryClient`), and TanStack's cancels it.
       void queryClient.refetchQueries({ queryKey: projectAccessQuery(project).queryKey });
     },
     method: "POST",
@@ -162,32 +167,41 @@ export function AccessPersonRow({
     enabled: invitation !== undefined,
     refetchInterval: invitation !== undefined ? SHOWN_LINK_POLL_MS : false,
   });
-  // Each answer of a read that began after the shown link landed says whether that link, the
-  // person's link made at its made_at, is still open; one that lists it not ends it, and no other
-  // link. A write's answer (`setQueryData`, `manual`) was read in the write's own transaction: a
-  // Reset pressed before this link was made and answered after it never saw the link, so it ends
-  // nothing here, and the read the panel asks once the Reset settles says whether it is open.
-  const shownMadeAt = invitation?.made_at;
+  // An answer of a read that began after the held link landed says whether that link, the person's
+  // link made at its made_at, is still open; one that lists it not ends it, and no other link. The
+  // row marks the first read that begins after the link lands (a `fetch` of the query) and acts on
+  // answers only from then. A read already out when the link landed holds the list as it was then:
+  // Dispatch's client lets it finish rather than cancel it, and its answer ends nothing. A write's
+  // answer (`setQueryData`, `manual`) was read in the write's own transaction: a Reset pressed
+  // before this link was made and answered after it never saw the link, so it ends nothing here,
+  // and the read the panel asks once the Reset settles says whether it is open.
   useEffect(() => {
-    if (shownMadeAt === undefined) return;
     const accessHash = hashKey(projectAccessQuery(project).queryKey);
     return queryClient.getQueryCache().subscribe((event) => {
-      if (event.type !== "updated" || event.query.queryHash !== accessHash) return;
-      if (event.action.type !== "success" || event.action.manual === true) return;
+      const held = watched.current;
+      if (held === undefined || event.type !== "updated" || event.query.queryHash !== accessHash) {
+        return;
+      }
+      if (event.action.type === "fetch") {
+        held.armed = true;
+        return;
+      }
+      if (!held.armed || event.action.type !== "success" || event.action.manual === true) return;
       const open = (event.action.data as ProjectAccess).open_invitations;
       if (
         open === undefined ||
         open.some(
           (listed) =>
-            listed.email === email && Date.parse(listed.made_at) === Date.parse(shownMadeAt)
+            listed.email === email && Date.parse(listed.made_at) === Date.parse(held.madeAt)
         )
       ) {
         return;
       }
-      setInvitation((shown) => (shown?.made_at === shownMadeAt ? undefined : shown));
+      watched.current = undefined;
+      setInvitation((shown) => (shown?.made_at === held.madeAt ? undefined : shown));
       setCopied(false);
     });
-  }, [queryClient, project, email, shownMadeAt]);
+  }, [queryClient, project, email]);
   const shown = passkeys !== undefined;
   const enrolled = passkeys ?? [];
   const link = invitation !== undefined && invitable ? invitation : undefined;

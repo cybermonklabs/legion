@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { AccessGroup, InvitationAnswer, ProjectAccess } from "../../api/types";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
@@ -38,25 +39,30 @@ export const ops: AccessGroup = {
 
 /** The panel for CORE, signed in as `login` through the identity the shell already read: the
  *  query client holds `/auth/whoami`'s answer fresh, as the shell's leaves it, so a panel that
- *  asked for the identity again would show in `whoAmI`. The access read answers what the last
- *  write left, as Dispatch does: `lands(next)` is a write that leaves `next` and answers it, and
- *  `invites(...links)` is the owner's Invite, each press answering the next of `links` and leaving
- *  its link in the answer's `open_invitations` in place of the person's earlier one. */
+ *  asked for the identity again would show in `whoAmI`. The client is the app's own
+ *  (`DispatchQueryClient`, `main.tsx`), whose `refetchQueries` waits for a running read rather
+ *  than cancelling it; `client: "tanstack"` renders under TanStack's, which cancels it. The
+ *  access read answers what the last write left, as Dispatch does: `lands(next)` is a write that
+ *  leaves `next` and answers it, and `invites(...links)` is the owner's Invite, each press
+ *  answering the next of `links` and leaving its link in the answer's `open_invitations` in place
+ *  of the person's earlier one. */
 export function renderPanel({
   answer = access(),
+  client = "dispatch",
   groups = [crew, ops],
   login = "alice",
   memberKind,
 }: {
   answer?: ProjectAccess;
+  client?: "dispatch" | "tanstack";
   groups?: AccessGroup[];
   login?: string;
   memberKind?: "restricted";
 } = {}) {
   let stored = answer;
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
-  });
+  const options = { defaultOptions: { queries: { retry: false, staleTime: 30_000 } } };
+  const queryClient =
+    client === "dispatch" ? new DispatchQueryClient(options) : new QueryClient(options);
   queryClient.setQueryData(whoAmIQuery().queryKey, {
     event_head: "0",
     kind: "user",

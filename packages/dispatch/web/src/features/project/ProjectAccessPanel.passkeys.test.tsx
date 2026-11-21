@@ -767,3 +767,58 @@ test("a Reset answered after an Invite pressed behind it leaves the new link the
     invite.mockRestore();
   }
 });
+
+// A read of the access list that began before an Invite landed holds the list as it was then,
+// without the new link. The app's client (`DispatchQueryClient`) lets such a read finish rather
+// than cancel it, and asks again once it settles, so its answer lands after the Invite's. It ends
+// nothing: only a read that began after the link landed can say the link is gone, and the read
+// asked after it lists the link open. TanStack's client cancels the running read instead; the row
+// keeps the link there too.
+test("a read that began before a second Invite landed leaves the link that Invite made", async () => {
+  for (const client of ["dispatch", "tanstack"] as const) {
+    const user = userEvent.setup();
+    const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }), client });
+    const second = {
+      expires_at: "2099-11-21T11:00:00Z",
+      made_at: "2099-11-20T11:00:00Z",
+      url: `https://dispatch.example/enroll#${"b".repeat(43)}`,
+    };
+    const invite = panel.invites(madeLink, second);
+    const link = { name: `Enrollment link for ${ana}` };
+    const accessKey = ["project-access", "CORE"];
+    try {
+      await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+      expect(await within(personRow(ana)).findByRole("textbox", link)).toHaveValue(madeLink.url);
+      await waitFor(() =>
+        expect(panel.queryClient.getQueryState(accessKey)?.fetchStatus).toBe("idle")
+      );
+
+      // A read begins and is held: it answers the list as it is now, with the first link open.
+      const held = Promise.withResolvers<void>();
+      panel.getProjectAccess.mockImplementationOnce(async () => {
+        const then = withPasskeys({ open_invitations: [openLink], passkeys: [] });
+        await held.promise;
+        return then;
+      });
+      await act(async () => {
+        void panel.queryClient.refetchQueries({ queryKey: accessKey });
+      });
+      expect(panel.queryClient.getQueryState(accessKey)?.fetchStatus).toBe("fetching");
+
+      // The second Invite lands while that read is out.
+      await user.click(screen.getByRole("button", { name: `Invite ${ana}` }));
+      expect(await within(personRow(ana)).findByRole("textbox", link)).toHaveValue(second.url);
+
+      await act(async () => held.resolve());
+      await waitFor(() =>
+        expect(panel.queryClient.getQueryState(accessKey)?.fetchStatus).toBe("idle")
+      );
+      await settle();
+      const shown = within(personRow(ana)).queryByRole("textbox", link) as HTMLInputElement | null;
+      expect({ client, shown: shown?.value }).toEqual({ client, shown: second.url });
+    } finally {
+      panel.restore();
+      invite.mockRestore();
+    }
+  }
+});
