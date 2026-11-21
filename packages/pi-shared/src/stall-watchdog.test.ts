@@ -151,6 +151,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
       sendMessage: (text) => {
         if (state.sendThrows !== undefined) throw new Error(state.sendThrows);
         state.messages.push(text);
+        return "sent";
       },
     },
     exits: {

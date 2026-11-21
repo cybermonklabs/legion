@@ -668,7 +668,7 @@ function watchdogWith(teller: StallWatchdogTeller, clock: () => number): StallWa
     isIdle: () => false,
     processes: { tree: () => ({ read: true, processes: [] }), endCall: () => 0 },
     teller,
-    aborter: { abortTurn: () => {}, sendMessage: () => {} },
+    aborter: { abortTurn: () => {}, sendMessage: () => "sent" },
     exits: { read: () => 0, write: () => true },
     exitProcess: () => {},
     log: { debug: () => {}, warn: () => {} },

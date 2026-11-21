@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `LegionTaskResponse` takes an optional `holds`, the takes of the issue's other claims held behind
+  the caller's turn (`[{role, task}]`), daemon API contract 209.

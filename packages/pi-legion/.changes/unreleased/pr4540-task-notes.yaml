@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A phase worker in a turn of its own gets one note with its next tool result when its task
+  waits for that turn to end, and a role whose turn holds another role's phase task gets one
+  note naming that role and task within a minute and two tool boundaries. While the take is
+  pending, the phase reminder starts no continuation and sends no timer reminder, and a stall
+  abort keeps its restart message back until the take is decided: the task is the next turn, and
+  the message is sent if the take is refused or dropped. A take the daemon refused because the
+  worker's own turn ran stays pending for the daemon's next write of the task, for at most 30
+  seconds after that turn's end or the refusal, whichever is later.

@@ -84,7 +84,9 @@ import {
   roleHeldBy,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
+import { claimCaller } from "@legion/pi-shared/daemon-client"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
+import { createHoldsRead, HOLDS_READ_BOUND_MS } from "@legion/pi-shared/holds-read"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -2543,7 +2545,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const bundlePath = process.argv[1] ?? ""
   // One connection to the bridge carries every line this server writes into the session: each
   // Envoy delivery, the reminders and notices the phase endpoint writes, and the claim's task
-  // values, ready line and finished numbers (`./legion-claim`).
+  // values, ready line and finished numbers (`./legion-claim`). The phase endpoint's take-pending
+  // query alone dials a connection of its own, which nothing queues behind a delivery.
   const inbox = inboxSocket === undefined ? undefined : createInboxNotifier(inboxSocket)
   /** Writes `what`, one line of the claim's, to the bridge: a pane that names no inbox, and a
    *  line the bridge refused, are logged, and nothing waits for the answer. */
@@ -2599,6 +2602,28 @@ export async function runEnvoyChannelServer(): Promise<void> {
           publish: client.publish,
           env: process.env,
           log: phaseLog,
+          // R6 and R1: the bridge holds the claim's take, and says whether it holds one pending
+          // and which task the turn running did not take. A pane with no inbox has none to ask.
+          takePending: async () => inbox?.takePending(),
+          // R2: the claim's own `claims/task`, read at the worker's tool calls for the takes of
+          // the issue's other claims the daemon holds behind its turn, with the claim's caller
+          // once it is registered. The bridge holds the claim's own value, handed it from the
+          // relay and the claim's own reads (`startLegionClaim`), so this read hands it nothing.
+          holdsRead: createHoldsRead({
+            daemon,
+            caller: () => {
+              const registered = claim?.capability()
+              return registered === undefined
+                ? undefined
+                : claimCaller(registered, registered.sessionID)
+            },
+            now: Date.now,
+            failed: (error) => {
+              logLegion(
+                `a claims/task read of the takes held behind this turn failed or had no answer within ${HOLDS_READ_BOUND_MS} ms; it notes nothing: ${messageFor(error)}`,
+              )
+            },
+          }),
         })
   const toolDefinitions = [
     ...channelToolDefinitions(),

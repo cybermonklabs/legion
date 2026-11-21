@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The Stop hook blocks no stop while the bridge holds a pending take, so the task starts ahead
+  of any reminder turn. The hook asks the bridge on an inbox connection of its own, and blocks as
+  before when the bridge does not answer. A PostToolUse of the worker's own adds one note naming
+  the owed task the running turn did not take, and one note for each take of another claim of the
+  issue that the daemon holds behind this turn.

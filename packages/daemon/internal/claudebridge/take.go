@@ -97,7 +97,14 @@ import (
 //     newer revision of it is taken and runs once. A report carrying a provider error marks
 //     nothing: the daemon takes the task back and writes its value again after its wait;
 //   - a refused take, a dropped one and a refusal of the route itself are answers: the value is
-//     asked about again only at its next revision.
+//     asked about again only at its next revision. A take refused `in-turn` during a turn is one
+//     the daemon writes the value of again at that turn's end, so it counts as pending until that
+//     turn ends or a newer value is held (refusedInTurn);
+//   - claude-envoy's hooks ask whether the take is pending, with a take-pending line on an inbox
+//     connection of their own, which the loop answers at once (pendingAnswer): its Stop hook
+//     blocks no stop while a take is pending, so the turn ends and the take goes ahead of any
+//     reminder turn (dispatch://INFRA-4130 R6), and its PostToolUse hook names the task an owed
+//     value waits with, during a turn that did not take it, in its note (R1).
 //
 // A seen report or a take the daemon gave no answer to is sent again (daemonLink.untilAnswered)
 // until the daemon answers it or a newer value replaces it (replace): every failure
@@ -110,11 +117,14 @@ const (
 	takePath     = "/legion/v1/claims/take"
 )
 
-// The outcomes a take is answered with (claim.TakeResponse, supervise's TakeOutcome).
+// The outcomes a take is answered with (claim.TakeResponse, supervise's TakeOutcome), and the hold
+// of a take refused because the claim's turn was running when the daemon decided it (supervise's
+// HoldInTurn), whose value the daemon writes again at that turn's end.
 const (
 	takeAccepted = "accepted"
 	takeRefused  = "refused"
 	takeDropped  = "dropped"
+	holdInTurn   = "in-turn"
 )
 
 // taskValue is a claim's task value as a task line carries it: the number of the task the claim is
@@ -169,12 +179,13 @@ func (b *bridge) unasked() bool {
 // valueHanded takes a task value the inbox handed the bridge, with the number the reading it came
 // with says the claim finished, the highest of which the bridge holds. A value newer than the one
 // held replaces it, and with it every seen report and take still being sent for another pair
-// (replace); one that names a task is reported seen at once, owed or not; and Claude Code in no
-// turn takes it once the ready line came (idle). A newer value of the task whose accepted text is
-// held through a turn, a text never written to Claude Code, is a new offer (the plan's decision 9):
-// the held text is let go, and the take of this value, made once Claude Code is idle, brings the
-// text that runs. A value no newer than the one held changes nothing but the finished number: the
-// same value relayed again is not a new ask.
+// (replace) and the in-turn refusal of the value it replaces (refusedInTurn); one that names a
+// task is reported seen at once, owed or not; and Claude Code in no turn takes it once the ready
+// line came (idle). A newer value of the task whose accepted text is held through a turn, a text
+// never written to Claude Code, is a new offer (the plan's decision 9): the held text is let go,
+// and the take of this value, made once Claude Code is idle, brings the text that runs. A value no
+// newer than the one held changes nothing but the finished number: the same value relayed again is
+// not a new ask.
 func (b *bridge) valueHanded(v taskValue, finished uint64) {
 	if b.daemon == nil {
 		b.log.Printf("ignoring task %d's value: this pane names no daemon to take it from", v.number)
@@ -182,7 +193,7 @@ func (b *bridge) valueHanded(v taskValue, finished uint64) {
 	}
 	b.finished = max(b.finished, finished)
 	if v.replaces(b.task) {
-		b.task = &v
+		b.task, b.refusedInTurn = &v, false
 		b.replace(v.at())
 		switch {
 		case v.number == 0:
@@ -345,6 +356,9 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 			return
 		}
 	case a.answer.Outcome == takeRefused:
+		if a.answer.Hold == holdInTurn && b.inRun {
+			b.refusedInTurn = true
+		}
 		b.log.Printf("the daemon refused the take of task %d (hold %s); it is asked again at the value's next revision", number, a.answer.Hold)
 	case a.answer.Outcome == takeDropped:
 		b.log.Printf("the daemon dropped task %d: the claim no longer owes it", number)
@@ -354,10 +368,47 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 	b.idle()
 }
 
-// takePending is whether the claim's take holds the queued deliveries back: an owed value not yet
-// asked about — before the ready line, or while Claude Code is in a turn or seeding —, a take being
-// sent, or one accepted whose task has not started its turn yet.
-func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b.held != nil }
+// runningOwn is whether the held value names the task whose turn is running and whose text that
+// turn took: Claude Code re-emitted it (taskRun.taken). Only such a turn's end holds the number
+// finished (runEnded). A turn whose text Claude Code never re-emitted is reported as no task's
+// (result), so its end marks nothing finished, and the bridge takes a newer revision of that
+// number the moment the turn ends.
+func (b *bridge) runningOwn() bool {
+	return b.inRun && b.run.taken && b.task != nil && b.task.number == b.run.task
+}
+
+// takePending is whether the claim's take holds a task: an owed value not yet asked about — before
+// the ready line, or while Claude Code is in a turn or seeding —, a take being sent, one accepted
+// whose task has not started its turn yet, or a take of the held value refused in-turn during the
+// turn running (refusedInTurn). It is what holds the queued deliveries back (deliver, idle), and
+// what a take-pending query answers (pendingAnswer). The last term holds back no delivery the
+// first three do not: it is set only while a turn runs and cleared as that turn ends (runEnded),
+// and deliver and idle read this only while no turn runs.
+//
+// The daemon can write the running task's own number again during its turn. Once that turn has
+// taken the task's text (runningOwn), such a value is not an unasked value here: the bridge takes
+// nothing for it, since that turn's end holds the number finished (runEnded). In a turn whose text
+// Claude Code dropped, the value counts as unasked, as in a turn of no task: that turn's end marks
+// nothing finished, and the bridge takes the value as soon as the turn ends. That changes neither
+// deliver nor idle: the term differs only while a turn runs, and neither reads this then.
+func (b *bridge) takePending() bool {
+	return (b.unasked() && !b.runningOwn()) || b.asking != nil || b.held != nil || b.refusedInTurn
+}
+
+// pendingAnswer is the answer to a take-pending query: whether the take is pending (takePending),
+// and which task waits. While Claude Code is in a turn, Waiting is the number of the task the held
+// value owes the claim, asked about or not, unless the turn is that task's own and took its text
+// (runningOwn), or the bridge holds the task's accepted text for when the turn ends (held). A turn
+// of the task whose text Claude Code dropped took nothing, so in it the answer names the task
+// waiting, as in a turn of no task. Out of a turn, and in those two cases, Waiting is 0.
+func (b *bridge) pendingAnswer() *TakePendingAnswer {
+	answer := &TakePendingAnswer{Pending: b.takePending()}
+	if b.inRun && b.task != nil && b.owes(b.task.number) && !b.runningOwn() &&
+		(b.held == nil || b.task.number != b.held.number) {
+		answer.Waiting = b.task.number
+	}
+	return answer
+}
 
 // startTask starts the turn of the task number, whose accepted take answered text: a turn of the
 // bridge's own whose first user message is text, sent ahead of every queued delivery, and whose
@@ -372,8 +423,10 @@ func (b *bridge) startTask(number uint64, text string) {
 // runEnded takes the end of a turn, the task's turn when task is not 0: one the provider did not
 // fail holds the task's number finished from here on (the run-end mark), before its report has even
 // landed, since that report finishes the task on the daemon, and until the daemon refuses it
-// (reportRefused). A turn the provider failed marks nothing.
+// (reportRefused). A turn the provider failed marks nothing. A take refused in-turn during the
+// turn is pending no more (refusedInTurn): the daemon writes the value again after this end.
 func (b *bridge) runEnded(task uint64, providerFailed bool) {
+	b.refusedInTurn = false
 	if task != 0 && !providerFailed {
 		b.finishing = max(b.finishing, task)
 	}

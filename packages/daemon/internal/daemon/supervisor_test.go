@@ -746,3 +746,106 @@ func TestAPhaseTaskWaitsForAnAcceptedTakeOnAnotherClaimOfItsIssue(t *testing.T) 
 	rig.endTurnThroughTheInbox(implementer, writing)
 	rig.wantTakenOnceTheTurnEnded(t, waiting, adoptions)
 }
+
+// A take refused issue-in-turn is named, as its role and its task's number, to the claims whose
+// turn holds it (HeldBehind) and to no other, so the worker of that turn can learn of it on its own
+// task route and come to a safe point (dispatch://INFRA-4130 R2). It is named until the holder's
+// turn ends, where the held take is accepted and nothing is named. Two claims in a turn each hold
+// the take, so it is named to each. A claim whose accepted take has not started its turn holds it
+// too, and it is named to that claim as well: its worker is idle and reads nothing, which is the
+// plugin's to hold.
+func TestATakeHeldBehindAnotherClaimsTurnIsNamedToThatClaimUntilItsTurnEnds(t *testing.T) {
+	const issue = "LEGION-209"
+	// deliver queues a phase task on the claim and has its worker take it, accepted.
+	deliver := func(t *testing.T, rig *issueRig, token claim.Token, machine *supervise.Machine, task, id string, p phase.Phase) {
+		t.Helper()
+		if err := machine.Handle(rig.ctx, supervise.RequestDeliver{Claim: token, Task: task, ID: id, Phase: p, Generation: 1}); err != nil {
+			t.Fatalf("deliver %s's task: %v", token, err)
+		}
+		acceptTake(rig.ctx, t, machine)
+	}
+	startTurn := func(t *testing.T, rig *issueRig, token claim.Token, machine *supervise.Machine) {
+		t.Helper()
+		if err := machine.Handle(rig.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+			t.Fatalf("the turn start of %s: %v", token, err)
+		}
+	}
+	// refused queues the tester's testing task and has its take refused issue-in-turn, answering
+	// the held take as the holder is to be told it.
+	refused := func(t *testing.T, rig *issueRig, tester claim.Token, waiting *supervise.Machine) claim.HeldTake {
+		t.Helper()
+		if err := waiting.Handle(rig.ctx, supervise.RequestDeliver{Claim: tester, Task: "test the branch", ID: "outbox:2",
+			Phase: phase.Testing, Generation: 1}); err != nil {
+			t.Fatalf("deliver the tester's task: %v", err)
+		}
+		if answer := rig.takeOf(waiting); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldIssueInTurn {
+			t.Fatalf("the tester's take = %+v, want it refused %s", answer, supervise.HoldIssueInTurn)
+		}
+		return claim.HeldTake{Role: claim.RoleTester, Task: waiting.Claim().Pending.Number}
+	}
+	wantHeld := func(t *testing.T, rig *issueRig, holder claim.Token, when string, want ...claim.HeldTake) {
+		t.Helper()
+		if got := rig.sup.HeldBehind(issue, holder); !slices.Equal(got, want) {
+			t.Fatalf("%s, the takes held behind %s = %+v, want %+v", when, holder, got, want)
+		}
+	}
+
+	t.Run("the implementer in a turn", func(t *testing.T) {
+		rig := newIssueRig(t)
+		implementer, writing := rig.ready(claim.RoleImplementer, fake.NewConn())
+		tester, waiting := rig.ready(claim.RoleTester, fake.NewConn())
+		deliver(t, rig, implementer, writing, "implement the plan", "outbox:1", phase.Implementing)
+		startTurn(t, rig, implementer, writing)
+		adoptions := rig.adoptions()
+
+		held := refused(t, rig, tester, waiting)
+		wantHeld(t, rig, implementer, "while the implementer's turn holds the tester's take", held)
+		wantHeld(t, rig, tester, "while the tester is in no turn")
+
+		rig.endTurnThroughTheInbox(implementer, writing)
+		rig.wantTakenOnceTheTurnEnded(t, waiting, adoptions)
+		wantHeld(t, rig, implementer, "once the implementer's turn ended and the tester's take was accepted")
+		if got := waiting.View().HeldTask; got != 0 {
+			t.Fatalf("the tester's view names task %d held after its take was accepted, want none", got)
+		}
+	})
+
+	t.Run("two claims in a turn", func(t *testing.T) {
+		rig := newIssueRig(t)
+		planner, planning := rig.ready(claim.RolePlanner, fake.NewConn())
+		implementer, writing := rig.ready(claim.RoleImplementer, fake.NewConn())
+		tester, waiting := rig.ready(claim.RoleTester, fake.NewConn())
+		deliver(t, rig, implementer, writing, "implement the plan", "outbox:1", phase.Implementing)
+		startTurn(t, rig, implementer, writing)
+		// The planner is in a turn of its own, as it is while it answers a question of the plan.
+		startTurn(t, rig, planner, planning)
+		if view := planning.View(); !view.InTurn() {
+			t.Fatalf("the planner is %s and in a turn = false, want it in a turn: this case proves nothing", view.State)
+		}
+
+		held := refused(t, rig, tester, waiting)
+		wantHeld(t, rig, planner, "while the planner's turn holds the tester's take", held)
+		wantHeld(t, rig, implementer, "while the implementer's turn holds the tester's take", held)
+		wantHeld(t, rig, tester, "while the tester is in no turn")
+	})
+
+	t.Run("an accepted take whose turn has not started", func(t *testing.T) {
+		rig := newIssueRig(t)
+		implementer, writing := rig.ready(claim.RoleImplementer, fake.NewConn())
+		tester, waiting := rig.ready(claim.RoleTester, fake.NewConn())
+		deliver(t, rig, implementer, writing, "implement the plan", "outbox:1", phase.Implementing)
+		adoptions := rig.adoptions()
+		if view := writing.View(); view.State != supervise.StateReady || !view.InTurn() {
+			t.Fatalf("the implementer is %s, in a turn = %v, want it ready and counted in a turn", view.State, view.InTurn())
+		}
+
+		held := refused(t, rig, tester, waiting)
+		wantHeld(t, rig, implementer, "while the implementer's accepted take awaits its turn", held)
+
+		startTurn(t, rig, implementer, writing)
+		wantHeld(t, rig, implementer, "once the implementer's take started its turn", held)
+		rig.endTurnThroughTheInbox(implementer, writing)
+		rig.wantTakenOnceTheTurnEnded(t, waiting, adoptions)
+		wantHeld(t, rig, implementer, "once the implementer's turn ended and the tester's take was accepted")
+	})
+}

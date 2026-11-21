@@ -1567,8 +1567,14 @@ export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 207). */
-export const LegionTaskResponse = z.object(taskReadingFields);
+ * finished, 0 for none (contract 207). `holds` (contract 209, `claim.HeldTake`) is the takes of
+ * the issue's other claims held behind the caller's turn, each the held claim's `role` and its
+ * task's number; absent where none is held, and served only to a caller at contract 209 or a
+ * later one. */
+export const LegionTaskResponse = z.object({
+  ...taskReadingFields,
+  holds: z.array(z.object({ role: nonEmptyString, task: z.number().int().positive() })).optional(),
+});
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
@@ -1594,8 +1600,10 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * longer owed and its value deleted. `hold` is read as a string, not an enum of today's holds
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
- * `adoption`, `project-paused`), since a worker acts on none of them by name and a hold a later
- * daemon adds must not refuse the answer (contract 207). */
+ * `adoption`, `project-paused`), since a hold a later daemon adds must not refuse the answer
+ * (contract 207). A worker acts on one by name, `in-turn`: `TaskTake.pending` in
+ * `@legion/pi-shared/task-take`, and the bridge's `refusedInTurn` in
+ * `packages/daemon/internal/claudebridge/take.go`, say how. */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -2411,8 +2419,18 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   ],
   // `task-take.ts` holds the value a read answers and the number of the task the claim last
   // finished, and runs the text of an accepted take or logs the hold a refused one met
-  // (contract 207).
-  LegionTaskResponse: ["task", "task.number", "task.epoch", "task.revision", "finished"],
+  // (contract 207). `holds-read.ts` keeps the takes held behind the caller's turn, and each host
+  // notes each one by its role and its task's number (contract 209).
+  LegionTaskResponse: [
+    "task",
+    "task.number",
+    "task.epoch",
+    "task.revision",
+    "finished",
+    "holds",
+    "holds[].role",
+    "holds[].task",
+  ],
   LegionTakeResponse: ["|0.text", "|1.hold"],
   // `controller-session.ts` checks the controller's claim token, mints every controller grant
   // with the secret, and sends the generation on `claims/ready`.

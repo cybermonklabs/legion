@@ -51,14 +51,15 @@ var (
 	errNotTaken = errors.New("Claude Code ended the step without taking the delivery")
 )
 
-// event is a frame from the shim, or an Envoy delivery, a task value, the ready line or a finished
-// line from the inbox, for the bridge's loop.
+// event is a frame from the shim, or an Envoy delivery, a task value, the ready line, a finished
+// line or a take-pending query from the inbox, for the bridge's loop.
 type event struct {
-	daemon   []byte        // a frame from the shim
-	delivery *delivery     // an Envoy delivery from the inbox
-	task     *taskLine     // the claim's task value from the inbox
-	ready    chan<- error  // the ready line from the inbox, answered once the loop has taken it
-	finished *finishedLine // a finished line from the inbox
+	daemon      []byte            // a frame from the shim
+	delivery    *delivery         // an Envoy delivery from the inbox
+	task        *taskLine         // the claim's task value from the inbox
+	ready       chan<- inboxReply // the ready line from the inbox, answered once the loop has taken it
+	finished    *finishedLine     // a finished line from the inbox
+	takePending chan<- inboxReply // a take-pending query from the inbox, answered at once (take.go)
 }
 
 // taskLine is the claim's task value, handed to the loop from the inbox (take.go), with the number
@@ -67,7 +68,7 @@ type event struct {
 type taskLine struct {
 	value    taskValue
 	finished uint64
-	answer   chan<- error
+	answer   chan<- inboxReply
 }
 
 // finishedLine is a reading of the daemon's that held no value, handed to the loop from the inbox
@@ -75,7 +76,7 @@ type taskLine struct {
 // has taken it.
 type finishedLine struct {
 	number uint64
-	answer chan<- error
+	answer chan<- inboxReply
 }
 
 // delivery is one Envoy delivery waiting to be a user turn. answer, buffered, is answered once:
@@ -87,7 +88,7 @@ type delivery struct {
 	id      string
 	content string
 	blocks  []json.RawMessage
-	answer  chan<- error
+	answer  chan<- inboxReply
 }
 
 // bridge is Run's state. Everything but the readers, the outputs' writers and end runs on Run's
@@ -148,6 +149,12 @@ type bridge struct {
 	// its zero value for a turn of no task.
 	held *heldTake
 	run  taskRun
+	// refusedInTurn is a take of the held value the daemon refused in-turn during the turn
+	// running: the daemon writes the value again at that turn's end, so the take counts as pending
+	// (takePending) until that turn ends (runEnded) or a newer value is held (valueHanded). A
+	// refusal that lands while no turn runs sets nothing: the daemon's write follows that turn's
+	// end, which has already come.
+	refusedInTurn bool
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
 	// the same stream — a `system` `init` of its own and a `result` of its own, between the
@@ -343,16 +350,19 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				// Nothing answers the daemon once Claude Code is done: its frames are read so that
 				// the end of the shim's input still reaches the loop.
 				if ev.delivery != nil {
-					ev.delivery.answer <- errClaudeExited
+					ev.delivery.answer <- inboxReply{err: errClaudeExited}
 				}
 				if ev.task != nil {
-					ev.task.answer <- errClaudeExited
+					ev.task.answer <- inboxReply{err: errClaudeExited}
 				}
 				if ev.ready != nil {
-					ev.ready <- errClaudeExited
+					ev.ready <- inboxReply{err: errClaudeExited}
 				}
 				if ev.finished != nil {
-					ev.finished.answer <- errClaudeExited
+					ev.finished.answer <- inboxReply{err: errClaudeExited}
+				}
+				if ev.takePending != nil {
+					ev.takePending <- inboxReply{err: errClaudeExited}
 				}
 				if !ignoring {
 					ignoring = true
@@ -363,14 +373,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			case ev.delivery != nil:
 				b.deliver(*ev.delivery)
 			case ev.task != nil:
-				ev.task.answer <- nil
+				ev.task.answer <- inboxReply{}
 				b.valueHanded(ev.task.value, ev.task.finished)
 			case ev.ready != nil:
-				ev.ready <- nil
+				ev.ready <- inboxReply{}
 				b.readied()
 			case ev.finished != nil:
-				ev.finished.answer <- nil
+				ev.finished.answer <- inboxReply{}
 				b.finishedHanded(ev.finished.number)
+			case ev.takePending != nil:
+				ev.takePending <- inboxReply{takePending: b.pendingAnswer()}
 			}
 		case <-done:
 			done, stopping = nil, true
@@ -784,7 +796,7 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 // whose text is the re-emitted user message's. The bridge's own user message (the seed) is no
 // delivery sent, so its echo answers none. The text of the task whose turn is running is read
 // first: its echo, and no other, is Claude Code having taken that text (taskRun.taken), so an Envoy
-// delivery's echo in the turn says nothing of the task's.
+// delivery's echo in the turn says nothing of the task's. That echo is logged, once a turn.
 func (b *bridge) echoed(message json.RawMessage) {
 	var texts []string
 	for _, block := range blocksOf(message) {
@@ -795,11 +807,12 @@ func (b *bridge) echoed(message json.RawMessage) {
 	text := strings.Join(texts, "\n")
 	if b.run.task != 0 && !b.run.taken && text == b.run.text {
 		b.run.taken = true
+		b.log.Printf("Claude Code took task %d's text", b.run.task)
 		return
 	}
 	for i, d := range b.taking {
 		if d.content == text {
-			d.answer <- nil
+			d.answer <- inboxReply{}
 			b.taking = slices.Delete(b.taking, i, i+1)
 			return
 		}
@@ -809,7 +822,7 @@ func (b *bridge) echoed(message json.RawMessage) {
 // answerAll answers each of deliveries with err.
 func answerAll(deliveries []delivery, err error) {
 	for _, d := range deliveries {
-		d.answer <- err
+		d.answer <- inboxReply{err: err}
 	}
 }
 

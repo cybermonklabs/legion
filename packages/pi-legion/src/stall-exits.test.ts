@@ -230,7 +230,7 @@ function ladder(exits: StallWatchdogExits, teller?: StallWatchdogTeller): Ladder
           stopped.push({ call, reason });
         },
       },
-      aborter: { abortTurn: () => {}, sendMessage: () => {} },
+      aborter: { abortTurn: () => {}, sendMessage: () => "sent" },
       exits,
       exitProcess: (code) => {
         exitCodes.push(code);

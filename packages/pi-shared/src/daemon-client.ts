@@ -175,8 +175,14 @@ export interface LegionDaemonClient {
    * once its ready has answered and before it claims its role, since the ready decision itself
    * may write the value (`src/legion-claim-core.ts`); the worker reads it again when its relay
    * begins a new epoch and when it gains its role again, since a value relayed while the session
-   * was not subscribed is lost (`src/task-take.ts`). */
-  readonly task: (input: z.input<typeof LegionTaskRequest>) => Promise<LegionTask>;
+   * was not subscribed is lost (`src/task-take.ts`). `holds`, absent where the daemon names none,
+   * is the takes of the issue's other claims held behind the caller's turn, each the held claim's
+   * role and its task's number, which the worker notes to its agent (`heldTakeNote`). `signal`
+   * aborts the request, as the bounded holds read does. */
+  readonly task: (
+    input: z.input<typeof LegionTaskRequest>,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionTask>;
   /** `claim.TaskSeenRequest`: the worker's report of a task value it was handed, whether or not
    * its host is idle; it answers 204. `signal` aborts the request, as a sender that bounds each
    * attempt does (`src/task-take.ts`). */
@@ -546,8 +552,9 @@ function daemonGaveNoAnswer(error: unknown): boolean {
 
 /** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
  * keeps no process alive. The one wait between attempts, `retryWhileDaemonRestarts`'s and
- * `sendUntilAnswered`'s, unless a test passes its own clock. */
-function timerWait(ms: number, signal?: AbortSignal): Promise<boolean> {
+ * `sendUntilAnswered`'s, unless a test passes its own clock; the bound of a take refused
+ * `in-turn` (`IN_TURN_REWRITE_BOUND_MS`, `./task-take`) uses it too. */
+export function timerWait(ms: number, signal?: AbortSignal): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
   if (signal?.aborted) {
     resolve(false);
@@ -827,7 +834,8 @@ export function createLegionDaemonClient(
         input,
         options?.signal
       ),
-    task: (input) => post("/legion/v1/claims/task", LegionTaskRequest, LegionTaskResponse, input),
+    task: (input, options) =>
+      post("/legion/v1/claims/task", LegionTaskRequest, LegionTaskResponse, input, options?.signal),
     taskSeen: (input, options) =>
       acknowledge(
         "/legion/v1/claims/task-seen",

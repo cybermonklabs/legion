@@ -1456,6 +1456,18 @@ func TestTaskResponseGolden(t *testing.T) {
 	golden(t, "task.json", claim.TaskResponse{Finished: 4})
 }
 
+// What `claims/task` answers a caller at contract 209 or later whose turn holds the take of
+// another claim of its issue: its own value and finished number beside `holds`, each held take's
+// role and its task's number. task.json above carries no `holds`, since the key is written only
+// where a take is held.
+func TestTaskResponseWithHoldsGolden(t *testing.T) {
+	golden(t, "task-holds.json", claim.TaskResponse{
+		Task:     &claim.TaskValue{Number: 5, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 13},
+		Finished: 4,
+		Holds:    []claim.HeldTake{{Role: claim.RoleTester, Task: 7}},
+	})
+}
+
 // What `claims/take` answers, one fixture for each outcome: the accepted take's text, the hold a
 // refused take met, and a dropped take, which carries neither.
 func TestTakeResponseGolden(t *testing.T) {

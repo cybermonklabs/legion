@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import type { LegionIssue } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { ActivityInput } from "@legion/pi-shared/daemon-client"
+import type { HoldsRead } from "@legion/pi-shared/holds-read"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -17,9 +18,11 @@ import {
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity"
 import { stallLimits } from "@legion/pi-shared/stall-limits"
+import { taskNotes } from "@legion/pi-shared/task-notes"
 import { workspaceRecreated, workspaceRecreatedNotice } from "@legion/pi-shared/workspace-recreated"
 import { z } from "zod"
 import { configuredValue } from "./claude-session"
+import type { TakePending } from "./legion-inbox"
 
 /**
  * The endless phase reminder's Claude Code host (INFRA-220). A Claude Code phase worker runs no Oh
@@ -51,6 +54,15 @@ import { configuredValue } from "./claude-session"
  * again once it is over, from the outcome the bridge reports with the provider's failure beside it
  * (INFRA-714, dispatch://INFRA-956). What stops the reminding for good is the runner's record
  * check, which drops every reminder once the daemon has failed this role's claim.
+ *
+ * A task the claim's take holds is the worker's next turn (dispatch://INFRA-4130 R6), and the
+ * bridge, which holds the take, is asked for it on the inbox (`LegionInbox.takePending`): while it
+ * answers that a take is pending, the `Stop` blocks nothing and the timer sends nothing. The same
+ * answer names the task the turn running did not take (R1), and the claim's own `claims/task`
+ * names the takes of the issue's other claims the daemon holds behind this turn (R2,
+ * `createHoldsRead` in `@legion/pi-shared/holds-read`): a `PostToolUse` of the worker's own tells
+ * it of each, once, as the hook's `additionalContext`, which reaches the model with its next
+ * request.
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -137,10 +149,16 @@ export function phaseHookToolDefinition() {
 
 /** One hook call's answer, as the tool's one JSON text block: `{}` when there is nothing to say,
  * `{"decision":"block","reason":…}` on the `Stop` that carries a reminder — which Claude Code
- * turns into one more turn of the same session, holding the reason — or the refusal. */
+ * turns into one more turn of the same session, holding the reason — `hookSpecificOutput` on the
+ * `PostToolUse` that carries a task note, whose `additionalContext` Claude Code hands the model
+ * with its next request, or the refusal. */
 export interface PhaseHookAnswer {
   readonly decision?: "block"
   readonly reason?: string
+  readonly hookSpecificOutput?: {
+    readonly hookEventName: "PostToolUse"
+    readonly additionalContext: string
+  }
   readonly error?: string
 }
 
@@ -193,6 +211,18 @@ export interface PhaseHookDeps {
    * `LEGION_WORKSPACE_RECREATED`. */
   readonly env: Readonly<Record<string, string | undefined>>
   readonly log: PhaseReminderLog
+  /** The bridge's answer to a take-pending query (`LegionInbox.takePending`): whether the claim's
+   * take holds a task, and the task the turn running did not take. Undefined where the bridge
+   * gives no answer — a refusal, as an older bridge's, no answer within the query's bound, or a
+   * pane with no inbox — which this endpoint reads as no take pending and no task waiting. */
+  readonly takePending: () => Promise<TakePending | undefined>
+  /** The claim's holds read (`createHoldsRead`, `@legion/pi-shared/holds-read`): its `holds` is
+   * called at each `PostToolUse` of the worker's own, which starts the next read where one is due
+   * and does not wait for it; its `turnEnded`, which drops what the turn's reads named and a read
+   * still in flight, is called at the worker's turn's end — a `Stop` that blocks nothing, a
+   * `StopFailure`; and its `turnStarted` at each `UserPromptSubmit` (`HoldsRead.turnStarted` says
+   * what it drops and keeps, and why). */
+  readonly holdsRead: HoldsRead
 }
 
 /** `<CLAUDE_CONFIG_DIR>/legion-phase-stall-<session id>.json`, the path the Go bridge built while
@@ -412,8 +442,15 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     project: configuredValue(deps.env["LEGION_PROJECT"]),
     limits,
     log: deps.log,
+    // R6: the bridge holds the take, and a take it holds pending is the next turn. A query the
+    // bridge does not answer reads as none pending, so the reminder comes as it did before.
+    taskPending: async () => (await deps.takePending())?.pending === true,
   })
   reminder.restore(restored.entry)
+
+  /** The numbers of the claim's own tasks this process has noted (R1), each once. The holds read
+   * gives each take of another claim once itself (R2). */
+  const notedTasks = new Set<number>()
 
   /**
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
@@ -517,6 +554,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
             lastAssistantText: event.lastAssistantMessage ?? "",
             backgroundWork,
           })
+          // A `Stop` that blocks nothing ends the turn, and the daemon accepts each take the holds
+          // read named at that end; a block continues the same turn, and the holds stand.
+          if (reminded === undefined) deps.holdsRead.turnEnded()
           // After the settle, so the report carries the wake that settle armed. The daemon
           // releases no claim whose last report is older than its last turn, so it goes at every
           // settle, whatever it says.
@@ -535,6 +575,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
+          deps.holdsRead.turnEnded()
           return {}
         }
         case "PostToolUse":
@@ -542,10 +583,30 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // The worker is working, whatever it is working on, and an attempted call that failed
           // is work too. `${agent_id}` substitutes to "" in the main conversation and to a
           // non-empty id for a subagent (measured on the real binary), so a helper agent's call
-          // is not this worker answering its reminder.
+          // is not this worker answering its reminder. Nor is a helper agent the one a note asks
+          // to end its turn, so it is told nothing and uses up no note.
           if ((event.agentId ?? "") !== "") return {}
           reminder.apply({ kind: "tool-call" })
-          return {}
+          // The notes go with a `PostToolUse` alone, the one event whose `additionalContext` the
+          // real binary is measured handing the model (tests/legion-phase-hook-claude.test.ts). A
+          // failed call's next step comes all the same, so a note owed then waits one tool call
+          // more, and nothing is used up meanwhile.
+          if (event.event === "PostToolUseFailure") return {}
+          // The holds read starts here, where one is due, and nothing waits for it: what it names
+          // is noted at the first `PostToolUse` after its answer. The bridge's answer is waited
+          // for, within its own 2 s bound and the hook's 10 s.
+          const held = deps.holdsRead.holds()
+          const waiting = (await deps.takePending())?.waiting ?? 0
+          const owed = waiting > 0 && !notedTasks.has(waiting) ? waiting : undefined
+          if (owed !== undefined) notedTasks.add(owed)
+          const notes = taskNotes(owed, held)
+          if (notes === undefined) return {}
+          return {
+            hookSpecificOutput: {
+              hookEventName: "PostToolUse",
+              additionalContext: notes,
+            },
+          }
         }
         case "UserPromptSubmit": {
           // D7: the only sight this server has of an inbound turn. The daemon's task reaches
@@ -556,6 +617,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
+          // A turn starts: the holds answer a turn kept is that turn's alone, since the daemon
+          // accepts each take it names at that turn's end (`HoldsRead.turnStarted` says what it
+          // drops and keeps, and why).
+          deps.holdsRead.turnStarted()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}
           // A line this server wrote is dropped as its prompt arrives, so a later turn carrying

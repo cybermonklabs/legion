@@ -88,6 +88,9 @@ type testSupervisor struct {
 	// stepErr is what the step read answers instead of the store's record, for a test about a
 	// refused read (refuseStep); nil while the store answers.
 	stepErr error
+	// heldBehind is what HeldBehind answers, for a test about the takes held behind a claim's
+	// turn (holdTakes); nil answers no held take.
+	heldBehind func(issue string, holder claim.Token) []claim.HeldTake
 }
 
 func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
@@ -165,6 +168,26 @@ func (s *testSupervisor) refuseStep(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stepErr = err
+}
+
+// HeldBehind is the takes held behind holder's turn as the test set them (holdTakes), and none
+// for a test that set nothing: the daemon's own answer reads its machines' published views
+// (internal/daemon's HeldBehind), which internal/daemon's own test holds.
+func (s *testSupervisor) HeldBehind(issue string, holder claim.Token) []claim.HeldTake {
+	s.mu.Lock()
+	held := s.heldBehind
+	s.mu.Unlock()
+	if held == nil {
+		return nil
+	}
+	return held(issue, holder)
+}
+
+// holdTakes has every later HeldBehind answer what held answers.
+func (s *testSupervisor) holdTakes(held func(issue string, holder claim.Token) []claim.HeldTake) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.heldBehind = held
 }
 
 type harness struct {

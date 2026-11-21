@@ -684,10 +684,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Pause: ended, Released: 3,
 		}}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 207).
+		// every key of the value a read answers (contract 207) and of the takes held behind the
+		// caller's turn (contract 209).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
 			Finished: 3,
+			Holds:    []claim.HeldTake{{Role: claim.RoleTester, Task: 7}},
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
 		// which between them carry every key of the answer (contract 207).

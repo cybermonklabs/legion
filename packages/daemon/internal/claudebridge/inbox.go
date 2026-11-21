@@ -19,30 +19,34 @@ import (
 // and finished numbers, and the word that the claim's ready has answered.
 const InboxVariable = "LEGION_CLAUDE_INBOX"
 
-// InboxTask, InboxReady and InboxFinished are the Kinds of a task line, of the ready line and of
-// a finished line (InboxDelivery).
+// InboxTask, InboxReady, InboxFinished and InboxTakePending are the Kinds of a task line, of the
+// ready line, of a finished line and of a take-pending query (InboxDelivery).
 const (
-	InboxTask     = "task"
-	InboxReady    = "ready"
-	InboxFinished = "finished"
+	InboxTask        = "task"
+	InboxReady       = "ready"
+	InboxFinished    = "finished"
+	InboxTakePending = "take-pending"
 )
 
 // InboxDelivery is one line a client writes to the inbox: an Envoy delivery, already rendered, that
 // becomes a user turn; a task line, the claim's task value; the ready line, claude-envoy's word
 // that the claim's `claims/ready` has answered, and the read of claims/task after it too, whose
-// reading line comes ahead of it; or a finished line, a reading of the daemon's that held no value.
+// reading line comes ahead of it; a finished line, a reading of the daemon's that held no value;
+// or a take-pending query, claude-envoy's hooks asking whether the claim's take holds a task.
 // InboxAnswer is the line the bridge writes back: for a delivery, once Claude Code has taken it,
 // re-emitting it as the user message it reads (--replay-user-messages), or with an error once it
 // never will — the delivery is in the transcript, which is what claude-envoy's `done` says; for
-// the claim's other lines, once the bridge's loop has taken it (take.go).
+// the claim's other lines, once the bridge's loop has taken it (take.go), which answers a
+// take-pending query at once, whatever Claude Code is doing.
 type InboxDelivery struct {
 	ID string `json:"id"`
-	// Kind is "" for an Envoy delivery, InboxTask for a task line, InboxReady for the ready line
-	// and InboxFinished for a finished line. A task line is a value of the claim's key in the task
-	// bucket, which claude-envoy hands the bridge as it is handed it — relayed, read at its
-	// registration, or read from claims/task (packages/claude-envoy, src/legion-inbox.ts) — and
-	// carries Number, Epoch, Revision and Finished and no Content. The ready line carries its ID
-	// alone, and a finished line its ID and Finished.
+	// Kind is "" for an Envoy delivery, InboxTask for a task line, InboxReady for the ready line,
+	// InboxFinished for a finished line and InboxTakePending for a take-pending query. A task line
+	// is a value of the claim's key in the task bucket, which claude-envoy hands the bridge as it
+	// is handed it — relayed, read at its registration, or read from claims/task
+	// (packages/claude-envoy, src/legion-inbox.ts) — and carries Number, Epoch, Revision and
+	// Finished and no Content. The ready line and a take-pending query carry their ID alone, and a
+	// finished line its ID and Finished.
 	Kind    string `json:"kind,omitempty"`
 	Content string `json:"content"`
 	// Blocks is the delivery as Claude Code's own content blocks, which a line carries where the
@@ -70,6 +74,18 @@ type InboxAnswer struct {
 	ID    string `json:"id"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// TakePending is a take-pending query's answer, and nil on the answer of every other line,
+	// which is therefore the line it always was.
+	TakePending *TakePendingAnswer `json:"takePending,omitempty"`
+}
+
+// TakePendingAnswer is what the bridge answers a take-pending query with (take.go): Pending,
+// whether the claim's take holds a task, which claude-envoy's Stop hook reads to block no stop
+// while it does; and Waiting, the number of the task the claim is owed that the turn running did
+// not take, 0 when no turn runs or none waits, which its PostToolUse hook names in its note.
+type TakePendingAnswer struct {
+	Pending bool   `json:"pending"`
+	Waiting uint64 `json:"waiting"`
 }
 
 // inbox is the bridge's listener: a unix socket in a directory of its own, 0700, so only this user
@@ -150,19 +166,36 @@ const (
 // owed is one answer a client is owed, in the order it sent its deliveries.
 type owed struct {
 	id     string
-	answer <-chan error
+	answer <-chan inboxReply
+}
+
+// inboxReply is the loop's answer to one inbox line, which serveInbox writes as that line's
+// InboxAnswer: err is why the bridge refused the line or will never take it, nil once it has taken
+// it; takePending is a take-pending query's answer, nil for every other line.
+type inboxReply struct {
+	err         error
+	takePending *TakePendingAnswer
 }
 
 // serveInbox reads one client's lines, handing each delivery and task value to the loop as it
-// arrives, and answers them in the order they came, each once the loop has answered it. The loop
-// answers every line it took before the inbox closes, so those answers are written then too,
-// within inboxFlushTimeout.
+// arrives, and answers them in the order they came, each once the loop has answered it: a line
+// waits for the answers of the lines ahead of it on its connection, so claude-envoy writes its
+// take-pending query down a connection of its own. The loop answers every line it took before the
+// inbox closes, so those answers are written then too, within inboxFlushTimeout. The watcher of
+// the inbox's close ends with the connection too: claude-envoy dials a connection for every
+// take-pending query, so a watcher left parked on stop would hold one goroutine and one closed
+// connection for each of them until the bridge exits.
 func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger *log.Logger) {
 	defer conn.Close()
+	served := make(chan struct{})
+	defer close(served)
 	go func() {
-		<-stop
-		_ = conn.SetReadDeadline(time.Now())
-		_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		select {
+		case <-stop:
+			_ = conn.SetReadDeadline(time.Now())
+			_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		case <-served:
+		}
 	}()
 	pending := make(chan owed, inboxPending)
 	go func() {
@@ -173,13 +206,13 @@ func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger
 			if err != nil {
 				return
 			}
-			answer := make(chan error, 1)
+			answer := make(chan inboxReply, 1)
 			var d InboxDelivery
 			if err := json.Unmarshal(line, &d); err != nil {
 				d = InboxDelivery{}
 			}
 			if ev, refusal := inboxEvent(d, answer); refusal != nil {
-				answer <- refusal
+				answer <- inboxReply{err: refusal}
 			} else if !send(events, stop, ev) {
 				return
 			}
@@ -192,19 +225,19 @@ func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger
 	}()
 	encoder := json.NewEncoder(conn)
 	for o := range pending {
-		var err error
+		var reply inboxReply
 		select {
-		case err = <-o.answer:
+		case reply = <-o.answer:
 		case <-stop:
 			select {
-			case err = <-o.answer:
+			case reply = <-o.answer:
 			default:
 				return
 			}
 		}
-		answer := InboxAnswer{ID: o.id, OK: true}
-		if err != nil {
-			answer = InboxAnswer{ID: o.id, Error: err.Error()}
+		answer := InboxAnswer{ID: o.id, OK: true, TakePending: reply.takePending}
+		if reply.err != nil {
+			answer = InboxAnswer{ID: o.id, Error: reply.err.Error()}
 		}
 		if err := encoder.Encode(answer); err != nil {
 			logger.Printf("could not answer inbox line %s: %v", o.id, err)
@@ -215,7 +248,7 @@ func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger
 
 // inboxEvent is the event the inbox line d hands the loop, answered on answer, or why d is no line
 // the bridge takes. A line that is not JSON reaches it as the zero line, which names no id.
-func inboxEvent(d InboxDelivery, answer chan<- error) (event, error) {
+func inboxEvent(d InboxDelivery, answer chan<- inboxReply) (event, error) {
 	if d.ID == "" {
 		return event{}, errors.New(malformedDelivery)
 	}
@@ -236,6 +269,8 @@ func inboxEvent(d InboxDelivery, answer chan<- error) (event, error) {
 			finished: *d.Finished, answer: answer}}, nil
 	case InboxReady:
 		return event{ready: answer}, nil
+	case InboxTakePending:
+		return event{takePending: answer}, nil
 	case InboxFinished:
 		if d.Finished == nil {
 			return event{}, errors.New(malformedFinished)

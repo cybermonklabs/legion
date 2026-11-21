@@ -1057,6 +1057,27 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if at, _ := shapeAnswer(AnswerRegister, registration, DaemonAPIVersion, DaemonAPIVersion); !reflect.DeepEqual(at, any(registration)) {
 					t.Errorf("the registration served at %d is %+v, want the body it was given", DaemonAPIVersion, at)
 				}
+			case AnswerTask:
+				// `holds` arrived at taskHoldsContract, after the answer did: a caller below it is
+				// served the read without the key, and a caller at it the body it was given.
+				reading := claim.TaskResponse{Task: &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12},
+					Finished: 3, Holds: []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}}
+				below, _ := shapeAnswer(AnswerTask, reading, taskHoldsContract-1, taskHoldsContract-1)
+				shaped, isReading := below.(claim.TaskResponse)
+				if !isReading {
+					t.Fatalf("the task read was shaped to %T, want a claim.TaskResponse", below)
+				}
+				encoded, err := json.Marshal(shaped)
+				if err != nil {
+					t.Fatalf("marshal the task read served below %d: %v", taskHoldsContract, err)
+				}
+				if bytes.Contains(encoded, []byte(`"holds"`)) || shaped.Task == nil || *shaped.Task != *reading.Task ||
+					shaped.Finished != reading.Finished {
+					t.Errorf("the task read served below %d is %s, want its task and finished with no `holds`", taskHoldsContract, encoded)
+				}
+				if at, _ := shapeAnswer(AnswerTask, reading, taskHoldsContract, taskHoldsContract); !reflect.DeepEqual(at, any(reading)) {
+					t.Errorf("the task read served at %d is %+v, want the body it was given", taskHoldsContract, at)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1067,11 +1088,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The four rows that shape a body of their own panic on a body of another type, as a row that
-// does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
-// have it served unshaped and in silence.
+// The rows that shape a body of their own panic on a body of another type, as a row that does not
+// exist panics: a route that wrote a State under AnswerIssueRecord would otherwise have it served
+// unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerTask} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

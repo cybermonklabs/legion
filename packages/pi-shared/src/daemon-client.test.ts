@@ -809,6 +809,35 @@ test("reads the claim's task value and finished number over claims/task, in eith
   ]);
 });
 
+// dispatch://INFRA-4130 R2: the daemon names, beside the caller's own value, the takes of the
+// issue's other claims held behind the caller's turn, and leaves the field out where it holds none.
+test("a task answer with holds parses, and one without parses to no holds", async () => {
+  const answers = [
+    daemonFixture("task-holds.json"),
+    daemonFixture("task.json"),
+    { task: null, finished: 4, holds: [{ role: "tester", task: 0 }] },
+  ];
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(() => Response.json(answers.shift())).fetch,
+  });
+  const agent = {
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+  };
+
+  const held = await client.task(agent);
+  expect(held.holds).toEqual([{ role: "tester", task: 7 }]);
+  expect(held).toEqual(daemonFixture("task-holds.json") as never);
+  const none = await client.task(agent);
+  expect(none.holds).toBeUndefined();
+  expect(none).toEqual({ task: null, finished: 4 });
+  // A held take naming no task is not what the contract describes.
+  await expect(client.task(agent)).rejects.toBeInstanceOf(LegionDaemonContractError);
+});
+
 test("reports a task value seen and takes it, reading every take answer the daemon's golden tests wrote, with the caller's signal", async () => {
   const taken = {
     claimToken: "legion-legion-legion-209-implementer",

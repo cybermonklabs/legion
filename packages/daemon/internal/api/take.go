@@ -32,7 +32,10 @@ import (
 // it onto the current plugin.
 
 // task is the worker reading its claim's value: the value the bucket holds now, null for none,
-// and the number of the last task the claim finished (supervise's Machine.CurrentTask).
+// and the number of the last task the claim finished (supervise's Machine.CurrentTask), with the
+// takes of its issue's other claims held behind its turn, so the worker of that turn can come to
+// a safe point; the key is absent where none is held (claim.TaskResponse). Both reads take the
+// claim as its machine last published it, waiting on no decision.
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req claim.TaskRequest
 	if !s.readTaskBody(w, r, &req) {
@@ -49,7 +52,9 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusInternalServerError, "TASK_VALUE_UNAVAILABLE", "task read failed: the daemon could not read the task bucket")
 		return
 	}
-	s.writeAnswer(w, r, AnswerTask, http.StatusOK, taskResponseOf(current))
+	answer := taskResponseOf(current)
+	answer.Holds = s.supervisor.HeldBehind(m.View().Issue, token)
+	s.writeAnswer(w, r, AnswerTask, http.StatusOK, answer)
 }
 
 // taskResponseOf is the claim's current task as the wire carries it.

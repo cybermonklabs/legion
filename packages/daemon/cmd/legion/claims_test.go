@@ -120,6 +120,9 @@ func (s *memoryClaims) Step(_ context.Context, token legionclaim.Token) (supervi
 	return s.rows[token].Step, nil
 }
 
+// HeldBehind answers no held take: no test of `legion claims` holds a take behind a turn.
+func (s *memoryClaims) HeldBehind(string, legionclaim.Token) []legionclaim.HeldTake { return nil }
+
 func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()

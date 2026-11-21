@@ -598,8 +598,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
-		// nobody reported seeing, the list supervise.TaskTakeContract added, which is this
-		// daemon's own, so the only pod served the key is one at it.
+		// nobody reported seeing, the list supervise.TaskTakeContract added, the newest contract
+		// the route narrows by, so a pod is served the key only at it or a later one.
 		unseen bool
 		// repos is whether the caller is served the repositories block this contract writes,
 		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a caller

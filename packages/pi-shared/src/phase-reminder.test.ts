@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { LegionIssue } from "@legion/contracts/legion-api";
+import type { LegionIssue, LegionTake } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
@@ -10,6 +10,7 @@ import { createLegionDaemonClient } from "./daemon-client";
 import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./phase-reminder";
 import { type PhaseStallEntry, REMINDER } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
+import { createTaskTake } from "./task-take";
 
 const implementer = {
   sessionID: "ses_implementer",
@@ -50,6 +51,7 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
+    taskPending: () => false,
     recordBoundMs: 20,
   });
   reminder.apply({ kind: "assignment" });
@@ -87,6 +89,7 @@ function overDaemon(answer: typeof fetch) {
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
+    taskPending: () => false,
   });
   reminder.apply({ kind: "assignment" });
   return { reminder, routes, debugged };
@@ -141,6 +144,7 @@ function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: EnvoyPublish;
   readonly record?: LegionIssue;
+  readonly taskPending?: () => boolean | Promise<boolean>;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -165,6 +169,7 @@ function rig(options: {
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
     log: { debug: () => {}, warn: (message) => warned.push(message) },
+    taskPending: options.taskPending ?? (() => false),
   });
   reminder.apply({ kind: "assignment" });
   return { reminder, timers, sent, entries, published, warned };
@@ -506,6 +511,7 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
+    taskPending: () => false,
   });
   // The continuation this first settle of a run would earn: the record check drops it.
   reminder.apply({ kind: "assignment" });
@@ -588,4 +594,250 @@ test("a resumed session whose phase is open gets one reminder turn after resumeM
   closed.reminder.restore(undefined);
   closed.reminder.armResumeReminder();
   expect(closed.timers).toEqual([]);
+});
+
+const EPOCH = "2026-11-13T16:21:44.123456789Z";
+const TASK_TEXT = "Task 4 of LEGION-208: implement the change.";
+
+/** Lets every promise queued so far settle. */
+async function flush(): Promise<void> {
+  for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+}
+
+/**
+ * The implementer's take of its claim's task (`src/task-take.ts`), ready, over a daemon that
+ * answers each take only when a case answers it (`answer`, the take asked last). No attempt's
+ * bound passes, so a take nobody answered stays in flight.
+ */
+function claimTake() {
+  const answers: ((answer: LegionTake) => void)[] = [];
+  const ran: string[] = [];
+  const take = createTaskTake({
+    caller: {
+      claimToken: implementer.claimToken,
+      sessionId: implementer.sessionID,
+      secret: implementer.secret,
+      generation: implementer.generation,
+    },
+    daemon: {
+      taskSeen: async () => undefined,
+      take: () => {
+        const { promise, resolve } = Promise.withResolvers<LegionTake>();
+        answers.push(resolve);
+        return promise;
+      },
+    },
+    run: (text) => {
+      ran.push(text);
+    },
+    setPending: () => {},
+    log: { info: () => {}, warn: () => {} },
+    wait: (_ms, signal) => {
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      if (signal.aborted) resolve(false);
+      signal.addEventListener("abort", () => resolve(false), { once: true });
+      return promise;
+    },
+  });
+  take.ready();
+  return {
+    take,
+    ran,
+    /** How many takes the daemon was asked. */
+    asked: () => answers.length,
+    /** The daemon's write of task `number` at `revision`, relayed to the session. */
+    relay: async (number: number, revision: number) => {
+      take.relayed({
+        claim: implementer.claimToken,
+        epoch: EPOCH,
+        revision,
+        op: "put",
+        task: number,
+      });
+      await flush();
+    },
+    /** The daemon's answer to the take asked last. */
+    answer: async (outcome: LegionTake) => {
+      answers.at(-1)?.(outcome);
+      await flush();
+    },
+  };
+}
+
+// dispatch://INFRA-4130 R6: while the take holds a task value it will ask about, or a take is in
+// flight or accepted and its turn has not started, the worker starts no reminder turn: the task is
+// the next turn, and the reminder has nothing to add. A hold that refuses the take still lets the
+// reminder come, as at the base.
+test("a settle while the take holds a task value returns no continuation, and a timer reminder sends nothing while the take is pending", async () => {
+  // S7: a value arrives during the run and is not asked about: the settle arms the timer at the
+  // reminder's delay with the same reminder, and the count does not move.
+  const unasked = claimTake();
+  const quiet = rig({ taskPending: () => unasked.take.pending() });
+  unasked.take.runStarted();
+  await unasked.relay(4, 12);
+  expect(unasked.asked()).toBe(0);
+  expect(await quiet.reminder.settle(said("Pushed."))).toBeUndefined();
+  expect(quiet.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.reminderMs]);
+  expect(quiet.entries.at(-1)).toMatchObject({ state: "open", count: 0 });
+  // The run ends, and the take is asked: the timer that fires while it is in flight sends nothing.
+  unasked.take.runEnded(false);
+  await flush();
+  expect(unasked.asked()).toBe(1);
+  await fireLast(quiet.timers);
+  expect(quiet.sent).toEqual([]);
+  expect(quiet.entries.at(-1)).toMatchObject({ state: "open", count: 0 });
+  // The take's text is the next turn.
+  await unasked.answer({ outcome: "accepted", text: TASK_TEXT });
+  expect(unasked.ran).toEqual([TASK_TEXT]);
+
+  // S8: a take asked while the host was idle is in flight when a run that started meanwhile
+  // settles.
+  const inFlight = claimTake();
+  const flying = rig({ taskPending: () => inFlight.take.pending() });
+  await inFlight.relay(4, 12);
+  expect(inFlight.asked()).toBe(1);
+  inFlight.take.runStarted();
+  flying.reminder.turnStarted();
+  expect(await flying.reminder.settle(said("Pushed."))).toBeUndefined();
+  expect(flying.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.reminderMs]);
+
+  // S9: the take was accepted during the run, and its text waits for the run's end.
+  const accepted = claimTake();
+  const holding = rig({ taskPending: () => accepted.take.pending() });
+  await accepted.relay(4, 12);
+  accepted.take.runStarted();
+  await accepted.answer({ outcome: "accepted", text: TASK_TEXT });
+  expect(accepted.ran).toEqual([]);
+  expect(await holding.reminder.settle(said("Pushed."))).toBeUndefined();
+  accepted.take.runEnded(false);
+  expect(accepted.ran).toEqual([TASK_TEXT]);
+
+  // S10: the take was refused at this revision by a hold other than `in-turn`: the daemon writes
+  // the value again once that hold ends, so nothing is pending and the continuation comes.
+  const held = claimTake();
+  const reminded = rig({ taskPending: () => held.take.pending() });
+  await held.relay(4, 12);
+  await held.answer({ outcome: "refused", hold: "issue-in-turn" });
+  held.take.runStarted();
+  expect(await reminded.reminder.settle(said("Pushed."))).toBe(REMINDER);
+  expect(reminded.timers).toEqual([]);
+  expect(reminded.entries.at(-1)).toMatchObject({ state: "open", count: 1 });
+
+  // S10a: the take asked while the host was idle was overtaken by this run and refused `in-turn`
+  // during it: the daemon writes the value again once it hears this run's end, so the take is
+  // pending past that end, until the daemon's write or the bound (`IN_TURN_REWRITE_BOUND_MS`).
+  const inTurn = claimTake();
+  const waiting = rig({ taskPending: () => inTurn.take.pending() });
+  await inTurn.relay(4, 12);
+  inTurn.take.runStarted();
+  await inTurn.answer({ outcome: "refused", hold: "in-turn" });
+  expect(await waiting.reminder.settle(said("Pushed."))).toBeUndefined();
+  expect(waiting.entries.at(-1)).toMatchObject({ state: "open", count: 0 });
+});
+
+test("a reminder skipped for a pending take is armed again, and reminds once the take is refused by a hold", async () => {
+  const claim = claimTake();
+  // Claude Code's host answers over the bridge, so its answer is a promise.
+  const { reminder, timers, sent, entries } = rig({
+    taskPending: async () => claim.take.pending(),
+  });
+  // The run's continuation, then the settle of the turn it bought, which arms the timer.
+  expect(await reminder.settle(said("Pushed."))).toBe(REMINDER);
+  reminder.turnStarted();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  expect(timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.reminderMs]);
+
+  // The host is idle and a value arrives: the take is asked at once, and is in flight.
+  await claim.relay(4, 12);
+  expect(claim.asked()).toBe(1);
+
+  // S11: the timer fires while the take is pending: nothing is sent, the count stands, and the
+  // timer is armed again at the reminder's delay, as often as it fires.
+  await fireLast(timers);
+  expect(sent).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ state: "open", count: 1 });
+  expect(timers.map((timer) => timer.delayMs)).toEqual([
+    DEFAULT_STALL_LIMITS.reminderMs,
+    DEFAULT_STALL_LIMITS.reminderMs,
+  ]);
+  expect(reminder.phaseWake().nextReminderAt).not.toBeNull();
+  await fireLast(timers);
+  expect(sent).toEqual([]);
+  expect(timers).toHaveLength(3);
+
+  // S12: the daemon refuses the take for another role's turn: nothing is pending, and the timer
+  // reminds as at the base, with the same reminder.
+  await claim.answer({ outcome: "refused", hold: "issue-in-turn" });
+  await fireLast(timers);
+  expect(sent).toEqual([REMINDER]);
+  expect(entries.at(-1)).toMatchObject({ state: "open", count: 2 });
+  expect(timers).toHaveLength(3);
+
+  // The resume reminder goes the same way: skipped while the take is pending and armed again at
+  // the reminder's delay, then sent once the take is refused.
+  const resumedClaim = claimTake();
+  const resumed = rig({ taskPending: () => resumedClaim.take.pending() });
+  resumed.reminder.restore({ state: "open", count: 0, reported: false });
+  await resumedClaim.relay(4, 12);
+  resumed.reminder.armResumeReminder();
+  await fireLast(resumed.timers);
+  expect(resumed.sent).toEqual([]);
+  expect(resumed.timers.map((timer) => timer.delayMs)).toEqual([
+    DEFAULT_STALL_LIMITS.resumeMs,
+    DEFAULT_STALL_LIMITS.reminderMs,
+  ]);
+  await resumedClaim.answer({ outcome: "refused", hold: "stale-plugin" });
+  await fireLast(resumed.timers);
+  expect(resumed.sent).toEqual([REMINDER]);
+});
+
+// The running task's own number written again at a newer revision during its turn (see the
+// task-take test "pending() is false for a newer revision of the task whose turn is running"): no
+// take follows it, so the settle gives the run's continuation as at the base, rather than holding
+// it for a take that never comes and reminding only after the reminder's whole delay.
+test("a newer revision of the running task's own number withholds no continuation", async () => {
+  const claim = claimTake();
+  const { reminder, timers, sent } = rig({ taskPending: () => claim.take.pending() });
+  await claim.relay(4, 12);
+  await claim.answer({ outcome: "accepted", text: TASK_TEXT });
+  claim.take.runStarted();
+  reminder.turnStarted();
+  await claim.relay(4, 13);
+  expect(claim.take.noteFor()).toBeUndefined();
+
+  const continuation = await reminder.settle(said("Pushed."));
+  claim.take.runEnded(false);
+  await flush();
+  expect(claim.asked()).toBe(1);
+  expect(claim.ran).toEqual([TASK_TEXT]);
+  expect({ continuation, timers: timers.map((t) => t.delayMs), sent }).toEqual({
+    continuation: REMINDER,
+    timers: [],
+    sent: [],
+  });
+});
+
+// The running task's own number written again while the host set its text up, before its
+// agent_start: the idle host asks it at once, and the task's turn starts before the daemon
+// answers. That take brings no turn (see the task-take test "pending() is false for a take in
+// flight at a newer revision of the task whose turn is running"), so the settle of the task's own
+// run gives its continuation, as for a newer revision not asked about.
+test("a take in flight at a newer revision of the running task's own number withholds no continuation", async () => {
+  const claim = claimTake();
+  const { reminder, timers, sent } = rig({ taskPending: () => claim.take.pending() });
+  await claim.relay(4, 12);
+  await claim.answer({ outcome: "accepted", text: TASK_TEXT });
+  expect(claim.ran).toEqual([TASK_TEXT]);
+  await claim.relay(4, 13);
+  expect(claim.asked()).toBe(2);
+  claim.take.runStarted();
+  reminder.turnStarted();
+  expect(claim.take.noteFor()).toBeUndefined();
+
+  const continuation = await reminder.settle(said("Pushed."));
+  expect({ continuation, timers: timers.map((t) => t.delayMs), sent }).toEqual({
+    continuation: REMINDER,
+    timers: [],
+    sent: [],
+  });
 });

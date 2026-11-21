@@ -154,6 +154,8 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
   // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 207).
   "task.json": LegionTaskResponse,
+  // `claim.TaskResponse` carrying `holds`, the takes held behind the caller's turn (contract 209).
+  "task-holds.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
   "take-dropped.json": LegionTakeResponse,
@@ -2404,6 +2406,33 @@ test("the register golden and the task read carry the claim's value and its fini
   }
   const noTask = { ...fixtureBody("task.json"), task: { number: 0, epoch: "e", revision: 1 } };
   expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
+});
+
+// A caller whose turn holds the take of another claim of its issue is told of it on its task read
+// (contract 209): `holds`, each held claim's role and its task's number, written by the Go side
+// beside the caller's own value. The key is absent where nothing is held, so the read without it
+// parses to no holds, and a held take names a role and a task.
+test("the task read names the takes held behind the caller's turn", () => {
+  expect(LegionTaskResponse.parse(fixture("task-holds.json"))).toEqual({
+    task: { number: 5, epoch: "2026-11-13T16:21:44.123456789Z", revision: 13 },
+    finished: 4,
+    holds: [{ role: "tester", task: 7 }],
+  });
+  expect(LegionTaskResponse.parse(fixture("task.json")).holds).toBeUndefined();
+
+  const held = fixtureBody("task-holds.json");
+  const broken = [
+    { role: "tester", task: 0 },
+    { role: "", task: 7 },
+    { task: 7 },
+    { role: "tester" },
+  ];
+  for (const take of broken) {
+    expect(
+      LegionTaskResponse.safeParse({ ...held, holds: [take] }).success,
+      `holds [${JSON.stringify(take)}]`
+    ).toBeFalse();
+  }
 });
 
 // A take is answered one of three ways (contract 207), each written by the Go side: accepted with

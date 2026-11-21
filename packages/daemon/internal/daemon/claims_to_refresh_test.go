@@ -83,7 +83,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
 	cfg := testConfig(t)
-	stale := api.DaemonAPIVersion - 1
+	stale := supervise.TaskTakeContract - 1
 
 	type seeded struct {
 		issue   string

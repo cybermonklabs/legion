@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   assistantRanTool,
   assistantText,
+  inboundKind,
   LAST_MESSAGE_LIMIT,
   phaseStallEntryFrom,
   REMINDER,
@@ -199,4 +200,22 @@ test("background work reopens nothing: a closed phase settles closed, and the wa
   expect(stepPhaseStall({ state: "waiting", count: 2 }, { kind: "reminded" })).toEqual({
     state: { state: "open", count: 3 },
   });
+});
+
+// dispatch://INFRA-4130 R1 and R2: Oh My Pi puts a tool result's `additionalContext`, which is how
+// the task notes reach the model (`taskWaitingNote` and `heldTakeNote` in `./task-notes`), into the
+// run as a `developer` message. A note tells the worker a task waits; it is neither the task's
+// assignment nor an event the worker waited on, so the reminder's count does not start again on
+// it.
+test("a developer message is neither an assignment nor an inbound event", () => {
+  const note = "Legion: task 4 of this claim waits for this turn to end.";
+  expect(inboundKind({ role: "developer", content: note })).toBeUndefined();
+  expect(
+    inboundKind({ role: "developer", content: [{ type: "text", text: note }] })
+  ).toBeUndefined();
+  // The same words as the user's turn, or as an Envoy delivery, are what the classifier counts.
+  expect(inboundKind({ role: "user", content: note })).toBe("assignment");
+  expect(inboundKind({ role: "custom", customType: "envoy-message", content: note })).toBe(
+    "inbound-event"
+  );
 });

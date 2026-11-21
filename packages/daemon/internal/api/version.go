@@ -3124,4 +3124,33 @@ package api
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 207
+//
+// 209: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
+// (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
+// of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
+// in a turn (its agent working, or an accepted take whose turn has not started), named by that
+// claim's role and its task's number, so the worker of that turn can come to a safe point before
+// the turn ends and the held take is accepted. The key is absent where none is held, and the
+// registration's answer never carries it, since a registering process is in no turn. This daemon
+// serves it down through the shaping 193 brought: a caller whose header states a contract below
+// 209 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
+// migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// `supervise.TaskTakeContract` stays 207.
+// (This entry took 179 against the branch's base, which declared 174. It took 206 at the forward
+// merge of 2026-11-21 that brought cybermonklabs/legion#3993's branch in at
+// d61d7da5e458078e99d93b6890ebd87bb7e1d62f, which declared 203: a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request from
+// 2026-11-21T02:54:37Z to 02:58:57Z found 203 (#2230, #3993, #4065, #4175, #4553, #4592 and
+// #4661), 204 (#3831 and #4030) and 205 (#4573) declared by open pull requests, so 206 was the
+// lowest number above 203 that none declared. It takes 209 at the forward merge of 2026-11-21
+// that brought #3993's branch in at 7ade1c0c32a4798795dc5ba22e30e5a6009a6e07, which declares 207,
+// the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
+// one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,
+// #4030, #4392, #4432, #4590 and #4592) and 208 (#4611) declared by open pull requests, so 209
+// was the lowest number above 207 that none declared. Read the base's own number and every open
+// pull request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 209

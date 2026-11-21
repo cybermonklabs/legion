@@ -548,7 +548,13 @@ export interface PiEventContract {
     readonly result: SessionStopEventResult;
   };
   readonly tool_call: { readonly event: ToolCallEvent; readonly result: ToolCallEventResult };
-  readonly tool_result: { readonly event: ToolResultEvent; readonly result: undefined };
+  /** `additionalContext` is text the host hands the model with the call's result: Oh My Pi's
+   *  `ToolResultEventResult.additionalContext`, which the next provider request carries as a
+   *  `developer` message (`shared-events.ts` at the pin in `.omp-pin`). */
+  readonly tool_result: {
+    readonly event: ToolResultEvent;
+    readonly result: { readonly additionalContext?: string } | undefined;
+  };
   /** A call handed to its tool, which is where the stall watch starts that call's clock. */
   readonly tool_execution_start: {
     readonly event: ToolExecutionStartEvent;

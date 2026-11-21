@@ -253,10 +253,23 @@ func (r TaskRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller, r.
 
 // TaskResponse is what POST /legion/v1/claims/task answers, and what the registration carries
 // (RegisterResponse): the claim's value as the bucket holds it now, null where it holds none, and
-// the number of the last task the claim finished, 0 for none.
+// the number of the last task the claim finished, 0 for none. Holds is what the task route alone
+// adds, for a caller whose plugin declared the contract that brought it or a later one: the takes
+// of the issue's other claims held behind the caller's turn (HeldTake), absent where none is
+// held. The registration carries none, since a process that registers is in no turn.
 type TaskResponse struct {
 	Task     *TaskValue `json:"task"`
 	Finished uint64     `json:"finished"`
+	Holds    []HeldTake `json:"holds,omitempty"`
+}
+
+// HeldTake is a take of another claim of the caller's issue refused because the caller is in a
+// turn (supervise's HoldIssueInTurn): the role of the claim whose take waits, and the number of
+// its task. The take is accepted once the caller's turn ends, so the caller's worker is told of it
+// to come to a safe point (dispatch://INFRA-4130).
+type HeldTake struct {
+	Role Role   `json:"role"`
+	Task uint64 `json:"task"`
 }
 
 // TaskSeenRequest is the body of POST /legion/v1/claims/task-seen: the worker reporting that it

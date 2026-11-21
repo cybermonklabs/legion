@@ -241,7 +241,11 @@ func recordedContractAtOrBelow(n int) int {
 // that contract and is the identity at every contract. One row more takes keys off below
 // supervise.TaskTakeContract, which added `task` and `finished` to the registration's answer: the
 // registration's row serves a caller below it the answer without both (withoutTaskReading). It
-// follows strip as well, and placedByPod places its caller by its pod too.
+// follows strip as well, and placedByPod places its caller by its pod too. And one row takes a
+// key off below taskHoldsContract, which added `holds` to the task read's answer: the task read's
+// row serves a caller whose header states a contract below it the answer without `holds`. It
+// follows strip as well, but placedByPod does not place its caller by its pod, so a caller that
+// states no contract is served `holds`; no plugin is such a caller (placedByPod says why).
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
@@ -299,18 +303,30 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			return withoutTaskReading(registration), took
 		}
 		return registration, took
+	case AnswerTask:
+		reading, isReading := body.(claim.TaskResponse)
+		if !isReading {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// `holds` arrived at taskHoldsContract, after the answer itself did
+		// (supervise.TaskTakeContract): a caller below it reads no such key, so it is served the
+		// answer without it, the shape the record of its own contract holds.
+		if strip < taskHoldsContract {
+			reading.Holds = nil
+		}
+		return reading, took
 	case AnswerHealth, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerTask, AnswerTake:
+		AnswerTake:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
 		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerTask and AnswerTake arrived whole at supervise.TaskTakeContract, so no older
-		// contract records any of the five at all.
+		// AnswerTake arrived whole at supervise.TaskTakeContract, so no older contract records
+		// any of the four at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -988,9 +1004,18 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
+
+// taskHoldsContract is the daemon contract that added `holds` to the answer of the task route
+// (version.go's 209): the takes of the caller's issue's other claims held behind the caller's turn
+// (Supervisor.HeldBehind, claim.HeldTake). The route writes the key for every caller, and the
+// task read's row serves it down (shapeAnswer's AnswerTask row): a caller whose header states a
+// contract below this one is answered without it. It is pinned, not read from DaemonAPIVersion,
+// so a later contract bump takes the key from no plugin that reads it; a merge that renumbers this
+// change moves it with its version.go entry and SupportedContracts.
+const taskHoldsContract = 209
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1859,11 +1884,15 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // PauseFailure and for a registration, and false for every other answer. The first two answers'
 // shapes moved at pauseContract and the registration's at supervise.TaskTakeContract, and their
 // writers answer from no snapshot of their own, so writeAnswer reads the claims for them
-// (placingClaims). Every other answer writeAnswer writes is the identity at every contract, and
-// so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for one of them
-// would decide nothing. A serving-down added to one of them reaches the caller of a pod only once
-// this answers true for it. The state and the record are no question for it: their routes hand
-// in their own snapshot's claims (writeAnswerFrom).
+// (placingClaims). Every other answer writeAnswer writes is the identity at every contract but
+// the task read, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims
+// for one of them would decide nothing. The task read's row takes `holds` off for a caller whose
+// header states a contract below taskHoldsContract, and a caller that states no contract is
+// served `holds`, since this answers false for it: no plugin is such a caller, because the task
+// route arrived at supervise.TaskTakeContract and every plugin since shapedAnswersContract states
+// its contract. A serving-down added to another answer reaches the caller of a pod only once this
+// answers true for it. The state and the record are no question for it: their routes hand in
+// their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords, AnswerRegister:

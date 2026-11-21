@@ -340,6 +340,9 @@ func (c *crossClaims) Step(ctx context.Context, token claim.Token) (supervise.St
 	return c.store.ClaimStep(ctx, token)
 }
 
+// HeldBehind answers no held take: no test of the bridge's take holds one behind a turn.
+func (c *crossClaims) HeldBehind(string, claim.Token) []claim.HeldTake { return nil }
+
 // crossSpecs is a launch the fake runtime accepts: the machine fills in who it is for.
 type crossSpecs struct{}
 

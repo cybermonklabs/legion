@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A phase task that waits behind another role's turn is no longer hidden from that role:
+  `POST /legion/v1/claims/task` answers `holds`, each take of another claim of the issue that the
+  daemon refused `issue-in-turn` behind the caller's turn, named by its role and task number, for
+  a caller on daemon API contract 209 or later. The hold itself does not change. The Claude Code
+  bridge answers a `take-pending` inbox line at once with whether its take holds a task and which
+  owed task the running turn did not take.

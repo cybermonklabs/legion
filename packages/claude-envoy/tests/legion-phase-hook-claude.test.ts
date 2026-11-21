@@ -1,10 +1,16 @@
 import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { LegionStateResponse } from "@legion/contracts/legion-api"
+import {
+  LegionStateResponse,
+  type LegionTask,
+  LegionTaskResponse,
+} from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
@@ -105,7 +111,9 @@ function messageStream(blocks: readonly Block[], id: string): string {
  * same server is the Anthropic API, the Legion daemon and the Envoy listener: a worker's three
  * addresses, each a path of its own.
  */
-function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Response): {
+function serveStandin(
+  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>,
+): {
   readonly requests: Request[]
   readonly base: string
 } {
@@ -136,13 +144,15 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // model's calls `PostToolUse` fires for. Every other test of this path drives the endpoint
 // directly and would pass just as well if Claude Code armed nothing.
 //
-// LEGION_TEST_CLAUDE names the binary: the one the worker image installs from this branch's
-// `packages/daemon/docker/claude-code/package-lock.json`
-// (`node_modules/@anthropic-ai/claude-code-linux-x64/claude`; the `node_modules/.bin/claude`
-// symlink is a `.exe` shim that does not exec on Linux). A run without one skips the whole file.
-// Unlike `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts`, which also runs on
-// GitHub Actions because CI's pi-envoy job installs the Oh My Pi pin, nothing in CI installs the
-// Claude Code binary, so there is no host where a skip here would hide the only run of the check.
+// LEGION_TEST_CLAUDE names the binary: the release `.claude-code-pin` pins, which CI's
+// claude-envoy job installs and exports (`.github/actions/install-claude-code`), or the one the
+// worker image installs from this branch's `packages/daemon/docker/claude-code/package-lock.json`
+// (`node_modules/@anthropic-ai/claude-code-linux-x64/claude`; in that image the
+// `node_modules/.bin/claude` symlink is a `.exe` shim that does not exec on Linux). A run without
+// one skips the whole file, except on GitHub Actions, where CI installs the binary and a skip
+// would hide the only run of these checks, so a missing binary fails each case there
+// (`GITHUB_ACTIONS`, not `CI`: agent harnesses on the devbox export `CI=true`), as
+// `tests/answers-claude.test.ts` does.
 //
 // What runs is real: a fresh `scripts/build.ts --out` build of this tree, whose generated `legion/`
 // plugin tree and built `dist/envoy-channel.js` (the pane's `legion` MCP server) are what main's
@@ -158,6 +168,7 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // document runs the real server under `sh -c exec` with its stderr redirected to a file — the
 // server stays Claude Code's own child, and nothing but the redirection differs.
 const claude = process.env["LEGION_TEST_CLAUDE"]
+const skipped = claude === undefined && process.env["GITHUB_ACTIONS"] !== "true"
 
 /** The pane's session, the form `--session-id` takes (`claudelaunch.NewSessionID`). */
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
@@ -173,6 +184,14 @@ const BOOT_TOKEN = fixtureSecret("boot")
 
 /** The package root, whose `scripts/build.ts` builds the plugin a worker loads. */
 const PACKAGE = resolve(import.meta.dir, "..")
+
+/** The daemon's own golden `claims/task` answer that names a take held behind the caller's turn
+ * (`task-holds.json`, from `internal/api`'s golden test), parsed as the plugin parses it: a value,
+ * and one held take. */
+async function heldTakeReading(): Promise<LegionTask> {
+  const path = resolve(PACKAGE, "../contracts/fixtures/daemon-api/task-holds.json")
+  return LegionTaskResponse.parse(JSON.parse(await readFile(path, "utf8")))
+}
 
 /** The scratch directory of the plugin build, removed after the last case. */
 let pluginScratch: string | undefined
@@ -300,6 +319,10 @@ interface WorkerRun {
   readonly record: unknown
   /** Claude Code's whole `--debug` log, for a failure's sake. */
   readonly debug: string
+  /** Every line the stand-in bridge's inbox read, in order; none without `bridge`. */
+  readonly inboxLines: readonly Record<string, unknown>[]
+  /** The `claims/task` reads the daemon stand-in answered, in order. */
+  readonly taskReads: readonly Request[]
 }
 
 /**
@@ -325,6 +348,18 @@ async function runWorker(options: {
    * session — asks for more, so stdin stays open until that run has ended too.
    */
   readonly runs?: number
+  /**
+   * A stand-in for the bridge, which these cases otherwise run without, and for the daemon's
+   * `claims/task`. The bridge's inbox socket at `LEGION_CLAUDE_INBOX` answers every line the
+   * server writes it `ok` — the claim's task lines, its ready line and finished lines, and any
+   * delivery all go there once the variable is set — and a take-pending query with a take pending
+   * and the claim's value waiting; the daemon answers each `claims/task` with `task-holds.json`,
+   * whose value is that one and which names one take held behind this claim's turn. The prompts
+   * after the seed wait for the claim boot's own read after its ready, so that every later read
+   * is the phase hook's holds read, and the scripted reply `heldReply` is sent only once the
+   * daemon stand-in has had the first of those.
+   */
+  readonly bridge?: { readonly heldReply: number }
 }): Promise<WorkerRun> {
   const plugin = await builtPlugin()
   const root = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
@@ -346,14 +381,27 @@ async function runWorker(options: {
   // The daemon's own golden answers, so a field the daemon adds to either reaches this stand-in.
   const registered = await fixture("register.json")
   const state = await fixture("state.json")
+  const holding = await heldTakeReading()
+  // What the stand-in bridge names as the claim's value waiting: the value that reading holds.
+  const waiting = holding.task?.number ?? 0
   const ready = Promise.withResolvers<void>()
+  // The claim boot's `claims/task` read after its ready, and the phase hook's first holds read.
+  const bootRead = Promise.withResolvers<void>()
+  const holdsRead = Promise.withResolvers<void>()
+  let taskReads = 0
   let answered = 0
-  const { requests, base } = serveStandin((url, body) => {
+  const { requests, base } = serveStandin(async (url, body) => {
     // The stand-in Anthropic API: one scripted reply per model request, the last of them ending
     // the run, so every case ends on its own.
     if (url.pathname === "/v1/messages") {
+      const reply = answered
       const blocks = options.replies[answered]
       answered += 1
+      if (options.bridge?.heldReply === reply) {
+        // Bounded, so a hook that starts no read fails the case at its assertions rather than at
+        // the case's own timeout; the real binary is what runs, so there is no clock to drive.
+        await Promise.race([holdsRead.promise, Bun.sleep(10_000)])
+      }
       if (blocks === undefined) {
         return Response.json(
           { type: "error", error: { type: "invalid_request_error", message: "no reply scripted" } },
@@ -385,6 +433,12 @@ async function runWorker(options: {
       return Response.json(LegionStateResponse.parse(state).issues[ISSUE])
     }
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
+    if (options.bridge !== undefined && url.pathname === "/legion/v1/claims/task") {
+      taskReads += 1
+      if (taskReads === 1) bootRead.resolve()
+      else holdsRead.resolve()
+      return Response.json(holding)
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
     }
@@ -402,6 +456,41 @@ async function runWorker(options: {
       delivery: consumerDelivery(registering),
     })
   })
+
+  // The stand-in bridge's inbox (`packages/daemon/internal/claudebridge/inbox.go`), one JSON line
+  // each way: every line answered `ok` under its id, and a take-pending query answered as a
+  // bridge answers it while it holds the claim's value during a turn that did not take it.
+  const inboxLines: Record<string, unknown>[] = []
+  let inboxSocket: string | undefined
+  if (options.bridge !== undefined) {
+    const socketPath = join(root, "inbox.sock")
+    const inbox = createServer((socket: Socket) => {
+      let lines = ""
+      socket.setEncoding("utf8")
+      socket.on("data", (chunk: string) => {
+        lines += chunk
+        for (let end = lines.indexOf("\n"); end >= 0; end = lines.indexOf("\n")) {
+          const line = JSON.parse(lines.slice(0, end)) as Record<string, unknown>
+          lines = lines.slice(end + 1)
+          inboxLines.push(line)
+          const answer =
+            line["kind"] === "take-pending"
+              ? { id: line["id"], ok: true, takePending: { pending: true, waiting } }
+              : { id: line["id"], ok: true }
+          socket.write(`${JSON.stringify(answer)}\n`)
+        }
+      })
+      // The query's connection is closed by the server once it is answered.
+      socket.on("error", () => undefined)
+    })
+    const listening = Promise.withResolvers<void>()
+    inbox.listen(socketPath, listening.resolve)
+    await listening.promise
+    cleanup.push(async () => {
+      inbox.close()
+    })
+    inboxSocket = socketPath
+  }
 
   // The worker's MCP document, as `claudelaunch.MCPConfig` writes it, with the one difference
   // this file needs: the server's stderr, which is the pane's log, is kept. `sh -c exec` leaves
@@ -473,6 +562,7 @@ async function runWorker(options: {
         ENVOY_URL: base,
         ENVOY_NATS_URL: broker.url,
         ...QUIET_LIMITS,
+        ...(inboxSocket === undefined ? {} : { LEGION_CLAUDE_INBOX: inboxSocket }),
       },
       stdin: "pipe",
       stdout: "pipe",
@@ -521,6 +611,7 @@ async function runWorker(options: {
         continue
       }
       await ready.promise
+      if (options.bridge !== undefined) await bootRead.promise
       prompt(next)
     }
   }
@@ -546,6 +637,8 @@ async function runWorker(options: {
     ...settleLines(paneLog),
     record,
     debug,
+    inboxLines,
+    taskReads: requests.filter((request) => request.path === "/legion/v1/claims/task"),
   }
 }
 
@@ -575,7 +668,12 @@ function syntheticMessages(run: WorkerRun): string[] {
   })
 }
 
-test.skipIf(claude === undefined)(
+/** Whether `request`'s body holds `text`, wherever Claude Code put it, as JSON writes it. */
+function carries(request: Request | undefined, text: string): boolean {
+  return JSON.stringify(request?.body ?? {}).includes(JSON.stringify(text).slice(1, -1))
+}
+
+test.skipIf(skipped)(
   "the generated hook entries arm on the real binary: a Stop answered with a block carries the reminder into one more turn of the same session",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
@@ -652,7 +750,7 @@ test.skipIf(claude === undefined)(
   180_000,
 )
 
-test.skipIf(claude === undefined)(
+test.skipIf(skipped)(
   "PostToolUse fires for the model's own tool call and for no call the hook itself makes",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
@@ -705,7 +803,7 @@ test.skipIf(claude === undefined)(
 // of a reminder, and the task's own result starts the next turn with nothing prompting it. Only
 // the real binary shows all three: that the substitution reaches an `mcp_tool` hook's input at
 // all, that the run then ends rather than continuing, and that Claude Code wakes itself.
-test.skipIf(claude === undefined)(
+test.skipIf(skipped)(
   "a turn that ends with a background task running earns no reminder, and the task's result starts the next turn",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
@@ -751,6 +849,76 @@ test.skipIf(claude === undefined)(
       reported: false,
       lastMessage: "WAITING on nothing more.",
     })
+  },
+  180_000,
+)
+
+// dispatch://INFRA-4130 R1 and R2 on the real binary: the phase hook's `PostToolUse` answers
+// `hookSpecificOutput.additionalContext`, and only the real binary shows that Claude Code hands
+// that text to the model, with the request that follows the tool call. The stand-in bridge holds
+// the claim's value through a turn of two tool calls, and the daemon names a take held behind
+// that turn: the first call's `PostToolUse` notes the value (R1) and starts the holds read, and
+// the second's notes the held take (R2). A request without its note is read as Claude Code's
+// behaviour only once the debug log shows the hook answered that note: a note the hook never gave
+// is a fault of this test, not a measurement.
+test.skipIf(skipped)(
+  "a real Claude Code turn reads the PostToolUse note",
+  async () => {
+    if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
+    const reading = await heldTakeReading()
+    const held = reading.holds?.[0]
+    if (reading.task === null || held === undefined) {
+      throw new Error("task-holds.json holds no value or names no held take")
+    }
+    const waitingNote = taskWaitingNote(reading.task.number)
+    const heldNote = heldTakeNote(held.role, held.task)
+    const run = await runWorker({
+      binary: claude,
+      prompts: ["Seed the session.", `Implement ${ISSUE}.`],
+      replies: [
+        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        [{ type: "tool_use", name: "Bash", input: { command: "echo first" } }],
+        // Sent once the daemon stand-in has had the holds read the first call's hook started.
+        [{ type: "tool_use", name: "Bash", input: { command: "echo second" } }],
+        [{ type: "text", text: "I have stopped at a safe point." }],
+      ],
+      bridge: { heldReply: 2 },
+    })
+
+    // 1. The hook gave each note, as Claude Code's debug log records its answers: the value's at
+    // the first call, the held take's at the second, the read for it started at the first and no
+    // other read within the minute, and the bridge asked at each.
+    expect(run.hooks.map(({ event }) => event)).toEqual([
+      "UserPromptSubmit",
+      "Stop",
+      "UserPromptSubmit",
+      "PostToolUse",
+      "PostToolUse",
+      "Stop",
+    ])
+    expect(
+      run.hooks.filter(({ event }) => event === "PostToolUse").map(({ answer }) => answer),
+    ).toEqual([
+      { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: waitingNote } },
+      { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: heldNote } },
+    ])
+    // The claim boot's read after its ready, and the one holds read.
+    expect(run.taskReads).toHaveLength(2)
+    expect(
+      run.inboxLines.filter((line) => line["kind"] === "take-pending").length,
+    ).toBeGreaterThanOrEqual(2)
+    // R6: the turn's `Stop` blocked nothing, since the bridge holds a take pending.
+    expect(run.hooks.at(-1)?.answer).toEqual({})
+    expect(syntheticMessages(run)).toEqual([])
+
+    // 2. The request after each `PostToolUse` carries the note that hook gave, and the request
+    // before it does not.
+    expect(run.turns).toHaveLength(4)
+    const [, beforeTools, afterFirst, afterSecond] = run.turns
+    expect(carries(beforeTools, waitingNote)).toBe(false)
+    expect(carries(afterFirst, waitingNote)).toBe(true)
+    expect(carries(afterFirst, heldNote)).toBe(false)
+    expect(carries(afterSecond, heldNote)).toBe(true)
   },
   180_000,
 )

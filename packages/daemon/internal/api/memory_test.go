@@ -224,8 +224,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// below it is not.
 		pause bool
 		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
-		// nobody reported seeing (supervise.TaskTakeContract, this daemon's own), so the only pod
-		// served the list is one at that contract.
+		// nobody reported seeing (supervise.TaskTakeContract, the newest contract the route
+		// narrows by), so a pod is served the list only at that contract or a later one.
 		unseen bool
 		// repos is whether the caller is served the repositories block this contract writes,
 		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a caller

@@ -58,6 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
+import { taskNotes } from "@legion/pi-shared/task-notes";
 import type { TaskTake, TaskTakeDeps } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
@@ -281,6 +282,9 @@ export default function legionExtension(pi: PiApi): void {
     project: process.env.LEGION_PROJECT,
     limits,
     log: logger,
+    // A take the claim holds is the next turn (dispatch://INFRA-4130 R6): neither a settle's
+    // continuation nor a timer's reminder starts one ahead of it.
+    taskPending: () => claimSession.taskPending(),
   });
 
   // The model fallback (src/model-fallback.ts) on the cooldown machine
@@ -437,6 +441,7 @@ export default function legionExtension(pi: PiApi): void {
     persistedTranscript,
     runTask,
     exitProcess: (code) => exitProcess(code),
+    now: Date.now,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
@@ -504,6 +509,11 @@ export default function legionExtension(pi: PiApi): void {
         context: () => paneContext,
         // `pi`'s own method, called on `pi` as every other send of this entry is.
         sendMessage: (message, options) => pi.sendMessage(message, options),
+        // The take's text is the turn after an abort while a take is pending; the message waits
+        // for that take, and goes once it settles with no run starting first
+        // (`TaskTake.deferUntilSettled` says when).
+        deferUntilTakeSettles: (callback) => claimSession.deferUntilTakeSettles(callback),
+        log: logger,
       }),
       exits: createStallExits({
         stateDir: requiredEnvironment(process.env, "LEGION_STATE_DIR"),
@@ -585,9 +595,20 @@ export default function legionExtension(pi: PiApi): void {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);
   });
+  // After the stall watch has the result, the session's own tool result carries the notes it owes
+  // (dispatch://INFRA-4130): R1's, of the claim's own task that waits for this run to end, for a
+  // phase worker alone; and R2's, one for each take of another claim of the issue the daemon
+  // holds behind this claim's turn, for every claim session. The host hands the model this
+  // `additionalContext` with the result, as a `developer` message in its next request: it carries
+  // no task, joins no message queue and starts no turn. A subagent's result is not the session's
+  // and carries none.
   pi.on("tool_result", async (event, context) => {
-    if (subagentEvent(context)) return;
+    if (subagentEvent(context)) return undefined;
     stallWatch?.resultDelivered(event);
+    const waiting = phaseWorkerSession(context) ? claimSession.taskNote() : undefined;
+    const claimed = claimSession.capability(context.sessionManager.getSessionId()) !== undefined;
+    const notes = taskNotes(waiting, claimed ? claimSession.heldNotes() : []);
+    return notes === undefined ? undefined : { additionalContext: notes };
   });
   // The turn is over, so every call it held open is closed and no step runs for one of them, and
   // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in
@@ -805,10 +826,12 @@ export default function legionExtension(pi: PiApi): void {
     // or of the daemon-launched controller, no longer finds the host idle, and the first run to
     // start after an accepted take's text was handed to the idle host is that task's turn; a run
     // that starts while the take holds the text, one a card's or a person's prompt started, is not
-    // (`@legion/pi-shared/task-take`). A `task` subagent's event is not a turn of this session
-    // (`subagentEvent`).
+    // (`@legion/pi-shared/task-take`). The claim's holds read starts its run here too
+    // (`runBoundary`). A `task` subagent's event is not a turn of this session (`subagentEvent`).
     if (!subagentEvent(context)) {
-      sessionTake(context.sessionManager.getSessionId())?.runStarted();
+      const sessionID = context.sessionManager.getSessionId();
+      claimSession.runBoundary(sessionID, true);
+      sessionTake(sessionID)?.runStarted();
     }
   });
   pi.on("session_shutdown", async (_event, context) => {
@@ -946,6 +969,7 @@ export default function legionExtension(pi: PiApi): void {
     let providerError = false;
     if (!subagentEvent(context)) {
       providerError = reportsProviderError(event);
+      claimSession.runBoundary(sessionID, false);
       take = sessionTake(sessionID);
       held = take?.held();
       task = take?.runEnded(providerError);

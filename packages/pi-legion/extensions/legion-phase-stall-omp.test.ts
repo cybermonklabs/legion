@@ -374,6 +374,14 @@ test.skipIf(skip)(
     // no grant file, no `legion` command, and no handoff file. Each of the two runs the host
     // settled also reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that
     // ended on the tool call ends no run of its own, so it earns no report.
+    //
+    // The one `claims/task` after the completion is the holds read of dispatch://INFRA-4130 R2
+    // (`createHoldsRead`, `@legion/pi-shared/holds-read`): the run's first tool result, the
+    // `legion` call's, starts it while the host is busy, after that call's own requests and
+    // before the run's report, and nothing waits for it. The first run settled on text with no
+    // tool result, so it made none, and no read starts while the host is idle. The run has one
+    // tool result, so one read; the bound of one read a minute is held with a clock by
+    // `extensions/legion.test.ts` ("a hold named in the claim task answer adds one note…").
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/task-seen",
@@ -385,8 +393,13 @@ test.skipIf(skip)(
       "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
+      "/legion/v1/claims/task",
       "/legion/v1/claims/turn-outcome",
     ]);
+    // The holds read names the claim it reads for, as the boot's read after the ready does.
+    const taskReads = pane.requests.filter((request) => request.path === "/legion/v1/claims/task");
+    expect(taskReads).toHaveLength(2);
+    expect(taskReads[1]?.body).toEqual(taskReads[0]?.body);
     expect(pane.pushedTip).toMatch(/^[0-9a-f]{40}$/);
     expect(
       pane.requests

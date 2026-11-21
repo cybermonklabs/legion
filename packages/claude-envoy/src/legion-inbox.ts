@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { createConnection, type Socket } from "node:net"
 import type { DeliveryCapability } from "@legion/contracts"
+import { z } from "zod"
 import type { ChannelNotification, ChannelNotifier } from "./envoy-channel-server"
 
 /**
@@ -26,6 +27,27 @@ export const INBOX_CAPABILITIES = [
   "aside",
   "steer",
 ] as const satisfies readonly DeliveryCapability[]
+
+/** How long a take-pending query (`LegionInbox.takePending`) waits for the bridge's answer. */
+export const TAKE_PENDING_TIMEOUT_MS = 2_000
+
+/** The bridge's line back for a take-pending query: `ok` under the query's id, with the answer.
+ * An older bridge refuses the kind with an error instead, and its line carries no answer. */
+const takePendingAnswer = z.object({
+  id: z.string(),
+  ok: z.literal(true),
+  /**
+   * What the bridge answers a take-pending query (`TakePendingAnswer` in
+   * `packages/daemon/internal/claudebridge/inbox.go`): whether the claim's take holds a task — a
+   * value it will ask about, a take in flight, an accepted take whose turn has not started, or a
+   * take refused `in-turn` during the turn running — and the number of the task the claim is
+   * owed that the turn running did not take, 0 when no turn runs or none waits.
+   */
+  takePending: z.object({ pending: z.boolean(), waiting: z.number().int().nonnegative() }),
+})
+
+/** What the bridge answers a take-pending query (`takePendingAnswer`'s `takePending`). */
+export type TakePending = z.output<typeof takePendingAnswer>["takePending"]
 
 /** `InboxAnswer`: the bridge's line back for one delivery, once Claude Code took it or cannot. */
 interface InboxAnswer {
@@ -76,6 +98,18 @@ export interface LegionInbox extends ChannelNotifier {
    * value at such a reading.
    */
   finished(finished: number): Promise<void>
+  /**
+   * Asks the bridge whether the claim's take holds a task, and which task the turn running did
+   * not take, as one line `{id, kind: "take-pending"}` on a connection of its own, dialled for
+   * this query alone and closed once it is answered: the bridge answers one connection's lines in
+   * order, and a delivery's answer waits for Claude Code to take it, so a query written behind a
+   * delivery would wait as long as the delivery does. The bridge answers the query at once,
+   * whatever Claude Code is doing. Resolves undefined, and never rejects, where the bridge gives
+   * no such answer: no bridge at the socket, a connection that closed first, a line that carries
+   * no `takePending` for this id (an older bridge refuses the kind with an error), or no line
+   * within `TAKE_PENDING_TIMEOUT_MS`.
+   */
+  takePending(): Promise<TakePending | undefined>
 }
 
 /**
@@ -92,9 +126,14 @@ export interface LegionInbox extends ChannelNotifier {
  * answer for another id rejects. The bridge answers one connection's lines in order, so one
  * connection, opened on first use and again after it closes, carries every line, in the order
  * this server writes them, and each line of the claim's carries an id of its own so that each
- * answer is paired with its line and not with a delivery's.
+ * answer is paired with its line and not with a delivery's. A take-pending query alone goes on a
+ * connection of its own (`takePending`), bounded at `takePendingTimeoutMs`.
  */
-export function createInboxNotifier(socketPath: string): LegionInbox {
+export function createInboxNotifier(
+  socketPath: string,
+  options: { readonly takePendingTimeoutMs?: number } = {},
+): LegionInbox {
+  const takePendingTimeoutMs = options.takePendingTimeoutMs ?? TAKE_PENDING_TIMEOUT_MS
   let socket: Socket | undefined
   let buffered = ""
   const waiting: {
@@ -187,6 +226,39 @@ export function createInboxNotifier(socketPath: string): LegionInbox {
     },
     finished(finished: number): Promise<void> {
       return send("finished line", { id: randomUUID(), kind: "finished", finished })
+    },
+    takePending(): Promise<TakePending | undefined> {
+      const id = randomUUID()
+      const answered = Promise.withResolvers<TakePending | undefined>()
+      const query = createConnection(socketPath)
+      // The first of the answer, an error, a close and the bound settles the query; the rest
+      // find it settled.
+      const settle = (answer: TakePending | undefined): void => {
+        clearTimeout(bound)
+        query.destroy()
+        answered.resolve(answer)
+      }
+      const bound = setTimeout(() => settle(undefined), takePendingTimeoutMs)
+      let line = ""
+      query.setEncoding("utf8")
+      query.on("data", (chunk: string) => {
+        line += chunk
+        const end = line.indexOf("\n")
+        if (end < 0) return
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line.slice(0, end))
+        } catch {
+          settle(undefined)
+          return
+        }
+        const answer = takePendingAnswer.safeParse(parsed)
+        settle(answer.success && answer.data.id === id ? answer.data.takePending : undefined)
+      })
+      query.on("error", () => settle(undefined))
+      query.on("close", () => settle(undefined))
+      query.write(`${JSON.stringify({ id, kind: "take-pending" })}\n`)
+      return answered.promise
     },
   }
 }

@@ -8,14 +8,22 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport"
-import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import {
+  type ActivityInput,
+  claimCaller,
+  createLegionDaemonClient,
+} from "@legion/pi-shared/daemon-client"
+import { createHoldsRead } from "@legion/pi-shared/holds-read"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes"
 import { legion } from "../package.json" with { type: "json" }
+import { createInboxNotifier, type TakePending } from "../src/legion-inbox"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
   PHASE_HOOK_TOOL_NAME,
+  type PhaseHookAnswer,
   type PhaseHookEndpoint,
   paneReminderLog,
   phaseHookToolDefinition,
@@ -78,6 +86,15 @@ interface Harness {
   /** Settles the claim's boot, as `startLegionClaim`'s `booted` does. */
   readonly boot: () => void
   readonly lines: readonly string[]
+  /** How many take-pending queries the endpoint has asked the bridge. */
+  readonly takePendingQueries: () => number
+  /** The body of each `claims/task` read the holds read made, in order. */
+  readonly taskReads: readonly unknown[]
+  /** How many of the holds read's `claims/task` reads the daemon has answered. Whatever reads a
+   * count that includes an answer finds the holds read holding that answer too. */
+  readonly answered: () => number
+  /** Moves the holds read's clock on by `ms`. */
+  readonly advance: (ms: number) => void
   readonly close: () => Promise<void>
 }
 
@@ -100,6 +117,13 @@ async function harness(
     ) => Promise<Pick<PublishResult, "kept">>
     /** Whether the daemon refuses every activity report: the hook still answers its worker. */
     readonly reportActivityFails?: boolean
+    /** What the bridge answers the `attempt`th take-pending query (`LegionInbox.takePending`):
+     * nothing by default, which is what the inbox gives for a bridge that refused the query or
+     * did not answer it. */
+    readonly takePending?: (attempt: number) => Promise<TakePending | undefined>
+    /** What the daemon answers the `attempt`th `claims/task` read, which only the holds read makes
+     * here: a reading that names no held take by default. */
+    readonly claimsTask?: (attempt: number) => Promise<Record<string, unknown>>
   } = {},
 ): Promise<Harness> {
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
@@ -122,11 +146,17 @@ async function harness(
     return raw === undefined ? undefined : JSON.parse(raw)
   }
   let atRead: unknown
+  const taskReads: unknown[] = []
   const paths: string[] = []
   // The reminder's record check reads one issue's record, never the whole project
   // (dispatch://INFRA-2694): the stub answers that route from the state golden's own issues.
-  const fetchStub = (async (input, _init) => {
+  const fetchStub = (async (input, init) => {
     const path = new URL(input.toString()).pathname
+    if (path === "/legion/v1/claims/task") {
+      taskReads.push(JSON.parse(String(init?.body)))
+      const reading = options.claimsTask?.(taskReads.length) ?? { task: null, finished: 0 }
+      return Response.json(await reading)
+    }
     paths.push(path)
     atRead = await record()
     const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
@@ -144,6 +174,31 @@ async function harness(
     fetch: fetchStub,
   })
   const lines: string[] = []
+  let now = Date.parse("2026-11-19T20:00:00Z")
+  let answered = 0
+  const holdsRead = createHoldsRead({
+    daemon: {
+      task: (input, init) => {
+        const reading = daemon.task(input, init)
+        // Counted by a handler on the answer itself, attached ahead of the holds read's own: that
+        // one runs straight after this one, before anything that can read the count.
+        void reading.then(
+          () => {
+            answered += 1
+          },
+          () => undefined,
+        )
+        return reading
+      },
+    },
+    caller: () =>
+      options.claim === undefined ? undefined : claimCaller(options.claim, options.claim.sessionID),
+    now: () => now,
+    failed: (error) => {
+      lines.push(`holds read failed: ${String(error)}`)
+    },
+  })
+  let takePendingQueries = 0
   const inbox: string[] = []
   const published: PublishInput[] = []
   const reports: ActivityInput[] = []
@@ -170,6 +225,11 @@ async function harness(
     },
     env: { LEGION_PROJECT: "legion", ...QUICK_LIMITS, ...options.env },
     log: paneReminderLog((line) => lines.push(line)),
+    takePending: async () => {
+      takePendingQueries += 1
+      return options.takePending?.(takePendingQueries)
+    },
+    holdsRead,
   })
   return {
     endpoint,
@@ -182,6 +242,12 @@ async function harness(
     reports,
     boot: booted.resolve,
     lines,
+    takePendingQueries: () => takePendingQueries,
+    taskReads,
+    answered: () => answered,
+    advance: (ms) => {
+      now += ms
+    },
     close: async () => {
       // As the server's own `stop` does: no armed timer outlives the case that armed it.
       endpoint.stop()
@@ -601,6 +667,315 @@ test("a tool call that failed is work too, and resets the count", async () => {
       await endpoint.handle({ event: "PostToolUseFailure", toolName: "Bash", agentId: "" }),
     ).toEqual({})
     expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+  } finally {
+    await close()
+  }
+})
+
+/** A `PostToolUse` answer that hands the model `notes`, joined by a blank line, as the hook's
+ * `additionalContext`. */
+function noted(...notes: string[]): PhaseHookAnswer {
+  return {
+    hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: notes.join("\n\n") },
+  }
+}
+
+// R6 of dispatch://INFRA-4130 on Claude Code: a task the claim's take holds is the worker's next
+// turn, and a reminder says nothing that task does not. While the bridge answers that a take is
+// pending, the `Stop` continues nothing and counts nothing, so the turn ends and the bridge takes
+// the task at its end; the reminder waits on its timer, which sends nothing while the take is
+// still pending and reminds once it is not.
+test("the Stop hook blocks nothing while the bridge holds a pending take", async () => {
+  // S18: a value the bridge has not asked about yet. S19a: a take of it the daemon refused
+  // `in-turn` during this turn, which the bridge holds pending until the turn's `result`, and
+  // whose number it names as the task this turn did not take.
+  for (const waiting of [0, 4]) {
+    let pending = true
+    const { endpoint, record, inbox, takePendingQueries, close } = await harness({
+      record: recorded("open", 0),
+      claim: implementer,
+      takePending: async () => ({ pending, waiting }),
+    })
+    try {
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "I pushed the branch." }),
+      ).toEqual({})
+      expect(takePendingQueries()).toBe(1)
+      const said = { reported: false, lastMessage: "I pushed the branch." }
+      expect(await record()).toEqual({ state: "open", count: 0, ...said })
+
+      // The timer the settle armed asks the bridge again when it fires, and sends nothing.
+      await waitFor(async () => takePendingQueries() >= 3, "the armed timer to ask the bridge")
+      expect(inbox).toEqual([])
+      expect(await record()).toEqual({ state: "open", count: 0, ...said })
+
+      // The daemon refused the take for a hold that stands: nothing is pending, and the reminding
+      // goes on as before.
+      pending = false
+      await waitFor(async () => inbox.length > 0, "the reminder once no take is pending")
+      expect(inbox).toEqual([REMINDER])
+      expect(await record()).toEqual({ state: "open", count: 1, ...said })
+    } finally {
+      await close()
+    }
+  }
+})
+
+test("the Stop hook blocks as before when the bridge does not answer whether a take is pending", async () => {
+  // The inbox's own query against a socket no bridge listens at, and what that query gives for a
+  // bridge that refuses the kind, as an older bridge does, for an answer with no `takePending`,
+  // and for no answer within its bound (each held in tests/legion-inbox.test.ts): no answer.
+  const unanswered = [
+    createInboxNotifier(join(tmpdir(), "claude-envoy-no-bridge", "inbox.sock")).takePending,
+    async () => undefined,
+  ]
+  for (const takePending of unanswered) {
+    const { endpoint, record, takePendingQueries, close } = await harness({
+      record: recorded("open", 0),
+      claim: implementer,
+      takePending,
+    })
+    try {
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "I pushed the branch." }),
+      ).toEqual({ decision: "block", reason: REMINDER })
+      expect(takePendingQueries()).toBe(1)
+      expect(await record()).toEqual({
+        state: "open",
+        count: 1,
+        reported: false,
+        lastMessage: "I pushed the branch.",
+      })
+    } finally {
+      await close()
+    }
+  }
+})
+
+// R1 of dispatch://INFRA-4130 on Claude Code: a task value that reaches the bridge while a turn
+// runs waits for that turn to end. The worker's own `PostToolUse` says so, once for each task,
+// naming the task the bridge says the turn running did not take.
+test("a PostToolUse while the bridge holds an unasked task value adds one note naming its number", async () => {
+  let waiting = 4
+  const { endpoint, record, takePendingQueries, close } = await harness({
+    record: recorded("open", 2),
+    claim: implementer,
+    takePending: async () => ({ pending: true, waiting }),
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    expect(await toolCall()).toEqual(noted(taskWaitingNote(4)))
+    // The call is the worker working all the same: the count goes back to 0, as at every call.
+    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    // Once for each task: the next call carries nothing, and a newer value gets a note of its own.
+    expect(await toolCall()).toEqual({})
+    waiting = 5
+    expect(await toolCall()).toEqual(noted(taskWaitingNote(5)))
+    // A number noted before, and a turn the bridge names no waiting task in, add nothing.
+    waiting = 4
+    expect(await toolCall()).toEqual({})
+    waiting = 0
+    expect(await toolCall()).toEqual({})
+    expect(takePendingQueries()).toBe(5)
+  } finally {
+    await close()
+  }
+})
+
+// R2 of dispatch://INFRA-4130 on Claude Code: the daemon holds another role's take of this issue
+// behind this turn, and names it in the `holds` of this claim's own `claims/task`. A `PostToolUse`
+// of the worker's own starts that read, at most once a minute, and is answered without waiting
+// for it; the first `PostToolUse` after the answer notes each held take once. A read the turn's
+// end overtakes notes nothing: the daemon accepts each take it names at that end.
+test("a PostToolUse while the daemon names a take held behind this turn adds one note naming the role and its number", async () => {
+  const readings: PromiseWithResolvers<Record<string, unknown>>[] = []
+  let waiting = 0
+  const { endpoint, taskReads, answered, advance, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    takePending: async () => ({ pending: waiting > 0, waiting }),
+    claimsTask: () => {
+      const reading = Promise.withResolvers<Record<string, unknown>>()
+      readings.push(reading)
+      return reading.promise
+    },
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  const holding = (...holds: { role: string; task: number }[]) => ({
+    task: null,
+    finished: 3,
+    holds,
+  })
+  try {
+    // The first call starts the read with the claim's caller, and is answered before the read is.
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toEqual([
+      {
+        claimToken: implementer.claimToken,
+        sessionId: SESSION,
+        secret: implementer.secret,
+        generation: implementer.generation,
+      },
+    ])
+    readings[0]?.resolve(holding({ role: "tester", task: 7 }))
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    // Once for each held take, and no second read inside the minute.
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+
+    // A minute on, the next call reads again. A take noted before gets no second note, a newly
+    // named one gets its own, and the claim's own task, waiting too, goes first.
+    advance(60_000)
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(2)
+    readings[1]?.resolve(holding({ role: "tester", task: 7 }, { role: "reviewer", task: 9 }))
+    await waitFor(async () => answered() === 2, "the second holds read's answer")
+    waiting = 6
+    expect(await toolCall()).toEqual(noted(taskWaitingNote(6), heldTakeNote("reviewer", 9)))
+
+    // A read still unanswered when the turn ends is dropped, and so is what the reads of the
+    // ended turn named: the next turn's calls note nothing of it.
+    advance(60_000)
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(3)
+    expect(
+      await endpoint.handle({ event: "Stop", lastAssistantMessage: "WAITING on the tester." }),
+    ).toEqual({})
+    readings[2]?.resolve(holding({ role: "planner", task: 11 }))
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with LEGION-208." })
+    await waitFor(async () => answered() === 3, "the ended turn's holds read's answer")
+    expect(await toolCall()).toEqual({})
+    // The planner's take, still held a minute into the new turn, is noted from that turn's read.
+    advance(60_000)
+    expect(await toolCall()).toEqual({})
+    readings[3]?.resolve(holding({ role: "planner", task: 11 }))
+    await waitFor(async () => answered() === 4, "the new turn's holds read's answer")
+    expect(await toolCall()).toEqual(noted(heldTakeNote("planner", 11)))
+  } finally {
+    await close()
+  }
+})
+
+// Risk (c) of dispatch://INFRA-4130: a turn can end with neither `Stop` nor `StopFailure` (one the
+// user interrupts), so the holds answer it kept is still kept when the next turn starts. The
+// daemon accepts each take that answer names at that end, so it waits no more: the next turn's
+// `UserPromptSubmit` drops it where its read started a minute or more ago, as Oh My Pi's run start
+// does, and that turn notes it only where a read of its own names it again.
+test("a holds answer of a turn that ended with no Stop is not noted in the next turn", async () => {
+  const { endpoint, taskReads, answered, advance, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: async () => ({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] }),
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The turn's first call starts the read, which names the tester's take; the turn is
+    // interrupted before a call notes it, and no `Stop` or `StopFailure` comes. The next turn
+    // starts a minute after that read started.
+    expect(await toolCall()).toEqual({})
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    advance(60_000)
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with LEGION-208." })
+
+    // The next turn's first call notes nothing of the ended turn's answer, and starts a read of
+    // its own, a minute having passed.
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(2)
+
+    // That read names the take again, and the next call notes it once.
+    await waitFor(async () => answered() === 2, "the new turn's holds read's answer")
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(2)
+  } finally {
+    await close()
+  }
+})
+
+// Claude Code may fire `UserPromptSubmit` for a message the bridge injects while a turn runs, so
+// the reset there keeps a holds read still in flight: its answer is at most
+// `HOLDS_READ_BOUND_MS` old, and dropping it would put R2's note a minute past its bound.
+test("a UserPromptSubmit while a holds read is in flight still gives one note from that read's answer", async () => {
+  const reading = Promise.withResolvers<Record<string, unknown>>()
+  const { endpoint, taskReads, answered, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: () => reading.promise,
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The worker's call starts the read, whose answer the daemon holds back; the prompt comes
+    // while it is in flight, and the answer after it.
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "A message for LEGION-208." })
+    reading.resolve({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] })
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+
+    // The next call notes the take that answer names, and the one after notes nothing.
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+  } finally {
+    await close()
+  }
+})
+
+// Claude Code may fire `UserPromptSubmit` for a message the bridge injects while a turn runs,
+// which ends no turn, so the reset there keeps an answer whose read started less than a minute
+// ago too: the next read starts only a minute after that one did, and waiting for its answer
+// would put R2's note past its bound.
+test("a UserPromptSubmit keeps a holds answer whose read started less than a minute ago", async () => {
+  const { endpoint, taskReads, answered, advance, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: async () => ({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] }),
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The worker's call starts the read, whose answer names the tester's take; the prompt comes
+    // half a minute after that read started.
+    expect(await toolCall()).toEqual({})
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    advance(30_000)
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "A message for LEGION-208." })
+
+    // The next call notes the take that answer names, the one after notes nothing, and no second
+    // read started.
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+  } finally {
+    await close()
+  }
+})
+
+// Rows S5 and S17 of dispatch://INFRA-4130: a helper agent's tool call is not the worker, which
+// alone can end the turn a note asks it to end. It asks the bridge nothing, starts no holds read,
+// and uses up no note: the worker's own next call carries them.
+test("a subagent's PostToolUse carries no task note", async () => {
+  const { endpoint, record, takePendingQueries, taskReads, answered, close } = await harness({
+    record: recorded("open", 2),
+    claim: implementer,
+    takePending: async () => ({ pending: true, waiting: 4 }),
+    claimsTask: async () => ({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] }),
+  })
+  const subagent = { toolName: "Bash", agentId: "agent-7" }
+  const worker = { event: "PostToolUse", toolName: "Bash", agentId: "" }
+  try {
+    for (const event of ["PostToolUse", "PostToolUseFailure"]) {
+      expect(await endpoint.handle({ event, ...subagent })).toEqual({})
+    }
+    expect(takePendingQueries()).toBe(0)
+    expect(taskReads).toEqual([])
+    expect(await record()).toEqual({ state: "open", count: 2, reported: false })
+
+    expect(await endpoint.handle(worker)).toEqual(noted(taskWaitingNote(4)))
+    expect(taskReads).toHaveLength(1)
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    expect(await endpoint.handle({ event: "PostToolUse", ...subagent })).toEqual({})
+    expect(await endpoint.handle(worker)).toEqual(noted(heldTakeNote("tester", 7)))
   } finally {
     await close()
   }
