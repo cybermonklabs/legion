@@ -17,11 +17,13 @@ import (
 // opened, still pending, is denied by anyone signed in (TestAPendingServiceLoginIsNeverApprovedButMayBeDenied),
 // but not by a person Dispatch calls a restricted member, who is no approver of a secret: their
 // deny is refused record.ErrNotApprover and the login stays pending, while a full member's deny,
-// the control, denies it. While Dispatch cannot say what kind of member the denying person is, the
-// deny is refused *projectaccess.MemberKindUncheckable naming them, and the login stays pending; a
-// read Dispatch does not answer at all ends before Dispatch stops waiting for the route it relays,
-// and the deny is refused the same way. A restricted member's own machine login is theirs alone to
-// decide: they deny it, asking Dispatch nothing.
+// the control, denies it. So is their deny of such a login whose request names the broker's
+// address with a trailing slash, the same origin, which the decision reads as this broker's
+// (record.VerifyStoredRequestObject). While Dispatch cannot say what kind of member the denying
+// person is, the deny is refused *projectaccess.MemberKindUncheckable naming them, and the login
+// stays pending; a read Dispatch does not answer at all ends before Dispatch stops waiting for the
+// route it relays, and the deny is refused the same way. A restricted member's own machine login
+// is theirs alone to decide: they deny it, asking Dispatch nothing.
 func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 	const (
 		guest  = "guest@outside.example"
@@ -51,6 +53,23 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		}
 		if n := decisions(t, svc, recordID); n != 0 {
 			t.Fatalf("the refused deny wrote %d decisions; want none, the login still pending", n)
+		}
+	})
+
+	t.Run("a restricted member's deny of a login whose request names the broker with a trailing slash is refused", func(t *testing.T) {
+		svc := newFixture(t)
+		recordID, code, _ := insertServiceRecordFor(t, svc, record.AnyoneApprover, testAudience+"/")
+		asking(svc, projectaccesstest.NewServer(t, nil, kinds))
+		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code)
+		if !errors.Is(err, record.ErrNotApprover) || !strings.HasPrefix(err.Error(), "a person Dispatch calls a restricted member is no approver of") {
+			t.Fatalf("ApplyDecision(deny) by %s of a login naming %s/ = %q, %v; want record.ErrNotApprover, opening by saying they are a restricted member", guest, testAudience, state, err)
+		}
+		if n := decisions(t, svc, recordID); n != 0 {
+			t.Fatalf("the refused deny wrote %d decisions; want none, the login still pending", n)
+		}
+		// The control: the same login is a service's to everyone else, and a full member denies it.
+		if state, _, err := svc.ApplyDecision(ctx, recordID, false, member, code); err != nil || state != "denied" {
+			t.Fatalf("ApplyDecision(deny) by %s of the same login = %q, %v; want denied", member, state, err)
 		}
 	})
 

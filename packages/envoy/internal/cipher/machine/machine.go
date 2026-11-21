@@ -414,9 +414,12 @@ type serviceDenier struct {
 // waits for its answer no longer than that read could otherwise take. A failure to ask, one the
 // bound cut short included, is the *projectaccess.MemberKindUncheckable it carries, and a failure
 // to read the record is that read's error; the transaction answers either for a service's login
-// alone, after the code and the record's own rule: a check that cannot decide refuses. A record it
-// finds no row for, or cannot parse or verify, asks nothing: the transaction reads it again and
-// refuses it.
+// alone, after the code and the record's own rule: a check that cannot decide refuses. It reads
+// the record's request object as the transaction does (record.VerifyStoredRequestObject, this
+// broker's by the origin of its address or its edge's), so every record the transaction reads as
+// a service's login, one whose aud spells the broker's address with a trailing slash included, is
+// one it asks about. A record it finds no row for, or cannot parse or verify, asks nothing: the
+// transaction reads it again by the same rule and refuses it.
 func (s *Service) readServiceDenier(ctx context.Context, recordID, login string) serviceDenier {
 	if s.Enroll == nil || s.Enroll.Projects == nil {
 		return serviceDenier{}
@@ -435,7 +438,7 @@ func (s *Service) readServiceDenier(ctx context.Context, recordID, login string)
 	if err != nil {
 		return serviceDenier{}
 	}
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil || obj.Service() == "" {
 		return serviceDenier{}
 	}
