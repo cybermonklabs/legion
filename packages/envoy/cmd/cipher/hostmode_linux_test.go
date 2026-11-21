@@ -655,6 +655,28 @@ func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
 	}
 }
 
+// TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess: `register --exec` never blocks a
+// launch on the broker, a refusal included: against a helper that answers the session refused
+// (403 RESTRICTED_MEMBER_ENROLLS_NOTHING), the command still runs, and stderr says the broker
+// refuses the session, the helper asks no more, and the session launches with no secrets access.
+func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
+	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
+	binary := buildAgentSecrets(t)
+	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "refused", Error: refusal})
+	cmd := exec.Command(binary, "register", "--exec", "--", "sh", "-c", "echo ran")
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "ran" {
+		t.Fatalf("register --exec of a refused session: %q, %v (stderr %q); want the command run", out, err, stderr.String())
+	}
+	want := "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more (" + refusal + "); launching anyway, with no secrets access\n"
+	if stderr.String() != want {
+		t.Fatalf("register --exec of a refused session: stderr %q, want %q", stderr.String(), want)
+	}
+}
+
 // TestRegisterFindsTheHelperOnItsDefaultSocket pins that register, like machine login and every
 // other helper-mode form, reaches a helper listening on its default socket
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
