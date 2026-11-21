@@ -92,11 +92,17 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 
 // requireNoConsumers fails t when stream holds a consumer, naming each by its name, when the
 // server created it, its config and what it has delivered, so a consumer some other actor made
-// says who it is.
+// says who it is. The listing is bounded by a minute, or what is left of the test binary's
+// deadline less a second when that is sooner (testwait.Bounded), as the row's other reads are,
+// and not by nats.go's 5 s default for a context with no deadline, which a loaded machine can
+// outrun.
 func requireNoConsumers(t *testing.T, stream jetstream.Stream) {
 	t.Helper()
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
 	var held []string
-	listed := stream.ListConsumers(context.Background())
+	listed := stream.ListConsumers(ctx)
 	for info := range listed.Info() {
 		config, err := json.Marshal(info.Config)
 		if err != nil {
@@ -106,7 +112,7 @@ func requireNoConsumers(t *testing.T, stream jetstream.Stream) {
 			info.Name, info.Created.Format(time.RFC3339Nano), info.Delivered.Consumer, info.Delivered.Stream, info.NumPending, config))
 	}
 	if err := listed.Err(); err != nil {
-		t.Fatalf("list the stream's consumers before the row's publishes: %v", err)
+		t.Fatalf("list the stream's consumers before the row's publishes, within %s: %v", bound, err)
 	}
 	if len(held) != 0 {
 		t.Fatalf("the stream holds %d consumers before the row's publishes, want none: %s", len(held), strings.Join(held, "; "))
