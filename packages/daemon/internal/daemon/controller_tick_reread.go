@@ -20,13 +20,15 @@ import (
 // because every handler decides inside the fact's transaction and performs no I/O; the mirror
 // handler writes the rows there, ahead of the two handlers that judge from them. So a blocker
 // whose closing event the daemon never consumed is caught within one wake interval instead of
-// standing until the next boot's listing.
+// standing until the next boot's listing. The turn then queues a seed for each step resting on an
+// issue of another project (queueBasisSeedsOfOtherProjects), whose events the daemon never hears.
 func (w *workflowRuntime) applyControllerTick(ctx context.Context, at time.Time) {
 	eventID := fmt.Sprintf("controller-tick:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
 	fact := intake.ControllerTick{Observed: w.observeWaitedOn(ctx)}
 	if _, err := intake.ApplyFact(ctx, w.pool, "controller", eventID, fact, w.handlers...); err != nil {
 		w.log.Warn("apply the controller wake tick failed", "error", err)
 	}
+	w.queueBasisSeedsOfOtherProjects(ctx)
 }
 
 // blockerReadFanout is how many blocker keys one turn reads one at a time: up to this many are
