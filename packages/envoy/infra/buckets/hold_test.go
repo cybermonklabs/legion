@@ -208,7 +208,7 @@ func (h *heldBuckets) noAckAfter(w *writer, since time.Time) {
 // refusedTime is when the hub first refused the writer's reconnect.
 func (w *writer) refusedTime() time.Time { return time.Unix(0, w.refusedAt.Load()) }
 
-// INFRA-4094's first bypass, a writer on a machine nobody listed: a listener connected before the
+// The old fence's first bypass, a writer on a machine nobody listed: a listener connected before the
 // hold is disconnected by its server's restart, its reconnect is refused, and `buckets recreate`
 // loses no acknowledged write, since none is acknowledged from the hold's move to held to its
 // release. The control is the same recreate's change with nothing held (the change alone, on the
@@ -261,7 +261,7 @@ func TestHoldBypassUnlistedMachine(t *testing.T) {
 	w.end()
 }
 
-// INFRA-4094's second bypass, a renamed binary: a listener whose connection is named /tmp/worker,
+// The old fence's second bypass, a renamed binary: a listener whose connection is named /tmp/worker,
 // which the old fence's process-name filter missed, is disconnected by the hold's restart and its
 // reconnect refused, as any client but the operator is. The control is that it is a writer: before
 // the hold its writes are acknowledged.
@@ -283,7 +283,7 @@ func TestHoldBypassRenamedBinary(t *testing.T) {
 	w.end()
 }
 
-// INFRA-4094's third bypass, a writer that starts after the proof: during the hold, after its
+// The old fence's third bypass, a writer that starts after the proof: during the hold, after its
 // report, a listener's connect is refused, so it creates and writes nothing until the release; then
 // it connects and writes, which is the control that it is a writer.
 func TestHoldBypassWriterAfterTheProof(t *testing.T) {
@@ -322,7 +322,7 @@ func (h *heldBuckets) backupNow(buckets ...string) string {
 	return dir
 }
 
-// INFRA-4094's fourth bypass, an unheld restore: `buckets restore --from <backup>` runs inside its
+// The old fence's fourth bypass, an unheld restore: `buckets restore --from <backup>` runs inside its
 // hold, and a listener started during it is refused; the restore completes with the backup's
 // messages. The control is that the listener is a writer: after the release it writes.
 func TestHoldBypassUnheldRestore(t *testing.T) {

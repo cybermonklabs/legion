@@ -77,7 +77,7 @@ func reportAt(runAt time.Time, findings []MinterFinding, unknown []MinterUnknown
 func TestHoldPreflightTheMinterReport(t *testing.T) {
 	ctx := t.Context()
 	now := func() time.Time { return minterNow }
-	accepted := []AcceptedMinter{{Principal: applier, Right: adminRole, Clause: "8(d)", Answer: "dispatch://INFRA-3862/ask/00000000-0000-0000-0000-000000000001"}}
+	accepted := []AcceptedMinter{{Principal: applier, Right: adminRole, Clause: "8(d)", Answer: "https://example.invalid/answers/1"}}
 	client := func(objects ...runtime.Object) *fake.Clientset { return fake.NewClientset(objects...) }
 	list := acceptedMinters(t, accepted)
 	fresh := minterNow.Add(-10 * time.Minute)
@@ -95,9 +95,9 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 	})
 
 	for _, writer := range []MinterFinding{
-		{Principal: "user:dba@example.invalid", Right: "cloudsql.users.update on instance dispatch-example"},
+		{Principal: "user:dba@example.com", Right: "cloudsql.users.update on instance example-sql"},
 		{Principal: "serviceAccount:reader@example-infra.iam.gserviceaccount.com", Right: "get on Secret dispatch/envoy-broker-db"},
-		{Principal: "group:infra@example.invalid", Right: "read of the broker/ stack's Pulumi state"},
+		{Principal: "group:infra@example.com", Right: "read of the broker/ stack's Pulumi state"},
 		{Principal: "serviceAccount:box@example-infra.iam.gserviceaccount.com", Right: "secretmanager.versions.access on operator-only-envoy-hold-signing"},
 	} {
 		t.Run("a hold writer: "+writer.Right, func(t *testing.T) {

@@ -779,8 +779,8 @@ func commentName(files map[string]string, key string) string {
 }
 
 // moveUser is the deployment repository's static move user (envoy-cluster/hub.go hubMovePublish), which holds
-// $JS.API.STREAM.UPDATE.* and $JS.API.STREAM.DELETE.* and connects past the callout; INFRA-4094's
-// pull request B removes it in the callout cutover.
+// $JS.API.STREAM.UPDATE.* and $JS.API.STREAM.DELETE.* and connects past the callout; the callout
+// cutover removes it.
 const moveUser = "envoy-move"
 
 // The auth service's grant as nats-server defines it (core's calloutRequestSubject and
