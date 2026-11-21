@@ -2914,10 +2914,15 @@ cluster's own token issuer is out of their reach. The copy has an issuer of its 
   (from #4387 on) answers 400 naming the role only after it takes the mark from Dispatch's verified
   principal. A build from before role marks answers 400 naming the missing target: it admitted the
   token, and the replay's role-routed sends reach their targets unmarked. A 503 is a listener still
-  starting (its readiness passes on `/healthz`'s `starting`, before `/v1` serves), so `up` sends
-  again every 3 s for 120 s. Any other answer stops `up` and names it: 401 is a token the listener
-  did not verify, 403 is another principal. A listener whose Deployment names no
+  starting (its readiness passes on `/healthz`'s `starting`, before `/v1` serves) or one that cannot
+  read its issuer, so `up` sends again every 3 s for 120 s, and a 503 that lasts the 120 s stops it.
+  A send that did not run (an API server error, kubectl's own time-out, curl's exit 7 or 28) is made
+  again the same way. Any other answer stops `up` and names it: 401 is a token the listener did not
+  verify, 403 is another principal. A listener whose Deployment names no
   `ENVOY_DISPATCH_PRINCIPAL` takes no mark from anyone, and `up` says it checks nothing.
+- A run that a `cluster.sh` from before this issuer started keeps the cluster's https issuer in its
+  `state.json`, and no `oidc_key` or account token, so its manifests no longer render. `db-size` and
+  `redeploy` refuse it before they change anything; take it `down` and start it `up` again.
 
 ### The one command
 

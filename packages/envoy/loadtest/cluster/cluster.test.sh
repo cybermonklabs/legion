@@ -72,11 +72,14 @@
 # for it before the listener starts, gives Dispatch the minted token from the run's Secret, and
 # checks from Dispatch's container that the listener takes a send's role mark from it; (d2) up
 # stops after one send, naming the answer, when the listener answers that check 403 or 401, sends
-# again every 3 s while it answers 503 and stops once a 503 outlasts the check's bound, naming it
-# as an issuer the listener could not read, checks nothing at a listener that names no Dispatch
-# principal, stops before any manifest when the mint fails or answers a token of another shape,
-# and refuses before the lock a loadgen that answers no oidc-mint -sub; (e) every manifest renders
-# with no placeholder left and every
+# again every 3 s while it answers 503 and stops once a 503 outlasts the check's 120 s bound (41
+# sends and 40 waits of 3 s on a fake clock, none after the deadline), naming it as a listener still
+# starting or one that cannot read its issuer, makes a send that did not run again 3 s later and
+# goes on, stops once such sends outlast the bound, checks nothing at a listener that names no
+# Dispatch principal, stops before any manifest when the mint fails or answers a token of another
+# shape, refuses before the lock a loadgen that answers no oidc-mint -sub, and db-size and redeploy
+# refuse a run whose state.json holds no oidc_key before they change anything; (e) every manifest
+# renders with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
 # of another namespace among them, and a token, redacted); (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
@@ -456,21 +459,28 @@ case $verb in
       "/work/loadgen replay-verify-bundle "*) echo '{"files": 28}' ;;
       # check_dispatch_identity: the listener's answer to Dispatch's send marked with a role no
       # claim can name, which is the 400 naming the role, or FAKE_IDENTITY_ANSWER's (its body and
-      # status, as IDENTITY_PROBE_SCRIPT prints them). The container the call names goes into
-      # identity-probes.
+      # status, as IDENTITY_PROBE_SCRIPT prints them). The status EXIT is a send that did not run:
+      # its body goes to standard error as kubectl's or curl's words, and the call exits 7. The
+      # container the call names goes into identity-probes, and the fake clock's second, where a
+      # test made FAKE_DIR/clock, into identity-probe-times.
       'sh -c printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUNT_TOKEN_FILE")" |'*)
         printf '%s\n' "$ctr" >>"$FAKE_DIR/identity-probes"
-        printf '%s\n' "$EPOCHREALTIME" >>"$FAKE_DIR/identity-probe-times"
+        [ ! -f "$FAKE_DIR/clock" ] || cat -- "$FAKE_DIR/clock" >>"$FAKE_DIR/identity-probe-times"
         # FAKE_DIR/identity-answers: answers used up first, one a line, "STATUS BODY".
         if [ -s "$FAKE_DIR/identity-answers" ]; then
           first=$(head -n1 "$FAKE_DIR/identity-answers")
           sed -i 1d "$FAKE_DIR/identity-answers"
-          printf '%s\n%s' "${first#* }" "${first%% *}"
+          answer_status=${first%% *} answer_body=${first#* }
         elif [ -n "${FAKE_IDENTITY_ANSWER:-}" ]; then
-          printf '%s' "$FAKE_IDENTITY_ANSWER"
+          answer_status=${FAKE_IDENTITY_ANSWER##*$'\n'} answer_body=${FAKE_IDENTITY_ANSWER%$'\n'*}
         else
-          printf '%s\n400' '{"error":"role \"-identity-probe\" is no role a claim can name","expected":["role"]}'
+          answer_status=400 answer_body='{"error":"role \"-identity-probe\" is no role a claim can name","expected":["role"]}'
         fi
+        if [ "$answer_status" = EXIT ]; then
+          printf '%s\n' "$answer_body" >&2
+          exit 7
+        fi
+        printf '%s\n%s' "$answer_body" "$answer_status"
         ;;
       *"/healthz")
         echo '{"ok":true,"nats":true,"schema_version":121}'
@@ -943,7 +953,9 @@ EOF
 # The fake sleep: apply_manifest's 3 s wait between tries, and a wait of any of FAKE_FAST_SLEEP's
 # seconds (space-separated: kube_read's 5 s, the daemons' 60 s, runner_wait's 15 s and the disk
 # watcher's 30 s, where a test sets them), are recorded and return at once; every other sleep (the
-# daemons' loops, their start waits) is the real one.
+# daemons' loops, their start waits) is the real one. FAKE_DIR/clock, where a test makes it, is a
+# fake epoch second that each recorded wait moves forward by its seconds: a cluster.sh whose now()
+# the test replaced reads its bound on it, so a bound of minutes costs the test no real second.
 #
 # FAKE_SLEEP_GATE=FILE holds the daemons' 60 s until FILE exists. A daemon removes its own pidfile
 # when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
@@ -960,6 +972,9 @@ if [ "\$*" = 60 ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
 fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
+  if [ -f "\$FAKE_DIR/clock" ] && [[ \$* =~ ^[0-9]+\$ ]]; then
+    printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock"
+  fi
   exit 0
 fi
 exec $real_sleep "\$@"
@@ -1097,7 +1112,7 @@ reset_fake() {
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
     "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" \
-    "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log"
+    "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log" "$fake/clock"
   rm -rf -- "$fake/runner" "$fake/bundle-fixture"
   write_pods
   echo '1600000 100000' >"$fake/cpu.max"
@@ -2270,41 +2285,80 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up with a starting listener exited $RC"
 pass "up sends Dispatch's role-marked send again 3 s after a starting listener's 503, and goes on once it is taken"
 
-# A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
-# up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
-# the 503 as an issuer the listener could not read. The bound is set to 5 s here, as (dd) sets the
-# step's grace, and the fake sleep returns at once, so the case waits out that bound in real time
-# alone. The bound counts whole seconds (EPOCHSECONDS), so a 5 s bound runs more than 4 s from
-# the check's start whatever fraction of a second it starts at; the row asks for 1 s of sends,
-# which leaves 3 s for the steps before the first send on a loaded machine (at 3 s, one run in 25
-# on a loaded box started sending too late and spanned 0.96 s).
-grep -qx 'IDENTITY_CHECK_SECONDS=120' "$cluster" || fail "cluster.sh does not bound the identity check's retries at 120 s"
-cat >"$tmp/up-identity-bounded.sh" <<EOF
+# The identity check's rows on a fake clock: cluster.sh's now() reads FAKE_DIR/clock, which starts
+# at clock_start and moves only by the fake sleep's waits, so the check keeps its real 120 s bound
+# (deadline clock_start + 120), costs no real second, and is judged by counts alone.
+# run_cluster_fake_clock ARGS: run_cluster ARGS so. identity_sends_span_the_bound WHAT: the
+# check's sends were 41, at clock_start and after each of 40 waits of 3 s, and none came after
+# its deadline.
+readonly clock_start=1800000000
+cat >"$tmp/cluster-fake-clock.sh" <<EOF
 source "$cluster"
-IDENTITY_CHECK_SECONDS=5
+now() { printf %s "\$(<"\$FAKE_DIR/clock")"; }
 main "\$@"
 EOF
+run_cluster_fake_clock() {
+  printf '%s\n' "$clock_start" >"$fake/clock"
+  set +e
+  bash "$tmp/cluster-fake-clock.sh" "$@" >"$tmp/out" 2>&1
+  RC=$?
+  set -e
+}
+identity_sends_span_the_bound() {
+  local late probes
+  late=$(awk -v d=$((clock_start + 120)) '$1 > d' "$fake/identity-probe-times" 2>/dev/null | tr '\n' ' ')
+  [ -z "$late" ] || fail "up made Dispatch's role-marked send to $1 after the check's deadline, fake second $((clock_start + 120)): at $late"
+  probes=$(wc -l <"$fake/identity-probes")
+  ((probes == 41)) ||
+    fail "up made Dispatch's role-marked send to $1 $probes times over the check's 120 s, not 41 (one at its start and one after each 3 s wait up to its deadline)"
+  [ "$(grep -cx 3 "$fake/sleep.log" || true)" = 40 ] && [ "$(wc -l <"$fake/sleep.log")" = 40 ] ||
+    fail "up waited '$(tr '\n' ' ' <"$fake/sleep.log" 2>/dev/null)' between its sends to $1, not 40 waits of 3 s"
+}
+
+# A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
+# up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
+# the 503 as a listener still starting or one that cannot read its issuer.
 reset_fake
-set +e
 FAKE_IDENTITY_ANSWER=$'{"error":"this identity token could not be checked; try again in a minute"}\n503' \
-  bash "$tmp/up-identity-bounded.sh" up "${up_args[@]}" --dispatch-commit "$commit_ok" >"$tmp/out" 2>&1
-RC=$?
-set -e
+  run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 1)) || fail "up whose listener answered Dispatch's role-marked send 503 past the check's bound exited $RC, not 1"
 grep -qF "the listener does not take a send's role mark from Dispatch's token" "$tmp/out" &&
   grep -qF 'was answered 503 {"error":"this identity token could not be checked; try again in a minute"}' "$tmp/out" &&
-  grep -qF 'a 503 an issuer it could not read' "$tmp/out" ||
-  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as an issuer it could not read: $(cat "$tmp/out")"
+  grep -qF 'and a 503 for all of 120 s a listener still starting or one that cannot read its issuer' "$tmp/out" ||
+  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as a listener still starting or one that cannot read its issuer: $(cat "$tmp/out")"
 ! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener answered 503 past the check's bound"
-probes=$(wc -l <"$fake/identity-probes")
-((probes >= 2)) || fail "up sent Dispatch's role-marked send $probes time(s) to a listener that kept answering 503, so it did not send again"
-((${probes} - 1 <= $(grep -cx 3 "$fake/sleep.log" || true))) ||
-  fail "up did not wait 3 s between its $probes sends to a listener that kept answering 503: $(grep -cx 3 "$fake/sleep.log" || true) waits of 3 s"
-awk 'NR == 1 { first = $1 } { last = $1 } END { exit !(last - first >= 1) }' "$fake/identity-probe-times" ||
-  fail "up stopped sending to a listener that kept answering 503 before its 5 s bound: its sends spanned $(awk 'NR == 1 { f = $1 } { l = $1 } END { printf "%.2f", l - f }' "$fake/identity-probe-times") s"
+identity_sends_span_the_bound 'a listener that kept answering 503'
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up whose listener kept answering 503 exited $RC"
-pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, and once its bound has passed stops, naming the 503 as an issuer it could not read"
+pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, 41 sends over its 120 s bound and none after it, then stops, naming the 503 as a listener still starting or one that cannot read its issuer"
+
+# A send that did not run (kubectl's or curl's error) wrote nothing: up makes it again 3 s later
+# and goes on once it is answered, and stops once sends that do not run outlast the check's bound,
+# naming the bound.
+reset_fake
+printf '%s\n' 'EXIT curl: (7) Failed to connect to listener port 8080 after 0 ms: Couldn'"'"'t connect to server' >"$fake/identity-answers"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up whose first identity send did not run exited $RC, not 0: it gave up on a send that wrote nothing"
+[ "$(wc -l <"$fake/identity-probes")" = 2 ] ||
+  fail "up made Dispatch's role-marked send $(wc -l <"$fake/identity-probes") times after one that did not run, not 2"
+[ "$(cat "$fake/sleep.log" 2>/dev/null)" = 3 ] || fail "up did not wait 3 s once before it sent again: $(cat "$fake/sleep.log" 2>/dev/null)"
+grep -qF "the check of Dispatch's identity at the listener did not run in dispatch-5d9c (kubectl's or curl's words above); trying again in 3 s" "$tmp/out" &&
+  grep -qF 'curl: (7) Failed to connect to listener port 8080' "$tmp/out" ||
+  fail "up did not show curl's words and say it sends again: $(cat "$tmp/out")"
+grep -q 'the copy is up' "$tmp/out" || fail "up did not finish once the send ran and the listener took Dispatch's role mark"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose first identity send did not run exited $RC"
+reset_fake
+FAKE_IDENTITY_ANSWER=$'curl: (28) Operation timed out after 10002 milliseconds with 0 bytes received\nEXIT' \
+  run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 1)) || fail "up whose identity sends never ran exited $RC, not 1"
+grep -qF "the check of Dispatch's identity at the listener did not run in dispatch-5d9c within 120 s (kubectl's or curl's words above)" "$tmp/out" ||
+  fail "up's refusal after identity sends that never ran does not name the check's bound: $(cat "$tmp/out")"
+! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up although no identity send ran"
+identity_sends_span_the_bound 'a listener no send reached'
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose identity sends never ran exited $RC"
+pass "up makes an identity send that did not run again 3 s later and goes on once it runs; sends that never run stop it after 41 tries over its 120 s bound, naming the bound"
 
 # A listener built before role marks reads no mark and refuses the send's missing target: it
 # admitted Dispatch's token, and up goes on, saying so.
@@ -2353,6 +2407,38 @@ grep -qF "answers no 'oidc-mint -sub <subject>=<file>', which mints the copy's t
 [ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 2 \( -name '.checker.*' -o -name '.build-src.*' \))" ] ||
   fail "up left its scratch directory after it refused a loadgen that answers no oidc-mint"
 pass "up refuses, before it takes the lock or creates anything, a loadgen that answers no oidc-mint -sub, leaving no scratch directory"
+
+# A run that a cluster.sh from before the copy's own issuer started: its state.json holds the
+# cluster's https issuer and no oidc_key or account token, so none of its manifests renders. db-size
+# and redeploy refuse it before they change anything (no scale, no apply, state.json as it was),
+# naming down and then up.
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up exited $RC: $(cat "$tmp/out")"
+old_state=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")/state.json
+jq '.oidc_issuer = "https://container.googleapis.com/v1/projects/p/locations/l/clusters/c" | del(.oidc_key, .secrets.account_token)' \
+  "$old_state" >"$tmp/old-state.json"
+cat -- "$tmp/old-state.json" >"$old_state"
+rm -f -- "$tmp/old-state.json"
+old_state_before=$(cat -- "$old_state")
+for sub in db-size redeploy; do
+  case $sub in
+  db-size) old_args=(db-size --namespace "$ns" 4 15Gi) ;;
+  redeploy) old_args=(redeploy --namespace "$ns" --dispatch-commit "$commit_ok") ;;
+  esac
+  mark=$(own_calls_mark)
+  run_cluster "${old_args[@]}"
+  ((RC == 1)) || fail "$sub of a run whose state.json holds no oidc_key exited $RC, not 1"
+  grep -qF "$sub: run $(jq -r .run "$old_state")'s state.json holds no oidc_key" "$tmp/out" &&
+    grep -qF "Nothing was changed. Take it down and start a new run: cluster.sh down --namespace $ns, then cluster.sh up" "$tmp/out" ||
+    fail "$sub's refusal of a run whose state.json holds no oidc_key does not name down then up: $(cat "$tmp/out")"
+  writes=$(own_calls_since "$mark" | grep -E -- "^-n $ns (scale|apply|create|delete) " || true)
+  [ -z "$writes" ] || fail "$sub changed the copy before it refused a run whose state.json holds no oidc_key: $writes"
+  [ "$(cat -- "$old_state")" = "$old_state_before" ] || fail "$sub rewrote state.json before it refused a run whose state.json holds no oidc_key"
+done
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down of the run whose state.json holds no oidc_key exited $RC"
+pass "db-size and redeploy refuse a run whose state.json a cluster.sh from before the copy's own issuer wrote, before any scale, apply or state change, naming down then up"
 
 # ---- (e) templates ---------------------------------------------------------------------------------
 

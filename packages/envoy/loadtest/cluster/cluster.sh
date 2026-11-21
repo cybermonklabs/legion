@@ -428,6 +428,10 @@ TRANSIENT_RETRY_SECONDS=5
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# now: the epoch second check_dispatch_identity reads its bound by. cluster.test.sh replaces it
+# with a clock that its fake sleep moves, so the check's 120 s bound costs a test no real second.
+now() { printf %s "$EPOCHSECONDS"; }
+
 # kube ARGS: kubectl in the copy's namespace, bounded by timeout (never --request-timeout, which
 # drops a pod's in-cluster config: kubernetes/kubernetes#93474). kube_for SECONDS ARGS: the same
 # with its own bound.
@@ -682,6 +686,15 @@ manifest_values() {
     "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)",
     "PG_PASSWORD=\(.secrets.pg_password)", "DISPATCH_TOKEN=\(.secrets.dispatch_token)",
     "LISTENER_TOKEN=\(.secrets.listener_token)", "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
+}
+
+# require_own_issuer: refuse, before anything changes, a run whose state.json a cluster.sh from
+# before the copy's own token issuer wrote. Such a state.json holds the cluster's https issuer and
+# no oidc_key and no account token, so no manifest of it renders again: db-size and redeploy, which
+# render one after they have scaled the copy down, would stop there with the copy left down.
+require_own_issuer() {
+  [ -n "$(state '.oidc_key.kid // empty')" ] ||
+    die "$CMD: run $RUN's state.json holds no oidc_key: a cluster.sh from before the copy served its own token issuer made it, so its manifests no longer render. Nothing was changed. Take it down and start a new run: cluster.sh down --namespace $NS, then cluster.sh up"
 }
 
 # apply_manifest NAME [KUBECTL ARGS...]: manifests/NAME rendered from state.json, applied
@@ -1729,7 +1742,7 @@ IDENTITY_PROBE_SCRIPT='printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUN
 # from anyone, so there is nothing to check, and it says so.
 IDENTITY_CHECK_SECONDS=120
 check_dispatch_identity() {
-  local principal pod answer status body deadline=$((EPOCHSECONDS + IDENTITY_CHECK_SECONDS))
+  local principal pod answer status body ran deadline=$(($(now) + IDENTITY_CHECK_SECONDS))
   principal=$(kube get deployment listener -o 'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="ENVOY_DISPATCH_PRINCIPAL")].value}') ||
     die "reading the listener's ENVOY_DISPATCH_PRINCIPAL (kubectl get deployment listener) failed"
   if [ -z "$principal" ]; then
@@ -1737,11 +1750,19 @@ check_dispatch_identity() {
     return 0
   fi
   pod=$(find_pod dispatch) && [ -n "$pod" ] || die "found no running Dispatch pod to check Dispatch's identity at the listener from"
+  # A send that did not run (an API server error, kubectl's own time-out, curl's exit 7 or 28)
+  # wrote nothing, so it is made again every 3 s until the deadline, as a 503 is.
   while :; do
-    answer=$(kube exec "$pod" -c envoy-dispatch -- sh -c "$IDENTITY_PROBE_SCRIPT") ||
-      die "the check of Dispatch's identity at the listener did not run in $pod (kubectl's or curl's words above)"
+    ran=1
+    answer=$(kube exec "$pod" -c envoy-dispatch -- sh -c "$IDENTITY_PROBE_SCRIPT") || ran=0
     status=${answer##*$'\n'} body=${answer%$'\n'*}
-    [ "$status" = 503 ] && ((EPOCHSECONDS < deadline)) || break
+    if ((ran == 0)); then
+      (($(now) < deadline)) ||
+        die "the check of Dispatch's identity at the listener did not run in $pod within $IDENTITY_CHECK_SECONDS s (kubectl's or curl's words above)"
+      note "the check of Dispatch's identity at the listener did not run in $pod (kubectl's or curl's words above); trying again in 3 s"
+    elif [ "$status" != 503 ] || (($(now) >= deadline)); then
+      break
+    fi
     sleep 3
   done
   if [ "$status" = 400 ] && jq -e '.expected == ["role"] and (.error | contains("-identity-probe"))' <<<"$body" >/dev/null 2>&1; then
@@ -1749,7 +1770,7 @@ check_dispatch_identity() {
   elif [ "$status" = 400 ] && jq -e '.expected == ["target_session"]' <<<"$body" >/dev/null 2>&1; then
     note "the listener admits Dispatch's token ($principal, issued by $(state .oidc_issuer)); its build reads no send's role mark, so the replay's role-routed sends reach their targets unmarked"
   else
-    die "the listener does not take a send's role mark from Dispatch's token: a send marked with the role -identity-probe, which no claim can name, on the token Dispatch's ENVOY_ACCOUNT_TOKEN_FILE holds was answered $status $body. A 400 naming the role means the mark was taken from $principal, and one naming target_session a listener that admitted the token and reads no mark; a 401 is a token the listener did not verify against $(state .oidc_issuer), a 403 another principal, a 503 an issuer it could not read. The replay's role-routed issues need it; kubectl -n $NS logs deployment/listener says why"
+    die "the listener does not take a send's role mark from Dispatch's token: a send marked with the role -identity-probe, which no claim can name, on the token Dispatch's ENVOY_ACCOUNT_TOKEN_FILE holds was answered $status $body. A 400 naming the role means the mark was taken from $principal, and one naming target_session a listener that admitted the token and reads no mark; a 401 is a token the listener did not verify against $(state .oidc_issuer), a 403 another principal, and a 503 for all of $IDENTITY_CHECK_SECONDS s a listener still starting or one that cannot read its issuer. The replay's role-routed issues need it; kubectl -n $NS logs deployment/listener says why"
   fi
 }
 
@@ -3828,6 +3849,7 @@ cmd_db_size() {
   valid cpu "${POS[0]}" || die "db-size: CPU '${POS[0]}' is not a whole number of cores"
   valid memory "${POS[1]}" || die "db-size: MEMORY '${POS[1]}' is not a whole number of Gi (for example 15Gi)"
   use_run
+  require_own_issuer
   ensure_daemons
   resize_postgres "${POS[0]}" "${POS[1]%Gi}"
 }
@@ -3839,6 +3861,7 @@ cmd_redeploy() {
   [ -n "$commit" ] || die "redeploy: --dispatch-commit is required"
   valid commit "$commit" || die "redeploy: --dispatch-commit '$commit' is not a full 40-hex commit sha"
   use_run
+  require_own_issuer
   image=$(image_for_commit "$commit")
   ensure_daemons
   # shellcheck disable=SC2016 # $c and $i are jq's variables
