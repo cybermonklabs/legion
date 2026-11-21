@@ -196,13 +196,18 @@ nonce=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ -n "$nonce" ] || nonce=$$
 peer=${OUTSIDE_PEER_SESSION:-outside-e2e-peer-$nonce}
 
-# --- Scratch directory and cleanup: every background child, stopped and waited for, then the
-# peer's tmux server, then the directory. ---
+# --- Scratch directory and cleanup: the full member's helper's machine login revoked, every
+# background child stopped and waited for, then the peer's tmux server, then the directory. ---
 work=''
 background=''
 peer_tmux=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
+  # However the leg ends, an INT, a TERM or an abort included, the full member's helper's machine
+  # login is revoked: its key goes with the directory, and the credential would stay live at the
+  # broker until it expires. The normal path revokes it first and clears control_credential.
+  [ -z "${control_credential:-}" ] ||
+    browser POST "/api/v1/machine-logins/$control_credential/revoke" "$work/control-revoke.json" >/dev/null 2>&1
   reap
   peer_stop
   [ -z "$work" ] || rm -rf "$work"
@@ -540,6 +545,16 @@ elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
 else
   problem=$(lacking OUTSIDE_WORKFLOW_REPO)
   [ -n "$problem" ] || problem=$(tool_problem gh)
+  # A run's inputs (the project, the sweep's project and fills naming the proxy's repository) are
+  # as readable as its repository, so the workflow starts only in a private one.
+  if [ -z "$problem" ]; then
+    visibility=$(gh repo view "$OUTSIDE_WORKFLOW_REPO" --json visibility --jq .visibility 2>/dev/null </dev/null)
+    case $visibility in
+      PRIVATE) ;;
+      '') problem="the visibility of $OUTSIDE_WORKFLOW_REPO could not be read, and a run's inputs are as readable as its repository" ;;
+      *) problem="$OUTSIDE_WORKFLOW_REPO is $visibility, not PRIVATE, and a run's inputs are as readable as its repository" ;;
+    esac
+  fi
   if [ -n "$problem" ]; then
     public_problem="not started: $problem"
   else
@@ -778,7 +793,10 @@ if [ -n "${control_helper_pid:-}" ]; then
     revoked=$(browser POST "/api/v1/machine-logins/$control_credential/revoke" "$work/control-revoke.json")
   [ -z "${control_login_pid:-}" ] || stop_child "$control_login_pid"
   stop_child "$control_helper_pid"
-  case $revoked in 2??) ;; *) say "the full member's helper's machine login was not revoked ($revoked)" ;; esac
+  case $revoked in
+    2??) control_credential='' ;;
+    *) say "the full member's helper's machine login was not revoked ($revoked); the leg's cleanup asks again" ;;
+  esac
   case $dropped in 2??) ;; *) say "the control's agent token was not revoked ($dropped)" ;; esac
   [ -z "$p7_control" ] || p7_control="$p7_control (revoked: $revoked)"
 fi
@@ -901,31 +919,11 @@ sweep_writer_stop
 public_tsv="$results/outside-agent-public.tsv"
 [ -n "$public_problem" ] || [ -f "$public_tsv" ] || public_problem="the public leg left no outside-agent-public.tsv"
 
-# public_line NAME: the public TSV's NAME row, whole, or nothing. Where the TSV holds NAME more
-# than once, the worst of them: FAIL, then any word but PASS, then PASS, so a later PASS never
-# hides an earlier FAIL.
-public_line() {
-  local each worst='' rank best=-1
-  [ -f "$public_tsv" ] || return 0
-  while IFS= read -r each; do
-    case $each in "$1$tab"*) ;; *) continue ;; esac
-    case ${each##*"$tab"} in
-      FAIL) rank=2 ;;
-      PASS) rank=0 ;;
-      *) rank=1 ;;
-    esac
-    if [ "$rank" -gt "$best" ]; then
-      best=$rank
-      worst=$each
-    fi
-  done <"$public_tsv"
-  printf '%s' "$worst"
-}
-
-# public_part NAME: the public TSV's NAME row (public_line's) as `verdict<TAB>got`, or nothing.
+# public_part NAME: the public TSV's NAME row (its worst copy, worst_row's) as `verdict<TAB>got`,
+# or nothing.
 public_part() {
   local each rest
-  each=$(public_line "$1")
+  each=$(worst_row "$public_tsv" "$1")
   [ -n "$each" ] || return 0
   rest=${each#*"$tab"*"$tab"}
   printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
@@ -938,10 +936,11 @@ if ! passed T1; then
 elif [ ! -f "$results/outside-edge-revocations.tsv" ]; then
   row T4 "$want_t4" "no outside-edge-revocations.tsv from the public leg${public_problem:+: $public_problem}" UNKNOWN
 else
-  revoked=''
-  while IFS="$tab" read -r name _ _ verdict; do
-    [ "$name" = "revoke-$credential" ] && revoked=$verdict
-  done <"$results/outside-edge-revocations.tsv"
+  # The revoke row is the proof of the revoke, its worst copy read: a retried revoke's FAIL then
+  # PASS reads FAIL. machine list's LAUNCHER_INVALID after it is only the helper's launcher
+  # refused, which an expired or skewed proof answers too, so it proves nothing of the revoke alone.
+  revoked=$(worst_row "$results/outside-edge-revocations.tsv" "revoke-$credential")
+  [ -z "$revoked" ] || revoked=${revoked##*"$tab"}
   ended=$(env -i "${scratch_env[@]}" agent-secrets machine list 2>&1 </dev/null)
   ended_exit=$?
   if [ -z "$revoked" ]; then
@@ -955,7 +954,7 @@ else
     row T4 "$want_t4" "revoked, and machine list through the scratch helper still answers" FAIL
   else
     case $ended in
-      *LAUNCHER_INVALID*) row T4 "$want_t4" "revoked; machine list refused LAUNCHER_INVALID" PASS ;;
+      *LAUNCHER_INVALID*) row T4 "$want_t4" "revoke-$credential reads PASS; machine list through the scratch helper is then refused LAUNCHER_INVALID" PASS ;;
       *) row T4 "$want_t4" "revoked; machine list exited $ended_exit: ${ended:0:300}" UNKNOWN ;;
     esac
   fi
@@ -1030,7 +1029,7 @@ fi
 # --- P1-P10 as the public leg's TSV has them, each held to what this leg saw beside it. ---
 for name in $public_rows; do
   line=''
-  [ -n "$public_problem" ] || line=$(public_line "$name")
+  [ -n "$public_problem" ] || line=$(worst_row "$public_tsv" "$name")
   if [ -z "$line" ]; then
     row "$name" "the public leg's row $name" "${public_problem:-the public TSV has no $name row}" UNKNOWN
     continue
@@ -1075,6 +1074,7 @@ EOF
     exchange=${exchange%% *}
     lags=''
     late=''
+    ahead=''
     unseen=''
     for word in ping reply; do
       seen_line=''
@@ -1092,11 +1092,16 @@ EOF
       lag=$((($4 - $3) / 1000))
       lags="${lags:+$lags, }$word $lag s"
       [ "$lag" -le 10 ] || late="${late:+$late, }$word $lag s"
+      # Shown before it was sent, by more than the 2 s the whole-second clocks round off: the
+      # runner's clock runs ahead of this box's, so a lag within 10 s says nothing.
+      [ "$lag" -ge -2 ] || ahead="${ahead:+$ahead, }$word $lag s"
     done
     if [ -n "$late" ]; then
       row P4 "$want" "the $peer_kind peer was shown the public side's $late after it was sent; $got" FAIL
     elif [ -n "$unseen" ]; then
       row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's transcript never held its $unseen of nonce $exchange; $got" UNKNOWN
+    elif [ -n "$ahead" ]; then
+      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer was shown the public side's $ahead, before it was sent, so the runner's clock and this box's disagree; $got" UNKNOWN
     elif [ "$peer_kind" = probe ]; then
       row P4 "$want" "$got; the scripted control peer was shown the $lags after they were sent: the path passes with no model in the loop, and the gate needs the model peer (OUTSIDE_PEER=omp)" UNKNOWN
     else

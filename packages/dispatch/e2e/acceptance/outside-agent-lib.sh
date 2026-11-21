@@ -134,6 +134,28 @@ running_child() {
   return 1
 }
 
+# worst_row FILE NAME: FILE's row NAME (a TSV line whose first field is NAME and whose last is its
+# verdict), whole, or nothing. Where FILE holds NAME more than once, the worst copy: FAIL, then any
+# word but PASS, then PASS, the first of equals, so a later PASS never hides an earlier FAIL. Every
+# row a leg reads from a file another program wrote is read through it.
+worst_row() {
+  local each worst='' rank best=-1 tab_=$'\t'
+  [ -f "$1" ] || return 0
+  while IFS= read -r each || [ -n "$each" ]; do
+    case $each in "$2$tab_"*) ;; *) continue ;; esac
+    case ${each##*"$tab_"} in
+      FAIL) rank=2 ;;
+      PASS) rank=0 ;;
+      *) rank=1 ;;
+    esac
+    if [ "$rank" -gt "$best" ]; then
+      best=$rank
+      worst=$each
+    fi
+  done <"$1"
+  printf '%s' "$worst"
+}
+
 # forget PID: takes PID out of `background`, once it is waited for or stopped.
 forget() {
   local pid kept=''

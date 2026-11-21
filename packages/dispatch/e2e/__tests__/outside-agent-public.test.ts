@@ -45,6 +45,9 @@ interface PublicScenario {
   readonly foreignSend?: Record<string, unknown>;
   readonly approve?: Record<string, unknown>;
   readonly livePublish?: Record<string, unknown>;
+  /** The rows the workflow's browser (OUTSIDE_T5_COMMAND) writes, in order, each
+   *  `[row, got, verdict]`; with none, OUTSIDE_T5_COMMAND is unset. */
+  readonly browserRows?: readonly (readonly [string, string, string])[];
 }
 
 /** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
@@ -158,6 +161,18 @@ exit 0
 `
   );
   const approve = script(join(scratch("inputs"), "approve"), '#!/bin/sh\necho "APPROVED $1"\n');
+  const browserRows = scenario.browserRows ?? [];
+  const rowsFile = join(state, "browser-rows.tsv");
+  await Bun.write(
+    rowsFile,
+    browserRows
+      .map(([name, got, verdict]) => `${name}\tthe browser's ${name}\t${got}\t${verdict}\n`)
+      .join("")
+  );
+  const browser = script(
+    join(bin, "t5-browser"),
+    `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
+  );
   const origin = `http://127.0.0.1:${closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
@@ -177,6 +192,7 @@ exit 0
       OUTSIDE_APPROVE_COMMAND: approve,
       OUTSIDE_PI_ENVOY_VERSION: "0.0.0",
       OUTSIDE_REPOSITORY: "example-owner/example-repo",
+      ...(browserRows.length === 0 ? {} : { OUTSIDE_T5_COMMAND: browser }),
     },
     from: import.meta.url,
   });
@@ -256,6 +272,29 @@ describe.skipIf(skipWithout("bash", "bun"))(
       },
       // The five runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+    );
+
+    test(
+      "each of the browser's T5 rows reads as its worst copy: a FAIL then a PASS of T5-cookie reads FAIL",
+      async () => {
+        const run = await publicStandInRun({
+          trades: [true, false, false],
+          holdCloseMs: 15_000,
+          holdCode: 4401,
+          browserRows: [
+            ["T5-cookie", "at=100 the cookie still answered", "FAIL"],
+            ["T5-cookie", "at=130 the cookie got 401", "PASS"],
+            ["T5-passkey", "at=140 the passkey sign-in was refused", "PASS"],
+          ],
+        });
+        // T5-passkey, one PASS, is the control: one copy reads as it is.
+        expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+          verdicts: { "T5-cookie": "FAIL", "T5-passkey": "PASS" },
+        });
+        expect(rowsOf(run.stdout).get("T5-cookie")?.got).toContain("the cookie still answered");
+      },
+      // The run, a bounded child under the short bound.
+      rowLimit("short")
     );
   }
 );

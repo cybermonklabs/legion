@@ -16,7 +16,7 @@
 # rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
 # since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
 #
-# The contract this file reads is #4608's at fbabf8561c, fills version 3: `routes`, the SHA-256 of
+# The contract this file reads is #4608's at cd8a041312, fills version 3: `routes`, the SHA-256 of
 # the routes.txt the fills were made from, and `deployment`, of the member's own projects' keys and
 # creation times. A runner refuses fills of another version, of another routes.txt than its own
 # checkout's, or of another deployment, and refuses a SWEEP_LIVE_SECONDS below 30; each such refusal

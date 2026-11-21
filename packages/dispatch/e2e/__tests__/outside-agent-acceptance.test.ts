@@ -46,6 +46,7 @@ import {
 import {
   fullLogin,
   inviteUrl,
+  liveStandInDispatches,
   type PreparedStandIn,
   passingControls,
   prepareStandIn,
@@ -401,9 +402,18 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
   }
 }
 
-/** Runs each prepared leg at once; every run answers, in the order given. */
+/** Prepares each run, one at a time, then runs every prepared leg at once; every run answers, in
+ *  the order given. A preparation that throws stops the stand-in Dispatch of each run already
+ *  prepared before the throw goes on, so no stand-in outlives the row. */
 async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
-  return Promise.all(standIns.map((each) => prepareStandIn(scratch, each)).map(runStandIn));
+  const prepared: PreparedStandIn[] = [];
+  try {
+    for (const each of standIns) prepared.push(prepareStandIn(scratch, each));
+  } catch (error) {
+    for (const done of prepared) done.dispatch.stop();
+    throw error;
+  }
+  return Promise.all(prepared.map(runStandIn));
 }
 
 describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
@@ -512,22 +522,30 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the pins hold the gate when Dispatch serves another build than its pin, is half rolled out, a pin moves between the legs, or the pins are local files",
+      "the pins hold the gate when Dispatch serves another build than its pin, is half rolled out, a pin moves between the legs, the pins are local files, or the pins file names one deployment twice",
       async () => {
-        const [other, split, moves, local] = await runStandIns(
+        const [other, split, moves, local, twice] = await runStandIns(
           { ...passingControls, serving: "other" },
           { ...passingControls, serving: "split" },
           { ...passingControls, pins: "moves" },
-          { ...passingControls, pins: "local" }
+          { ...passingControls, pins: "local" },
+          { ...passingControls, pins: "duplicate" }
         );
         if (
           other === undefined ||
           split === undefined ||
           moves === undefined ||
-          local === undefined
+          local === undefined ||
+          twice === undefined
         ) {
-          throw new Error("four runs, want four");
+          throw new Error("five runs, want five");
         }
+        // Two `dispatch` lines: only one image could be held, so the pins are not read; the
+        // control is the answered run of the first test of this suite, one line a name.
+        expect({ verdicts: verdictsOf(twice.stdout), stdout: twice.stdout }).toMatchObject({
+          verdicts: { pins: "UNKNOWN", T1: "UNKNOWN" },
+        });
+        expect(rowsOf(twice.stdout).get("pins")?.got).toContain("has more than one dispatch line");
         expect({ verdicts: verdictsOf(other.stdout), stdout: other.stdout }).toMatchObject({
           verdicts: { pins: "UNKNOWN", T1: "UNKNOWN" },
         });
@@ -552,8 +570,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         });
         expect(rowsOf(local.stdout).get("pins-end")?.got).toContain("OUTSIDE_PINS_REPO is unset");
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
     );
 
     test(
@@ -647,7 +665,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     test(
       "the sweep reads UNKNOWN for each refusal of a version 3 runner, and the leg sends no fills of another version",
       async () => {
-        // The runner's own refusals before its first request, as #4608's fbabf8561c words them.
+        // The runner's own refusals before its first request, as #4608's cd8a041312 words them.
         const refusals = [
           `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"a".repeat(64)}, and this run's is ${"c".repeat(64)}`,
           "UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills bbbbbbbbbbbb, here dddddddddddd)",
@@ -681,15 +699,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "T1 reads a login nobody approved UNKNOWN, and T4 counts a revoke row with no verdict as UNKNOWN",
+      "T1 reads a login nobody approved UNKNOWN, and T4 counts a revoke row with no verdict as UNKNOWN and reads a retried revoke's FAIL then PASS as FAIL",
       async () => {
-        const [control, expired, noVerdict] = await runStandIns(
+        const [control, expired, noVerdict, retried] = await runStandIns(
           passingControls,
           { ...passingControls, approve: false },
-          { ...passingControls, revokeVerdict: "SKIPPED" }
+          { ...passingControls, revokeVerdicts: ["SKIPPED"] },
+          { ...passingControls, revokeVerdicts: ["FAIL", "PASS"] }
         );
-        if (control === undefined || expired === undefined || noVerdict === undefined) {
-          throw new Error("three runs, want three");
+        if (
+          control === undefined ||
+          expired === undefined ||
+          noVerdict === undefined ||
+          retried === undefined
+        ) {
+          throw new Error("four runs, want four");
         }
         expect(rowsOf(control.stdout).get("T4")).toMatchObject({ verdict: "PASS" });
         expect({ verdicts: verdictsOf(expired.stdout), stdout: expired.stdout }).toMatchObject({
@@ -706,9 +730,15 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         // The same run but for that row: the gate counts it, so it can never exit 0 on it.
         expect(unknownsCounted(noVerdict.stdout)).toBe(unknownsCounted(control.stdout) + 1);
+        // A revoke that failed and was retried: its worst copy is read, and the later PASS hides
+        // nothing; the control is the first run, one PASS.
+        expect({ verdicts: verdictsOf(retried.stdout), stdout: retried.stdout }).toMatchObject({
+          verdicts: { T4: "FAIL" },
+        });
+        expect(rowsOf(retried.stdout).get("T4")?.got).toContain("reads FAIL");
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
     );
 
     test(
@@ -782,13 +812,34 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, and a refused dispatch holds the gate at once",
+      "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private repository, and a refused dispatch holds the gate at once",
       async () => {
-        const [started, refused] = await runStandIns(
+        const [started, refused, inPublic, unread] = await runStandIns(
           { ...passingControls, workflow: {} },
-          { ...passingControls, workflow: { inputs: "edge_host=dispatch.edge.example" } }
+          { ...passingControls, workflow: { inputs: "edge_host=dispatch.edge.example" } },
+          { ...passingControls, workflow: { visibility: "PUBLIC" } },
+          { ...passingControls, workflow: { visibility: "" } }
         );
-        if (started === undefined || refused === undefined) throw new Error("two runs, want two");
+        if (
+          started === undefined ||
+          refused === undefined ||
+          inPublic === undefined ||
+          unread === undefined
+        ) {
+          throw new Error("four runs, want four");
+        }
+        // A repository that is not read as PRIVATE gets no run: its inputs would be as readable as
+        // it is. The control is the first run, in a PRIVATE one.
+        for (const [run, said] of [
+          [inPublic, "is PUBLIC, not PRIVATE"],
+          [unread, "could not be read"],
+        ] as const) {
+          expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { T1: "UNKNOWN", public: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("public")?.got).toContain(said);
+          expect(existsSync(join(run.state, "workflow-args"))).toBe(false);
+        }
         // The words name no input: those reach `gh` on its stdin alone.
         expect(
           readFileSync(join(started.state, "workflow-args"), "utf8").trim().split("\n")
@@ -820,6 +871,54 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           'Unexpected inputs provided: ["edge_host"]'
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
+      "the full member's helper's login is revoked when a TERM ends the leg, and a failed preparation leaves no stand-in running",
+      async () => {
+        // A TERM after the full member's helper was approved: the leg's cleanup revokes its login.
+        // The control is the answered run of the first test of this suite, which revokes it on the
+        // normal path.
+        const [ended] = await runStandIns({ ...passingControls, t3Kills: true });
+        if (ended === undefined) throw new Error("one run, want one");
+        expect({ code: ended.code, seen: ended.seen }).toMatchObject({
+          code: 143,
+          seen: expect.arrayContaining(["POST /api/v1/machine-logins/cred-full-0001/revoke"]),
+        });
+        // A preparation that throws after its stand-in Dispatch started stops it, and stops each
+        // stand-in of the runs prepared before it.
+        const before = liveStandInDispatches();
+        await expect(
+          runStandIns(passingControls, { ...passingControls, failAfterDispatch: true })
+        ).rejects.toThrow("a step after the stand-in Dispatch started failed");
+        expect(liveStandInDispatches()).toBe(before);
+      },
+      // The one run, a bounded child under the short bound; the failed preparation runs no leg.
+      rowLimit("short")
+    );
+
+    test(
+      "P4 reads UNKNOWN where the peer was shown the public side's ping and reply before they were sent",
+      async () => {
+        const [ahead, inStep] = await runStandIns(
+          { ...passingControls, window: { lastAnsweredAfter: 0 }, peerAheadMs: 60_000 },
+          { ...passingControls, window: { lastAnsweredAfter: 0 }, peerAheadMs: 0 }
+        );
+        if (ahead === undefined || inStep === undefined) throw new Error("two runs, want two");
+        // The runner's clock 60 s ahead of this box's: the peer's lags read below -2 s.
+        expect({ verdicts: verdictsOf(ahead.stdout), stdout: ahead.stdout }).toMatchObject({
+          verdicts: { P4: "UNKNOWN" },
+        });
+        expect(rowsOf(ahead.stdout).get("P4")?.got).toContain(
+          "before it was sent, so the runner's clock and this box's disagree"
+        );
+        // The control: clocks in step reach the scripted peer's own reading.
+        expect(rowsOf(inStep.stdout).get("P4")?.got).toContain(
+          "the scripted control peer was shown the ping"
+        );
       },
       // The two runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short"] })

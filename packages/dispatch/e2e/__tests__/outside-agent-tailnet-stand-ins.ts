@@ -66,16 +66,18 @@ export interface StandIns {
   readonly fillsLeaveOut?: string;
   /** Whether the public leg approves the scratch login; a login nobody approves ends `expired`. */
   readonly approve?: boolean;
-  /** The verdict the public leg's revoke row of the scratch login reads (default PASS). */
-  readonly revokeVerdict?: string;
+  /** The verdicts of the public leg's revoke rows of the scratch login, in order: more than one is
+   *  a retried revoke (default one PASS). */
+  readonly revokeVerdicts?: readonly string[];
   /** The public leg's own last word: its verdict row (none for "absent") and its exit. */
   readonly publicVerdict?: "PASS" | "FAIL" | "absent";
   readonly publicExit?: number;
   /** P6's row as the public leg writes it, where it differs from a PASS. */
   readonly p6?: string;
   /** Where the pins come from: the deployment repository through `gh` (default), or local files.
-   *  `moves` has the public leg change Dispatch's pin at that repository's main while it runs. */
-  readonly pins?: "repository" | "local" | "moves";
+   *  `moves` has the public leg change Dispatch's pin at that repository's main while it runs;
+   *  `duplicate` gives the pins file a second `dispatch` line. */
+  readonly pins?: "repository" | "local" | "moves" | "duplicate";
   /** The commit the stand-in Dispatch's /healthz names: its pin's (default), another one, or its
    *  pin's on this process while `fleet_commit` names another. */
   readonly serving?: "pinned" | "other" | "split";
@@ -83,12 +85,13 @@ export interface StandIns {
    *  T5-agent row whose last answered trade is `lastAnsweredAfter` s after the leg started. */
   readonly window?: { readonly lastAnsweredAfter: number };
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
-   *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone). */
-  readonly workflow?: { readonly inputs?: string };
+   *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone), its
+   *  repository's visibility as `gh repo view` reads it (default PRIVATE; empty, unreadable). */
+  readonly workflow?: { readonly inputs?: string; readonly visibility?: string };
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
    *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
    *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
-   *  the fills' version (default 3, #4608's contract at fbabf8561c); and the runner's last line
+   *  the fills' version (default 3, #4608's contract at cd8a041312); and the runner's last line
    *  and exit (default PASS, 0). */
   readonly sweep?: {
     readonly writer?: string;
@@ -99,6 +102,14 @@ export interface StandIns {
   };
   /** A P row the public TSV holds twice, first with `first`'s verdict, then with `second`'s. */
   readonly duplicate?: { readonly name: string; readonly first: string; readonly second: string };
+  /** With the T5 window's scripted peer: it is shown P4's ping and reply stamped this many ms ahead
+   *  of this box's clock, and the public TSV's P4 row is a PASS of that exchange. */
+  readonly peerAheadMs?: number;
+  /** T3's register sends the leg a TERM, as an operator's Ctrl-C or a killed job would, after the
+   *  full member's helper was approved. */
+  readonly t3Kills?: boolean;
+  /** The preparation throws once its stand-in Dispatch runs, as a failed step after it would. */
+  readonly failAfterDispatch?: boolean;
 }
 
 export interface StandInRun extends LegRun {
@@ -159,12 +170,14 @@ function standInPath(scratch: Scratch, state: string, publicCommand: string): st
   // repository's main: the file under state/deploy, base64. `gh workflow run` keeps its words in
   // state/workflow-args and its stdin in state/workflow-inputs.json, refuses an input the
   // workflow does not declare as GitHub does (422), and otherwise starts the public command as the
-  // run, with the code the inputs carry; `gh run view`, `watch` and `download` read that run.
+  // run, with the code the inputs carry; `gh run view`, `watch` and `download` read that run. `gh
+  // repo view` prints the visibility state/visibility holds, or nothing where there is none.
   script(
     join(bin, "gh"),
     `#!/usr/bin/env bash
 state='${state}'
 case $1 in
+  repo) [ ! -f "$state/visibility" ] || cat "$state/visibility" ;;
   api)
     path=\${2#repos/${deployRepository}/contents/}
     path=\${path%%\\?ref=main}
@@ -245,7 +258,12 @@ case $1 in
     ;;
   register)
     session=$3
-    case $session in *-t3-*) printf '%s\\n' "$operator" >"$state/t3-operator" ;; esac
+    case $session in *-t3-*)
+      printf '%s\\n' "$operator" >"$state/t3-operator"
+      # The leg runs this register in the foreground, so its TERM trap runs once this exits.
+      [ ! -f "$state/t3-kills" ] || { kill -TERM "$PPID"; exit 1; }
+      ;;
+    esac
     while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
     shift
     [ "$granted" = no ] || exec "$@"
@@ -281,6 +299,14 @@ export interface StandInDispatch {
 const standInDispatchFile = fileURLToPath(
   new URL("./outside-agent-stand-in-dispatch.ts", import.meta.url)
 );
+/** Every stand-in Dispatch started and not yet stopped. */
+const liveDispatches = new Set<number>();
+
+/** How many stand-in Dispatches run now: none once every run's preparation and run have ended,
+ *  however they ended. */
+export function liveStandInDispatches(): number {
+  return liveDispatches.size;
+}
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
  *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
@@ -312,6 +338,7 @@ function standInDispatch(
     stdout: "ignore",
     stderr: "inherit",
   });
+  liveDispatches.add(child.pid);
   // Its readiness, read as the rest of the preparation is, before any leg starts: at most 10 s.
   const ready = Bun.spawnSync([
     "bash",
@@ -321,6 +348,7 @@ function standInDispatch(
   ]);
   if (!ready.success) {
     child.kill();
+    liveDispatches.delete(child.pid);
     throw new Error(`the stand-in Dispatch did not answer at ${origin} within 10 s`);
   }
   const seenFile = join(state, "dispatch-seen");
@@ -332,7 +360,10 @@ function standInDispatch(
             .split("\n")
             .filter((line) => line !== "")
         : [],
-    stop: () => child.kill(),
+    stop: () => {
+      child.kill();
+      liveDispatches.delete(child.pid);
+    },
   };
 }
 
@@ -349,17 +380,25 @@ export interface PreparedStandIn {
 }
 
 /** The stand-in probe beside the tailnet leg for the T5 row: its scripted peer is ready at once
- *  and is shown the public leg's `t5-open`. */
-const standInPeerProbe = `
+ *  and is shown the public leg's `t5-open`, and, where `aheadMs` is given, P4's ping and reply of
+ *  nonce `example`, stamped that many ms ahead of this box's clock. */
+function standInPeerProbe(aheadMs: number | undefined): string {
+  const exchange =
+    aheadMs === undefined
+      ? ""
+      : `for (const word of ["ping", "reply"]) process.stdout.write("outside-e2e " + word + " example at " + (Date.now() + ${aheadMs}) + "\\n");`;
+  return `
 const [command] = Bun.argv.slice(2);
 if (command === "peer") {
   process.stdout.write(JSON.stringify({ ready: true }) + "\\n");
+  ${exchange}
   process.stdout.write("outside-e2e t5-open example at 1\\n");
   await Bun.sleep(600000);
 } else {
   process.stdout.write(JSON.stringify({ unknown: "the stand-in probe has no " + command }) + "\\n");
 }
 `;
+}
 
 export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedStandIn {
   const state = scratch("state");
@@ -403,7 +442,16 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
           ]
         : name === "P6" && standIns.p6 !== undefined
           ? [[name, `the row ${name}`, standIns.p6, standIns.p6.split(" ")[0] as string]]
-          : [[name, `the row ${name}`, `what ${name} read`, "PASS"]]
+          : name === "P4" && standIns.peerAheadMs !== undefined
+            ? [
+                [
+                  name,
+                  `the row ${name}`,
+                  "session omp-session-1: pong 1 s, hello 1 s and done 1 s after the peer sent them; nonce=example sockets=1",
+                  "PASS",
+                ],
+              ]
+            : [[name, `the row ${name}`, `what ${name} read`, "PASS"]]
     ),
     ["revocations", "every login revoked", "the revoke command exited 0", "PASS"],
     ...(standIns.publicVerdict === "absent"
@@ -428,7 +476,7 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   const leg = copyLeg(scratch, tailnetLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   if (standIns.window !== undefined) {
-    writeFileSync(join(legDir, "outside-agent-probe.ts"), standInPeerProbe);
+    writeFileSync(join(legDir, "outside-agent-probe.ts"), standInPeerProbe(standIns.peerAheadMs));
   }
   // The writer is stopped by the leg when the public leg ends: on a TERM it leaves a mark and
   // ends. A writer the leg failed to stop is killed later by the bounded child's own stop, with
@@ -466,7 +514,12 @@ esac
       `${name} ${pinsLocal ? join(state, "deploy", `${name}.yaml`) : `${name}.yaml`} example:image`
     );
   }
+  // A second `dispatch` line, naming another file, where the pins file is to hold one twice.
+  if (standIns.pins === "duplicate") pins.push("dispatch dispatch-second.yaml example:image");
   writeFileSync(join(inputs, "pins.txt"), `${pins.join("\n")}\n`);
+  if (standIns.t3Kills === true) writeFileSync(join(state, "t3-kills"), "");
+  const visibility = standIns.workflow?.visibility ?? "PRIVATE";
+  if (visibility !== "") writeFileSync(join(state, "visibility"), `${visibility}\n`);
   const approve =
     standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
   const moves =
@@ -485,7 +538,7 @@ ${moves}
 out=$OUTSIDE_PUBLIC_RESULTS
 cp '${state}/public.tsv' "$out/outside-agent-public.tsv"
 ${lastAnswered}
-printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${standIns.revokeVerdict ?? "PASS"}' >"$out/outside-edge-revocations.tsv"
+${(standIns.revokeVerdicts ?? ["PASS"]).map((verdict) => `printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${verdict}' >>"$out/outside-edge-revocations.tsv"`).join("\n")}
 : >'${state}/revoked'
 { printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
@@ -497,51 +550,60 @@ exit ${standIns.publicExit ?? 0}
   writeFileSync(join(inputs, "cookie"), "session=full\n");
   writeFileSync(join(inputs, "token"), "example-token\n");
   const dispatch = standInDispatch(state, standIns.controls, repo, standIns.serving ?? "pinned");
-  const remove = script(
-    join(inputs, "remove.sh"),
-    `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
-  );
-  const env = {
-    PATH: standInPath(scratch, state, publicLegCommand),
-    HOME: scratch("home"),
-    ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-    OUTSIDE_ALLOW_HTTP: "1",
-    OUTSIDE_PINS: join(inputs, "pins.txt"),
-    ...(pinsLocal ? {} : { OUTSIDE_PINS_REPO: deployRepository }),
-    OUTSIDE_IMAGE_REVISION_COMMAND: `sh ${revision}`,
-    OUTSIDE_LEGION_CHECKOUT: repo.dir,
-    OUTSIDE_ENROLL_REFUSAL_COMMIT: repo.held,
-    OUTSIDE_DISPATCH_COMMITS: {
-      held: repo.held,
-      lacking: `${repo.held} ${repo.apart}`,
-      blank: "  ",
-      malformed: `${repo.held} HEAD`,
-    }[standIns.dispatchCommits],
-    OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
-    OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
-    ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),
-    OUTSIDE_PERSON: "outside-e2e@example.com",
-    OUTSIDE_CANARY: "EXAMPLE_CANARY",
-    OUTSIDE_REPOSITORY: "example-owner/example-repo",
-    OUTSIDE_SWEEP_PROJECT: "PRIV",
-    OUTSIDE_SWEEP_FULL_TOKEN_FILE: join(inputs, "token"),
-    OUTSIDE_SWEEP_CONVERSATION_FILE: "example-session/example-slug",
-    OUTSIDE_SWEEP_WRITE_ISSUE: "PRIV-1",
-    ...(standIns.workflow === undefined
-      ? { OUTSIDE_PUBLIC_COMMAND: `bash ${publicLegCommand}` }
-      : {
-          OUTSIDE_WORKFLOW_REPO: workflowRepository,
-          OUTSIDE_WORKFLOW_INPUTS: standIns.workflow.inputs ?? `invite_url=${inviteUrl}`,
-        }),
-    ...(standIns.window === undefined
-      ? {}
-      : {
-          OUTSIDE_PEER: "probe",
-          OUTSIDE_LISTENER_URL: `http://127.0.0.1:${closedPort()}`,
-          OUTSIDE_OWNER_REMOVE_COMMAND: `sh ${remove}`,
-        }),
-  };
-  return { leg, env, dispatch, state, repo };
+  try {
+    if (standIns.failAfterDispatch === true) {
+      throw new Error("a step after the stand-in Dispatch started failed, as the row asks");
+    }
+    const remove = script(
+      join(inputs, "remove.sh"),
+      `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
+    );
+    const env = {
+      PATH: standInPath(scratch, state, publicLegCommand),
+      HOME: scratch("home"),
+      ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+      OUTSIDE_ALLOW_HTTP: "1",
+      OUTSIDE_PINS: join(inputs, "pins.txt"),
+      ...(pinsLocal ? {} : { OUTSIDE_PINS_REPO: deployRepository }),
+      OUTSIDE_IMAGE_REVISION_COMMAND: `sh ${revision}`,
+      OUTSIDE_LEGION_CHECKOUT: repo.dir,
+      OUTSIDE_ENROLL_REFUSAL_COMMIT: repo.held,
+      OUTSIDE_DISPATCH_COMMITS: {
+        held: repo.held,
+        lacking: `${repo.held} ${repo.apart}`,
+        blank: "  ",
+        malformed: `${repo.held} HEAD`,
+      }[standIns.dispatchCommits],
+      OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
+      OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
+      ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),
+      OUTSIDE_PERSON: "outside-e2e@example.com",
+      OUTSIDE_CANARY: "EXAMPLE_CANARY",
+      OUTSIDE_REPOSITORY: "example-owner/example-repo",
+      OUTSIDE_SWEEP_PROJECT: "PRIV",
+      OUTSIDE_SWEEP_FULL_TOKEN_FILE: join(inputs, "token"),
+      OUTSIDE_SWEEP_CONVERSATION_FILE: "example-session/example-slug",
+      OUTSIDE_SWEEP_WRITE_ISSUE: "PRIV-1",
+      ...(standIns.workflow === undefined
+        ? { OUTSIDE_PUBLIC_COMMAND: `bash ${publicLegCommand}` }
+        : {
+            OUTSIDE_WORKFLOW_REPO: workflowRepository,
+            OUTSIDE_WORKFLOW_INPUTS: standIns.workflow.inputs ?? `invite_url=${inviteUrl}`,
+          }),
+      ...(standIns.window === undefined
+        ? {}
+        : {
+            OUTSIDE_PEER: "probe",
+            OUTSIDE_LISTENER_URL: `http://127.0.0.1:${closedPort()}`,
+            OUTSIDE_OWNER_REMOVE_COMMAND: `sh ${remove}`,
+          }),
+    };
+    return { leg, env, dispatch, state, repo };
+  } catch (error) {
+    // A step after the stand-in Dispatch started threw: stop it, so no process outlives the row.
+    dispatch.stop();
+    throw error;
+  }
 }
 
 /** The number of UNKNOWN rows the gate counted, from its `got`. */

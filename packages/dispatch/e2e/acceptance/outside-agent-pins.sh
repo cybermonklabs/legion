@@ -35,6 +35,11 @@ read_pins() {
       set -- $line
       set +f
       [ "$#" -eq 3 ] && [ "$1" = "$name" ] || continue
+      # One line a name: a second could name another image than the first, and only one is held.
+      if [ -n "$found" ]; then
+        pins_problem="${pins_problem:+$pins_problem; }$OUTSIDE_PINS has more than one $name line"
+        continue
+      fi
       file=$2 key=$3 found=yes
       image=''
       copy="$work/pin-$name"

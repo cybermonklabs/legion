@@ -69,8 +69,9 @@ OUTSIDE_TAILNET_TSV=tailnet.tsv \
   bash packages/dispatch/e2e/acceptance/outside-agent-tailnet.sh EXAMPLE
 ```
 
-`pins.txt` holds one `name file key` line for each of `broker`, `dispatch` and `edge-listener`:
-the deployment's configuration file, a path in `OUTSIDE_PINS_REPO`, and the key whose value is that
+`pins.txt` holds exactly one `name file key` line for each of `broker`, `dispatch` and
+`edge-listener` (a second line of one name reads UNKNOWN, since only one image could be held): the
+deployment's configuration file, a path in `OUTSIDE_PINS_REPO`, and the key whose value is that
 deployment's image. The leg reads each file at that repository's main with `gh api`, at the start
 and again at the end, and reads the commit each image was built from with `crane config`
 (`org.opencontainers.image.revision`), or with `OUTSIDE_IMAGE_REVISION_COMMAND`. Without
@@ -131,8 +132,9 @@ The tailnet leg does these steps, in this order:
    row P6. Its token names `OUTSIDE_FOREIGN_PROJECT` alone: a token naming no project carries every
    project of the box's person, the scratch project among them, and the edge would rightly list it.
    The probe presents that token to the edge too, which must refuse it `token_not_admitted`.
-5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file) in
-   its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
+5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file, added by
+   #4608; until #4608 merges the file is absent, the sweep row reads UNKNOWN, and so the gate cannot
+   pass) in its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
    `SWEEP_MEMBER`, and the full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the
    GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
@@ -141,17 +143,18 @@ The tailnet leg does these steps, in this order:
    the fills' session of that project, and prints `write <UTC> <comment id> <message id>
    delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
    delivered write counts. No full member's credential goes to the runner: the fills file holds
-   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `fbabf8561c`,
+   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `cd8a041312`,
    fills version 3 (`restricted-sweep-fills<TAB>3`), which name the SHA-256 of the `routes.txt`
    they were made from (`routes`) and of the member's own projects' keys and creation times
-   (`deployment`). Fills mode writes no file that lacks a fill, and the leg sends no fills of
-   another version. A runner refuses, before its first request, fills of another `routes.txt` than
-   its own checkout's, of another deployment, or older than 55 minutes, and a `SWEEP_LIVE_SECONDS`
-   below 30; so the workflow's checkout must hold this checkout's `routes.txt`, the workflow sets
-   no shorter window, and the leg starts the public leg right after the fills. Each refusal is the
-   runner's UNKNOWN, and the sweep row's. The runner's own control of the member's feed is
-   the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the scratch
-   project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
+   (`deployment`). Fills mode writes no file that lacks a fill, nor one where the member's project
+   list gives a project no creation time, and the leg sends no fills of another version (each, the
+   sweep row UNKNOWN on the box). A runner refuses, before its first request, fills of another
+   `routes.txt` than its own checkout's, of another deployment, or older than 55 minutes, and a
+   `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold this checkout's `routes.txt`,
+   the workflow sets no shorter window, and the leg starts the public leg right after the fills.
+   Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
+   member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
+   scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
    session its driver registered at the edge as the test person; it needs no input from this leg.
    Without it the runner reads UNKNOWN, and so does the sweep row. A runner's
    UNKNOWN, such as a GET route the deployment's own index lists and `routes.txt` lacks, keeps the
@@ -163,7 +166,9 @@ The tailnet leg does these steps, in this order:
    through the GitHub proxy, the workflow runs of one commit of the repository the fills name
    (the one only the sweep's project's issues resolve to, which the runner's proxy rows read), and
    must get 200 with a list of workflow runs.
-6. It starts the public leg, within the code's 15 minutes: `gh workflow run --json` of
+6. It starts the public leg, within the code's 15 minutes, and only in a repository `gh repo view`
+   reads as `PRIVATE`, since a run's inputs are as readable as its repository (else, or where the
+   visibility cannot be read, UNKNOWN and no run): `gh workflow run --json` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `sweep_project`, `sweep_fills`
    (the fills file, base64, when fills mode made one) and `OUTSIDE_WORKFLOW_INPUTS` on stdin. With
@@ -175,7 +180,8 @@ The tailnet leg does these steps, in this order:
    token, which must answer 201 and is revoked at once, and approves the machine login of a second
    scratch helper whose operator is that member and whose broker is `OUTSIDE_TAILNET_BROKER_URL`,
    the broker T2's helper enrolls at, which must answer 200. T3 enrolls through that helper; then
-   its login is revoked and the helper stopped.
+   its login is revoked and the helper stopped. Should the leg end before that, an INT, a TERM or
+   any exit, its cleanup revokes that login, so the full member's credential never outlives the leg.
 8. During the public run's T5 window it runs T5's removal. Once the peer's transcript holds
    `outside-e2e t5-open <nonce>`, it reads the test person on the access list (the control), asks
    the owner on this terminal to remove them and waits for Enter; with
@@ -266,19 +272,22 @@ shim finds its program through the caller's HOME.
 | T1 | The scratch helper's machine login completes. Its machine file holds a credential, and `agent-secrets machine list` names the test person as its approver. `agent-secrets whoami` cannot show this: it reads an enrolled session, and T2 shows that the test person's login enrolls none. A login that ends `expired`, a code nobody approved, reads UNKNOWN: the public leg never approved it, which is a missing step, not a crossing. |
 | T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value, its session refused by that same code. A canary that gets no value for another reason, such as a requesters list on the secret that names someone else, reads FAIL: it says nothing of the member kind. |
 | T3 | A fresh session enrolled through the full member's helper, whose broker is `OUTSIDE_TAILNET_BROKER_URL`, the broker T2's helper enrolls at, is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker grants the canary to a full member's session, so a refusal in T2 is the member kind's. Without the full member's helper (its login not approved by the full member's browser), T3 reads UNKNOWN. |
-| T4 | The public leg's revoke step, before the T5 window, revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
+| T4 | The public leg's revoke step, before the T5 window, revokes the scratch login: its `revoke-<credential id>` row, the only row read for it, passes. `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`, a reading beside the row and no proof of the revoke alone, since an expired or skewed proof is refused so too. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
 | T5 | The owner's removal, made during the public run's T5 window between the two clocks the leg read around it; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows, each part stopped at or after the first clock: the cookie got 401 within 30 s of it, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it. A part that stopped more than its bound after the second clock reads FAIL, and so does a trade answered more than 325 s after the second clock (`last_answered_at`), refused trade or not, once the list confirms the removal; a part between the two bounds reads UNKNOWN, as does one that stopped before the first clock. The socket part counts only for a socket opened before the first clock. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | public | The public leg's own `verdict` row and `revocations` row pass, and it ended well: exit 0 for a local command, or the run's conclusion `success`. A run concludes `failure` for an exit 1 and an exit 2 alike, so its verdict row says which. A public leg that failed, or left no verdict, never lets the gate pass. |
 | sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 
-The tailnet leg reads a row the public TSV holds more than once as the worst of them: FAIL, then
-any word but PASS, then PASS, so a later PASS never hides an earlier FAIL. It holds a public row to
-what it saw beside it. P4 reads UNKNOWN when the peer did not
+Each leg reads every row of a TSV another program wrote, the public leg's, the browser's T5 rows
+and the revocations, through one `worst_row`: where the TSV holds a row more than once, the worst
+copy, FAIL, then any word but PASS, then PASS, so a later PASS never hides an earlier FAIL. The
+tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
 start. A PASS of P4 also needs the peer's own side: the peer was shown the ping and the reply within
 10 s of their stamps, read from its transcript (or the scripted peer's log); not seen there, it
-reads UNKNOWN. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads
+reads UNKNOWN, and so does a lag below -2 s on either side, a message shown before it was sent,
+which says the two clocks disagree.
+A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads
 UNKNOWN when the peer did not start, the private listener did not list `<peer>-foreign`, or the
 edge admits that session's token, which puts it in the project. A PASS of P7 reads UNKNOWN when
 P7's control was not answered 201 and 200: no broker token approves, so the 403 the agent's token

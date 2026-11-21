@@ -558,6 +558,10 @@ EOF
     row P4 "$want4" "session $session_id: pong, hello and done held, and the transcript gave no send time for one of them (pong $pong_lag, hello $hello_lag, done $done_lag); $marks" UNKNOWN
   elif [ "$pong_lag" -gt 10 ] || [ "$hello_lag" -gt 10 ] || [ "$done_lag" -gt 10 ]; then
     row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them; $marks" FAIL
+  elif [ "$pong_lag" -lt -2 ] || [ "$hello_lag" -lt -2 ] || [ "$done_lag" -lt -2 ]; then
+    # Held before it was sent, by more than the 2 s whole seconds round off: the peer's clock runs
+    # ahead of this runner's, so a lag within 10 s says nothing.
+    row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them, one before it was sent, so the two clocks disagree; $marks" UNKNOWN
   else
     row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them; $marks" PASS
   fi
@@ -954,10 +958,7 @@ else
     driver_end="${child_exit:+exit $child_exit}"
     driver_end=${driver_end:-still running}
     for name in T5-cookie T5-passkey; do
-      line=''
-      while IFS= read -r each; do
-        case $each in "$name$tab"*) line=$each ;; esac
-      done <"$work/t5.tsv"
+      line=$(worst_row "$work/t5.tsv" "$name")
       if [ -z "$line" ]; then
         want=$want_t5c
         [ "$name" = T5-cookie ] || want=$want_t5p
