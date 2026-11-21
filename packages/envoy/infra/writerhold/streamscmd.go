@@ -191,7 +191,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
 			r, err := streams.Update(ctx, nc, settings, held)
 			result = r
-			return streamChanges(r), nil, streamsRefusal(r, err)
+			return streamChanges(r), nil, leftBy(r, streamsRefusal(r, err))
 		}
 	case "census":
 		c.Command = CommandStreamsCensus
@@ -249,10 +249,10 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				write(kvStreamPrefix+bucket, n)
 			}
 			if refused := streamsRefusal(r, err); refused != nil {
-				return changes, nil, refused
+				return changes, nil, leftBy(r, refused)
 			}
 			outputs, err := reconcileStreamIDs(ctx, nc, e.stores, o.families, o.daemonDatabases, stdout)
-			return changes, outputs, err
+			return changes, outputs, leftBy(r, err)
 		}
 	}
 	_, err = RunHeld(ctx, records, op, c, e.now, stdout)
@@ -263,6 +263,21 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		return 0, err
 	}
 	return result.ExitCode(), nil
+}
+
+// leftBy is err, a streams run's failure after its intent, as the stop's record of what the run
+// left: a *Left naming each change the report made (a stream made or raised, a consumer or stream
+// removed) when it made any, else err itself, which RunHeld records as holdrecord.LeftUnchanged.
+// The bucket barrier's keys are the hold's own, and are no change.
+func leftBy(r streams.Report, err error) error {
+	if err == nil || len(r.Changes) == 0 {
+		return err
+	}
+	changed := make([]string, len(r.Changes))
+	for i, f := range r.Changes {
+		changed[i] = f.String()
+	}
+	return &Left{What: strings.Join(changed, "; "), Err: err}
 }
 
 // reconcileStreamIDs has stores bring every daemon store's StreamID to ENVOY_NOTIFICATIONS'

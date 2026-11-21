@@ -62,9 +62,10 @@ names already there changes nothing and needs no hold.
   `envoy-infra hold release`.
 - **Deleting a bucket under running listeners does not empty it for them:** each serves its last
   copy for reads within its stale bound, answers every write that needs the bucket 503, and never
-  brings the bucket back. To empty a bucket, or to replace one, run
-  `envoy-infra buckets recreate --bucket <name>`, which runs in its own hold. Never delete one with
-  `nats kv rm` or `nats stream rm`.
+  brings the bucket back. To empty a bucket, or to replace one, back it up first with
+  `envoy-infra buckets backup --workflow recreate --to <dir> --bucket <name>`, which sets a
+  buckets-recreate hold, then run `envoy-infra buckets recreate --hold <id> --bucket <name>` in it.
+  Never delete one with `nats kv rm` or `nats stream rm`.
 - **A bucket from a backup:** `envoy-infra buckets backup --workflow restore --to <dir>`, which
   sets a buckets-restore hold and backs up as its first command, then
   `envoy-infra buckets restore --hold <id> --from <dir> --bucket <name>` in the same hold. Never
@@ -3270,8 +3271,14 @@ configuration or KUBECONFIG's. `hold set` runs §3a's steps: the preflight (the 
 report against `envoy-operator/envoy-operator-accepted-minters`, each server's monitoring reads,
 each protected stream), the row moved to held, the probe refused, the writer census, the restart of
 every declared server by eviction with its proof, the meta barrier and the report that only the
-operator and the auth service remain. Exit codes: 0 done; 1 refused, naming what; 2 a usage error,
-or UNKNOWN, a reading that is not whole, which is never a pass.
+operator and the auth service remain. Every held command that fails after its intent writes a
+stop entry recording what it left; `hold release` ends a hold whose stops all left nothing
+changed, and `hold abort` is every workflow's way out once a command has stopped and no intent is
+pending (in hub-restore, not after a done `hold prove`), printing what each stop left. Once
+`hold release` or `hold abort` is done, no command is admitted in that hold. A journal the broker
+answers below its floor (an older signed record put back into its database) is UNKNOWN. Exit
+codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that is not whole,
+which is never a pass.
 
 ## `envoy-infra buckets`
 
@@ -3282,18 +3289,24 @@ deleted and created again, so on the clustered hub it changes a bucket only insi
 
 ```sh
 envoy-infra buckets create   --reason R [--bucket B]... <the hold's flags>
-envoy-infra buckets recreate --reason R --bucket B... <the hold's flags>
+envoy-infra buckets recreate --hold ID --reason R --bucket B... <the hold's flags>
 envoy-infra buckets restore  --reason R --bucket B... --from DIR <the hold's flags>
 envoy-infra buckets backup   (--workflow recreate|restore | --hold ID) --reason R --to DIR [--bucket B]... <the hold's flags>
 ```
 
-With no `--hold`, `create`, `recreate` and `restore` prepare and set a hold of their workflow
-(`buckets-create`, `buckets-recreate`, `buckets-restore`) themselves, which takes
-`--minters-report` and `--probe-token-file` as `hold set` does; with `--hold ID` they run in that
-hold. Each then changes the buckets on the operator's one connection under the held grant, checks
-each protected stream against what it did (the postcheck) and writes its done entry. The hold
-stays set: `envoy-infra hold release --hold ID` ends it. A `create` that finds every bucket it
-names already there changes nothing and needs no hold: it prints
+With no `--hold`, `create` and `restore` prepare and set a hold of their workflow
+(`buckets-create`, `buckets-restore`) themselves, which takes `--minters-report` and
+`--probe-token-file` as `hold set` does; with `--hold ID` they run in that hold. `recreate` runs
+only with `--hold`: it deletes each bucket, so the hold's table admits it only after a done
+`buckets backup` of its hold, and `buckets backup --workflow recreate --to DIR` sets that hold.
+Each command changes the buckets on the operator's one connection under the held grant, checks
+each protected stream against what it did (the postcheck) and writes its done entry. A command
+that fails after its intent writes a stop entry recording what it left: `unchanged`, or what it
+changed (a recreate that deleted a bucket, a restore that left its stream deleted); `hold release`
+then ends the hold when every stop left nothing changed, and `hold abort` when one changed
+something. Once `hold release` or `hold abort` is done, no command is admitted in that hold. The
+hold stays set until then: `envoy-infra hold release --hold ID` ends it. A `create` that finds
+every bucket it names already there changes nothing and needs no hold: it prints
 `every bucket named exists (<buckets>): nothing to create, so no hold is set` and exits 0.
 
 `create` makes each missing bucket with its configuration (file storage, `--replicas` copies or

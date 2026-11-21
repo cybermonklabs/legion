@@ -292,11 +292,14 @@ func sameDisks(step, what string, want, read map[string]string) error {
 }
 
 // release is `hold release`. Its admission (holdrecord.Admit) is its decision: the record holds no
-// entry but hold set's and its own, or it is complete for its workflow, else ErrOutOfOrder. In
-// hub-restore, before its PUT, every claim must be on the disk the latest done prove records for
-// it, and every other target on its step-1 disk (holdrecord.Expected); a refusal of that check
-// writes a stop entry, which keeps the completion. Its PUT is its last step. Run again on a row
-// already released under its hold id, it sends no PUT.
+// entry but hold set's and its own, or it is complete for its workflow, or every stop in it left
+// nothing changed, else ErrOutOfOrder. In hub-restore, before its PUT, every claim must be on the
+// disk the latest done prove records for it, and every other target on its step-1 disk
+// (holdrecord.Expected); a refusal of that check writes a stop entry, which keeps the completion.
+// Its PUT moves the row to released, and its done entry after it ends the hold: from then the
+// table admits no command in it (holdrecord's EndIsFinal). Run again on a row already released
+// under its hold id, it sends no PUT, and writes the done entry a release killed between its PUT
+// and its done left unwritten.
 func release(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -309,6 +312,12 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 		d, _, err := records.Journal(ctx, o.holdID)
 		if err != nil {
 			return err
+		}
+		if latestState(d, holdrecord.CommandRelease) == "intent" {
+			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "hold %s was released (row gen %d) and its release's done entry is now written\n", o.holdID, row.Gen)
 		}
 		fmt.Fprintf(stdout, "hold %s is already released (row gen %d); its record's hold_gen is %d\n", o.holdID, row.Gen, d.HoldGen)
 		return nil
@@ -335,6 +344,9 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
 	if err != nil {
 		return err
+	}
+	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
+		return fmt.Errorf("hold %s is released (row gen %d), and its done entry was not written: run hold release --hold %s again: %w", o.holdID, moved.Gen, o.holdID, err)
 	}
 	fmt.Fprintf(stdout, "released hold %s: row gen %d; the record's hold_gen is %d\n", o.holdID, moved.Gen, d.HoldGen)
 	return nil

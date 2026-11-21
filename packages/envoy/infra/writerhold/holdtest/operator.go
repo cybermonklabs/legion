@@ -121,8 +121,8 @@ func (s *Stack) HoldWithoutTheSteps(t testing.TB, id string) {
 	}
 }
 
-// Release releases the held hold id as `hold release` does: its admission, then the row moved to
-// released.
+// Release releases the held hold id as `hold release` does: its admission, the row moved to
+// released, then its done entry, which ends the hold.
 func (s *Stack) Release(t testing.TB, id string) {
 	t.Helper()
 	ctx := context.Background()
@@ -135,6 +135,9 @@ func (s *Stack) Release(t testing.TB, id string) {
 	}
 	if _, err := s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "holdtest release"); err != nil {
 		t.Fatalf("holdtest: move hold %s to released: %v", id, err)
+	}
+	if err := s.Records.AppendDone(ctx, id, holdrecord.CommandRelease, nil); err != nil {
+		t.Fatalf("holdtest: hold %s's release done entry: %v", id, err)
 	}
 }
 

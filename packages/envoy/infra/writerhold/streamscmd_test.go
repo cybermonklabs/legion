@@ -189,15 +189,16 @@ func TestHoldTheStreamsWordsRunOnlyInTheirHolds(t *testing.T) {
 // `hold release` succeeds after a streams-census hold: the census, its only command, writes its
 // intent and its done entry, which completes the record. The census runs with the stack's every
 // family converted (each cutover row done) and a stub reader of the recorded session consumers.
-// The control is a census with no reader, which is UNKNOWN (exit 2) and writes no done entry, so
-// release is refused, naming the pending census.
+// A census with no reader is UNKNOWN (exit 2) and, as every command can, writes a stop entry,
+// `unchanged`. The control is a census killed after its intent, with no stop: release is refused
+// while that intent is pending.
 func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
-	// The control: no reader.
+	// No reader: UNKNOWN, and a stop entry that left nothing changed.
 	code, _, stderr := h.streamsRun(nil, "census", "--family", "session")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
@@ -207,11 +208,18 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 		// census reaches the reader.
 		code, _, stderr = h.streamsRun(nil, "census", "--hold", id, "--family", "session")
 	}
-	require.Equal(t, 2, code, "control: a census with no reader")
+	require.Equal(t, 2, code, "a census with no reader")
 	require.Contains(t, stderr, ErrNoRecordReader.Error())
-	require.NotContains(t, h.journalCommands(id), "streams census done")
-	code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "over a census with no done entry")
-	require.Equal(t, 1, code, "control: release over a census with no done entry")
+	last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
+	require.Equal(t, CommandStreamsCensus+" stop", last.Command+" "+last.State)
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+
+	// The control: the census run again and killed after its intent, with no stop.
+	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsCensus}, nil)
+	require.NoError(t, err)
+	code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "over a census killed after its intent")
+	require.Equal(t, 1, code, "control: release over a pending census intent")
+	require.Contains(t, stderr, holdrecord.ErrBusy.Error())
 
 	code, stdout, _ := h.streamsRunWith(stub, noStores, "census", "--hold", id, "--family", "session")
 	require.Zero(t, code, "the census with a reader")

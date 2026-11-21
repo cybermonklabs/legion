@@ -225,7 +225,7 @@ func TestHoldBypassUnlistedMachine(t *testing.T) {
 	h := newHeldBuckets(t)
 	w := h.startWriter(holdtest.ListenerMachines[2], "envoy-listener", bus.SessionBucket)
 
-	code, stdout, _ := h.run("recreate", "--bucket", bus.SessionBucket)
+	code, stdout, _ := h.recreateHeld(bus.SessionBucket)
 	if code != 0 || !strings.Contains(stdout, "buckets recreate done") {
 		t.Fatalf("buckets recreate = %d\n%s", code, stdout)
 	}
@@ -277,7 +277,7 @@ func TestHoldBypassRenamedBinary(t *testing.T) {
 	w := h.startWriter(holdtest.ListenerMachines[1], "/tmp/worker", bus.SessionBucket)
 	t.Logf("control: the renamed writer's writes are acknowledged before the hold (%d)", w.acked.Load())
 
-	code, stdout, _ := h.run("recreate", "--bucket", bus.SessionBucket)
+	code, stdout, _ := h.recreateHeld(bus.SessionBucket)
 	if code != 0 {
 		t.Fatalf("buckets recreate = %d\n%s", code, stdout)
 	}
@@ -295,7 +295,7 @@ func TestHoldBypassRenamedBinary(t *testing.T) {
 // it connects and writes, which is the control that it is a writer.
 func TestHoldBypassWriterAfterTheProof(t *testing.T) {
 	h := newHeldBuckets(t)
-	code, stdout, _ := h.run("recreate", "--bucket", bus.RoleClaimBucket)
+	code, stdout, _ := h.recreateHeld(bus.RoleClaimBucket)
 	if code != 0 {
 		t.Fatalf("buckets recreate = %d\n%s", code, stdout)
 	}
@@ -320,8 +320,16 @@ func TestHoldBypassWriterAfterTheProof(t *testing.T) {
 // hold stays set for the restore that follows (run's restore with no --hold runs in it).
 func (h *heldBuckets) backupNow(buckets ...string) string {
 	h.t.Helper()
-	dir := filepath.Join(h.t.TempDir(), "backup")
-	args := []string{"backup", "--workflow", "restore", "--to", dir}
+	return h.backupInto("restore", buckets...)
+}
+
+// backupInto backs up buckets as `buckets backup --workflow <workflow>` (recreate or restore),
+// which prepares and sets that hold and backs up as its first command, and returns the backup's
+// directory. The hold stays set for the command that follows.
+func (h *heldBuckets) backupInto(workflow string, buckets ...string) string {
+	h.t.Helper()
+	dir := filepath.Join(h.t.TempDir(), "backup-"+workflow)
+	args := []string{"backup", "--workflow", workflow, "--to", dir}
 	for _, bucket := range buckets {
 		args = append(args, "--bucket", bucket)
 	}
@@ -329,6 +337,18 @@ func (h *heldBuckets) backupNow(buckets ...string) string {
 		h.t.Fatalf("buckets backup = %d\n%s%s", code, stdout, stderr)
 	}
 	return dir
+}
+
+// recreateHeld runs `buckets recreate` as the table admits it: first `buckets backup --workflow
+// recreate` of the same buckets, which sets the buckets-recreate hold, then the recreate in it.
+func (h *heldBuckets) recreateHeld(buckets ...string) (int, string, string) {
+	h.t.Helper()
+	h.backupInto("recreate", buckets...)
+	args := []string{"recreate", "--hold", h.row().HoldID}
+	for _, bucket := range buckets {
+		args = append(args, "--bucket", bucket)
+	}
+	return h.run(args...)
 }
 
 // The old fence's fourth bypass, an unheld restore: `buckets restore --from <backup>` runs inside its

@@ -297,6 +297,8 @@ func TestHoldReleasesWrite(t *testing.T) {
 	require.Equal(t, before.Gen+1, after.Gen)
 	require.Equal(t, int64(1), puts.Load())
 	require.True(t, h.listenerAdmitted(), "a listener was refused after the release")
+	last := h.lastEntry(id)
+	require.Equal(t, holdrecord.CommandRelease+" done", last.Command+" "+last.State, "the release wrote no done entry, so the hold never ended")
 
 	code, stdout, _ := h.run(actionRelease, "--hold", id, "--reason", "the rerun")
 	require.Zero(t, code)

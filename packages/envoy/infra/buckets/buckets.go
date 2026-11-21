@@ -115,7 +115,8 @@ const usage = `usage: envoy-infra buckets create|recreate|restore [--hold ID] --
 
   create     create every copied bucket that is missing (or each --bucket), inside a
              buckets-create hold; with none missing it changes nothing and needs no hold
-  recreate   delete each --bucket and create it again, inside a buckets-recreate hold
+  recreate   delete each --bucket and create it again, inside the buckets-recreate hold
+             "buckets backup --workflow recreate" set (--hold ID), once that backup is done
   restore    restore each --bucket from --from DIR, a backup's directory, inside a
              buckets-restore hold; the backup's manifest is validated first
   backup     snapshot each --bucket (default: every one) into --to DIR, inside a buckets-recreate or
@@ -346,6 +347,11 @@ func (o options) usageProblem(given []string) string {
 	case "recreate":
 		if len(o.buckets) == 0 {
 			add("recreate needs each --bucket it deletes")
+		}
+		// A recreate deletes each bucket, so the hold's table admits it only after a done backup of
+		// its hold: it runs in the hold `buckets backup --workflow recreate` set.
+		if o.holdID == "" {
+			add("recreate needs --hold, the buckets-recreate hold whose `buckets backup --workflow recreate --to DIR` is done")
 		}
 	case "restore":
 		need("from", o.from)
