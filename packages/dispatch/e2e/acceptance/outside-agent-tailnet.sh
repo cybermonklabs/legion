@@ -38,8 +38,9 @@
 #                                repository.
 #   OUTSIDE_TAILNET_BROKER_URL   the broker's origin on the private network.
 #   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network: its /healthz names the
-#                                build it serves, and the full member's browser session reads T5's
-#                                access list and the positive controls there.
+#                                build it serves, so the pins row needs it and no leg starts without
+#                                it; the full member's browser session reads T5's access list and
+#                                the positive controls there.
 #   OUTSIDE_LISTENER_URL         the edge listener, where the peer session registers.
 #   OUTSIDE_INTERNAL_LISTENER_URL  a listener on the private network, where a session outside the
 #                                project (<peer>-foreign) registers for P6's control.
@@ -122,7 +123,7 @@ export LC_ALL
 
 case $0 in */*) here=${0%/*} ;; *) here=. ;; esac
 here=$(cd "$here" && pwd)
-for support in outside-agent-lib.sh outside-agent-peer.sh outside-agent-sweep.sh; do
+for support in outside-agent-lib.sh outside-agent-peer.sh outside-agent-sweep.sh outside-agent-pins.sh; do
   if [ ! -r "$here/$support" ]; then
     echo "UNKNOWN: $support is not beside this file in $here"
     exit 2
@@ -134,6 +135,8 @@ done
 . "$here/outside-agent-peer.sh"
 # shellcheck source=outside-agent-sweep.sh
 . "$here/outside-agent-sweep.sh"
+# shellcheck source=outside-agent-pins.sh
+. "$here/outside-agent-pins.sh"
 tab=$(printf '\t')
 newline='
 '
@@ -246,86 +249,7 @@ gate() {
 
 # --- pins: the deployed images, the commit each was built from, and the build Dispatch serves. The
 # pins are read at the start and again at the end (row pins-end), from the deployment repository's
-# main when OUTSIDE_PINS_REPO names it. ---
-# pin_file FILE OUT: the pin file FILE into OUT: FILE at OUTSIDE_PINS_REPO's main, read with
-# `gh api`, or a local file; false when it could not be read.
-pin_file() {
-  if [ -n "${OUTSIDE_PINS_REPO:-}" ]; then
-    command -v gh >/dev/null 2>&1 || return 1
-    gh api "repos/$OUTSIDE_PINS_REPO/contents/$1?ref=main" --jq .content 2>/dev/null </dev/null |
-      base64 -d >"$2" 2>/dev/null && [ -s "$2" ]
-  else
-    [ -r "$1" ] && cp "$1" "$2"
-  fi
-}
-# read_pins: sets pins_text, the `name image revision` lines, or pins_problem.
-read_pins() {
-  local line name file key value image revision found copy
-  pins_text=''
-  pins_problem=''
-  for name in broker dispatch edge-listener; do
-    found=''
-    while IFS= read -r line || [ -n "$line" ]; do
-      line=${line%%#*}
-      set -f
-      # shellcheck disable=SC2086 # the fields of one pin line, split on purpose
-      set -- $line
-      set +f
-      [ "$#" -eq 3 ] && [ "$1" = "$name" ] || continue
-      file=$2 key=$3 found=yes
-      image=''
-      copy="$work/pin-$name"
-      if pin_file "$file" "$copy"; then
-        while IFS= read -r value || [ -n "$value" ]; do
-          case $value in *"$key:"*) image=${value#*"$key:"} ;; esac
-        done <"$copy"
-      fi
-      image=${image#"${image%%[! ]*}"}
-      image=${image%"${image##*[! ]}"}
-      if [ -z "$image" ]; then
-        pins_problem="${pins_problem:+$pins_problem; }$name: $file${OUTSIDE_PINS_REPO:+ at the main of $OUTSIDE_PINS_REPO} holds no $key"
-        continue
-      fi
-      revision=''
-      if [ -n "${OUTSIDE_IMAGE_REVISION_COMMAND:-}" ]; then
-        set -f
-        # shellcheck disable=SC2086 # a command line, split on blanks on purpose
-        revision=$($OUTSIDE_IMAGE_REVISION_COMMAND "$image" 2>/dev/null </dev/null)
-        set +f
-      elif command -v crane >/dev/null 2>&1; then
-        revision=$(json_field org.opencontainers.image.revision "$(crane config "$image" 2>/dev/null </dev/null)")
-      fi
-      case $revision in
-        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-        *)
-          pins_problem="${pins_problem:+$pins_problem; }$name: no commit read for $image${OUTSIDE_IMAGE_REVISION_COMMAND:+ through OUTSIDE_IMAGE_REVISION_COMMAND}$(command -v crane >/dev/null 2>&1 || [ -n "${OUTSIDE_IMAGE_REVISION_COMMAND:-}" ] || printf ' (crane not on PATH)')"
-          continue
-          ;;
-      esac
-      pins_text="${pins_text:+$pins_text$newline}$name $image $revision"
-    done <"$OUTSIDE_PINS"
-    [ -n "$found" ] || pins_problem="${pins_problem:+$pins_problem; }$OUTSIDE_PINS has no $name line"
-  done
-}
-# read_serving: Dispatch's /healthz at its private origin, the build it serves: sets
-# serving_commit (`commit`, the commit this process was built from) and serving_fleet
-# (`fleet_commit`, the commit every live server process serves), or serving_problem.
-read_serving() {
-  local answer
-  serving_commit=''
-  serving_fleet=''
-  serving_problem=''
-  answer=$(curl -q -sS -g --noproxy '*' --max-time 15 "$OUTSIDE_TAILNET_DISPATCH_URL/healthz" 2>&1 </dev/null | tr -d ' \n')
-  serving_commit=$(json_field commit "$answer")
-  serving_fleet=$(json_field fleet_commit "$answer")
-  case $serving_commit in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *)
-      serving_problem="Dispatch's /healthz names no commit it serves: ${answer:0:200}"
-      serving_commit=''
-      ;;
-  esac
-}
+# main when OUTSIDE_PINS_REPO names it; the reads are outside-agent-pins.sh's. ---
 
 dispatch_commits=${OUTSIDE_DISPATCH_COMMITS:-}
 want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Dispatch serves its pin's build on every process (/healthz commit and fleet_commit), and that build holds ${dispatch_commits:-<OUTSIDE_DISPATCH_COMMITS>}; the pins printed"
@@ -360,21 +284,6 @@ done <<EOF
 $pins_text
 EOF
 checkout=${OUTSIDE_LEGION_CHECKOUT:-$here}
-# holds BUILD COMMIT: whether the build made from commit BUILD holds COMMIT: yes, no, or what could
-# not be read.
-holds() {
-  local sha
-  for sha in "$2" "$1"; do
-    git -C "$checkout" cat-file -e "$sha^{commit}" 2>/dev/null ||
-      git -C "$checkout" fetch -q origin "$sha" >/dev/null 2>&1 </dev/null
-  done
-  git -C "$checkout" merge-base --is-ancestor "$2" "$1" 2>"$work/merge-base.err"
-  case $? in
-    0) printf yes ;;
-    1) printf no ;;
-    *) printf 'git merge-base --is-ancestor %s %s: %s' "$2" "$1" "$(tr '\n' ' ' <"$work/merge-base.err")" ;;
-  esac
-}
 # The broker's build must hold the enrollment refusal (T2), and Dispatch's build each commit
 # OUTSIDE_DISPATCH_COMMITS names: the change that gives no broker token the approve scope, which
 # P7's refusal and its control rest on, and the change that refuses a restricted member an issue's
@@ -389,8 +298,6 @@ if [ -n "$serving_commit" ]; then
     "$dispatch_revision"*) ;;
     *) problem="Dispatch serves $serving_commit, and its pin names $dispatch_revision" ;;
   esac
-  [ "$serving_fleet" = "$serving_commit" ] ||
-    problem="${problem:+$problem; }not every Dispatch process serves $serving_commit: fleet_commit is $serving_fleet"
 fi
 read -r -a dispatch_shas <<<"$dispatch_commits"
 if ! command -v git >/dev/null 2>&1; then
@@ -553,12 +460,13 @@ foreign_start
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
 # Dispatch's GitHub proxy reads as the browser's person and never as a token, and no broker token
-# approves, so the positive controls of the sweep's proxy rows and of P7 read with it. The cookie
-# reaches curl in a header file of mode 0600 alone, never on a command line. whoami names the
-# member, whose address is the operator of P7's control login. ---
+# approves, so the positive controls of the sweep's proxy rows, of T3 and of P7 read with it. The
+# cookie reaches curl in a header file of mode 0600 alone, never on a command line. whoami names
+# the member, whose address is the operator of the full member's helper (T3 and P7's control). The
+# pins row has already held OUTSIDE_TAILNET_DISPATCH_URL. ---
 browser_header="$work/full-browser.h"
 full_login=''
-browser_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_FULL_COOKIE_FILE)
+browser_problem=$(lacking OUTSIDE_FULL_COOKIE_FILE)
 if [ -z "$browser_problem" ] && [ ! -r "$OUTSIDE_FULL_COOKIE_FILE" ]; then
   browser_problem="OUTSIDE_FULL_COOKIE_FILE names $OUTSIDE_FULL_COOKIE_FILE, which cannot be read"
 fi
@@ -659,14 +567,8 @@ elif [ -n "$public_problem" ]; then
   row T1 "$want_t1" "not run: only the public leg approves code $code, and it did not start: $public_problem" UNKNOWN
 else
   say "T1: waiting for the code $code to be approved (the code waits 15 minutes)"
-  deadline=$(($(now) + 960))
-  while running_child "$scratch_login_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 2; done
-  exited=''
-  if ! running_child "$scratch_login_pid"; then
-    wait "$scratch_login_pid"
-    exited=$?
-    forget "$scratch_login_pid"
-  fi
+  await_child "$scratch_login_pid" 960 2
+  exited=$child_exit
   [ ! -f "$scratch/machine.json" ] || credential=$(json_field credential_id "$(tr -d ' \n' <"$scratch/machine.json")")
   listed=$(env -i "${scratch_env[@]}" agent-secrets machine list --json 2>&1 </dev/null)
   person_lower=$(printf '%s' "$person" | tr '[:upper:]' '[:lower:]')
@@ -778,16 +680,18 @@ fi
 # full member's browser mints a personal agent token (201), revoked again at once, and approves a
 # machine login (200) of a scratch helper whose operator is that member and whose broker is
 # OUTSIDE_TAILNET_BROKER_URL, the broker T2's scratch helper enrolls at. T3 enrolls through that
-# helper, and then its login is revoked and the helper stopped. Without both answers P7 reads
-# UNKNOWN. The mint's answer, the one place the token's plaintext is shown, is removed as soon as
-# its id is read. ---
+# helper, and then its login is revoked and the helper stopped. T3 needs the helper alone
+# (control_helper_problem); P7 needs the helper and the mint (p7_control_problem), so without both
+# answers P7 reads UNKNOWN. The mint's answer, the one place the token's plaintext is shown, is
+# removed as soon as its id is read. ---
 p7_control=''
-p7_control_problem=$browser_problem
-[ -n "$p7_control_problem" ] || p7_control_problem=$(lacking OUTSIDE_TAILNET_BROKER_URL)
-[ -n "$p7_control_problem" ] || p7_control_problem=$(tool_problem agent-secrets agent-secrets-helper)
-control_ready=''
+control_helper_problem=$browser_problem
+[ -n "$control_helper_problem" ] || control_helper_problem=$(lacking OUTSIDE_TAILNET_BROKER_URL)
+[ -n "$control_helper_problem" ] || control_helper_problem=$(tool_problem agent-secrets agent-secrets-helper)
 control_env=()
-if [ -z "$p7_control_problem" ]; then
+minted=''
+approved=''
+if [ -z "$control_helper_problem" ]; then
   say "the full member's helper: the browser mints an agent token and approves a machine login"
   printf '{"name":"outside-e2e-control-%s"}\n' "$nonce" >"$work/mint-body.json"
   minted=$(browser POST /api/v1/me/agent-tokens "$work/mint.json" "$work/mint-body.json")
@@ -801,7 +705,6 @@ if [ -z "$p7_control_problem" ]; then
   start_login "$control"
   control_login_pid=$login_pid
   control_helper_pid=$helper_pid
-  approved=''
   control_credential=''
   if [ -n "$login_problem" ]; then
     approved="no code: $login_problem"
@@ -818,18 +721,19 @@ if [ -z "$p7_control_problem" ]; then
     fi
   fi
   # The approved login completes and writes its machine file; then the helper can enroll.
-  if [ -n "$control_credential" ]; then
-    deadline=$(($(now) + 30))
-    while running_child "$control_login_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
-    if ! running_child "$control_login_pid"; then
-      wait "$control_login_pid" && control_ready=yes
-      forget "$control_login_pid"
-    fi
-  fi
-  case $minted:$approved in
-    201:2??) p7_control="the full member's browser minted an agent token, 201 (revoked: $dropped), and approved a machine login, $approved" ;;
-    201:*) p7_control_problem="the full member's browser approved no machine login: $approved" ;;
-    *) p7_control_problem="the full member's browser mint of an agent token answered $minted; the approve: $approved" ;;
+  child_exit=''
+  [ -z "$control_credential" ] || await_child "$control_login_pid" 30 1
+  case $approved:$child_exit in
+    2??:0) ;;
+    2??:*) control_helper_problem="the full member's machine login did not complete within 30 s of its approval (${child_exit:+exit $child_exit}${child_exit:-still running})" ;;
+    *) control_helper_problem="the full member's browser approved no machine login: $approved" ;;
+  esac
+fi
+p7_control_problem=$control_helper_problem
+if [ -z "$p7_control_problem" ]; then
+  case $minted in
+    201) p7_control="the full member's browser minted an agent token, 201 (revoked: $dropped), and approved a machine login, $approved" ;;
+    *) p7_control_problem="the full member's browser mint of an agent token answered $minted" ;;
   esac
 fi
 
@@ -839,8 +743,7 @@ fi
 # AGENT_SECRETS_URL), so the helper is the one this leg started with that URL. ---
 want_t3="a fresh session enrolled through a full member's scratch helper whose broker is ${OUTSIDE_TAILNET_BROKER_URL:-<OUTSIDE_TAILNET_BROKER_URL>} is granted ${canary:-<OUTSIDE_CANARY>} at once, a value 64 long"
 problem=$(lacking OUTSIDE_CANARY)
-[ -n "$problem" ] || problem=$p7_control_problem
-[ -n "$problem" ] || [ -n "$control_ready" ] || problem="the full member's machine login did not complete within 30 s of its approval"
+[ -n "$problem" ] || problem=$control_helper_problem
 if [ -n "$problem" ]; then
   row T3 "$want_t3" "no full member's helper at the broker: $problem" UNKNOWN
 else
@@ -909,7 +812,7 @@ public_running() {
 }
 removal_from=''
 removal_to=''
-t5_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL)
+t5_problem=''
 [ -n "$t5_problem" ] || [ -z "$public_problem" ] || t5_problem="the public leg did not start: $public_problem"
 [ -n "$t5_problem" ] || [ -z "$peer_problem" ] || t5_problem="no peer, which the window is opened to: $peer_problem"
 [ -n "$t5_problem" ] || [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] || { : </dev/tty; } 2>/dev/null ||
@@ -959,14 +862,11 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   say "run $run_id: ${public_end:-no conclusion read}"
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
-  deadline=$(($(now) + 3600))
-  while running_child "$public_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
-  if running_child "$public_pid"; then
+  await_child "$public_pid" 3600 5
+  if [ -z "$child_exit" ]; then
     public_problem="the public leg's command had not ended within an hour"
   else
-    wait "$public_pid"
-    public_end=$?
-    forget "$public_pid"
+    public_end=$child_exit
   fi
 fi
 # The public leg has ended, so the sweep's writer has nothing more to show it.
@@ -1033,16 +933,18 @@ else
   lags=''
   wrong=''
   unread=''
+  # The bound of a trade's refusal, of the socket's close and of the passkey sign-in (above).
+  trade_bound=325
   # A trade answered after the removal's bound fails T5 even where no trade was refused: the
   # public leg keeps the time of the last answered trade (last_answered_at), and a removal the list
-  # confirms stops every trade within 325 s of its second clock at the latest.
+  # confirms stops every trade within trade_bound s of its second clock at the latest.
   agent_got=$(public_part T5-agent)
   agent_got=${agent_got#*"$tab"}
   last_answered=$(mark last_answered_at "$agent_got")
-  if [ -n "$last_answered" ] && [ "$after" = false ] && [ $((last_answered - removal_to)) -gt 325 ]; then
-    wrong="T5-agent: a trade was answered $((last_answered - removal_to)) s after the removal, past 325 s"
+  if [ -n "$last_answered" ] && [ "$after" = false ] && [ $((last_answered - removal_to)) -gt "$trade_bound" ]; then
+    wrong="T5-agent: a trade was answered $((last_answered - removal_to)) s after the removal, past $trade_bound s"
   fi
-  for part in T5-agent:refused_at:325 T5-agent:socket_closed_at:325 T5-cookie:at:30 T5-passkey:at:325; do
+  for part in "T5-agent:refused_at:$trade_bound" "T5-agent:socket_closed_at:$trade_bound" T5-cookie:at:30 "T5-passkey:at:$trade_bound"; do
     name=${part%%:*}
     rest=${part#*:}
     key=${rest%%:*}
@@ -1209,10 +1111,10 @@ else
   read_pins
   read_serving
   if [ -n "$pins_problem" ] || [ -n "$serving_problem" ]; then
-    row pins-end "$want_pins_end" "not read again: $pins_problem${serving_problem:+${pins_problem:+; }$serving_problem}" UNKNOWN
+    row pins-end "$want_pins_end" "at the end: $pins_problem${serving_problem:+${pins_problem:+; }$serving_problem}" UNKNOWN
   elif [ "$pins_text" != "$pins_start" ]; then
     row pins-end "$want_pins_end" "a pin moved between the legs: at the start $(printf '%s' "$pins_start" | tr '\n' ';'), at the end $(printf '%s' "$pins_text" | tr '\n' ';')" UNKNOWN
-  elif [ "$serving_commit" != "$serving_start" ] || [ "$serving_fleet" != "$serving_commit" ]; then
+  elif [ "$serving_commit" != "$serving_start" ]; then
     row pins-end "$want_pins_end" "Dispatch served $serving_start at the start and serves $serving_commit (fleet ${serving_fleet:-none}) at the end" UNKNOWN
   else
     row pins-end "$want_pins_end" "the same pins at the end; Dispatch still serves $serving_commit on every process" PASS

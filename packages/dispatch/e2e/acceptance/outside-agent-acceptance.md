@@ -13,6 +13,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `outside-agent-lib.sh` | What both legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, and `reap`, which stops and waits for every background child a leg started. |
 | `outside-agent-peer.sh` | The tailnet leg's peer of row P4 and its session outside the project of row P6. |
 | `outside-agent-sweep.sh` | The tailnet leg's half of the read sweep and its two controls. |
+| `outside-agent-pins.sh` | The tailnet leg's reads of the deployed pins and of the build Dispatch serves, for rows pins and pins-end. |
 | `outside-agent-probe.ts` | The calls that carry a broker credential (DPoP), which a shell cannot sign, the scripted peer, and the public session's keyless model. Both legs run it with `bun`. |
 | `outside-path-reach.sh` | The TCP reach check that row P9 runs. |
 | `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; and that the tailnet leg's own judgments hold against stand-ins. |

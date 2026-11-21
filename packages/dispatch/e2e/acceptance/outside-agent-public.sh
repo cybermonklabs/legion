@@ -188,6 +188,52 @@ probe_exec() {
 # unknown_of LINE: the probe's `unknown` text, or nothing when it read an answer.
 unknown_of() { json_field unknown "$1"; }
 
+# refused KIND TOPIC CODE: the probe's answer to KIND (interest or publish) of TOPIC, as the session
+# `probe_as` names (the probe's own by default), is 403 and, where CODE is given, its `code` is CODE.
+# A 5xx is the edge not deciding (repositories_unknown), neither a refusal nor an admission, so it
+# is unread, as is no readable answer. Adds to the row's `wrong` or `unread`.
+refused() {
+  local answer status code
+  answer=$(probe "$1" "$2")
+  status=$(json_field status "$answer")
+  code=$(json_field code "$answer")
+  if [ -n "$(unknown_of "$answer")" ] || [ -z "$status" ]; then
+    unread="${unread:+$unread; }$1 $2: ${answer:0:200}"
+  elif [ "${status#5}" != "$status" ]; then
+    unread="${unread:+$unread; }$1 $2 answered $status, so the edge could not decide it: ${answer:0:200}"
+  elif [ "$status" != 403 ]; then
+    wrong="${wrong:+$wrong; }$1 $2 answered $status"
+  elif [ -n "$3" ] && [ "$code" != "$3" ]; then
+    wrong="${wrong:+$wrong; }$1 $2 answered 403 ${code:-with no code}, not $3"
+  fi
+}
+
+# sub_refused LINE WHAT: the probe's relay-socket `sub` answer LINE, for the subject WHAT names, is
+# the edge's refusal, subject_not_granted. Sets `sub` (refused, granted, unread, or the other code)
+# and adds to the row's `wrong` or `unread`: a granted sub, or another code, is wrong.
+sub_refused() {
+  local granted
+  granted=$(json_field granted "$1")
+  if [ -n "$(unknown_of "$1")" ]; then
+    sub=unread
+    unread="${unread:+$unread; }the relay sub of $2: ${1:0:200}"
+  elif [ -z "$granted" ]; then
+    sub=unread
+    unread="${unread:+$unread; }the listener serves no relay socket (status $(json_field status "$1"))"
+  elif [ "$granted" = true ]; then
+    sub=granted
+    wrong="${wrong:+$wrong; }a relay sub of $2 was granted"
+  else
+    case $1 in
+      *subject_not_granted*) sub=refused ;;
+      *)
+        sub=$(json_field code "$1")
+        wrong="${wrong:+$wrong; }the relay sub of $2 was refused with ${sub:-no code}"
+        ;;
+    esac
+  fi
+}
+
 # --- P1: the plugin, installed from npm as the outside person installs it. ---
 plugin_dir="$home/.omp/plugins/node_modules/@sjawhar/pi-envoy"
 target=${OUTSIDE_PI_ENVOY_PACKAGE:-}
@@ -254,14 +300,8 @@ else
     approved=$?
     p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
-    deadline=$(($(now) + 300))
-    while running_child "$p2_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
-    exited=''
-    if ! running_child "$p2_pid"; then
-      wait "$p2_pid"
-      exited=$?
-      forget "$p2_pid"
-    fi
+    await_child "$p2_pid" 300 1
+    exited=$child_exit
     mode=''
     # The mode as ls prints it: stat's flags differ between GNU and BSD, and macOS ships BSD's.
     # shellcheck disable=SC2012 # one file this run named, so no name can confuse the read
@@ -530,23 +570,6 @@ if [ -n "$problem5" ]; then
 else
   wrong=''
   unread=''
-  # refused KIND TOPIC CODE: the probe's answer to KIND (interest or publish) of TOPIC is 403 and,
-  # where CODE is given, names it. A 5xx is the edge not deciding (repositories_unknown), which is
-  # neither a refusal nor an admission, so it is unread.
-  refused() {
-    local answer status
-    answer=$(probe "$1" "$2")
-    status=$(json_field status "$answer")
-    if [ -n "$(unknown_of "$answer")" ] || [ -z "$status" ]; then
-      unread="${unread:+$unread; }$1 $2: ${answer:0:200}"
-    elif [ "${status#5}" != "$status" ]; then
-      unread="${unread:+$unread; }$1 $2 answered $status, so the edge could not decide it: ${answer:0:200}"
-    elif [ "$status" != 403 ]; then
-      wrong="${wrong:+$wrong; }$1 $2 answered $status"
-    elif [ -n "$3" ]; then
-      case $answer in *"$3"*) ;; *) wrong="${wrong:+$wrong; }$1 $2 answered 403 without $3: ${answer:0:200}" ;; esac
-    fi
-  }
   refused interest "notifications.dispatch.issue.$other_project.$other_project-1.>" ''
   refused interest 'notifications.slack.>' topic_not_in_project
   refused interest 'notifications.whatsapp.>' topic_not_in_project
@@ -555,8 +578,7 @@ else
   refused interest 'notifications.github.>' repository_not_in_project
   refused publish "notifications.dispatch.issue.$project.$project-1.comment.created" topic_not_published
   say "P5: waiting for the event probe"
-  wait "$event_pid" 2>/dev/null
-  forget "$event_pid"
+  await_child "$event_pid" $((event_seconds + 120)) 2
   event=$(cat "$work/p5.event" 2>/dev/null)
   status=$(json_field status "$event")
   delivered=$(json_field event "$event")
@@ -622,25 +644,7 @@ else
     foreign_send=$sent_status
     wrong="${wrong:+$wrong; }a send to $foreign answered $sent_status, not the 404 of a session no listener knows: ${sent:0:200}"
   fi
-  granted=$(json_field granted "$socket")
-  if [ -n "$(unknown_of "$socket")" ]; then
-    sub=unread
-    unread="${unread:+$unread; }the relay socket: ${socket:0:200}"
-  elif [ -z "$granted" ]; then
-    sub=unread
-    unread="${unread:+$unread; }the listener serves no relay socket (status $(json_field status "$socket"))"
-  elif [ "$granted" = true ]; then
-    sub=granted
-    wrong="${wrong:+$wrong; }a relay sub to $peer's subject was granted"
-  else
-    case $socket in
-      *subject_not_granted*) sub=refused ;;
-      *)
-        sub=$(json_field code "$socket")
-        wrong="${wrong:+$wrong; }the sub was refused with $sub"
-        ;;
-    esac
-  fi
+  sub_refused "$socket" "$peer's subject"
   marks="peer_listed=$peer_listed foreign_listed=$foreign_listed foreign_send=$foreign_send sub=${sub:-unread}"
   if [ -n "$wrong" ]; then
     row P6 "$want6" "$wrong${unread:+; $unread}; $marks" FAIL
@@ -784,33 +788,9 @@ if [ -n "$problem" ]; then
 else
   wrong=''
   unread=''
-  # live_refused KIND TOPIC CODE: KIND (publish or interest) of TOPIC as the session is 403 CODE.
-  live_refused() {
-    local answer status
-    answer=$(probe_as=$session_id probe "$1" "$2")
-    status=$(json_field status "$answer")
-    if [ -n "$(unknown_of "$answer")" ] || [ -z "$status" ]; then
-      unread="${unread:+$unread; }$1 $2: ${answer:0:200}"
-    elif [ "${status#5}" != "$status" ]; then
-      unread="${unread:+$unread; }$1 $2 answered $status, so the edge could not decide it"
-    elif [ "$status" != 403 ] || [ "$(json_field code "$answer")" != "$3" ]; then
-      wrong="${wrong:+$wrong; }$1 $2 answered $status $(json_field code "$answer"), not 403 $3"
-    fi
-  }
-  live_refused publish "agentstream.$session_id.frames" topic_not_published
-  live_refused interest 'agentstream.>' topic_not_in_project
-  socket=$(probe_as=$session_id probe relay-sub "agentstream.$session_id.>")
-  granted=$(json_field granted "$socket")
-  if [ -n "$(unknown_of "$socket")" ] || [ -z "$granted" ]; then
-    unread="${unread:+$unread; }the relay sub of agentstream.$session_id.>: ${socket:0:200}"
-  elif [ "$granted" = true ]; then
-    wrong="${wrong:+$wrong; }a relay sub of agentstream.$session_id.> was granted"
-  else
-    case $socket in *subject_not_granted*) ;; *)
-      wrong="${wrong:+$wrong; }the relay sub of agentstream.$session_id.> was refused with $(json_field code "$socket")"
-      ;;
-    esac
-  fi
+  probe_as=$session_id refused publish "agentstream.$session_id.frames" topic_not_published
+  probe_as=$session_id refused interest 'agentstream.>' topic_not_in_project
+  sub_refused "$(probe_as=$session_id probe relay-sub "agentstream.$session_id.>")" "agentstream.$session_id.>"
   if [ -n "$wrong" ]; then
     row P10 "$want10" "$wrong${unread:+; $unread}" FAIL
   elif [ -n "$unread" ]; then
@@ -970,13 +950,9 @@ else
     row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
     row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
   else
-    while running_child "$t5_driver" && [ "$(now)" -le $((deadline + 30)) ]; do sleep 2; done
-    driver_end='still running'
-    if ! running_child "$t5_driver"; then
-      wait "$t5_driver"
-      driver_end="exit $?"
-      forget "$t5_driver"
-    fi
+    await_child "$t5_driver" $((deadline + 30 - $(now))) 2
+    driver_end="${child_exit:+exit $child_exit}"
+    driver_end=${driver_end:-still running}
     for name in T5-cookie T5-passkey; do
       line=''
       while IFS= read -r each; do

@@ -143,6 +143,21 @@ forget() {
   background=$kept
 }
 
+# shellcheck disable=SC2034 # child_exit is await_child's answer, which the leg that sources this file reads
+# await_child PID SECONDS INTERVAL: waits up to SECONDS, looking every INTERVAL s, for the child PID
+# to end. Once it has, waits for it, forgets it and sets child_exit to its exit status; while it
+# still runs, child_exit is empty and the child stays on the list.
+await_child() {
+  local deadline
+  deadline=$(($(now) + $2))
+  child_exit=''
+  while running_child "$1" && [ "$(now)" -lt "$deadline" ]; do sleep "$3"; done
+  running_child "$1" && return 0
+  wait "$1"
+  child_exit=$?
+  forget "$1"
+}
+
 # stop_child PID: stops one background child of the leg, if it still runs: TERM, up to 10 s for it
 # to end, then KILL, and waits for it, so it writes nothing after the leg goes on; and forgets it.
 stop_child() {

@@ -17,6 +17,7 @@ export const supportFiles = [
   "outside-agent-lib.sh",
   "outside-agent-peer.sh",
   "outside-agent-sweep.sh",
+  "outside-agent-pins.sh",
 ];
 
 /** The public leg's P rows, in order. */

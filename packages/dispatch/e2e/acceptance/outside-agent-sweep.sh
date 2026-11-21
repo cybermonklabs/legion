@@ -20,7 +20,7 @@ sweep_setup() {
   sweep_script="$here/restricted-sweep.sh"
   sweep_fills=''
   writer_pid=''
-  sweep_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE OUTSIDE_FULL_COOKIE_FILE)
+  sweep_problem=$(lacking OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE OUTSIDE_FULL_COOKIE_FILE)
   [ -n "$sweep_problem" ] || [ -f "$sweep_script" ] || sweep_problem="restricted-sweep.sh is not beside this file in $here"
   [ -n "$sweep_problem" ] || [ -r "${OUTSIDE_SWEEP_FULL_TOKEN_FILE:-}" ] ||
     sweep_problem="OUTSIDE_SWEEP_FULL_TOKEN_FILE names $OUTSIDE_SWEEP_FULL_TOKEN_FILE, which cannot be read"
