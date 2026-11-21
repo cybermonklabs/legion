@@ -130,6 +130,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
 	}
+	// A scoped caller is refused a parent or a blocked_by target outside its project here too,
+	// with no lock held, before the near-copy gate and every other write before the transaction,
+	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
+	// The lock step and the reads under the locks refuse it again, the authoritative refusal.
+	if scoped && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
 		if err == nil {

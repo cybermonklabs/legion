@@ -5,7 +5,9 @@ body: |-
   project". The not-found, self, cycle and 32-link depth refusals still hold, counted across
   projects. A credential scoped to one project is refused a parent outside it with
   `403 PROJECT_SCOPE`, naming the parent and its project, as it is refused such a `blocked_by`
-  target. A parent of another project passes on no repository, components, architecture owner,
+  target; a create meets either refusal before the near-copy check, so it gets no
+  `409 POSSIBLE_DUPLICATE` in its place and records no near-copy check. A parent of another
+  project passes on no repository, components, architecture owner,
   `legion` label or assignee: the walks that resolve `resolved_repo`, an inherited component
   attachment, the architecture tree's owner, `legion_managed_status` and the delivery views'
   ancestors read only ancestors of the issue's own project, so such an issue takes its own

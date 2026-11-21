@@ -204,30 +204,17 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // transaction (writeBlockedBy's, validateIssueParent's and the create's read of its parent).
 //
 // A caller whose credential names one project is refused a target or a parent outside it here,
-// before any lock is taken: the pre-handler check reads the project of the object the path
-// names and no key of the body (project_scope.go), so this is the first point at which a
-// target's or the parent's project is known, and a caller that may not write at all would
-// otherwise take the deployment-wide lock first. The write refuses it again under the locks,
-// which is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or
-// the create's own read for the parent. Each pair words it through one function,
-// refuseBlockedByOutsideCallerProject and refuseParentOutsideCallerProject.
+// before any lock is taken (foreignDependencyTargets): the pre-handler check reads the project of
+// the object the path names and no key of the body (project_scope.go), and a caller that may not
+// write at all would otherwise take the deployment-wide lock first. A create runs the same check
+// earlier still, before its near-copy gate writes anything (createIssue). The write refuses it
+// again under the locks, which is the authoritative refusal: writeBlockedBy for a target, and
+// validateIssueParent or the create's own read for the parent. Each pair words it through one
+// function, refuseBlockedByOutsideCallerProject and refuseParentOutsideCallerProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string, parent string) error {
-	foreign, err := foreignTargets(ctx, tx, project, targets)
+	foreign, err := foreignDependencyTargets(ctx, tx, project, caller, targets, parent)
 	if err != nil {
 		return err
-	}
-	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
-	}
-	if parent != "" {
-		foreignParent, err := foreignTargets(ctx, tx, project, []string{parent})
-		if err != nil {
-			return err
-		}
-		if caller != "" && len(foreignParent) > 0 {
-			return refuseParentOutsideCallerProject(caller, parent, foreignParent[0].project)
-		}
-		foreign = append(foreign, foreignParent...)
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -244,6 +231,33 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 		}
 	}
 	return lockDeploymentIssueDependencies(ctx, tx)
+}
+
+// foreignDependencyTargets is every blocked_by target of targets and the parent ("" for none)
+// that belongs to a project other than project, the issue's own, targets first, read with no
+// lock held. caller is the one project the request's credential may write, empty for a
+// credential that names none; such a caller is refused the first target outside it, then a
+// parent outside it, before anything else is read. The lock step and a create's check before
+// its near-copy gate both run it, so the two refuse the same key in the same words.
+func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
+	foreign, err := foreignTargets(ctx, q, project, targets)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return nil, refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	if parent == "" {
+		return foreign, nil
+	}
+	foreignParent, err := foreignTargets(ctx, q, project, []string{parent})
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreignParent) > 0 {
+		return nil, refuseParentOutsideCallerProject(caller, parent, foreignParent[0].project)
+	}
+	return append(foreign, foreignParent...), nil
 }
 
 // foreignTarget is a blocked_by target or a parent of a project other than the issue's own, and
