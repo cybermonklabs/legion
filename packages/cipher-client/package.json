@@ -9,6 +9,10 @@
       "types": "./src/device-login.ts",
       "bun": "./src/device-login.ts"
     },
+    "./device-login-file": {
+      "types": "./src/device-login-file.ts",
+      "bun": "./src/device-login-file.ts"
+    },
     "./dpop": {
       "types": "./src/dpop.ts",
       "bun": "./src/dpop.ts"

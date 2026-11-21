@@ -1064,24 +1064,29 @@ It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, an
 approves the login from `--person`, else `AGENT_SECRETS_PERSON`. It prints the broker's page and
 the code to type there, waits while that person approves it in Dispatch, and keeps the login
 (above). Without `--device`, a person, a broker a device login may use (https, or http on this
-machine's loopback), a login directory of this user's own that this user can enter and write to
-and others cannot write to, or a file setting that names anything but a directory, it exits 2
-before any request, so no person approves a login the machine could not keep there. It exits 1
-when the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and
-5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into; a copy of the login it wrote whole is
-kept beside the file, under the file's name with `.kept-<uuid>` added, and the message names that
-suffix, so the person can move the copy into place instead. A login kept whose lock the command
-then cannot let go of is kept all the same: it exits 0, says why the lock was left, and names no
-credential to revoke; another process takes that lock over once it is 15 s old. A code or an
-access token is taken to live an hour at most, whatever the broker says. What the broker answers
-for the person to read (the page, the code, the credential's id) is refused where it holds a
-control or format character (a right-to-left override), and an OAuth code is shown only where it
-is one the clients know. The host it names is this machine's name in the form the broker takes
+machine's loopback), or a login directory of this user's own that this user can enter and write to
+and others cannot write to, it exits 2 before any request, so no person approves a login the
+machine could not keep there. It exits 2 too, before any request, for a file setting that names
+something other than a regular file, a link to one included: a directory, which no save can
+replace, or a named pipe, which a read waits on until a process writes to it. It reads the login
+a new one replaces, and every login it trades, only from a regular file. It exits 1 when the
+broker refuses the login, the person denies it, its code expires, or the broker answers a poll
+with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge), naming
+its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the broker's
+interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and 5 s where
+it names none. It then writes no file. It exits 1 too when a login that was approved cannot be
+kept: it names the login's credential, which the broker holds live, and says to revoke it in
+Machine logins on the page the code was typed into. Where it wrote a copy of the login whole, the
+copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
+names that suffix: moved over the file, the copy is the login and its credential needs no revoke;
+unused, the person deletes it, since it holds the login's key and refresh token, and revokes the
+credential. A login kept whose lock the command then cannot let go of is kept all the same: it
+exits 0, says why the lock was left, and names no credential to revoke; another process takes that
+lock over once it is 15 s old. A code or an access token is taken to live an hour at most,
+whatever the broker says. What the broker answers for the person to read (the page, the code, the
+credential's id) is refused where it holds a control or format character (a right-to-left
+override), and an OAuth code is shown only where it is one the clients know. The host it names is
+this machine's name in the form the broker takes
 (`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). A second login of the machine replaces the
 file, and the earlier login's credential stays live at the broker until it lapses or is revoked,
 so the command names that credential and says to revoke it in Machine logins on the page the code

@@ -6,12 +6,8 @@
 
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
 import { isHttpUrl } from "@legion/contracts/log-text";
-import {
-  DEVICE_LOGIN_FILE_VAR,
-  DeviceLoginIdentity,
-  deviceLoginFile,
-  deviceLoginSessionName,
-} from "./device-login";
+import { DeviceLoginIdentity, deviceLoginSessionName } from "./device-login";
+import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "./device-login-file";
 import { importDpopKey, newDpopKey } from "./dpop";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";

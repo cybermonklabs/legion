@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { stubDeviceLoginBroker, writeDeviceLoginFile } from "../../test/device-logins";
-import { DEVICE_LOGIN_FILE_VAR, DeviceLoginIdentity, withDeviceLoginLock } from "../device-login";
+import { DeviceLoginIdentity, withDeviceLoginLock } from "../device-login";
+import { DEVICE_LOGIN_FILE_VAR } from "../device-login-file";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,

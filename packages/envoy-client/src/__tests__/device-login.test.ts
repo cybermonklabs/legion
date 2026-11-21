@@ -9,7 +9,15 @@
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
 import { expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
@@ -124,22 +132,44 @@ test("of two dispatch login --device at once, the one kept second names the othe
   expect(JSON.parse(readFileSync(file, "utf8")).credential_id).toBe("cred-second-1");
 });
 
-test("dispatch login refuses a file setting that names a directory, before any code is asked for", async () => {
-  const stub = broker();
-  const file = path.join(tempDir(), "legion", "device-login.json");
-  mkdirSync(file, { recursive: true });
-  chmodSync(path.dirname(file), 0o700);
-  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
-    HOME: tempDir(),
-    AGENT_SECRETS_URL: stub.url,
-    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
-  });
-  expect(code, stdout).toBe(2);
-  expect(stdout).toContain("AGENT_SECRETS_DEVICE_LOGIN_FILE");
-  expect(stdout).toContain("is a directory");
-  // Named by its setting, never by its path.
-  expect(stdout).not.toContain(file);
-  expect(stub.authorizations).toHaveLength(0);
+test("dispatch login refuses a file setting that names no regular file, before any code is asked for", async () => {
+  // A directory, which no save can replace; a named pipe and a link to one, which a read waits on
+  // until a process writes to it; a link that loops, which no read can follow. Each is refused
+  // with exit 2 before any request, so no person approves a login this machine could not keep.
+  for (const [name, make, says] of [
+    ["directory", (file: string) => mkdirSync(file), "is a directory, not a regular file"],
+    [
+      "named pipe",
+      (file: string) => expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0),
+      "is a named pipe, not a regular file",
+    ],
+    [
+      "link to a named pipe",
+      (file: string) => {
+        expect(Bun.spawnSync(["mkfifo", `${file}.pipe`]).exitCode).toBe(0);
+        symlinkSync(`${file}.pipe`, file);
+      },
+      "is a named pipe, not a regular file",
+    ],
+    ["link that loops", (file: string) => symlinkSync(file, file), ": ELOOP"],
+  ] as const) {
+    const stub = broker();
+    const file = path.join(tempDir(), "legion", "device-login.json");
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    chmodSync(path.dirname(file), 0o700);
+    make(file);
+    const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
+      HOME: tempDir(),
+      AGENT_SECRETS_URL: stub.url,
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+    });
+    expect(code, `${name}: ${stdout}`).toBe(2);
+    expect(stdout, name).toContain("AGENT_SECRETS_DEVICE_LOGIN_FILE");
+    expect(stdout, name).toContain(says);
+    // Named by its setting, never by its path.
+    expect(stdout, name).not.toContain(file);
+    expect(stub.authorizations, name).toHaveLength(0);
+  }
 });
 
 test("a login approved and then not kept names its credential and where to revoke it", async () => {
@@ -324,9 +354,13 @@ test("a laptop session's Dispatch credential is its device login's trade, naming
   expect(trade?.proofThumbprint).toBe(written.thumbprint);
 });
 
-/** Where the device login's module is, resolved through cipher-client's own exports: a child
- *  script in a temporary directory imports it by path, since no package resolves from there. */
+/** Where the device login's modules are, resolved through cipher-client's own exports: a child
+ *  script in a temporary directory imports them by path, since no package resolves from there. */
 const DEVICE_LOGIN_MODULE = Bun.resolveSync("@legion/cipher-client/device-login", import.meta.dir);
+const DEVICE_LOGIN_FILE_MODULE = Bun.resolveSync(
+  "@legion/cipher-client/device-login-file",
+  import.meta.dir
+);
 const TOKEN_CLIENT_MODULE = Bun.resolveSync("@legion/cipher-client/token-client", import.meta.dir);
 
 /**
@@ -345,7 +379,8 @@ async function tradeTwiceAtOnce(
   const child = path.join(tempDir(), "trade.ts");
   writeFileSync(
     child,
-    `import { DeviceLoginIdentity, readDeviceLogin, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
+    `import { DeviceLoginIdentity, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
+import { readDeviceLogin } from ${JSON.stringify(DEVICE_LOGIN_FILE_MODULE)};
 import { BrokerTokenClient } from ${JSON.stringify(TOKEN_CLIENT_MODULE)};
 const [file, brokerUrl, session, lock] = process.argv.slice(2);
 const identity = new DeviceLoginIdentity({ path: file, brokerUrl });

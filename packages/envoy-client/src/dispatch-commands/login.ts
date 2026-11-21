@@ -13,14 +13,16 @@
 
 import { hostname } from "node:os";
 import {
-  DEVICE_LOGIN_FILE_NAMED,
   deviceLoginBroker,
-  deviceLoginFile,
   deviceLoginHost,
-  deviceLoginPlace,
   finishDeviceLogin,
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
+import {
+  DEVICE_LOGIN_FILE_NAMED,
+  deviceLoginFile,
+  deviceLoginPlace,
+} from "@legion/cipher-client/device-login-file";
 import {
   BROKER_URL_VAR,
   IDENTITY_DEVICE_LOGIN,

@@ -12,13 +12,8 @@ import {
   stubDeviceLoginBroker,
   writeDeviceLoginFile,
 } from "../../test/device-logins";
-import {
-  DEVICE_LOGIN_FILE_VAR,
-  DeviceLoginIdentity,
-  deviceLoginFile,
-  deviceLoginSessionName,
-  startDeviceLogin,
-} from "../device-login";
+import { DeviceLoginIdentity, deviceLoginSessionName, startDeviceLogin } from "../device-login";
+import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "../device-login-file";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,

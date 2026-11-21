@@ -14,8 +14,9 @@
 // 2. The broker answers an RFC 8628 user code and the page to type it into; the person types it
 //    there, signed in to Dispatch.
 // 3. The machine polls the device code, proving the key, until the person decides. Approved, it
-//    keeps the login in its file: the key, the launcher credential's id and expiry, the refresh
-//    token, the broker, and the access token the poll answered with its expiry.
+//    keeps the login in its file (`device-login-file.ts`, which holds the file's place, its read
+//    and its save): the key, the launcher credential's id and expiry, the refresh token, the
+//    broker, and the access token the poll answered with its expiry.
 //
 // A trade, every time a session needs a broker token: the login's access token is the subject of
 // the RFC 8693 exchange, under RFC 8693's own `access_token` type, with no actor, and every proof
@@ -35,10 +36,7 @@
 // token is kept in the file for the same reason: every `dispatch` command is a process of its
 // own, and a refresh for each would rotate the login's refresh token at every command.
 
-import { createPrivateKey, generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { access, lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
@@ -55,14 +53,20 @@ import {
   type TokenEndpointResponse,
 } from "openid-client";
 import {
+  DEVICE_LOGIN_FILE_NAMED,
+  type DeviceLogin,
+  KeptCopyError,
+  lockLost,
+  readDeviceLogin,
+  saveDeviceLogin,
+} from "./device-login-file";
+import {
   DEVICE_LOGIN_STALE_LOCK_MS,
   type DeviceLoginLockOptions,
-  removeLeftLocks,
-  removeUntouched,
   withLoginLock,
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
-import { messageOf, readErrorCode } from "./error-text";
+import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -93,15 +97,6 @@ import {
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
 } from "./wire";
-
-/** Names the file a machine keeps its device login in. Unset, it is
- *  `~/.config/legion/device-login.json` ({@link deviceLoginFile}). */
-export const DEVICE_LOGIN_FILE_VAR = "AGENT_SECRETS_DEVICE_LOGIN_FILE";
-
-/** How every message names the login's file: by its setting, never by its path. The file holds
- *  the login's key and refresh token, and the setting is where a person who pasted a secret in
- *  place of a path put it, as the Go helper's `MachineFileNamed` says of its own file. */
-export const DEVICE_LOGIN_FILE_NAMED = `the device login ${DEVICE_LOGIN_FILE_VAR} names (default ~/.config/legion/device-login.json)`;
 
 /** The variable that names the broker, as `environment.ts` holds it (`BROKER_URL_VAR`); that
  *  module builds on this one, so naming it here keeps the import one way. */
@@ -136,25 +131,6 @@ const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 /** A control or format character: a terminal may run the one as an escape sequence rather than
  *  print it, and the other (a right-to-left override) changes what it shows. */
 const UNPRINTABLE = /[\p{Cc}\p{Cf}]/u;
-
-/** Whether `name` is a temporary copy of a login a save left when it died (`saveDeviceLogin`). */
-function isTemporaryCopy(name: string): boolean {
-  return /^\.device-login-[0-9a-f-]{36}\.json\.tmp$/.test(name);
-}
-
-/** The file a machine keeps its device login in: {@link DEVICE_LOGIN_FILE_VAR}, else
- *  `$HOME/.config/legion/device-login.json`. */
-export function deviceLoginFile(env: Readonly<Record<string, string | undefined>>): string {
-  const named = (env[DEVICE_LOGIN_FILE_VAR] ?? "").trim();
-  if (named !== "") return named;
-  const home = (env["HOME"] ?? "").trim();
-  if (home === "") {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_VAR} names no file and HOME names no home directory, so this machine has nowhere to keep its device login`
-    );
-  }
-  return join(home, ".config", "legion", "device-login.json");
-}
 
 /** The session name a device login trades under for a caller that names none:
  *  `device-login-` and the first 12 characters of the login key's thumbprint, the same on every
@@ -203,30 +179,6 @@ export function deviceLoginBroker(brokerUrl: string): string {
   return holdUrlUserinfo(trimmed);
 }
 
-/** A machine's device login as its file keeps it. */
-export interface DeviceLogin {
-  /** The key the login is bound to, which signs every request of it. */
-  readonly key: KeyObject;
-  /** The launcher credential the approval minted. */
-  readonly credentialId: string;
-  /** The token the next refresh spends. */
-  readonly refreshToken: string;
-  /** When the credential lapses unless a refresh moves it. */
-  readonly expiresAt: Date;
-  /** The broker the login was made at, as `AGENT_SECRETS_URL` named it, less a trailing slash. */
-  readonly broker: string;
-  /** The access token the last grant answered, "" where the file keeps none. */
-  readonly accessToken: string;
-  /** When that access token lapses; null where the file keeps none. */
-  readonly accessExpiresAt: Date | null;
-}
-
-/** A member of the file's JSON as a string, "" where it is absent or not one. */
-function member(json: Record<string, unknown>, name: string): string {
-  const value = json[name];
-  return typeof value === "string" ? value : "";
-}
-
 /** `key` as the DPoP key every request of the login proves; a key that is not P-256 is refused
  *  naming it as this machine's device login key. */
 function loginDpopKey(key: KeyObject): DpopKey {
@@ -257,273 +209,6 @@ function page(uri: string, endpoint: string): string {
     );
   }
   return printable(uri, "page to type the code in", endpoint);
-}
-
-/**
- * Refuses `what`, the login's file or its directory, whose status is `info`, where its mode has a
- * bit of `forbidden` (`opens` says what that lets others do, and the fix), or where this user does
- * not own it (`notOwned` says the fix).
- */
-function checkPrivate(
-  info: Stats,
-  what: string,
-  forbidden: number,
-  opens: string,
-  notOwned: string
-): void {
-  const mode = info.mode & 0o777;
-  if ((mode & forbidden) !== 0) {
-    throw new Error(`${what} is mode ${mode.toString(8).padStart(4, "0")}, which ${opens}`);
-  }
-  const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid) {
-    throw new Error(`${what} is owned by uid ${info.uid}, not this user (uid ${uid}); ${notOwned}`);
-  }
-}
-
-/**
- * Refuses `dir`, the login's directory, where another user could replace the login or its lock
- * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
- * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
- * `~/.config/legion` that envoy.json lives in: the login's file is 0600 itself, and its name is
- * no secret. Each refusal names the directory by the file's setting and the fix.
- */
-async function checkLoginDirectory(dir: string): Promise<void> {
-  let info: Stats;
-  try {
-    info = await stat(dir);
-  } catch (error) {
-    throw new Error(`read the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  }
-  checkPrivate(
-    info,
-    `the directory of ${DEVICE_LOGIN_FILE_NAMED}`,
-    0o022,
-    "lets others replace the login in it; run chmod 700 on it",
-    "keep the login in a directory of this user's own"
-  );
-}
-
-/**
- * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
- * user could replace the login in ({@link checkLoginDirectory}), one this user cannot enter and
- * write to (a 0555 directory, or the 0600 one a `chmod -R 600` leaves), and a `path` that is a
- * directory, which no save can replace with the login. `dispatch login --device` runs it before it
- * asks for a code, so no person approves a login this machine could not keep there.
- */
-export async function deviceLoginPlace(path: string): Promise<void> {
-  const dir = dirname(path);
-  try {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-  } catch (error) {
-    throw new Error(`make the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  }
-  await checkLoginDirectory(dir);
-  try {
-    await access(dir, constants.W_OK | constants.X_OK);
-  } catch (error) {
-    const code = readErrorCode(error);
-    // Only a mode this user can change has chmod for a cure; a read-only mount, say, has not.
-    throw new Error(
-      `this user cannot enter and write to the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${code}${code === "EACCES" ? "; run chmod 700 on it" : ""}`
-    );
-  }
-  let info: Stats;
-  try {
-    info = await lstat(path);
-  } catch (error) {
-    if (readErrorCode(error) === "ENOENT") return;
-    throw new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  }
-  if (info.isDirectory()) {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_NAMED} is a directory, so no login can be kept in its place; remove it, or set ${DEVICE_LOGIN_FILE_VAR} to a file's path`
-    );
-  }
-}
-
-/**
- * The device login at `path`. A file that is not there is refused naming
- * {@link DEVICE_LOGIN_COMMAND}; one whose mode grants its group or anyone else any access, or that
- * this user does not own, is refused naming the fix, since it holds the login's key and refresh
- * token, and so is one in a directory another user could replace it in
- * ({@link checkLoginDirectory}); one that is not a whole login (no JSON object, a missing value, a
- * key that is not a P-256 PKCS#8 key, an expiry that is no time) is refused. Each names the file
- * by its setting ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and
- * access tokens are held (`holdSecret`), so no line this process prints carries them.
- */
-export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
-  let data: string;
-  try {
-    data = await readFile(path, "utf8");
-  } catch (error) {
-    const code = readErrorCode(error);
-    throw new Error(
-      code === "ENOENT"
-        ? `this machine has no device login: ${DEVICE_LOGIN_FILE_NAMED} is not there; log this machine in with: ${DEVICE_LOGIN_COMMAND}`
-        : `read ${DEVICE_LOGIN_FILE_NAMED}: ${code}`
-    );
-  }
-  checkPrivate(
-    await stat(path),
-    DEVICE_LOGIN_FILE_NAMED,
-    0o077,
-    "lets others read the login's key; run chmod 600 on it",
-    `remove it and log in again with: ${DEVICE_LOGIN_COMMAND}`
-  );
-  await checkLoginDirectory(dirname(path));
-  let json: Record<string, unknown>;
-  try {
-    const parsed: unknown = JSON.parse(data);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
-    json = parsed as Record<string, unknown>;
-  } catch {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_NAMED} is not a device login: it does not read as one JSON object of the login's fields`
-    );
-  }
-  const credentialId = member(json, "credential_id");
-  const refreshToken = member(json, "refresh_token");
-  const broker = member(json, "broker");
-  const expiresAt = new Date(member(json, "expires_at"));
-  if (
-    credentialId === "" ||
-    refreshToken === "" ||
-    broker === "" ||
-    Number.isNaN(expiresAt.getTime())
-  ) {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_NAMED}: credential_id, refresh_token, broker and an RFC 3339 expires_at are all required`
-    );
-  }
-  let key: KeyObject;
-  try {
-    key = createPrivateKey({
-      key: Buffer.from(member(json, "key"), "base64"),
-      format: "der",
-      type: "pkcs8",
-    });
-  } catch {
-    throw new Error(`${DEVICE_LOGIN_FILE_NAMED}: key is not a base64 PKCS#8 key`);
-  }
-  if (key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
-    throw new Error(`${DEVICE_LOGIN_FILE_NAMED}: key is not a P-256 key`);
-  }
-  const accessToken = member(json, "access_token");
-  const accessText = member(json, "access_expires_at");
-  const accessExpiresAt = accessToken === "" || accessText === "" ? null : new Date(accessText);
-  const accessUsable = accessExpiresAt !== null && !Number.isNaN(accessExpiresAt.getTime());
-  return {
-    key,
-    credentialId,
-    refreshToken: holdSecret(refreshToken, expiresAt),
-    expiresAt,
-    broker,
-    accessToken: accessUsable ? holdSecret(accessToken, accessExpiresAt) : "",
-    accessExpiresAt: accessUsable ? accessExpiresAt : null,
-  };
-}
-
-/**
- * Keeps `temp`, a whole copy of a new login that could not be saved to the login's file at `path`
- * (`error` says why), beside that file as `<path>.kept-<uuid>`, a name no save removes, and
- * answers the error naming the copy by the suffix its name has, never by its path: the person
- * moves it into place, or revokes its credential. Where even that rename fails, `error` is
- * answered as it is, and the save removes its temporary file as it removes any other.
- */
-async function keptCopy(temp: string, path: string, error: unknown): Promise<unknown> {
-  const suffix = `.kept-${randomUUID()}`;
-  try {
-    await rename(temp, `${path}${suffix}`);
-  } catch {
-    return error;
-  }
-  return new Error(
-    `${messageOf(error)}; a copy of the new login is kept beside ${DEVICE_LOGIN_FILE_NAMED}, under that file's name with ${suffix} added: move the copy over the file to use the login`,
-    { cause: error }
-  );
-}
-
-/**
- * Writes `login` to `path`, mode 0600, creating its directory 0700 where it is absent and refusing
- * one another user could replace the login in ({@link checkLoginDirectory}): through a new
- * temporary file beside it (a fresh name, created exclusively and 0600, so no file or link already
- * there is followed), synced, then renamed over `path`, so the file is always one whole login, the
- * old or the new. A save that fails, or whose lock is no longer the caller's, removes its
- * temporary file, and its error names the file by its setting; but where `keep` is set, as it is
- * for a new login, a copy written whole is kept ({@link keptCopy}), since the broker already holds
- * its credential live and no other copy of its key and refresh token exists. It first removes what
- * a save or a take-over that died left beside the file: a temporary copy of a login, which holds
- * its key and refresh token, and a lock moved aside, each untouched for the lock's stale bound, as
- * the Go helper's `RemoveLeftoverMachineTemps` removes its own; a younger one may be a live
- * caller's. A caller holds the login's lock ({@link withDeviceLoginLock}), so no other process's
- * refresh writes between its read and this write; `held` reads that lock again just before the
- * rename, and a lock that is no longer the caller's keeps nothing in the file. What is left is the
- * instant between that look and the rename.
- */
-async function saveDeviceLogin(
-  path: string,
-  login: DeviceLogin,
-  held: () => Promise<boolean>,
-  keep = false
-): Promise<void> {
-  const dir = dirname(path);
-  const data = JSON.stringify({
-    key: login.key.export({ format: "der", type: "pkcs8" }).toString("base64"),
-    credential_id: login.credentialId,
-    refresh_token: login.refreshToken,
-    expires_at: login.expiresAt.toISOString(),
-    broker: login.broker,
-    ...(login.accessToken === "" || login.accessExpiresAt === null
-      ? {}
-      : {
-          access_token: login.accessToken,
-          access_expires_at: login.accessExpiresAt.toISOString(),
-        }),
-  });
-  await deviceLoginPlace(path);
-  await removeUntouched(dir, isTemporaryCopy);
-  await removeLeftLocks(path);
-  const temp = join(dir, `.device-login-${randomUUID()}.json.tmp`);
-  const saveFailed = (error: unknown): Error =>
-    new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  // Whether the temporary file holds the whole login, synced: only such a copy is worth keeping.
-  let whole = false;
-  try {
-    try {
-      const handle = await open(temp, "wx", 0o600);
-      try {
-        await handle.writeFile(data);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      throw saveFailed(error);
-    }
-    whole = true;
-    if (!(await held()))
-      throw keep ? lockLost("the new login was not kept in its place") : lockLost();
-    await rename(temp, path).catch((error: unknown) => {
-      throw saveFailed(error);
-    });
-  } catch (error) {
-    throw keep && whole ? await keptCopy(temp, path, error) : error;
-  } finally {
-    // After the rename, or once the copy is kept, there is no temporary file to remove.
-    await rm(temp, { force: true });
-  }
-  // The rename is what readers see; syncing the directory is what keeps it across a power cut.
-  // A directory this platform cannot sync still holds the whole login, so that failure is no
-  // failure of the save.
-  try {
-    const handle = await open(dir, "r");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  } catch {}
 }
 
 /**
@@ -819,8 +504,11 @@ export async function finishDeviceLogin(
         const lockLeft = `this process could not let go of the lock beside ${DEVICE_LOGIN_FILE_NAMED} (${messageOf(error)}); another process takes it over once it is ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s old`;
         return { ...login, replaced, lockLeft };
       }
+      const revoke = `Machine logins on ${started.verificationUri}`;
       throw new Error(
-        `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: where no copy of it is kept, revoke it in Machine logins on ${started.verificationUri} and log in again with: ${DEVICE_LOGIN_COMMAND}`,
+        error instanceof KeptCopyError
+          ? `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it in its place: ${messageOf(error)}, which then needs no revoke. Where the copy is not used, delete it, since it holds the login's key and refresh token, and revoke the credential in ${revoke}: it stays live until it lapses or is revoked`
+          : `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: revoke it in ${revoke}, and log in again with: ${DEVICE_LOGIN_COMMAND}`,
         { cause: error }
       );
     }
@@ -959,16 +647,6 @@ export class DeviceLoginIdentity implements TokenSource {
   async read(signal?: AbortSignal): Promise<SubjectToken> {
     return await this.spend(async (subject) => subject, signal);
   }
-}
-
-/** The refusal of a holder whose lock another caller took while it was stopped; `then` says what
- *  the holder did and did not do. */
-function lockLost(
-  then = "this trade refreshes and keeps nothing, and the next one reads the login again"
-): Error {
-  return new Error(
-    `the lock beside ${DEVICE_LOGIN_FILE_NAMED} is no longer this process's: it stopped for over ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s while it held it (a laptop asleep, a process stopped), and another process took it; ${then}`
-  );
 }
 
 /**

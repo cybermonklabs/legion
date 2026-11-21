@@ -10,7 +10,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -25,15 +25,14 @@ import {
 } from "../../test/device-logins";
 import { sentAs } from "../../test/refusal-corpus";
 import {
-  DEVICE_LOGIN_FILE_VAR,
   DeviceLoginIdentity,
   deviceLoginHost,
   finishDeviceLogin,
-  readDeviceLogin,
   refreshDeviceLogin,
   startDeviceLogin,
   withDeviceLoginLock,
 } from "../device-login";
+import { DEVICE_LOGIN_FILE_VAR, readDeviceLogin } from "../device-login-file";
 import { DEVICE_LOGIN_STALE_LOCK_MS } from "../device-login-lock";
 import {
   BROKER_URL_VAR,
@@ -560,45 +559,6 @@ test("a save removes the copies and locks a process that died left beside the lo
     expect(await stat(left).catch(() => null), left).toBeNull();
   }
   expect(await readFile(freshCopy, "utf8")).toBe("a live save's");
-});
-
-test("a machine with no login file is told to log in", async () => {
-  const refusal = await readDeviceLogin(loginPath()).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(refusal?.message).toContain("this machine has no device login");
-  expect(refusal?.message).toContain(`log this machine in with: ${DEVICE_LOGIN_COMMAND}`);
-});
-
-test("a login directory others may write is refused, as a file others may read is", async () => {
-  const stub = broker();
-  const path = loginPath();
-  await writeDeviceLoginFile(path, stub.url);
-  await chmod(dirname(path), 0o775);
-  const refused = await readDeviceLogin(path).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(refused?.message).toContain("mode 0775");
-  expect(refused?.message).toContain("chmod 700");
-
-  // A login made into such a directory is refused before its file is written there.
-  const fresh = join(makeDirectory(), "open", "device-login.json");
-  await mkdir(dirname(fresh));
-  await chmod(dirname(fresh), 0o777);
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const unsaved = await finishDeviceLogin(started, { path: fresh, sleep: noSleep }).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(unsaved?.message).toContain("chmod 700");
-  expect(await stat(fresh).catch(() => null)).toBeNull();
-
-  // A directory others may only read and enter, as `mkdir -p` leaves the `~/.config/legion` that
-  // envoy.json lives in, holds a login: its file is 0600, and no one else can replace it there.
-  await chmod(dirname(path), 0o755);
-  expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
 test("of two callers that find one stale lock, exactly one takes it", async () => {
