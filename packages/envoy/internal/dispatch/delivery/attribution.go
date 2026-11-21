@@ -61,9 +61,11 @@ import (
 // body.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
-// stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
-// row is read again only by that arm — so a change made without raising it leaves every pull
-// request merged before it judged by the rule of its day for good.
+// stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
+// process, each starting at most five minutes after the one before it ended
+// (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a change made
+// without raising it leaves every pull request merged before it judged by the rule of its day for
+// good.
 const AttributionRuleVersion = 2
 
 // attributionSource names the source a pull request's issue came from.
@@ -256,8 +258,8 @@ const attributionCandidateBound = 25
 // so the text reads as the list at the top of this file reads. The two link sources compare
 // URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
 // answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
-// link lowercased (canonicalRepo) or as a person typed it (issue_external_links_url_lower serves
-// the comparison).
+// link lowercased (refs.ExternalRepo) or as a person typed it (issue_external_links_url_lower
+// serves the comparison).
 func attributionCandidates(c attributionColumns) string {
 	return `select s.key, s.source, s.rank, s.n from (
 		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n

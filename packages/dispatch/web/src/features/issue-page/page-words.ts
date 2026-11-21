@@ -103,6 +103,17 @@ export const NODE_TYPE_NAMES = freeze({
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
 
 /**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
+
+/**
  * The state words of each type whose state the model holds, and no entry at all for a type it
  * gives no state: a comment is not in a state, so the page has no word to draw for one, and an
  * entry holding an empty table would invite a row to draw a blank badge.
@@ -380,6 +391,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -607,6 +622,22 @@ export const STATE_LINES = freeze({
    *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
+  /** What the outline says over its rows, on load as much as later, of each read they come from
+   *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
+   *  which checks serve each statement, the issue's decisions, the checks' results, the
+   *  questions, the comments, the messages, and each document whose blocks it draws, named by
+   *  the part the document plays. */
+  names_unreadable: "Could not load the names this issue's rows cite.",
+  coverage_unreadable: "Could not load which checks serve each statement.",
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
+  results_unreadable: "Could not load the checks' results.",
+  asks_unreadable: "Could not load the questions.",
+  comments_unreadable: "Could not load the comments.",
+  messages_unreadable: "Could not load the messages.",
+  spec_unreadable: "Could not load the spec.",
+  plan_unreadable: "Could not load the plan.",
+  verification_unreadable: "Could not load the verification document.",
+  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -634,13 +665,13 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -861,6 +892,9 @@ export const CONTROL_LABELS = freeze({
   copy_command: "Copy the command",
   /** Copies the address of the block the caret is in, in the open document's toolbar (R16). */
   copy_link: "Copy link",
+  /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
+   *  page offers it on the same node (part G's R6, root R19). */
+  copy_reference: "Copy reference",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one panel of the issue's properties, which opens over the right of the page, and the
@@ -1013,6 +1047,13 @@ export const CONTROL_LABELS = freeze({
   save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
+  /** The names a focused row's scrollers carry while each keeps its tab stop, so a reader on the
+   *  keyboard can reach it and scroll it sideways (decision 317): a code block, a drawn diagram,
+   *  a table, and content of any other kind. */
+  scrolls_code: "Code, scrolls sideways",
+  scrolls_content: "Content, scrolls sideways",
+  scrolls_diagram: "Diagram, scrolls sideways",
+  scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
@@ -1400,6 +1441,7 @@ function phrasesIn(value: unknown): readonly string[] {
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,

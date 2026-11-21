@@ -1,0 +1,81 @@
+{
+  "id": 186353,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1,
+  "type": "issue.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a17552-e0de-7007-aa66-3a2088e7dbc6",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit a",
+      "cwd": "lorem ipsum dolor s",
+      "session_title": "lorem ipsum dolor sit ame"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-04T16:18:05.675718Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ips",
+    "repo": "lorem ipsum dolor si",
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+    "labels": [
+      "lorem ",
+      "lor"
+    ],
+    "number": 1185,
+    "parent": null,
+    "status": "triage",
+    "changed": [
+      "title",
+      "status",
+      "rank",
+      "priority",
+      "assignee",
+      "labels",
+      "repo"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 1,
+    "priority": 1,
+    "ancestors": [],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-04T16:18:05.675718Z",
+    "created_by": {
+      "id": "01a17552-e0de-7007-aa66-3a2088e7dbc6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor s",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit a",
+        "session_title": "lorem ipsum dolor sit ame"
+      }
+    },
+    "updated_at": "2026-11-04T16:18:05.675718Z",
+    "resolved_repo": "lorem ipsum dolor si",
+    "external_links": [],
+    "plan_artifact_id": "",
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "primary_artifact_id": "f655aea1-1cb6-468d-9092-8a55d1d8d2df",
+    "verification_artifact_id": ""
+  }
+}

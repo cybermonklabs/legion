@@ -84,7 +84,7 @@
 #   stop-fault
 #       The same four proxy variables, emptied in $GITHUB_ENV and printed. The steps after it
 #       must not go through a proxy that stops with the job: the ci-ok-report step every job
-#       ends with uploads an artifact.
+#       ends with can call GitHub's API with gh.
 #       The two bypass lists stay as `start-fault` wrote them, because with no proxy set
 #       nothing reads them.
 #
@@ -1085,8 +1085,8 @@ start_fault() {
 
 # stop_fault: the four proxy variables emptied, which is where a job stops going through the
 # fault. The proxy process itself ends with the job; what must end before that is every later
-# step reading it, since the ci-ok-report step each job ends with uploads an artifact and a
-# proxy about to go would carry that upload.
+# step reading it, since the ci-ok-report step each job ends with can call GitHub's API with gh and a
+# proxy about to go would carry those calls.
 stop_fault() {
   [ "$#" -eq 0 ] || die "stop-fault takes no argument, and this call gave $#"
   note "no later step of this job goes through the fault proxy:"

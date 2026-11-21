@@ -2,23 +2,26 @@
 // it writes. Two checks run, in this order, and either one refuses the write:
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
-//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
+//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text. The
+//     deployment names it (Setting); under a deployment that names none, a write where no check
+//     is named skips it rather than being refused for its absence (Guard.sharedCheck).
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
 //     GitHub reports public.
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
-// and reads one of two answers from a refused write: a *Refusal, which is about the text the write
-// carries, and a *SetupFailure, which is the check missing, the check failing, the engine failing,
-// or a destination whose visibility cannot be read. Both refuse the write; they are two types so
-// that a call site can say which one it met, the way the shared check itself keeps
-// "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
+// and reads one of three answers from a refused write: a *Refusal, which is about the text the
+// write carries; a *SetupFailure, which is the check missing, the check failing, the engine
+// failing, or a destination whose visibility cannot be read; and a *NotFound, which is a
+// destination GitHub answers 404 for. All three refuse the write; they are three types so that a
+// call site can say which one it met, the way the shared check itself keeps "LEAK CHECK: refusing"
+// apart from "LEAK CHECK SETUP ERROR".
 //
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
 // every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its lines 145-154).
+// .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -29,6 +32,7 @@ package leakguard
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -72,6 +76,12 @@ type Options struct {
 	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
 	// own names on top of those.
 	Env []string
+	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
+	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
+	// caller's PATH, since the curl that runs is handed a token on its standard input. A test fills
+	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
+	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
+	Curl string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -83,8 +93,8 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
-	// curl is the curl the visibility read after a failure of gh's connection runs: curlProgram,
-	// which this package's tests alone point at a stand-in (Guard.curlVisibility).
+	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
+	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
 }
 
@@ -93,6 +103,9 @@ type Guard struct {
 // every call resolves it again.
 func New(opts Options) *Guard {
 	g := &Guard{opts: opts, curl: curlProgram}
+	if opts.Curl != "" {
+		g.curl = opts.Curl
+	}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }
@@ -198,18 +211,22 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own.
+// shape, and the rule pass then reads the title and the body as two records of their own. Under a
+// deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
-	}
-	if err := g.shared(ctx, what, child{
-		argv:  []string{check, "check-public-text", "-"},
-		stdin: strings.NewReader(req.Text),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		if err := g.shared(ctx, what, child{
+			argv:  []string{check.path, "check-public-text", "-"},
+			stdin: strings.NewReader(req.Text),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
 	if err != nil {
@@ -225,7 +242,8 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // scanThrough is whether the rule pass runs for a write to slug: it does for a destination GitHub
 // reports public, and for one the caller could not name, which is the fail-closed answer — a
 // destination nobody can name is scanned as if it were public. A visibility that cannot be read is
-// a setup failure and refuses the write, as it does in the shared check.
+// a setup failure and refuses the write, as it does in the shared check. A read GitHub answered
+// 404 refuses the write too, as a *NotFound, which says what GitHub answered.
 //
 // A slug that is no repository GitHub could serve is a setup failure before any read is made, and
 // that is where the one recursion this package can make is broken. A pod's gh is `legion gh`,
@@ -246,7 +264,10 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 		}
 	}
 	visibility, err := g.Visibility(ctx, slug)
-	if err != nil {
+	switch {
+	case errors.As(err, new(*notFoundError)):
+		return false, &NotFound{What: what, Repo: maskPath(slug)}
+	case err != nil:
 		return false, &SetupFailure{
 			What: what,
 			Why:  "the visibility of " + maskPath(slug) + " could not be read",

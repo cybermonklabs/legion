@@ -180,7 +180,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
 	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
-		func(context.Context, string) (sessionproxy.Dialer, error) {
+		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	rig.kube.serve(t)
@@ -577,7 +577,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// releases save none one indexed read per role start, which answers no row: the save of a
 	// workspace with nothing unpushed stores nothing and deletes what the issue had
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
@@ -601,7 +601,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string {
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
-	opts.Mapped = func() []ghrepo.Repository { return nil }
+	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
 	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL

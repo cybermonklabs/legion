@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -57,6 +58,9 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 		"an operator mount added":                          {withOperatorMount, nil, true},
 		"another disk size":                                {func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, nil, true},
 		"an installing launch into a pod on another image": {func(o *Options) { o.Image = nextImage }, plugins, false},
+		"another leak check manifest digest": {func(o *Options) {
+			o.LeakCheckSetting = leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+		}, nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
@@ -68,7 +72,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 				state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 				t.Fatalf("PodDrift = %q of a pod no round covers, want nothing: its launch is what replaces it", drifted)
 			}
 			shape := func() string {
@@ -118,7 +122,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatalf("PodDrift of the issue pod is empty, so this case proves nothing: its round is what replaces it")
 			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
@@ -146,10 +150,11 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 // that is not there.
 //
 // That process never registers, so its claim never answers the round it was started for, and a
-// round waits for every claim of its pod with a session (daemon's blockingClaims). The round that
-// would have replaced the pod is therefore blocked by the pod it is replacing — a resume or a
-// relaunch starts a claim into that pod while the round is open — and only an operator drain ends
-// it, which is the outage this issue exists to end.
+// round waits for every claim of its pod with a session that it asks, a launching claim among
+// them (daemon's sessionClaims, roundAsks). The round that would have replaced the pod is
+// therefore blocked by the pod it is replacing — a resume or a relaunch starts a claim into that
+// pod while the round is open — and only an operator drain ends it, which is the outage this
+// issue exists to end.
 //
 // The launch must therefore not start a role against configuration its pod cannot carry: either it
 // starts the role as the pod it is in was built (no new flag, no new overlay), or it does not
@@ -210,7 +215,7 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
@@ -300,7 +305,7 @@ func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *tes
 		g := newRig(t, nil)
 		loc := g.spawn(spec)
 		r2 := restartedOver(t, g, loc, move)
-		drifted = driftOf(t, g.ctx, r2, loc)
+		drifted = driftOf(t, g, r2, loc)
 		g.clearActions()
 		next := spec
 		next.Generation, next.BootToken, next.ResumeSessionFile = 2, "boot-tester-g2", resumeSession

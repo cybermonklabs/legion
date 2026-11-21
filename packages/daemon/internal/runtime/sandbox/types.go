@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -62,10 +63,15 @@ type SandboxConfig struct {
 
 // MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
 // pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
-// none, which the loader fills in; and the metadata endpoint their launchers serve, nil for none.
+// none, which the loader fills in; whether an issue pod keeps its volume; and the metadata endpoint
+// their launchers serve, nil for none.
 type MicroVM struct {
 	ComputeClass, StorageClass string
-	Metadata                   *MetadataEndpoint
+	// KeepVolume is microvm.keep_volume. It applies to an issue pod that runs in a microVM alone:
+	// that pod's volume is then a claim that the issue's Sandbox owns, and the claim outlives the
+	// pod. A gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
+	Metadata   *MetadataEndpoint
 }
 
 // MetadataEndpoint is runtime.kubernetes.sandbox.microvm.metadata, which a microVM pod's launcher
@@ -256,7 +262,11 @@ type Options struct {
 	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
 	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
 	// credentials, as that account, and writes the URL file in that generation's private
-	// directory.
+	// directory. Where the store names a writer audience too, the launcher is told it, the pod
+	// carries the projected token of that audience under RolesDir (sessionWriterVolumes), and the
+	// launcher impersonates the account with that token in place of the pod's own credentials; the
+	// controller's pod then runs the launcher's roles-dir form, so no role's process reads the
+	// token (controllerPod.launcherContainer).
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
@@ -358,16 +368,16 @@ type Options struct {
 	// .repository_cache, whose defaults the daemon's configuration supplies): required for
 	// supervision, which sweeps and refreshes caches.
 	RepositoryCache RepositoryCache
-	// Mapped is, despite its name, more than the mapping: the repositories the project works
-	// now, read at every orphan sweep, which are those Dispatch's mapping names and those of the
-	// project's live issue records, a set the daemon holds and answers without I/O
-	// (daemon's cacheRepositories). An issue of any project may name any repository both role
-	// Apps are installed on, so a repository no mapping names gets its cache — one volume and one
-	// pod — from the moment a record names it. The sweep makes or repairs each member's cache
+	// CacheRepositories is the cache set: the repositories the project works now, read at every
+	// orphan sweep, which are those of the project's live issue records and those a launch
+	// worked since the daemon last read the records, a set the daemon holds and answers without
+	// I/O (daemon's cacheRepositories). An issue may name any repository both role Apps are
+	// installed on, so a repository gets its cache — one volume and one pod — from the moment a
+	// record or a launch names it. The sweep makes or repairs each member's cache
 	// (EnsureRepositoryCache), and retires the cache of a repository the set no longer holds,
-	// which is one no live record and no mapping names, once that cache's retention passes.
-	// Required for supervision.
-	Mapped func() []ghrepo.Repository
+	// which is one no live record and no launch since the last read names, once that cache's
+	// retention passes. Required for supervision.
+	CacheRepositories func() []ghrepo.Repository
 	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
 	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
 	// release took off the released pod's disk back into the pod that replaces it: the runtime
@@ -376,6 +386,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// HeldWorkspaceBundle drops the bundle an issue's last release saved where the pod's own kept
+	// volume holds that work already (runtime.HeldWorkspaceBundleDrop): the pod's Sandbox owns the
+	// issue's kept volume and was created before the save. At each role start the runtime asks it
+	// before the take, and only for a pod of such a Sandbox (launchers.restoreWorkspace). When it
+	// drops the bundle, the runtime sends that pod nothing. A runtime given none takes the bundle
+	// for every pod as SavedWorkspaceBundle answers it.
+	HeldWorkspaceBundle runtime.HeldWorkspaceBundleDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
@@ -383,6 +400,13 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
+	// LeakCheckSetting is the deployment's shared public leak check (leakguard.Setting): the
+	// repository it is read from and the sha256 of its checker. Configured, every role is told the
+	// pod's install as PUBLIC_LEAK_CHECK and the checker as leakguard.CheckerVar
+	// (mainEnvironment), and the check is pushed to each pod's launcher (LeakCheck). The zero
+	// Setting is a deployment that runs none: the runtime pushes nothing to a launcher whatever
+	// tag its hello names, tells its roles neither variable, and so starts each role without one.
+	LeakCheckSetting leakguard.Setting
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
 	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming
@@ -390,12 +414,26 @@ type Options struct {
 	// connection on it, since the launcher would redial the one connection that carries its
 	// reports once a second (ServeLauncher's switch).
 	VolumeReported runtime.VolumeReported
+	// RoundPodEnds is the daemon's reading of the update round over a pod a launch would keep
+	// (runtime.RoundPodEnds): whether the round open over podUID, the live pod of token's issue
+	// that the launch replaces for no other reason, has ended by the daemon's rule for a round with
+	// no process in its pod (dispatch://INFRA-4109 R7). relaunch asks it under the pod's launch
+	// turn, only of a live pod a round covers (roundCovers) and only where the launch would keep
+	// that pod. A yes is the round's own replacement of the pod, made by the launch: the Sandbox is
+	// suspended under the round's mark (displacing, roundReplacement), and the role starts
+	// in a new pod, so it is launched once rather than into a pod the round is about to replace. An
+	// error fails the launch as any of its steps does. The daemon builds the runtime before its
+	// supervision opens, so it binds this through a holder it fills once the supervision is open
+	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
+	// the hook existed.
+	RoundPodEnds runtime.RoundPodEnds
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
 	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
-	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
-	// every role whose launcher names a tag and starts a launcher that names none as it is.
+	// (*leakguard.Source) where LeakCheckSetting is configured; nil under a configured setting is a
+	// daemon that runs with no GitHub App, which refuses the start of every role whose launcher
+	// names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time

@@ -12,9 +12,12 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
-// Enrollment is one pod generation's enrollment with the secrets broker.
+// Enrollment is one pod generation's enrollment with the secrets broker. ID is the broker's, held
+// as the store keeps it (storetext.Text), so the shim and the broker's revocation are handed the
+// id a restart reads back, before the restart as after it.
 type Enrollment struct {
 	ID          string
 	Incarnation string
@@ -80,7 +83,7 @@ type ExpiredTokenError interface{ TokenExpired() bool }
 // Registrar is the secrets broker's pod-session registration as the machine uses it (Deps.Registrar):
 // KeepPodSession writes r's registration now, answering that first write's outcome, and keeps it
 // written, again and again on r.After, until stop is called or ctx ends. stop returns only once a
-// write in flight has been answered, without cancelling it. The daemon's is agentsecrets.Client's
+// write in flight has been answered, without cancelling it. The daemon's is cipher.Client's
 // own KeepPodSession, which logs each write naming the pod and the session.
 type Registrar interface {
 	KeepPodSession(ctx context.Context, r PodSession) (stop func(), err error)
@@ -227,7 +230,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 			}
 			return nil
 		}
-		m.claim.Enrollment = &Enrollment{ID: id, Incarnation: incarnation}
+		m.claim.Enrollment = &Enrollment{ID: storetext.Text(id), Incarnation: incarnation}
 		m.identity.PodToken = "" // held no longer than the enrollment needs it
 		m.enrollmentSent = false
 		m.log.Info("supervise: agent-secrets: enrolled", "incarnation", incarnation, "enrollment", id, "thumbprint", m.identity.Thumbprint)

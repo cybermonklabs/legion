@@ -65,7 +65,8 @@ jobs:
       # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
       # matcher, its path resolved against the workspace, its cache restore, and its count output,
       # which the next step reads. In a pull request and a merge group it restores its cache and
-      # saves nothing (ci.yaml's header, "Caches"). It runs right after the checkout, before this
+      # saves nothing (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+      # "Caches"). It runs right after the checkout, before this
       # job's own setup-go, which adds setup-go's `go` problem matcher back for every later step
       # of the job: the placement "before the Go setup of the job" of the action's README.md, "The
       # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
@@ -179,8 +180,14 @@ jobs:
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+        run: bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: bash scripts/project-secrets-check.test.sh
         working-directory: packages/envoy
       - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
         run: bash scripts/callout-check.test.sh
@@ -211,10 +218,13 @@ jobs:
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
       # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; no real Compose or Postgres)
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
         run: |
           sudo locale-gen en_US.UTF-8
           bash deploy/scripts/autodeploy_test.sh
+        working-directory: packages/envoy
+      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
+        run: bash deploy/scripts/up-dispatch_test.sh
         working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener

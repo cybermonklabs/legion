@@ -17,7 +17,7 @@ import (
 // service, and clients configured with none, run exactly as they run today. Today (the merge base,
 // 1610472cb1) a bus connection that holds a stored nkey seed, and that the hub refuses twice in a
 // row - a seed rotated or revoked on the hub - closes for good, as nats.go does by default
-// (nats.go v1.53.1, nats.go:4086). It must still do so: IgnoreAuthErrorAbort is what a connection
+// (nats.go v1.55.0, nats.go:4217-4222). It must still do so: IgnoreAuthErrorAbort is what a connection
 // the auth service decides needs, and natscred.Session and natscred.Service set it on those
 // connections. internal/bus's background connect (connectInBackground) sets it too, on every
 // connection it makes, nkey ones included, as it did at the merge base; this test's connection is

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -27,7 +28,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsSubmitButton,
   settingsTableHead,
@@ -77,7 +78,8 @@ const TOKEN_SCOPES: readonly TokenScope[] = [
     label: "Act as you",
   },
   {
-    allows: "Answers approvals for you, and approves the credentials agents ask you for.",
+    allows:
+      "Reviews documents, answers approvals and keeps decisions for you, and approves the credentials agents ask you for.",
     id: "approve",
     label: "Approve and control credentials",
   },
@@ -91,7 +93,7 @@ const BOTH_SCOPES: readonly DispatchScope[] = DISPATCH_SCOPES;
  *  box for is left out rather than drawn as a box nobody can clear, and a token whose list came
  *  back absent holds none. */
 function heldScopes(scopes: readonly string[] | null): DispatchScope[] {
-  return DISPATCH_SCOPES.filter((known) => scopes !== null && scopes.includes(known));
+  return DISPATCH_SCOPES.filter((known) => scopes?.includes(known) ?? false);
 }
 
 /** The whole set a token holds after one box is ticked or cleared, in `TOKEN_SCOPES` order.
@@ -168,6 +170,7 @@ export function AgentTokensSection(): ReactNode {
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,
+    method: "POST",
     write: ({ name: label, scopes }, bounds) =>
       api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
     onSuccess: (created) => {
@@ -184,7 +187,9 @@ export function AgentTokensSection(): ReactNode {
         return;
       }
       const { token, ...safeToken } = created;
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
+      // Each write's answer goes over any read of the list still out, which was asked before the
+      // write and would put back the list without it (`replaceQueryData`).
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) => [
         safeToken,
         ...current,
       ]);
@@ -194,9 +199,10 @@ export function AgentTokensSection(): ReactNode {
   });
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
+    method: "DELETE",
     write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
     onSuccess: (_result, id) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
         )
@@ -208,9 +214,10 @@ export function AgentTokensSection(): ReactNode {
   const setTokenScopes = useKeyedWrite({
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
+    method: "PATCH",
     write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
     onSuccess: (updated, input) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
         )
@@ -462,12 +469,11 @@ export function AgentTokensSection(): ReactNode {
       {createToken.isError ? (
         <div className="mt-4">
           <QueryError
-            message="Couldn't create the agent token."
-            onRetry={() =>
-              createToken.mutate(
-                createToken.variables ?? { before: listedIds(), name, scopes: newScopes }
-              )
+            message={
+              stoppedNote(createToken, "the new agent token", "made") ??
+              "Couldn't create the agent token."
             }
+            onRetry={createToken.retry}
             retrying={createToken.isPending}
           />
         </div>

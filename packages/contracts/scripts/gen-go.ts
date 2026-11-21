@@ -5,6 +5,7 @@ import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
@@ -44,6 +45,7 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  STORE_UNCONFIRMED_CAUSE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -356,6 +358,12 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
+// StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
+// 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
+// from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
+// the dashboard keys its retry wording on cannot drift apart.
+const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
@@ -513,6 +521,14 @@ const DispatchItemBlocks = ${DISPATCH_ITEM_BLOCKS}
 // packages/contracts; the server enforces it, names it in its refusal, and publishes it through
 // GET /api/v1/limits.
 const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
+
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
+}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in

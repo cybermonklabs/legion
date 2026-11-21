@@ -199,7 +199,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	client := &detailDispatch{resolved: map[string]string{"LEGION-301": "acme/widgets"}, seq: 4, failures: 1}
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@release/v7.1"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"))
 	w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos,
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -257,7 +257,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 	client := &detailDispatch{resolved: map[string]string{"LEGION-310": "acme/widgets"}, seq: 5}
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"))
 	w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos,
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())

@@ -8,7 +8,7 @@
  *  that is absent here, so the map stays complete and machine-checked either way.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
- *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
+ *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
  *  A file whose every row moved is absent from this list, and so is a file no project of this
@@ -170,14 +170,24 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-g.e2e.ts":
+    "the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on",
+  "issue-page-g-view.e2e.ts":
+    "its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on",
   "issue-page-look.e2e.ts":
     "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
+  "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
+  "issue-page-v.e2e.ts":
+    "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-p.e2e.ts":
+    "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -206,6 +216,8 @@ export const realStackReasons: Record<string, string> = {
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
+  "machine-logins-person-pod.e2e.ts":
+    "the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back",
   "machines.e2e.ts":
     "the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes",
   "margin-composer-hold.e2e.ts": "live document margin with sends out and server refusals",

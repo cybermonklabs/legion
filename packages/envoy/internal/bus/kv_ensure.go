@@ -156,9 +156,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// by the branch below, which reads the bucket until the member answering has applied it.
 		//
 		// Sending the step again sends more than the create: nats.go asks the account for its
-		// JetStream info first (nats.go@v1.53.1 kv.go:432-434), and on "stream name already in
+		// JetStream info first (nats.go@v1.55.0 kv.go:422-548), and on "stream name already in
 		// use" it reads the stream and, when the stream's configuration equals the one asked for,
-		// sends a STREAM.UPDATE of it (kv.go:534-545). That update goes again with the rest of
+		// sends a STREAM.UPDATE of it. That update goes again with the rest of
 		// the step where updateStream leaves an unanswered update alone, because it carries the
 		// configuration the stream already holds: it changes nothing when it lands twice, while
 		// the replica or age change updateStream guards is a write another one can race. A
@@ -291,15 +291,19 @@ func bucketMissing(err error) bool {
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
-// returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, which reads
-// the stream once and is made again at its next pass (raiseStream). One copy needs no read: every
-// stream has at least one.
+// returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, made again
+// at its next pass (raiseStream). Its read of the stream is a read of a stream's state, sent again
+// while the server leaves it unanswered, each send up to its read limit, for as long as ctx lasts
+// (readAgain), as updateStream's read after an update is: a cluster that answers no read within
+// the JetStream context's wait has said nothing of the bucket, so a read sent once would log a
+// raise that failed over a question nobody answered. One copy needs no read: every stream has at
+// least one.
 func raiseReplicas(ctx context.Context, js nats.JetStreamContext, bucket string, replicas int) (int, error) {
 	if replicas <= 1 {
 		return 0, nil
 	}
 	stream := "KV_" + bucket
-	info, err := js.StreamInfo(stream)
+	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("raise %s: %w", stream, err)
 	}

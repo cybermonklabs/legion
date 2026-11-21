@@ -9,7 +9,9 @@
 # reads this file with `jq -L .github/scripts 'include "ci-ok"; …'`.
 #
 # `$out.filter_verdicts` is the paths filter's own answer for every filter, which the `changes`
-# job publishes beside the outputs (ci.yaml's `changes` job says why). It is what tells a job
+# job publishes beside the outputs
+# (.github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
+# says why). It is what tells a job
 # the `full-ci` label held back from one its paths never selected: the slow suites' outputs
 # are written `false` on a pull request without that label whether the filter said yes or no, so
 # the output alone reads the same in both cases. Only a pull request can be gated that way - on

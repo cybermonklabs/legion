@@ -54,8 +54,8 @@ type specs struct {
 	// commits a pane stamps with its issue key (runtime.SpawnSpec.IssueTrailer); nil for a
 	// project that names none, whose panes stamp nothing.
 	commitIssueTrailerRepos []ghrepo.Repository
-	// same is whether two repository names name one repository: the daemon's one equivalence,
-	// the project's mapping's (repositories.same) — the same name compared without case, or the
+	// same is whether two repository names name one repository: the daemon's one equivalence
+	// (repositories.same) — the same name compared without case, or the
 	// two names of a configured rename (repository_renames) — which issueTrailer compares
 	// commit_issue_trailer_repos against, so a launch on the name a transfer moved a repository
 	// away from stamps exactly as one on the name the project wrote. Boot always sets it; it is
@@ -67,9 +67,10 @@ type specs struct {
 	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
 	// Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
-	// repository is the repository an issue works and its default branch
-	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
-	// workflow does not record); nil for a daemon with no workflow, whose launches work no
+	// repository is the repository an issue works and its default branch, as every launch reads it
+	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
+	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
+	// the issue holds its workspace); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
 	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
@@ -82,14 +83,11 @@ type specs struct {
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
 	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
-	// The daemon answers it from
-	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
-	// which costs no read of its own on a launch; a role whose App no bundle has been built for
-	// yet — the first launch of a daemon that has built none — is answered the owners of the
-	// repositories the project is mapped, every one of which has both Apps installed, so the
-	// clause names a true part of the reach and never more than it. The daemon sets it at boot
-	// whether or not a workflow is configured; a nil one names no owner, as an App installed
-	// nowhere does.
+	// The daemon answers it from what GitHub last answered of that App's installations
+	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
+	// gh bundle of it, which costs no read of its own on a launch. The daemon sets it at boot
+	// whether or not a workflow is configured; a nil one, and a daemon with no GitHub Apps, names
+	// no owner, as an App installed nowhere does.
 	appOwners func(role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch
@@ -324,7 +322,7 @@ func passthrough(env map[string]string, names ...string) {
 // (runtime.SpawnSpec.IssueTrailer, which each runtime tells its agent as LEGION_ISSUE_TRAILER):
 // the claim's own issue when the project names that repository in commit_issue_trailer_repos, and
 // "" for every other repository and for a launch that works none. The two names are compared as
-// every repository comparison of the daemon is, the mapping's own equivalence (s.same): without
+// every repository comparison of the daemon is, by the daemon's one equivalence (s.same): without
 // case and through the deployment's configured renames, so a claim on the name a transfer moved
 // a repository away from stamps exactly as one on the name the project wrote. A specs with no
 // equivalence stamps nothing.
@@ -408,13 +406,14 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // controllerSpawnSpec is the daemon's controller's launch (`controller: daemon`): its role part and
 // the headless part; as its addressing the design-gate steps the project gates, then the reach
 // its GitHub App gives it as a sentence of its own (RepositoriesSentence, which also says when
-// its App is installed on no owner) and, when it names any, its Slack channels; then the
-// deployment instructions and the launch secrets. The operator's controller (`legion controller
-// start`) is told the steps and the reach the same way, never channels, since only the daemon's may
-// have channels (config.checkSlackChannels). The channels reach its environment as
-// LEGION_SLACK_CHANNELS from the runtime (sandbox.Options.ControllerSlackChannels), which
-// compares them with the list a running controller was launched under and relaunches it when
-// they change; a spec cannot set that variable.
+// its App is installed on no owner, so that it has no GitHub owner) and, when it names any, its
+// Slack channels; then the deployment instructions and the launch secrets. The operator's
+// controller (`legion controller start`) is told the steps and the reach the same way, never
+// channels, since only the daemon's may have channels (config.checkSlackChannels). The channels
+// reach its environment as LEGION_SLACK_CHANNELS from the runtime
+// (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
+// controller was launched under and relaunches it when they change; a spec cannot set that
+// variable.
 // It has no repository and no git identity: the controller works Dispatch, never a checkout, and
 // commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
@@ -472,9 +471,9 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
 // on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
 // exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
-// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
-// project's mapping view before, so a label checked out before that change does not build against
-// a rig that passes owners.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was a view
+// of the project's repositories before, so a label checked out before that change does not build
+// against a rig that passes owners.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
@@ -493,6 +492,19 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
 // architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
 // above it, and the sentence names it that way.
+//
+// The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
+// each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
+// claim that had one, and is told so in words the forget's cause chooses, which name the session
+// forgotten (c.Abandoned.Session) where the cause is not that no store holds it. A launch that has
+// Oh My Pi resume the session by its id itself, through a pod launcher older than the lookup
+// (c.AgentResumeGeneration equal to c.Generation, which only that launch's copy has), is told that
+// its workspace may have been recreated: that launcher reads no row of the session, so its word
+// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). The guidance is
+// that of the plugin's own notice of a recreated workspace
+// (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
+// as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
+// agent's registration chose, and the quotes bound it in a text the agent reads.
 func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
@@ -501,14 +513,33 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
 		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
-	if c.SessionLost {
-		// The agent this launch starts is a fresh session on a claim that had one: nothing in it
-		// says an earlier session existed, so it would read an empty transcript as a fresh start
-		// and redo work that is already pushed (dispatch://INFRA-714 R8).
+	// The agent a launch after a forget starts is a fresh session on a claim that had one: nothing in
+	// it says an earlier session existed, so it would read an empty transcript as a fresh start and
+	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not
+	// look up was not deleted, and a store may hold it still, so its words say neither that it was
+	// lost nor that no store holds it.
+	const readFirst = "Read your issue and the committed handoffs in your workspace before you continue. " +
+		"Then tell the architect named above what you found, unless you are your tree's root architect."
+	switch c.SessionLost {
+	case "":
+	case supervise.SessionLossNotResumedByID:
+		fragment += fmt.Sprintf(" The pod's launcher, which is older than this release, could not look the session %q this claim recorded up by its id, "+
+			"and Oh My Pi did not resume it by that id, so this is a new session: the turns, tool calls and subagents of your earlier work are not in it, "+
+			"and only what you pushed and committed reaches you. ", c.Abandoned.Session) + readFirst
+	case supervise.SessionLossClaudeNoFile:
+		fragment += fmt.Sprintf(" This Claude Code claim recorded the session %q with no transcript file, so the launch could not resume it and this is a new session: "+
+			"the turns, tool calls and subagents of your earlier work are not in it, and only what you pushed and committed survives. ", c.Abandoned.Session) + readFirst
+	default:
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
-			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " +
-			"Read your issue and the committed handoffs in your workspace before you continue. " +
-			"Then tell the architect named above what you found, unless you are your tree's root architect."
+			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " + readFirst
+	}
+	if c.AgentResumeGeneration != 0 && c.AgentResumeGeneration == c.Generation {
+		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
+			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
+			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
+			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+
+			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
+			c.Session, claim.IssueBranch(c.Issue), c.Issue, c.Issue)
 	}
 	if repo.IsZero() {
 		return fragment
@@ -521,9 +552,9 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // full stop and starts in lower case, to follow a worker's `; `: "your role's GitHub App is
 // installed on the owners a, b, and its token reaches every repository of those owners." owners
 // are the owner accounts of the role's own App, lowercased and sorted (specs.appOwners), and not
-// the owners of the repositories the project is mapped: since INFRA-2543 a role's reach is its
-// App's installations and the mapping bounds none of it, so naming the mapping's owners told an
-// agent its reach was smaller than it is wherever the App reaches an owner the project maps
+// the owners of any list of the project's repositories: since INFRA-2543 a role's reach is its
+// App's installations and no repository list bounds any of it, so naming such a list's owners
+// told an agent its reach was smaller than it is wherever the App reaches an owner the list held
 // nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
 // answered from that owner's directory.
 //
@@ -535,10 +566,13 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // bundle holds a directory per owner.
 //
 // An App installed on no owner, which a deployment with no installation has, is told so
-// plainly: a clause that named nothing would read as one the daemon failed to fill.
+// plainly, with the GitHub owner the role has, none: a clause that named nothing would read as one
+// the daemon failed to fill, and a controller whose review App is installed on no account is
+// launched on an empty gh bundle (runtime.ErrNoGitHubOwner), so this clause is what tells it that
+// its gh acts as nobody (dispatch://INFRA-4401 A3).
 func RepositoriesClause(owners []string) string {
 	if len(owners) == 0 {
-		return "your role's GitHub App is installed on no owner, so its token reaches no repository."
+		return "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	}
 	if len(owners) == 1 {
 		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner."

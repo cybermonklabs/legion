@@ -162,6 +162,81 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/** The refusals `writeUnderKey` ended a write with after an attempt of that write that may have
+ *  landed unseen (`refusedByDispatch`). */
+const refusedAfterUnanswered = new WeakSet<ApiError>();
+
+/**
+ * Whether `refusal`, which ended a write, is Dispatch's verdict that it made nothing: a 4xx it
+ * answered with no earlier attempt of the write that may have landed unseen, since
+ * `writeUnderKey` makes the write again after every other answer. Dispatch commits nothing of such
+ * a write, so it publishes no live event for it (`EndReadHold`). An attempt may have landed unseen
+ * where the page had no answer to it in this try of the write, and where an earlier try sent
+ * anything under the write's key (`carried`): a lapse stops a try, and the page takes the write up
+ * in a try of its own once the person signs in again. A refusal after such an attempt is no
+ * verdict: that attempt may have landed, and the retry Dispatch refused says nothing of it - a
+ * snooze is a `PUT`, which sends no key, so its retry runs Dispatch's handler again, which refuses
+ * a moment that has passed meanwhile - and its event may still come. An earlier try counts however
+ * its attempts were answered, since this try is not told, which errs only toward waiting. So may
+ * the event of a write that ended any other way - stopped, interrupted by a reload, its key run
+ * out, or an error of the page's own.
+ */
+export function refusedByDispatch(refusal: unknown): boolean {
+  return refusal instanceof ApiError && !refusedAfterUnanswered.has(refusal);
+}
+
+/** `error`, which ends a write, marked as a refusal after an attempt that may have landed unseen
+ *  where `unseen` says one went out (`refusedByDispatch`). */
+function endingAfter(error: unknown, unseen: boolean): unknown {
+  if (unseen && error instanceof ApiError) refusedAfterUnanswered.add(error);
+  return error;
+}
+
+/**
+ * What a Retry of a write `refusal` ended does, in the reader's words: the one account of it a
+ * surface's sentence (`stoppedWriteNote`) and the shell's indicator both end with. A write that
+ * goes under its key (`keyed`: a `POST` or a `PATCH`, `goesUnderKey`) is asked again under it
+ * while Dispatch holds it (`sameKeyRetryNote`), and made as a new write once Dispatch has
+ * forgotten it (`expiredRetryNote`), as `retriesUnderItsKey` says of `refusal`. A `PUT` or a
+ * `DELETE` sends no key, and Dispatch keeps nothing under one for it, so neither promise is true
+ * of its Retry: that sends the same change again, which is the same however often it is made.
+ */
+export function retryNote(keyed: boolean, refusal: Error, made: string): string {
+  if (!keyed) {
+    return "A Retry sends the same change again, which is the same however often it is made.";
+  }
+  return retriesUnderItsKey(refusal) ? sameKeyRetryNote(made) : expiredRetryNote(made);
+}
+
+/** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): a control
+ *  that makes that very press again (`retry`, `again`), with `method` the write's own, which says
+ *  whether that press goes under its key (`goesUnderKey`). A plain Retry button the sentence does
+ *  not name carries no label; one with its own words carries `again`, named so the sentence says
+ *  which control to press. `anew` says what a control that is a press of its own sends (`mutate`,
+ *  under a key of its own). */
+export type StoppedControl =
+  | { readonly method: WriteMethod; readonly stopped: SendStoppedError }
+  | { readonly again: string; readonly method: WriteMethod; readonly stopped: SendStoppedError }
+  | { readonly anew: string };
+
+/**
+ * What a surface says of its write the reader stopped, in place of a failure it cannot know of:
+ * Dispatch has not confirmed `what`, which may have been `made`, and what pressing the surface's
+ * control does now. A control that makes the stopped press again ends with what that Retry does
+ * (`retryNote`), by the write's method. A control that is a press of its own says what it sends.
+ * `SendStoppedError`'s own words are a composer's, of a message and its Retry, so a form says
+ * these instead.
+ */
+export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
+  const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
+  if ("anew" in control) {
+    return `${unconfirmed} ${control.anew}`;
+  }
+  const pressed = "again" in control ? ` Pressing ${control.again} again retries it.` : "";
+  const note = retryNote(goesUnderKey(control.method), control.stopped, made);
+  return `${unconfirmed}${pressed} ${note}`;
+}
+
 /** What ended one attempt without Dispatch's verdict, and so makes the write again under its key:
  *  how long to wait first, and whether the page learning Dispatch can be reached again cuts that
  *  wait short. `undefined` for an answer that is Dispatch's verdict, or an error of the page's
@@ -313,7 +388,8 @@ export async function writeUnderKey<T>(
   // then on the key may name something there, and its age decides the write.
   let underKey: WriteMethod | null = carried;
   // Whether an attempt went out that the page has no answer to: a resent `DELETE` then finds the
-  // thing already gone.
+  // thing already gone, and a refusal after it, or after an earlier try that sent under the key
+  // (`carried`), says nothing of that attempt (`refusedByDispatch`).
   let unanswered = false;
   const told = (request: WriteRequest) => {
     if (first === undefined) first = request;
@@ -361,10 +437,12 @@ export async function writeUnderKey<T>(
           backoff = FIRST_BACKOFF_MS;
         }
         const wait = retryAfter(error, backoff);
-        if (wait === undefined) throw error;
+        if (wait === undefined) throw endingAfter(error, unanswered || carried !== null);
         if (isUnauthorized(error)) {
           const stillSignedIn = (await unauthorized?.()) === true;
-          if (stillSignedIn && unauthorizedWhileSignedIn) throw error;
+          if (stillSignedIn && unauthorizedWhileSignedIn) {
+            throw endingAfter(error, unanswered || carried !== null);
+          }
           unauthorizedWhileSignedIn = stillSignedIn;
         } else {
           unauthorizedWhileSignedIn = false;

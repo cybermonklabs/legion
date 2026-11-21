@@ -90,8 +90,9 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 // A todo child whose repository cannot be read before it is recorded (the daemon's preparation
 // reads Dispatch's issue detail, the repository's Apps and its default branch from GitHub) is not
 // released: the answer names the read that failed, whatever answered it, and records nothing, so
-// the architect's retry of release_children records it. A child held back for a read of the
-// repository mapping (intake.RetryLater) is answered the release's backoff, naming the wait.
+// the architect's retry of release_children records it. A child held back for GitHub's rate limit
+// on its repository's default-branch read (intake.RetryLater) is answered the release's backoff,
+// naming the wait.
 func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name, code, want string
@@ -101,9 +102,9 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 		{"a read that failed", "REPOSITORY_READ_FAILED",
 			"could not read the repository of LEGION-209: read the repository Dispatch resolves for LEGION-209: Dispatch is down; retry release_children",
 			http.StatusBadGateway, errors.New("read the repository Dispatch resolves for LEGION-209: Dispatch is down")},
-		{"a child held for a read of the mapping", "CHILD_RELEASE_BACKOFF",
-			"LEGION-209: LEGION-209 resolves to zeta/tools, which the repository mapping did not serve when last read; retry after 1s",
-			http.StatusConflict, &intake.RetryLater{After: time.Second, Err: errors.New("LEGION-209 resolves to zeta/tools, which the repository mapping did not serve when last read")}},
+		{"a child held for GitHub's rate limit", "CHILD_RELEASE_BACKOFF",
+			"LEGION-209: prepare LEGION-209 on zeta/tools: GitHub's rate limit refused the read of its default branch; retry after 1s",
+			http.StatusConflict, &intake.RetryLater{After: time.Second, Err: errors.New("prepare LEGION-209 on zeta/tools: GitHub's rate limit refused the read of its default branch")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

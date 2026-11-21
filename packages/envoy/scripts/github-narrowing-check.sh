@@ -53,7 +53,7 @@
 # is the outage another check drives and this one never sets.
 #
 # The curl calls the child makes carry no --cacert and no --resolve, which the check's own text
-# would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-airlock-stands is
+# would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-proxy-stands is
 # served over plain http on 127.0.0.1 (its plainStands): the broker mints a type's value with an
 # HTTP client that trusts this host's own roots and nothing else, so a minter endpoint behind TLS
 # would want a root in the pod's trust store. There is therefore no certificate to carry a name
@@ -213,9 +213,7 @@ holds() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 is() { [ "$1" = "$2" ]; }
 lacks() { ! holds "$1" "$2"; }
 # counted judges a property that is about what a run asked GitHub for rather than how many times
-# it asked: the mint of a refused read-only narrowing asks once more without actions (secrets'
-# optionalReadOnlyPermission), so one ask of the search below is one record at the stand-in or
-# two.
+# it asked, so a count of at least one holds it.
 counted() { # <how many>
 	[ "${1:-0}" -gt 0 ]
 }
@@ -279,7 +277,7 @@ STACK_PID=$!
 STACK_STARTED=$SECONDS
 # One wait for each of the stack's two phases, so a wait that ends names the phase it ended in.
 # The first holds dev-broker.sh's six go builds, with the bound of a cold build cache: on a pod
-# of two CPUs with an empty cache the build of cmd/broker alone ran for more than 367 seconds
+# of two CPUs with an empty cache the build of cmd/cipherd alone ran for more than 367 seconds
 # (dispatch://INFRA-3099's tester, 2026-11-12), and the six together took 388 seconds in a cold
 # run later that day, so 1800 leaves room for a pod slower or busier than either. dev-broker.sh
 # logs the line this waits for once all six have ended. The second holds the start of what they
