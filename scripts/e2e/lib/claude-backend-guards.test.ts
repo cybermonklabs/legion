@@ -34,8 +34,6 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep", "sh", "perl");
-// Only the unreadable-environment case needs an interpreter.
-const withoutPython = skipWithout("python3");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -345,7 +343,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test.skipIf(withoutPython)(
+  test(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
