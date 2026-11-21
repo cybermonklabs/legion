@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1272,35 +1271,90 @@ func leftForRecovery(t *testing.T, w *workflowRuntime, child dispatch.Issue, tre
 // event of its own): the event's silence is noted with the repository it was silent for, and that
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
+//
+// The move and GitHub's answer are made together while no recovery pass runs (heldRefresher), so
+// the pass that admits the issue is the one GitHub's answer starts (readAnswered), with zeta/tools
+// among the repositories to recover. A pass that ran between them would see the move with
+// zeta/tools still unread and admit the issue without GitHub's answer, and one that listed before
+// the move and read GitHub after the answer would admit it on zeta/tools.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	refresher := &heldRefresher{}
+	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
 	const key = "LEGION-1500"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	if recordedIssue(t, w, key) != nil {
 		t.Fatalf("%s recorded while zeta/tools' read fails", key)
 	}
+	refresher.awaitIdle(t, w)
 	// The project's default moves to acme/widgets: Dispatch resolves the issue there now, and sends
-	// no event of it.
-	moved := issue(key, "acme/widgets", "todo", true, "", 1)
-	client.show(moved)
-	// GitHub answers only once no recovery pass still holds a listing read before the move. The
-	// silent apply woke one (leaveUnread), and more run on the refresher's backoff while zeta/tools
-	// is unread; a pass prepares what it listed, so one that listed the issue on zeta/tools and read
-	// GitHub after the answer would admit it there, from Dispatch's word before the move, which is
-	// the order this test does not set out to read. Every listing in this rig is the refresher's
-	// (recoverRepositories, and backfill's, which has no unfilled record to list for), and the
-	// refresher runs one job at a time, so a listing that begins after the move is made after every
-	// earlier pass has read GitHub and noted the issue silent again.
-	listed := client.listingCount()
-	testwait.WithinPolling(t, testwait.Bounded(t, math.MaxInt64, time.Second), testwait.Poll,
-		"a recovery pass that lists Dispatch after "+key+" moved", func() bool { return client.listingCount() > listed })
-	serveAndRecover(t, w, installs)
+	// no event of it. Then GitHub answers for zeta/tools.
+	client.show(issue(key, "acme/widgets", "todo", true, "", 1))
+	installs.setFailing(nil, "implement zeta/tools")
+	refresher.release()
+	testwait.Eventually(t, "zeta/tools recorded on and recovered", func() bool {
+		return recordsOn(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	})
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
 	}
+}
+
+// heldRefresher holds a rig's refresher clock (recheckAfter) until release: until then the
+// refresher runs a job only when one of its wakes asks for one, and it counts each turn it begins,
+// and the last one it began with no wake waiting. After release it waits as the daemon does. On its
+// first turn after release every job whose wait has passed is due, and the second job, which reads
+// GitHub again for the repositories whose answer was bad, runs before the recovery
+// (refreshRepositories).
+type heldRefresher struct {
+	mu       sync.Mutex
+	held     chan time.Time
+	released bool
+	turns    int
+	idleTurn int
+}
+
+// hold is the rig option that installs the held clock on w.
+func (h *heldRefresher) hold(w *workflowRuntime) {
+	h.held = make(chan time.Time)
+	w.recheckAfter = func(d time.Duration) <-chan time.Time {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.released {
+			return time.After(d)
+		}
+		h.turns++
+		if len(w.recoverWake)+len(w.rereadWake)+len(w.liveWake)+len(w.heardWake)+len(w.heldWake) == 0 {
+			h.idleTurn = h.turns
+		}
+		return h.held
+	}
+}
+
+// awaitIdle waits for a turn begun after this call with no wake waiting: every job the refresher
+// was asked for has ended, and it waits on the held clock alone. The wake it sends runs no job (it
+// only arms the second job's clock), so such a turn comes even when nothing else wakes it.
+func (h *heldRefresher) awaitIdle(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	h.mu.Lock()
+	since := h.turns
+	h.mu.Unlock()
+	wake(w.rereadWake)
+	testwait.Eventually(t, "the refresher waiting with no job to run", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.idleTurn > since
+	})
+}
+
+// release lets the refresher's clock run from now on.
+func (h *heldRefresher) release() {
+	h.mu.Lock()
+	h.released = true
+	h.mu.Unlock()
+	close(h.held)
 }
 
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
