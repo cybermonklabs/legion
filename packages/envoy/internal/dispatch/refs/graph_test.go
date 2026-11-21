@@ -1282,10 +1282,7 @@ var edgesFixtureEpoch = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // edgesFixtureTables is every table the fixture copies rows into, with the columns its rows
 // carry, in the order the copies run: each after the tables its foreign keys name.
-var edgesFixtureTables = []struct {
-	name    string
-	columns []string
-}{
+var edgesFixtureTables = []copyTable{
 	{name: "projects", columns: []string{"key", "name", "default_assignee", "created_at"}},
 	{name: "architecture_sources", columns: []string{"id", "project_key", "repo", "branch", "installation_id", "created_by", "created_at"}},
 	{name: "architecture_snapshots", columns: []string{"id", "project_key", "commit", "files", "imported_at"}},
@@ -1311,8 +1308,7 @@ var edgesFixtureTables = []struct {
 	{name: "message_block_refs", columns: []string{"message_id", "block_id", "from_node", "to_kind", "to_id", "kind", "created_at"}},
 }
 
-// newEdgesFixture writes the fixture in one transaction, a COPY for each table, commits it and
-// analyzes every table it wrote.
+// newEdgesFixture writes the fixture in bulk (loadFixture), a COPY for each table.
 func newEdgesFixture(t *testing.T) edgesFixture {
 	t.Helper()
 	w := &edgesFixtureWriter{rows: map[string][][]any{}}
@@ -1330,40 +1326,7 @@ func newEdgesFixture(t *testing.T) edgesFixture {
 	kinds := w.kindsMembers(t)
 
 	database := storetest.Open(t)
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the fixture: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	// The tables' triggers are off for the copies and on again before the commit, in the one
-	// transaction, so no other session sees them off, as testdata/coverage_corpus.sql of
-	// embedqueue loads its corpus: they write the search vectors, the owed queues, the user
-	// threads and the watermarks, which no read here reads, and they were most of the load's
-	// time. artifacts_ref_key is one of them, so the copy writes each document's ref_key itself.
-	tables := make([]string, 0, len(edgesFixtureTables))
-	for _, table := range edgesFixtureTables {
-		tables = append(tables, table.name)
-	}
-	for _, table := range tables {
-		if _, err := tx.Exec(ctx, "alter table "+table+" disable trigger user"); err != nil {
-			t.Fatalf("turn the triggers of %s off: %v", table, err)
-		}
-	}
-	for _, table := range edgesFixtureTables {
-		copyText(t, tx, table.name, table.columns, w.rows[table.name])
-	}
-	for _, table := range tables {
-		if _, err := tx.Exec(ctx, "alter table "+table+" enable trigger user"); err != nil {
-			t.Fatalf("turn the triggers of %s on: %v", table, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the fixture: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, "analyze "+strings.Join(tables, ", ")); err != nil {
-		t.Fatalf("analyze the fixture: %v", err)
-	}
+	loadFixture(t, database.Pool, edgesFixtureTables, w.rows)
 
 	partOf, mentions := []string{"part_of"}, []string{"mentions"}
 	reads := []edgesRead{

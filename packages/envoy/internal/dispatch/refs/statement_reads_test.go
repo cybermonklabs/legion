@@ -16,7 +16,7 @@ import (
 
 // The helpers below read one of this package's statements the way a plan test reads it: as the
 // function sent it, text and arguments (statementRecorder), over a fixture written in bulk so the
-// planner plans it from real sizes (copyText), and by the plan it ran under (explainAnalyzed).
+// planner plans it from real sizes (loadFixture), and by the plan it ran under (explainAnalyzed).
 
 // recordedStatement is one statement a statementRecorder passed on, its text and the arguments
 // it bound, as the caller sent them.
@@ -107,9 +107,68 @@ func copyTextValue(t testing.TB, value any) string {
 	return ""
 }
 
+// copyTable is one table a bulk fixture writes and the columns its rows carry.
+type copyTable struct {
+	name    string
+	columns []string
+}
+
+// loadFixture writes a fixture in bulk: in one transaction, it turns off every user trigger of
+// tables, copies each table's rows (copyText) in the order of tables, each after every table its
+// foreign keys name, turns the triggers on again and commits, then analyzes every table of
+// tables, so the planner plans from the tables' real sizes. The triggers are on again before the
+// commit, so no other session sees them off, as testdata/coverage_corpus.sql of embedqueue loads
+// its corpus; one test login owns every table, so it may turn them off. They write the search
+// vectors, the owed queues, the user threads, the watermarks and the embeddings, which no read
+// of these tests reads, and they were most of a load's time. artifacts_ref_key is one of them, so
+// a fixture writes each document's ref_key itself.
+func loadFixture(t testing.TB, pool *store.Pool, tables []copyTable, rows map[string][][]any) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	names := make([]string, len(tables))
+	for index, table := range tables {
+		names[index] = table.name
+		if _, err := tx.Exec(ctx, "alter table "+table.name+" disable trigger user"); err != nil {
+			t.Fatalf("turn the triggers of %s off: %v", table.name, err)
+		}
+	}
+	for _, table := range tables {
+		copyText(t, tx, table.name, table.columns, rows[table.name])
+	}
+	for _, name := range names {
+		if _, err := tx.Exec(ctx, "alter table "+name+" enable trigger user"); err != nil {
+			t.Fatalf("turn the triggers of %s on: %v", name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "analyze "+strings.Join(names, ", ")); err != nil {
+		t.Fatalf("analyze the fixture: %v", err)
+	}
+}
+
 // explainAnalyzed is the plan statement ran under, from explain (analyze, format json), in a
 // transaction of its own that runs each of settings first (each a `set local`) and rolls back.
 func explainAnalyzed(t testing.TB, pool *store.Pool, statement recordedStatement, settings ...string) json.RawMessage {
+	t.Helper()
+	plan, err := explainAnalyzedWith(t, pool, "analyze, format json", statement, settings...)
+	if err != nil {
+		t.Fatalf("explain the statement under %v: %v\n%s", settings, err, statement.sql)
+	}
+	return plan
+}
+
+// explainAnalyzedWith is explainAnalyzed's plan read with the explain options given, analyze and
+// format json among them, or the error the explain ended with, which it answers where
+// explainAnalyzed fails the test: a statement_timeout among settings ends a statement that runs
+// past it with SQLSTATE 57014.
+func explainAnalyzedWith(t testing.TB, pool *store.Pool, options string, statement recordedStatement, settings ...string) (json.RawMessage, error) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := pool.Begin(ctx)
@@ -123,8 +182,8 @@ func explainAnalyzed(t testing.TB, pool *store.Pool, statement recordedStatement
 		}
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement.sql, statement.args...).Scan(&raw); err != nil {
-		t.Fatalf("explain the statement under %v: %v\n%s", settings, err, statement.sql)
+	if err := tx.QueryRow(ctx, "explain ("+options+") "+statement.sql, statement.args...).Scan(&raw); err != nil {
+		return nil, err
 	}
-	return explaintest.OnePlan(t, raw)
+	return explaintest.OnePlan(t, raw), nil
 }
