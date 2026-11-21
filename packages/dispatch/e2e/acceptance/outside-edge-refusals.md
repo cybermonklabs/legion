@@ -78,7 +78,9 @@ answer must come whole, with no marker; the line is refused only on a 404 with n
 same body. A route that forwards a line without a marker to a backend that answers 404 may give
 another body, and so may an edge whose own 404 differs by Host; the run cannot tell the two apart,
 so such a line reads `UNKNOWN`, never refused. An edge's own 404 with an empty body tells nothing
-either, since such a forward could give an empty body too, so it reads `UNKNOWN` as well. An
+either, since such a forward could give an empty body too, so it reads `UNKNOWN` as well. A body's
+SHA-256 counts only when the hasher exits 0 printing exactly one, so a line whose body or whose
+control's the hasher gave none of reads `UNKNOWN` too: two failed hashes would compare equal. An
 `UNKNOWN` line that says "another body than its unrouted control's 404" is a possible forward: look
 into it before running the check again.
 
@@ -91,12 +93,13 @@ own 404. The deployment's own tests hold that rule, not this check.
 |---|---|
 | the one the line names, read whole: for a line of five fields, 404 with no marker in any block and its unrouted control's body; for a line of six, exactly 405, naming exactly the sixth field's marker | `refused` |
 | any other answer: for a line of five fields, a marker of any value in any block or a status other than 404, a redirect included | `REACHED` |
-| no status (a connect or TLS failure, a timeout), the named answer that curl did not read whole, its body past 1 MiB included, or a 404 with no marker whose unrouted control got no such 404, whose body is not its unrouted control's, or whose body and its unrouted control's are both empty; the verdict names each cause and its lines | `UNKNOWN` |
+| no status (a connect or TLS failure, a timeout), the named answer that curl did not read whole, its body past 1 MiB included, or a 404 with no marker whose unrouted control got no such 404, whose body or its unrouted control's the hasher gave no SHA-256 of, whose body is not its unrouted control's, or whose body and its unrouted control's are both empty; the verdict names each cause and its lines | `UNKNOWN` |
 
-Each line prints the status, every marker in order (`none` for none) and the SHA-256 of the body,
-so two runs can be compared, and curl's exit code and first message where curl did not exit 0; an
-unrouted control prints `unrouted <name>` the same way. No line names the machine's host name, since
-the output goes to logs anyone may read.
+Each line prints the status, every marker in order (`none` for none) and the SHA-256 of the body
+(`unreadable` where the hasher did not exit 0 printing exactly one), so two runs can be compared,
+and curl's exit code and first message where curl did not exit 0; an unrouted control prints
+`unrouted <name>` the same way. No line names the machine's host name, since the output goes to
+logs anyone may read.
 
 ## The verdict
 

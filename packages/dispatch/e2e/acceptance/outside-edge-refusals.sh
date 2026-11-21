@@ -93,11 +93,15 @@
 #            is; or did, with another body than the line's, as a route that forwards without a
 #            marker to a backend that answers 404 may give, and as an edge whose own 404 differs
 #            by Host may too (the run cannot tell the two apart); or did, with an empty body,
-#            which such a forward could give as well. The verdict names each cause and its lines.
+#            which such a forward could give as well; or when the hasher gave no SHA-256 of the
+#            line's body or its control's, so the two bodies cannot be compared. The verdict names
+#            each cause and its lines.
 # Each probe prints its status (000 where none came), every marker of its answer in order and
 # separated by `,` (`none` where it had none), and the SHA-256 of its body (`none` where no answer
-# came), so two runs can be compared, and curl's exit code and first message where curl did not
-# exit 0; an unrouted control prints `unrouted <name>` the same way. Then the verdict:
+# came, `unreadable` where the hasher did not exit 0 printing exactly one SHA-256, 64 lowercase
+# hexadecimal digits and the name `-`), so two runs can be compared, and curl's exit code and
+# first message where curl did not exit 0; an unrouted control prints `unrouted <name>` the same
+# way. Then the verdict:
 #   PASS     exit 0: every routed control showed its marker and every refusal line was refused.
 #   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read, a signal
 #            that stopped it afterwards included: an answer is evidence, where a probe that came
@@ -448,17 +452,26 @@ printf 'outside-edge-refusals: curl %s\n' "$version"
 printf 'outside-edge-refusals: routed %s (%s)\n' "$OUTSIDE_EDGE_ROUTED" "$routed"
 printf 'outside-edge-refusals: refusals %s (%s)\n' "$OUTSIDE_EDGE_REFUSALS" $((total - routed))
 
-# digest_of FILE: sets `digest` to the SHA-256 of FILE, `unreadable` where the hash failed.
+# digest_of FILE: sets `digest` to the SHA-256 of FILE, or `unreadable` unless the hasher exited 0
+# and printed exactly one line, 64 lowercase hexadecimal digits and the name of its stdin, `-`
+# (`<hex>  -`, or `<hex> *-` from a hasher reading in binary mode). A hash that failed is never a
+# digest: two of them would compare equal, and two 404 bodies that differ would read as the same.
 digest_of() {
-  local out
+  local out status hex
   if [ "$hasher" = sha256sum ]; then
     out=$(sha256sum <"$1" 2>/dev/null)
+    status=$?
   else
     out=$(shasum -a 256 <"$1" 2>/dev/null)
+    status=$?
   fi
-  out=${out%% *}
-  case $out in *[!0-9a-f]* | '') digest=unreadable ;; *) digest=$out ;; esac
-  [ "${#out}" -eq 64 ] || digest=unreadable
+  digest=unreadable
+  [ "$status" -eq 0 ] || return 0
+  hex=${out%% *}
+  case $hex in '' | *[!0-9a-f]*) return 0 ;; esac
+  [ "${#hex}" -eq 64 ] || return 0
+  [ "$out" = "$hex  -" ] || [ "$out" = "$hex *-" ] || return 0
+  digest=$hex
 }
 
 # The Host of each refusal line's unrouted control: a name no route can name, since RFC 6761 keeps
@@ -559,10 +572,11 @@ done
 
 # unread: the lines whose answer came short. Of the lines of five fields answered 404 with no
 # marker that could not be told from a forward, as the header says: uncontrolled, whose unrouted
-# control got no such 404; unlike, whose body was not that 404's; bodiless, whose body and that
-# 404's were both empty.
+# control got no such 404; unhashed, whose body or that 404's the hasher gave no SHA-256 of;
+# unlike, whose body was not that 404's; bodiless, whose body and that 404's were both empty.
 unread=''
 uncontrolled=''
+unhashed=''
 unlike=''
 bodiless=''
 # The SHA-256 of an empty body.
@@ -591,6 +605,8 @@ while [ "$row" -le "$total" ]; do
     kind=unread
   elif [ -z "$own" ]; then
     kind=uncontrolled
+  elif [ "$digest" = unreadable ] || [ "$own" = unreadable ]; then
+    kind=unhashed
   elif [ "$digest" != "$own" ]; then
     kind=unlike
   elif [ "$own" = "$nothing" ]; then
@@ -613,6 +629,10 @@ while [ "$row" -le "$total" ]; do
       report UNKNOWN "$row" "; its unrouted control did not answer 404 with no marker, read whole"
       uncontrolled="$uncontrolled ${names[row]}"
       ;;
+    unhashed)
+      report UNKNOWN "$row" "; the hasher gave no SHA-256 of its body or its unrouted control's"
+      unhashed="$unhashed ${names[row]}"
+      ;;
     unlike)
       report UNKNOWN "$row" "; another body than its unrouted control's 404"
       unlike="$unlike ${names[row]}"
@@ -628,11 +648,13 @@ done
 # A reached line is a failure whatever else the run saw: an answer is evidence, while a probe
 # that came short only failed to look.
 [ -z "$reached" ] || verdict 1 "FAIL: reached$reached"
-if [ -n "$unread$uncontrolled$unlike$bodiless" ]; then
+if [ -n "$unread$uncontrolled$unhashed$unlike$bodiless" ]; then
   message=''
   [ -z "$unread" ] || message="no answer could be read whole for$unread"
   [ -z "$uncontrolled" ] ||
     message="${message:+$message; }no unrouted control got the edge's own 404, with no marker and read whole, for$uncontrolled, so nothing says what that 404 is"
+  [ -z "$unhashed" ] ||
+    message="${message:+$message; }the hasher gave no SHA-256 of the 404 body or of the edge's own 404 for its path, so the two could not be compared, for$unhashed"
   [ -z "$unlike" ] ||
     message="${message:+$message; }the 404 with no marker had another body than the edge's own 404 for its path, as a forward could, for$unlike"
   [ -z "$bodiless" ] ||

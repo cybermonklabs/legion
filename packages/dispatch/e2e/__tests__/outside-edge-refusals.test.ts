@@ -9,9 +9,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync } from "node:fs";
+import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { hostTool } from "@legion/test-fixtures/host-tools";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import type { Route } from "./outside-edge-refusals-edge";
 import {
@@ -45,9 +46,11 @@ import {
   visibleControls,
   withoutTools,
 } from "./outside-edge-refusals-fixtures";
-import { closedPort, curl, verdict } from "./outside-path-reach-fixtures";
+import { bash, closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
-const { check, httpsCurl, listFile, planLists, scratch } = edgeFixtures(import.meta.url);
+const { check, directoryOf, httpsCurl, listFile, planLists, scratch } = edgeFixtures(
+  import.meta.url
+);
 
 /** The refusal lines of five fields: each has its unrouted control sent before it. */
 const fiveFields = refusals.filter((line) => line.expect === undefined);
@@ -400,6 +403,135 @@ describe(scriptName, () => {
     // The script, a bounded child under the bound of a run that probes.
     rowLimit("edgeRun")
   );
+
+  // A body's digest counts only when the hasher exits 0 printing exactly one SHA-256. A hash that
+  // failed is no digest: two failed hashes compared equal, so a line whose 404 body differed from
+  // the edge's own read refused and the run passed. Each row runs the script on a PATH of its own:
+  // links to the host's curl, mktemp, rm and date, and a hasher script, `sha256sum`, or `shasum`
+  // alone, which the script takes where no sha256sum is on PATH. In the fault rows a route
+  // forwards broker-pending without a marker to a backend whose 404 body is not the edge's own:
+  // the false PASS the faults made. A working hasher, the control, reads PASS on equal bodies.
+  const hostSha256sum = hostTool("sha256sum");
+  /** A PATH directory of the row's own: the host's curl, mktemp, rm and date, and `tool`, a bash
+   *  script of `body`. */
+  function hasherPath(tool: string, body: string): string {
+    const directory = directoryOf("path");
+    for (const name of ["curl", "mktemp", "rm", "date"]) {
+      const found = hostTool(name);
+      if (found !== null) symlinkSync(found, join(directory, name));
+    }
+    writeFileSync(join(directory, tool), `#!${bash}\n${body}\n`, { mode: 0o755 });
+    return directory;
+  }
+  const hasherFaults = [
+    { name: "a sha256sum that exits 1 with no output", tool: "sha256sum", body: "exit 1" },
+    {
+      name: "a sha256sum that exits 0 printing no SHA-256",
+      tool: "sha256sum",
+      body: `printf '%s  -\\n' ${"e".repeat(63)}; exit 0`,
+    },
+    {
+      // Not the SHA-256 of an empty body, which the empty-404 rule would read apart.
+      name: "a sha256sum that prints a SHA-256 and exits 1",
+      tool: "sha256sum",
+      body: `printf '%s  -\\n' ${sha("hasher")}; exit 1`,
+    },
+    { name: "a shasum, the only hasher, that exits 1", tool: "shasum", body: "exit 1" },
+  ];
+  const unhashedVerdict = `UNKNOWN: the hasher gave no SHA-256 of the 404 body or of the edge's own 404 for its path, so the two could not be compared, for ${fiveFields.map((line) => line.name).join(" ")}`;
+  for (const { name, tool, body } of hasherFaults) {
+    test.skipIf(withoutTools)(
+      `(i) reads UNKNOWN, never refused, with ${name}, naming each line of five fields`,
+      async () => {
+        const edge = await standIn([
+          planted(pending, { status: 404, marker: undefined, body: "backend: no such page\n" }),
+          ...production,
+        ]);
+        try {
+          const run = await check(
+            `i ${name}`,
+            { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+            { path: hasherPath(tool, body) }
+          );
+          expect(linesOf(run, "UNKNOWN"), said(run)).toEqual(
+            fiveFields.map(
+              (line) =>
+                `UNKNOWN ${line.name} 404 none body-sha256 unreadable; the hasher gave no SHA-256 of its body or its unrouted control's`
+            )
+          );
+          expect(linesOf(run, "refused"), said(run)).toEqual(
+            refusals
+              .filter((line) => line.expect !== undefined)
+              .map((line) => `refused ${line.name} 405 broker body-sha256 unreadable`)
+          );
+          expect(verdict(run), said(run)).toBe(unhashedVerdict);
+          expect(run.code, said(run)).toBe(2);
+        } finally {
+          await edge.stop();
+        }
+      },
+      // The script, a bounded child under the bound of a run that probes.
+      rowLimit("edgeRun")
+    );
+  }
+
+  // A reached line keeps the run at FAIL whatever the hasher did.
+  test.skipIf(withoutTools)(
+    "(i) fails naming a line reached when the hasher exits 1 with no output",
+    async () => {
+      const [first] = refusals as [Line];
+      const edge = await standIn([planted(first), ...production]);
+      try {
+        const run = await check(
+          "i reached, hasher failing",
+          { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+          { path: hasherPath("sha256sum", "exit 1") }
+        );
+        expect(linesOf(run, "REACHED"), said(run)).toEqual([
+          `REACHED ${first.name} 200 canary body-sha256 unreadable`,
+        ]);
+        expect(verdict(run), said(run)).toBe(`FAIL: reached ${first.name}`);
+        expect(run.code, said(run)).toBe(1);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The script, a bounded child under the bound of a run that probes.
+    rowLimit("edgeRun")
+  );
+
+  // The control: the same PATH of the row's own, with a hasher that works, reads PASS where the
+  // bodies are equal, through sha256sum and through shasum alone.
+  const workingHashers = [
+    { name: "sha256sum", tool: "sha256sum", body: `exec ${hostSha256sum} "$@"` },
+    {
+      name: "shasum, the only hasher",
+      tool: "shasum",
+      body: `[ "$1 $2" = "-a 256" ] && shift 2; exec ${hostSha256sum} "$@"`,
+    },
+  ];
+  for (const { name, tool, body } of workingHashers) {
+    test.skipIf(withoutTools || hostSha256sum === null)(
+      `(i) passes with a working ${name} where each line's 404 is the edge's own`,
+      async () => {
+        const edge = await standIn(production);
+        try {
+          const run = await check(
+            `i working ${name}`,
+            { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+            { path: hasherPath(tool, body) }
+          );
+          expect(linesOf(run, "refused"), said(run)).toEqual(refusals.map(refusedLine));
+          expect(verdict(run), said(run)).toBe(passVerdict);
+          expect(run.code, said(run)).toBe(0);
+        } finally {
+          await edge.stop();
+        }
+      },
+      // The script, a bounded child under the bound of a run that probes.
+      rowLimit("edgeRun")
+    );
+  }
 
   // A refusal line whose sixth field names its answer, `broker-token-get`'s `405:broker`: no route
   // of the edge matches on method, so a GET on the broker's token path reaches the broker, and its
