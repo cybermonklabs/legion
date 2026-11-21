@@ -14,7 +14,14 @@ import { inboxRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { nodeRow, openIssue, rowWords } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
-import { RENDERED_BODY, referenceAgent } from "./reference-surfaces";
+import {
+  expandedComment,
+  expectIssueReference,
+  expectStatusMark,
+  issueReferenceName,
+  RENDERED_BODY,
+  referenceAgent,
+} from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -35,12 +42,12 @@ import { asUser } from "./users";
  * status or a title changed - which a recording would freeze.
  */
 
-/** The statuses these rows put an issue in, and how its mark draws each one: its shape, its
- *  colour and its accessible name, the status's words (`statusText`). */
+/** The statuses these rows put an issue in, and how its mark draws each one: its colour, and
+ *  the status's words (`statusText`) that name it. */
 const MARKS = {
-  done: { glyph: "✓", tone: "text-page-passed", words: "Done" },
-  in_progress: { glyph: "◐", tone: "text-page-in-progress", words: "In progress" },
-  todo: { glyph: "○", tone: "text-page-not-run", words: "Todo" },
+  done: { tone: "text-page-passed", words: "Done" },
+  in_progress: { tone: "text-page-in-progress", words: "In progress" },
+  todo: { tone: "text-page-not-run", words: "Todo" },
 } as const;
 
 type Status = keyof typeof MARKS;
@@ -48,31 +55,32 @@ type Status = keyof typeof MARKS;
 /** The words a link whose author worded it says, in every row. */
 const WORDS = "the warm one";
 
-/** The accessible name of a bare reference to `key`: its key, its status's words and its
- *  title. */
-function bareName(key: string, status: Status, title: string): string {
-  return `${key}, ${MARKS[status].words}, ${title}`;
-}
-
 /** An issue of CORE titled `title`, put in `status`. */
 async function issueIn(status: Status, title: string): Promise<Issue> {
   const issue = await createIssue({ project: "CORE", title });
   return patchIssue(issue.key, { status });
 }
 
-/** Holds `reference` to the one mark it draws before its words: the shape, the colour and the
- *  name of `status`. */
-async function expectMark(reference: Locator, status: Status): Promise<void> {
-  const mark = reference.locator("svg[data-status-glyph]");
-  await expect(mark, `the reference draws no mark of ${status}`).toHaveCount(1);
-  await expect(mark).toHaveAttribute("data-status-glyph", MARKS[status].glyph);
-  await expect(mark).toHaveAttribute("role", "img");
-  await expect(mark).toHaveAttribute("aria-label", MARKS[status].words);
-  await expect(mark).toHaveClass(new RegExp(`(^| )${MARKS[status].tone}( |$)`, "u"));
+/** Holds the mark `reference` draws to the colour of `status`'s group. */
+async function expectTone(reference: Locator, status: Status): Promise<void> {
+  await expect(reference.locator("svg[data-status-glyph]")).toHaveClass(
+    new RegExp(`(^| )${MARKS[status].tone}( |$)`, "u")
+  );
 }
 
-/** Holds the bare reference in `scope` to `issue` in `status`: one element named by its key, its
- *  status's words and its title, drawing its mark and its key, and no title. */
+/** Holds `reference` to a bare reference to `issue` in `status`: its mark, in its group's
+ *  colour, and its key, named by its key, its status's words and its title. */
+async function expectRead(
+  reference: Locator,
+  issue: Pick<Issue, "key" | "title">,
+  status: Status
+): Promise<void> {
+  await expectIssueReference(reference, { ...issue, status });
+  await expectTone(reference, status);
+}
+
+/** Holds the bare reference in `scope` to `issue` in `status` to the one link that name finds,
+ *  read as `expectRead` says. */
 async function expectBare(
   scope: Locator,
   issue: Pick<Issue, "key" | "title">,
@@ -80,11 +88,10 @@ async function expectBare(
 ): Promise<Locator> {
   const reference = scope.getByRole("link", {
     exact: true,
-    name: bareName(issue.key, status, issue.title),
+    name: issueReferenceName({ ...issue, status }),
   });
   await expect(reference, `${issue.key} is not named by its key, status and title`).toHaveCount(1);
-  await expectMark(reference, status);
-  await expect(reference).toHaveText(issue.key);
+  await expectRead(reference, issue, status);
   return reference;
 }
 
@@ -95,15 +102,6 @@ async function expectRowWordedLink(row: Locator): Promise<void> {
   await expect(worded, "the row's worded link is not named by its words alone").toHaveCount(1);
   await expect(worded.locator("svg[data-status-glyph]")).toHaveCount(0);
   await expect(worded).toHaveText(WORDS);
-}
-
-/** The comment's Conversation card, expanded: a collapsed card draws its one-line preview, and
- *  the comment itself, with live links, is what the expanded card holds. */
-async function expandedComment(page: Page, id: string): Promise<Locator> {
-  const card = page.locator(`[data-turn="comment:${id}"]`);
-  await card.getByRole("button", { name: "Expand thread" }).click();
-  await expect(card.getByRole("button", { name: "Collapse thread" })).toBeVisible();
-  return card.locator(RENDERED_BODY).first();
 }
 
 /** Marks the page's document, so a check after a write can tell the page was not loaded again:
@@ -176,7 +174,7 @@ test("an issue reference draws the words written until its summary answers, then
   });
 
   await page.goto(`/issues/${host.key}/conversation`);
-  const body = await expandedComment(page, comment.id);
+  const body = (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first();
   await expect
     .poll(() => [...held].sort(), { message: "the page asked for no summary of the cited issues" })
     .toEqual(
@@ -208,7 +206,12 @@ test("an issue reference draws the words written until its summary answers, then
     name: `${MARKS.in_progress.words} ${WORDS}`,
   });
   await expect(worded).toHaveCount(1);
-  await expectMark(worded, "in_progress");
+  await expectStatusMark(
+    worded.locator("svg[data-status-glyph]"),
+    "in_progress",
+    "the worded link"
+  );
+  await expectTone(worded, "in_progress");
   await expect(worded).toHaveText(WORDS);
   await expect(worded).not.toHaveAttribute("aria-label");
   // An ask and a comment draw their headlines, with no mark.
@@ -262,7 +265,7 @@ interface Surfaces {
 
 async function openSurfaces(page: Page, rows: Page, seeded: Cited): Promise<Surfaces> {
   await page.goto(`/issues/${seeded.host.key}/conversation`);
-  const comment = await expandedComment(page, seeded.comment);
+  const comment = (await expandedComment(page, seeded.comment)).locator(RENDERED_BODY).first();
   const editor = await page.context().newPage();
   await editor.goto(`/issues/${seeded.host.key}/spec`);
   await withIssuePage(rows.context(), "alice");
@@ -280,9 +283,7 @@ async function expectEverywhere(
   await expectBare(surfaces.comment, issue, status);
   const title = editorTitle(surfaces.editor, issue.key);
   await expect(title).toHaveCount(1);
-  await expectMark(title, status);
-  await expect(title).toHaveText(issue.key);
-  await expect(title).toHaveAttribute("aria-label", bareName(issue.key, status, issue.title));
+  await expectRead(title, issue, status);
   await expectBare(surfaces.row, issue, status);
 }
 
@@ -376,10 +377,7 @@ test("a reference's peek shows the title and the status on hover and keyboard fo
 
     // The editor's drawn title opens it on hover.
     const title = editorTitle(surfaces.editor, cited.key);
-    await expect(title).toHaveAttribute(
-      "aria-label",
-      bareName(cited.key, "in_progress", cited.title)
-    );
+    await expect(title).toHaveAttribute("aria-label", issueReferenceName(cited));
     await title.hover();
     await expect(peek(surfaces.editor)).toBeVisible();
     await expect(peek(surfaces.editor)).toContainText(cited.title);
@@ -441,9 +439,7 @@ test("a bare key draws its mark and its key in a comment, the editor, a row and 
     // The line renders the thread's markup, so its reference draws the mark and the key, inside
     // the one link the row's `o` follows, named as everywhere else.
     const reference = line.locator(`[data-dispatch-ref="dispatch://${cited.key}"]`).first();
-    await expectMark(reference, "todo");
-    await expect(reference).toHaveText(cited.key);
-    await expect(reference).toHaveAttribute("aria-label", bareName(cited.key, "todo", cited.title));
+    await expectRead(reference, cited, "todo");
     // The thread's full title is plain text: the key alone, with no mark and no title.
     const fullTitle = `Where does ${cited.key} go, after ${WORDS}?`;
     await expect(line.locator("[data-markdown-preview]")).toHaveAttribute("title", fullTitle);
@@ -454,11 +450,7 @@ test("a bare key draws its mark and its key in a comment, the editor, a row and 
     await patchIssue(cited.key, { title: renamed.title });
     // Each surface keeps the mark and the key, and its name takes the new title.
     await expectEverywhere(surfaces, renamed, "todo");
-    await expect(reference).toHaveAttribute(
-      "aria-label",
-      bareName(cited.key, "todo", renamed.title)
-    );
-    await expect(reference).toHaveText(cited.key);
+    await expectRead(reference, renamed, "todo");
     await expect(line.locator("[data-markdown-preview]")).toHaveAttribute("title", fullTitle);
     // A worded link keeps its words: after the mark in a rendered comment, alone in a row.
     await expect(
