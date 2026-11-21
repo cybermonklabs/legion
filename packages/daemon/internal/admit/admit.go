@@ -1079,10 +1079,13 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	if summary.Seq > 0 && summary.Seq < stored.LastDispatchSeq {
 		return nil
 	}
-	// The record keeps the repository it was recorded with, as for a live event (the engine's
-	// NoteRepositoryKept); the note is said once per resolution, so a listing no newer than the
-	// record says nothing again.
-	if err := a.engine.NoteRepositoryKept(ctx, tx, *stored, summary.ResolvedRepo); err != nil {
+	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
+	// live event (the engine's ApplyRepositoryChange). A recorded issue reaches this from the boot
+	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). The
+	// boot listing's preparation reads no GitHub for a change and asks for the daemon's follow
+	// pass instead (followListing), which calls the engine itself once the boot is over, so the
+	// fact here carries no read and corrects nothing (Resolution.Unread).
+	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary); err != nil {
 		return err
 	}
 	seq := stored.LastDispatchSeq
@@ -1216,6 +1219,43 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	root, err := a.store.Issue(ctx, tx, fact.Tree)
 	if err != nil || root == nil || !root.LingersAt(fact.Generation) {
 		return err
+	}
+	// The record's repository follows the one Dispatch resolves the issue to here too, as it does
+	// for a live event (the engine's ApplyRepositoryChange) and for the boot listing
+	// (applySummary): the outbox read the issue from Dispatch before it applied this fact and
+	// carries that read's resolution (intake.Handover.ResolvedRepo), so a child handed over as a
+	// root of its own while its repository changed in Dispatch opens its new generation on the
+	// repository Dispatch resolves it to now, rather than on the one the record holds until its
+	// next event or the next boot listing. A fact carrying no resolution is nothing Dispatch has
+	// said about the issue's repository — no read answered one — so nothing is corrected and the
+	// record stands. The record is not read again after the correction: everything the
+	// re-admission below reads of this copy is the issue's title, rank, parent, chain, sequence
+	// and phase, which the correction writes none of, and the record it writes back names no
+	// repository column at all (record.Store.PutIssue), so the correction stands whatever this
+	// copy holds of the repository. applySummary corrects the repository the same way and reads
+	// the record again only after an engine transition, which writes the phase, the hold and the
+	// linger that its own copy would put back. The correction is written from what the outbox's
+	// preparation of the fact read of GitHub for the repository it moves onto
+	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
+	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
+	// again at the issue's next event or at the next boot. Nor does a hand-over whose Dispatch read
+	// is older than the record (intake.Handover.Seq below its LastDispatchSeq): the event the
+	// record took since carried Dispatch's newer resolution, which the engine acted on then, and
+	// the outbox's reads of GitHub between its Dispatch read and this apply leave time for a
+	// person's change of the repository to land first, which the older read would undo. The follow
+	// pass leaves a record a later event carried past its listing the same way (the daemon's
+	// followListing).
+	if fact.ResolvedRepo != "" && (fact.Seq == 0 || fact.Seq >= stored.LastDispatchSeq) {
+		change := intake.DispatchIssue{
+			Key:                   fact.Issue,
+			ResolvedRepo:          fact.ResolvedRepo,
+			RepositoryRead:        fact.RepositoryRead,
+			RepositoryRefusal:     fact.RepositoryRefusal,
+			RepositoryRefusalKind: fact.RepositoryRefusalKind,
+		}
+		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, change); err != nil {
+			return err
+		}
 	}
 	intake.OnCommit(ctx, func() {
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
@@ -1433,7 +1473,8 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
-			// new generation (record.ClearGeneration), since its replay would put the old fence back.
+			// new generation (record.Store.ClearGeneration), since its replay would put the old fence
+			// back.
 			pr.Generation, pr.Run = int64(stored.Generation), nil
 			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
@@ -1488,7 +1529,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
 	// request, gate and handoffs go for every issue of it, not only the root's.
-	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
+	return a.engine.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
@@ -2529,8 +2570,8 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // with nothing to do comes back and is told nothing.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
-// role has run: a re-admission clears the generation's facts — clearGeneration touches
-// pull_requests, design_gates, phases and issues, never claims — and a claim's token carries no
+// role has run: a re-admission clears the generation's facts — record.Store.ClearTreeGeneration
+// touches pull_requests, phases and design_gates, never claims — and a claim's token carries no
 // generation (claim.NewToken), so the row outlives the generation that wrote it. A role that has
 // never run holds none and is started by nothing here: its session would come up with no
 // transcript and nothing asked of it, and only a message could ever wake it. The rows of every
@@ -3171,11 +3212,12 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
 // its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
-// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
-// record rather than taken off the row, while a task the resume of a person's answer wrote is
-// sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
-// root's architect claim does not exist, that start is what creates it, exactly as admission's
-// queued-root branch does.
+// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the record
+// rather than taken off the row, while an entry the resume of a person's answer raised is sent
+// the start that resume wrote, built from the wait the row keeps, which the send renders from the
+// record as it stands then (workflow's SendArchitectStart, over record.PhaseRow.EntryAwaiting).
+// Where the root's architect claim does not exist, that start is what creates it, exactly as
+// admission's queued-root branch does.
 //
 // An architect whose phases row names no entry at all is handed one here, rather than resumed:
 // the entry is raised with the task the derivation gives over the record as it stands, and the

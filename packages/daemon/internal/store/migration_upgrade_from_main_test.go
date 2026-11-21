@@ -19,25 +19,26 @@ import (
 // which leaves the table as main has it, the resume's own anchor (20261111181500), and the pull
 // request's read stamp (20261112070503), which dispatch://INFRA-3027 adds on top of this branch
 // and which a database the main before this branch migrated lacks as surely as this branch's own,
-// so the upgrade applies it after them. The nine versions of main's above the claim-death
-// charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
-// release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
+// so the upgrade applies it after them. The nine versions of main's above the claim-death charge,
+// the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
+// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the unmarked
+// start of a phase past its review (20261110233602), the kind of the rule that wrote a release
+// mark (20261111001612), the issue's movement time (20261111010031), the declined ask
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
-// (20261111212544), are
-// main's own and are applied as main's run applied them. Every version of this branch's but
-// twenty-five stands below main's newest: a migration's version is a timestamp rather than a place
-// in a line, and the twenty-five above it are the phase entry's own (20261111225552,
-// dispatch://INFRA-2800), which this branch wrote after main's claim-failure cause, and the
-// twenty-four the next paragraph names.
+// (20261111212544), are main's own and are applied as main's run applied them. A migration's
+// version is a timestamp rather than a place in a line, so this branch's versions and main's
+// interleave, and no one version divides the two sets: the phase entry's own (20261111225552,
+// dispatch://INFRA-2800) stands above main's newest, written after main's claim-failure cause.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
-// deployment ever has, so the test below holds the list against the embedded set: every version
-// above main's newest is this branch's and has to be named here. That holds for a change built on
-// this one too: INFRA-3036's 20261111214351, the mark of a slot released for a wait, stands above
-// main's newest and below the phase entry's, and a database main migrated has not recorded it
-// either, so the upgrade applies it with the rest. dispatch://INFRA-3219's claim leak-check cause
+// deployment ever has, so the test below holds the list against the embedded set by the one rule
+// that holds however the two interleave: every embedded version above main's newest is this
+// branch's and has to be named here. That holds for a change built on this one too: INFRA-3036's
+// 20261111214351, the mark of a slot released for a wait, stands above main's newest and below
+// the phase entry's, and a database main migrated has not recorded it either, so the upgrade
+// applies it with the rest. dispatch://INFRA-3136's two, the repository a correction moves an
+// issue onto (20261112012123) and the resume task a held delivery renders at send
+// (20261112215432), stand above main's newest too. dispatch://INFRA-3219's claim leak-check cause
 // (20261112180548), which came after, is above main's newest too, and above the phase entry's as
 // well, so a database main migrated takes it in the same upgrade, after the phase entry, and it is
 // named here with the rest, as is dispatch://INFRA-3027's pull request read stamp (20261112070503)
@@ -62,11 +63,18 @@ import (
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
+// t-e-54's claim sessions (20261116144907, cybermonklabs/legion#4220) are named here too: that
+// version stands between INFRA-2614's 20261114061900 and the role-holders publication's
+// 20261116165926, and an upgrade of a database main migrated applies it there. It creates
+// claim_sessions, every name of a session a claim has recorded, filled from the sessions the
+// claims rows hold, and it touches no outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157 and dispatch://INFRA-4729's 20261120055717, so an upgrade
-// of a database main migrated applies it just before those three. It adds pull_requests.statuses
-// at its default, the empty list, and it touches no outbox_kind_check.
+// dispatch://INFRA-3136's 20261118073048 and 20261118172458, cybermonklabs/legion#4464's
+// 20261119003157 (dispatch://INFRA-4374), cybermonklabs/legion#4581's 20261120042902
+// (dispatch://INFRA-4108) and cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729),
+// so an upgrade of a database main migrated applies it just before those six. It adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -81,60 +89,124 @@ import (
 // columns of pod_resumes and the outbox's held_by_pause, and rewrites no kind list, so it needs
 // no row of its own here (migration_20261115194357_test.go reads it).
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
-// the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
-// The two kind lists above it are named here too: the step record's (20261117000528) restates
-// 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
-// with plan_record. They stand above every other version of the list that rewrites
-// outbox_kind_check but this branch's 20261119003157, so an upgrade applies them after all the
-// others and before that one. The count of starts of each step (20261117004117) creates tables
-// and a function of its own, and its roll forward (20261117064152) changes nothing on a database
-// no rollback touched; neither touches outbox_kind_check.
-// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
-// of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
-// is still queued.
-// dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but dispatch://INFRA-4108's
-// 20261120042902 and dispatch://INFRA-4729's 20261120055717, and it is still the last of them to
-// rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
-// plan-record list names and its own two, phase_ended among them. The same migration deletes the
-// queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
-// and pull_requests.merge_forward, both null on every row it finds.
-// dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
-// (20261120042902) stands above every other version of this list but dispatch://INFRA-4729's
-// 20261120055717; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
-// and touches no outbox_kind_check, so it needs no row of its own here.
-// dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these and touches no outbox_kind_check: it adds columns to
-// dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
-// copy holds rows of.
+// the reviewer's reviewed commit, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
+// 20261117064152, cybermonklabs/legion#4488's 20261117023932, dispatch://INFRA-1997's
+// 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
+// dispatch://INFRA-3136's 20261118073048 and 20261118172458, cybermonklabs/legion#4464's
+// 20261119003157, cybermonklabs/legion#4581's 20261120042902 and cybermonklabs/legion#4598's
+// 20261120055717: it names every kind the merge-queue list names and its own. The two kind lists
+// above it are named here too: the step record's (20261117000528, cybermonklabs/legion#4400)
+// restates 20261116165926's kinds with step_record, and the plan record's (20261117023932,
+// cybermonklabs/legion#4488) restates those with plan_record. They stand above every other
+// version of the list that rewrites outbox_kind_check but cybermonklabs/legion#4464's
+// 20261119003157, so an upgrade applies them after all the others and before that one. The count
+// of starts of each step (20261117004117) creates tables and a function of its own, and its roll
+// forward (20261117064152) changes nothing on a database no rollback touched; neither touches
+// outbox_kind_check. The four after them touch no outbox_kind_check either. dispatch://INFRA-1997's
+// 20261117112334 adds a column at its default, as the reviewer's reviewed commit does, and
+// dispatch://INFRA-4109's cutover clears a claim's ask mark where that claim's ask is still queued.
+// dispatch://INFRA-3136's wait on a resume's entry (20261118073048) is applied after all of them:
+// it replaces the column 20261114061900 adds, so it runs after that one. dispatch://INFRA-3136's
+// table of bundle refusals for size (20261118172458) is applied after it: it creates
+// workspace_bundle_refusals, which 20261112215432 created before the table moved to a migration of
+// its own.
+// cybermonklabs/legion#4464's kind list with the conflict's second read and the merge forward
+// (20261119003157, dispatch://INFRA-4374) stands above every other version of this list but
+// cybermonklabs/legion#4581's 20261120042902 and cybermonklabs/legion#4598's 20261120055717, and
+// it is still the last of them to rewrite outbox_kind_check: it is now that constraint's last
+// word, and it names every kind the plan-record list names and its own two, phase_ended among
+// them. The same migration deletes the queued phase_ended rows, the seeded one below among them,
+// and adds pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it
+// finds.
+// cybermonklabs/legion#4581's mark of a launch that had Oh My Pi resume a claim's session by its
+// id (20261120042902, dispatch://INFRA-4108) stands above every other version of this list but
+// cybermonklabs/legion#4598's 20261120055717; it adds claims.agent_resume_generation at its
+// default, 0, on every row it finds, and touches no outbox_kind_check, so it needs no row of its
+// own here.
+// cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues
+// (20261120055717, dispatch://INFRA-4729) is applied after all of these and touches no
+// outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
+// and a refill mark for each project the copy holds rows of.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
-	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
-	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
-	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
-	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
-	20261120042902, 20261120055717,
+	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
+	// cybermonklabs/legion#3575 (dispatch://INFRA-2566): the experiment assignments, below main's
+	// newest but written after main recorded it.
+	20261111045636,
+	// dispatch://INFRA-3036: the mark of a slot released for a wait.
+	20261111214351,
+	// dispatch://INFRA-2800: the phase entry.
+	20261111225552,
+	// dispatch://INFRA-3136: the repository a correction moves an issue onto, and the resume task
+	// a held delivery renders at send. Both stand above main's newest and are applied over its rows.
+	20261112012123, 20261112215432,
+	// dispatch://INFRA-3027: the pull request's read stamp.
+	20261112070503,
+	// dispatch://INFRA-3219: the claim's leak-check cause.
+	20261112180548,
+	// dispatch://INFRA-2981's two, dispatch://INFRA-3146's between them, and dispatch://INFRA-3274's.
+	20261113082214, 20261113090512, 20261113110610, 20261114031356,
+	// dispatch://INFRA-3276: the record of what a relaunch ended.
+	20261113082415,
+	// dispatch://INFRA-2614: the architect stall marks, the architect entry upgrade, the claim
+	// handshake and the phase entry's mark that a task is sent again as written.
+	20261113181500, 20261113182000, 20261114020537, 20261114061900,
+	// cybermonklabs/legion#4115 (dispatch://INFRA-3759): the project pause, its three tables, two
+	// columns of pod_resumes and the outbox's held_by_pause.
+	20261115194357,
+	// t-e-54 (cybermonklabs/legion#4220): the claim sessions, every name of a session a claim has
+	// recorded, held to the claim that recorded it first.
+	20261116144907,
+	// The kind list with the role-holders publication.
+	20261116165926,
+	// The reviewer's reviewed commit.
+	20261116234034,
+	// cybermonklabs/legion#4400: the kind list with the step record, the count of starts of each
+	// step and its roll forward.
+	20261117000528, 20261117004117, 20261117064152,
+	// cybermonklabs/legion#4488: the kind list with the plan record.
+	20261117023932,
+	// dispatch://INFRA-1997: the commit statuses of the checked head.
+	20261117112334,
+	// dispatch://INFRA-4109: the update ask's mark, cut over at delivery.
+	20261117200337,
+	// dispatch://INFRA-3136: the wait a resume's entry answers, in place of the mark INFRA-2614's
+	// 20261114061900 added, which it drops, and the table of bundle refusals for size.
+	20261118073048, 20261118172458,
+	// cybermonklabs/legion#4464 (dispatch://INFRA-4374): the kind list with the conflict's second
+	// read and the merge forward, which deletes the queued phase_ended rows and adds the pull
+	// request's two merge-forward columns.
+	20261119003157,
+	// cybermonklabs/legion#4581 (dispatch://INFRA-4108): the mark of a launch that had Oh My Pi
+	// resume a claim's session by its id, claims.agent_resume_generation.
+	20261120042902,
+	// cybermonklabs/legion#4598 (dispatch://INFRA-4729): the sequence of each value of the copy of
+	// Dispatch's issues, with the refill mark of each project the copy holds rows of.
+	20261120055717,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came in
-// above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and above it stand
-// INFRA-3036's 20261111214351, the phase entry's 20261111225552, dispatch://INFRA-3027's
-// 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
-// and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
-// 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, dispatch://INFRA-3759's
-// 20261115194357, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
-// reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the
-// step record (20261117000528), the count of starts of each step (20261117004117) and its roll
-// forward (20261117064152), the kind list with the plan record (20261117023932),
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902 and
-// dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// failure. Every embedded version above it is a branch's own and is named in thisBranchsMigrations,
+// which is what the loop below checks; versions of this branch below it are named there too, since
+// no version says by itself which side it is on. main's newest came in above dispatch://INFRA-714's
+// own at the forward merge of 2026-11-12, and above it stand INFRA-3036's 20261111214351, the
+// phase entry's 20261111225552, dispatch://INFRA-3136's 20261112012123 and 20261112215432,
+// dispatch://INFRA-3027's 20261112070503, dispatch://INFRA-3219's 20261112180548,
+// dispatch://INFRA-2981's 20261113082214 and 20261113110610, dispatch://INFRA-3276's
+// 20261113082415, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's 20261114031356,
+// dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900,
+// cybermonklabs/legion#4115's 20261115194357 (dispatch://INFRA-3759), t-e-54's 20261116144907,
+// the role-holders publication's 20261116165926, the reviewer's reviewed
+// commit, 20261116234034, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
+// 20261117064152, the kind list with the plan record (cybermonklabs/legion#4488's
+// 20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337, dispatch://INFRA-3136's 20261118073048 and 20261118172458,
+// cybermonklabs/legion#4464's 20261119003157, cybermonklabs/legion#4581's 20261120042902
+// (dispatch://INFRA-4108) and cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729),
+// which is why the loop below holds the list rather than counting it, so that a version added
+// above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

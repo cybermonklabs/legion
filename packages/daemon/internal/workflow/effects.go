@@ -442,7 +442,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if role == claim.RoleArchitect {
 		return nil
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, movedBack, nil)
 	if err != nil {
 		return err
 	}
@@ -568,7 +568,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // A row carrying no task is sent the phase's resume task instead (ResumePhaseTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the
 // entry left with no task, since the release before it recorded none, and one a re-admission
-// reset (record.Store.ClearGeneration).
+// reset (Engine.ClearGeneration).
 //
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
@@ -615,7 +615,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
-// the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
+// the rest of the generation (Engine.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
 // (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
@@ -623,7 +623,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, nil)
 	if err != nil {
 		return err
 	}
@@ -932,16 +932,18 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
 // rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
 //
-// verbatim is whether the sweep's send of a root architect's entry again sends that task as
-// written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
-// raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+// awaiting is the wait a person answered, where the resume of that answer raises a root
+// architect's entry, and nil for every other raise (record.PhaseRow.EntryAwaiting): it is what
+// the sweep's send of such an entry again renders the resume from at its send. Every raise writes
+// it, so a raise that names no wait clears the one an earlier entry's resume left.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool,
+	awaiting *record.Awaiting) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, "", err
 	}
 	row.Entry++
-	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
+	row.EntryAwaiting, row.EntryRaisedAt, row.EntryMovedBack = awaiting, e.now(), movedBack
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
 	// written here does: raised is that row, read for the sentences alone, and the row is given its
 	// task once, the text the worker is sent.
@@ -967,8 +969,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
-// work of that entry, whether the sweep sends it again as written (verbatim, enter) and the
-// moment it was raised, and answers the number for the start that hands it
+// work of that entry, the wait a person answered where a resume raises it (awaiting, enter) and
+// the moment it was raised, and answers the number for the start that hands it
 // (record.SuperviseRequest.Entry). A root's architect holds a row of the phases record exactly as
 // every phase worker does, so what it was handed, what that work is and how long it has stood are
 // read from the record rather than from the outbox row that carried it.
@@ -976,27 +978,32 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // It is the one way a root architect's entry is raised, and two starts that hand the architect
 // work it was not on make it. StartArchitect does, for admission's promotion of a queued root
 // (admit's LineQueuedRoot branch) and for the sweep's raise for an architect whose row names no
-// entry, with the derivation's task, which the sweep derives again. ResumeAwaitedRoot does, for
-// the resume of a root a person answered, with the task that names the answer, which the sweep
-// sends as written. Each composes the architect's task itself and enqueues its start itself,
-// because an architect's start waits for no admission slot, so neither writes through start or
-// started, both of which are a phase worker's. The rule it is held to is enter's own, which is
-// why it is one call and not a second implementation: it is made in the transaction that writes
-// that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
-// one reader is the completion route's entry fence, and the architect completes nothing there.
-func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+// entry, with the derivation's task and no wait, and the sweep derives that task again.
+// ResumeAwaitedRoot does, for the resume of a root a person answered, with the task that names
+// the answer and the wait it answers, from which the sweep renders that task again at its send.
+// Each composes the architect's task itself and enqueues its start itself, because an
+// architect's start waits for no admission slot, so neither writes through start or started, both
+// of which are a phase worker's. The rule it is held to is enter's own, which is why it is one
+// call and not a second implementation: it is made in the transaction that writes that start. The
+// entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's one reader is the
+// completion route's entry fence, and the architect completes nothing there.
+func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, awaiting *record.Awaiting) (int64, error) {
+	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, false, awaiting)
 	return entry, err
 }
 
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last.
-// The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
-// its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
-// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
-// the reviewer's record names, and the commit retro and the merger stand on.
+// The handoff a phase ended with is a Dispatch handoff record on the issue. The line names it by
+// its phase word and the version the daemon accepted, with the command that reads that version,
+// because `Handoff commit:` and the verdict are that version's. It also names the command that
+// reads the phase's newest version, because a writer may record a correction after the daemon
+// accepted its record, and a reader given only the pinned command would never read it
+// (dispatch://INFRA-2980); where a commit is named too, the line says that head stands whatever a
+// later version names. A commit is named, as `Handoff commit:`, whenever the completion reported
+// one: the head the planner's, the implementer's, the tester's or the reviewer's record names, and
+// the commit retro and the merger stand on.
 // A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
@@ -1013,10 +1020,13 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
+		text += fmt.Sprintf(" Handoff: %[1]s version %[2]d (dispatch handoff-read --issue %[3]s --phase %[1]s --version %[2]d); the newest version of that record: dispatch handoff-read --issue %[3]s --phase %[1]s. A version above %[2]d is a correction its writer recorded after the daemon accepted version %[2]d, so read it too.", word, handoff.HandoffVersion, issue.Key)
 	}
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
+		if handoff.HandoffRecord != "" {
+			text += " Where a later version names another head, the head this task names is still " + handoff.HandoffCommit + "."
+		}
 	}
 	if handoff.Verdict != "" {
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."

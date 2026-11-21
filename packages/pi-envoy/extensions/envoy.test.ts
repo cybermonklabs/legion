@@ -13924,8 +13924,8 @@ console.log(JSON.stringify(args));
         },
       ]);
       expect(recordedWhenDelivered).toEqual([1]);
-      // Legion's phase-stall check reads this: the user message it starts is the person's, never
-      // the daemon's assignment.
+      // Legion's phase-stall check reads this: the user message it starts is an inbound message
+      // from outside the session, which puts the reminder count back at zero.
       const turn = {
         content: [{ text: DIRECT_MESSAGE_BODY, type: "text" }],
         role: "user",

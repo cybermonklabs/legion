@@ -66,14 +66,14 @@ func TestTheCatchUpMigrationRewritesTheGateKeyAsTheSpecStepsEntry(t *testing.T) 
 		payload record.Notice
 	}{
 		{registered, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-208",
-			CatchUp: &record.CatchUp{Generation: 3, Launch: 2,
+			CatchUp: &record.CatchUp{Generation: 3, Launch: 2, CatchUpTree: record.CatchUpTree{
 				Gates: []record.CatchUpGate{{Step: record.DesignStepSpec, Gated: true,
 					Artifact: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", Version: 4, Approved: 4, Open: true}},
-				Issues: []record.CatchUpIssue{{Key: "LEGION-208", Title: "a gated root", Phase: phase.Implementing, Status: "in_progress"}}}}},
+				Issues: []record.CatchUpIssue{{Key: "LEGION-208", Title: "a gated root", Phase: phase.Implementing, Status: "in_progress"}}}}}},
 		{unregistered, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-300",
-			CatchUp: &record.CatchUp{Generation: 1, Launch: 1,
+			CatchUp: &record.CatchUp{Generation: 1, Launch: 1, CatchUpTree: record.CatchUpTree{
 				Gates:  []record.CatchUpGate{{Step: record.DesignStepSpec, Unregistered: true}},
-				Issues: []record.CatchUpIssue{{Key: "LEGION-300", Title: "a root with no gate", Phase: phase.Planning, Status: "in_progress"}}}}},
+				Issues: []record.CatchUpIssue{{Key: "LEGION-300", Title: "a root with no gate", Phase: phase.Planning, Status: "in_progress"}}}}}},
 		{plain, record.Notice{Kind: "phase-finished", Role: claim.RoleArchitect, Phase: phase.Testing, Summary: "the tests are green"}},
 	} {
 		got, err := decodeNotice(t, store, want.id)

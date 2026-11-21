@@ -97,7 +97,8 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
+		followWake: make(chan struct{}, 1)}
 	// The records ask the refresher for a read of the live records at the commit of each write that
 	// can change them, as the daemon's do (projectRecords, refreshLive), so a repository a new
 	// record names is among the ones whose bad answers the refresher reads again. The anchors are
@@ -1285,6 +1286,12 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	// A recovery pass that listed Dispatch before the move holds the issue on zeta/tools, and
+	// records it there if GitHub answers its reads, which serveAndRecover lets it do. The
+	// refresher runs one pass at a time, every 20 to 40 ms while zeta/tools is unread, so a
+	// listing after the move means every pass that listed before it has ended, its reads failed.
+	listed := client.listingCount()
+	testwait.Eventually(t, "a recovery listing after the move", func() bool { return client.listingCount() > listed })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)

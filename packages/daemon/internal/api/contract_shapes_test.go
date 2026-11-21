@@ -676,6 +676,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The owed golden's own value (owed.json, claims_owed_test.go): a claim that owes its
+		// phase, named with the architect that owns it, which between them carry every key of
+		// an OwedResponse.
+		AnswerOwed: {roots: typesOf(OwedResponse{}), bodies: []any{OwedResponse{
+			Owes: true, Work: "the testing phase of LEGION-208", Architect: "legion-legion-legion-208-architect",
+		}}},
 	}
 }
 

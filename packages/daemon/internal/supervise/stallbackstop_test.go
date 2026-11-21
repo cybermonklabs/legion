@@ -3,12 +3,10 @@ package supervise
 import (
 	"context"
 	"errors"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	gotoken "go/token"
 	"go/types"
-	"os"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -724,38 +722,20 @@ func stalledSweep(h *harness) (time.Time, StepRecord) {
 // or one another package manufactures — is outside it, and the daemon's notice answers that one
 // by naming the value rather than claiming a relaunch (the daemon's stallBackstopEnd).
 func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read this package's source: %v", err)
-	}
 	fileset := gotoken.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fileset, name, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		parsed = append(parsed, file)
-	}
-	defs := map[*ast.Ident]types.Object{}
-	config := types.Config{Importer: importer.ForCompiler(fileset, "gc", compiledDependencies(t))}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", fileset, parsed, &types.Info{Defs: defs})
+	checked, err := testtypes.CheckPackage(fileset, importer.ForCompiler(fileset, "gc", compiledDependencies(t)), supervisePath, ".")
 	if err != nil {
-		t.Fatalf("type-check this package: %v", err)
+		t.Fatal(err)
 	}
 	type declaration struct{ name, text string }
 	var declared []declaration
-	for ident, object := range defs {
+	for ident, object := range checked.Info.Defs {
 		constant, isConstant := object.(*types.Const)
 		if !isConstant {
 			continue
 		}
 		named, isNamed := constant.Type().(*types.Named)
-		if !isNamed || named.Obj().Pkg() != pkg || named.Obj().Name() != "ProcessEnd" {
+		if !isNamed || named.Obj().Pkg() != checked.Types || named.Obj().Name() != "ProcessEnd" {
 			continue
 		}
 		text, err := strconv.Unquote(constant.Val().ExactString())
@@ -794,14 +774,33 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 // the go command reports the file of each from its build cache (testtypes.CompiledDependencies).
 // The walk above reads those rather than type-checking the dependency tree from its source,
 // which this package's dependencies make tens of seconds of the test binary's run (the source
-// read sealed makes, in table_test.go, is the longest test in the package by itself).
-func compiledDependencies(t *testing.T) importer.Lookup {
+// read sealed makes, in table_test.go, is the longest test in the package by itself). also names
+// other packages, by directory, whose dependencies are looked up after this package's, for a test
+// that type-checks their source too.
+func compiledDependencies(t *testing.T, also ...string) importer.Lookup {
 	t.Helper()
-	compiled, err := testtypes.CompiledDependencies("github.com/sjawhar/legion/daemon/internal/supervise")
-	if err != nil {
-		t.Fatal(err)
+	patterns := append([]string{"github.com/sjawhar/legion/daemon/internal/supervise"}, also...)
+	lookups := make([]importer.Lookup, 0, len(patterns))
+	for _, pattern := range patterns {
+		compiled, err := testtypes.CompiledDependencies(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lookups = append(lookups, compiled)
 	}
-	return compiled
+	if len(lookups) == 1 {
+		return lookups[0]
+	}
+	return func(path string) (io.ReadCloser, error) {
+		var err error
+		for _, lookup := range lookups {
+			var file io.ReadCloser
+			if file, err = lookup(path); err == nil {
+				return file, nil
+			}
+		}
+		return nil, err
+	}
 }
 
 // The one thing the claim cannot show about an end is whether the runtime made the stop that

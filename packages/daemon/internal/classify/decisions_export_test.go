@@ -258,3 +258,37 @@ func TestStaleReviewIsAReviewTheGateAlreadyFollowedWithAnother(t *testing.T) {
 		t.Fatalf("ReviewAfter of the review at sequence 12 = wrong, want it after a read at 10 and not after one at 12")
 	}
 }
+
+// A review of version 13 is superseded by the person's approval of a later version whatever its
+// mark, and by an approval of version 13 itself only when the review does not come after that
+// approval; a gate that records no approval supersedes nothing. The replay is dispatch://INFRA-3111:
+// a changes request of version 13 followed by the approval of version 19.
+func TestReviewSupersededIsAReviewAnApprovalFollowed(t *testing.T) {
+	at := time.Date(2026, 11, 11, 20, 3, 22, 0, time.UTC)
+	approvedAt := func(version int, mark record.EventMark) record.DesignGate {
+		return record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: version, ApprovedVersion: new(version), ApprovedMark: mark}
+	}
+	for _, tc := range []struct {
+		name       string
+		gate       record.DesignGate
+		mark       record.EventMark
+		superseded bool
+	}{
+		{name: "an approval of a later version", gate: approvedAt(19, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 52}, superseded: true},
+		{name: "an approval of a later version no mark places", gate: approvedAt(19, record.EventMark{}), mark: record.EventMark{Seq: 52}, superseded: true},
+		{name: "an approval of the same version after the review", gate: approvedAt(13, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 30}, superseded: true},
+		{name: "an approval of the same version after the review by time", gate: approvedAt(13, record.EventMark{At: at}), mark: record.EventMark{At: at.Add(-time.Minute)}, superseded: true},
+		{name: "an approval of the same version before the review", gate: approvedAt(13, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 41}},
+		{name: "an approval of the same version before the review by time", gate: approvedAt(13, record.EventMark{At: at}), mark: record.EventMark{At: at.Add(time.Minute)}},
+		{name: "an approval of an older version", gate: record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 13, ApprovedVersion: new(12),
+			ApprovedMark: record.EventMark{Seq: 40}}, mark: record.EventMark{Seq: 30}},
+		{name: "no approval at all", gate: RecordChangesTold(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 13}, 13, "name the rollback path",
+			record.EventMark{Seq: 30}), mark: record.EventMark{Seq: 30}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReviewSuperseded(tc.gate, 13, tc.mark); got != tc.superseded {
+				t.Fatalf("ReviewSuperseded(%#v, 13, %#v) = %v, want %v", tc.gate, tc.mark, got, tc.superseded)
+			}
+		})
+	}
+}

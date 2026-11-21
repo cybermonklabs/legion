@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -1727,6 +1728,8 @@ func (c *turnClock) fire(after time.Duration) int {
 // its send after the turn's start, and the re-send acknowledged and then answered busy, by a late
 // refusal or by its result.
 func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
+	// Oh My Pi's busy answer as the stream hands it on: its words for the log, and the outcome the
+	// stream minted from its code, which is all the daemon decides by.
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	for _, tc := range []struct {
 		name string
@@ -1735,7 +1738,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 	}{
 		{name: "the re-send refused at its send, after the turn's start", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
 			t.Helper()
-			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy}
+			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy, Outcome: runtime.OutcomeAgentBusy}
 			if err := machine.Handle(context.Background(), supervise.PromptRefused{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id, Err: refusal}); err != nil {
 				t.Fatalf("refuse the re-send: %v", err)
 			}
@@ -1745,7 +1748,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 				t.Fatalf("acknowledge the re-send: %v", err)
 			}
-			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy}); err != nil {
 				t.Fatalf("refuse the re-send late: %v", err)
 			}
 		}},
@@ -1754,7 +1757,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 				t.Fatalf("acknowledge the re-send: %v", err)
 			}
-			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy}); err != nil {
 				t.Fatalf("answer the re-send busy: %v", err)
 			}
 		}},

@@ -29,10 +29,25 @@ your cluster, from one published worker image.
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
 Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
-its default branch as GitHub names it, when it first records the issue, and keeps both: a later
-change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
-An issue whose repository resolves to none, or to one a role App is not installed on, is not
-admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
+its default branch as GitHub names it, when it first records the issue. The record then follows
+Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
+which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
+that runs once the daemon's boot is over. Each such pass reads both role Apps' installations on
+the repository the change names and its name and default branch from GitHub at that moment, and
+applies the change only from what GitHub answers then. Under `runtime: kubernetes` the daemon then
+replaces the issue's pod, so its workspace, its GitHub token and its clone are of the new owner;
+under `runtime: tmux` there is no pod to replace, and each pane works the repository the issue
+left until its next launch, which provisions it a workspace of the new repository on the daemon's
+host. A change onto a repository a role App is not installed on, or one GitHub does not have, is
+not applied; the record keeps what it has, the daemon says so once on the issue, and the record
+carries the waiting change (`repoChangePending` and `repoChangeReason` of `legion state --json`)
+until the issue's next event or the daemon's next boot, the two passes that read the repository
+again: installing the missing App starts no pass by itself. The daemon reads no repository
+mapping from Dispatch, so nothing else reads such a repository again, and a change of the
+project's default repository in Dispatch moves an issue that inherits it at that issue's next
+event or at the next boot. An issue whose repository resolves to none, or to one a role App is
+not installed on, is not admitted, and the daemon says why on the issue. A claim an operator
+starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
 claim's first launch and kept for as long as the issue holds its workspace. When that issue
 resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
@@ -931,7 +946,8 @@ What each part is for:
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
-  `LEGION_STALL_RESUME_MS` (120000, after a resume on an open phase) and
+  `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
+  work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
   the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
   number of 0 or more; a value that is not is ignored, the default stands, and the worker's log

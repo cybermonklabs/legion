@@ -199,8 +199,8 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, p.repositories.left,
+		cfg.RepositoryRenames, p.installed, p.left, o.githubAPI, p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -585,12 +585,15 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the repository state's own, so a configured rename's mint follows the
-// owner whose installation holds the repository now), with the repositories the project works as
-// the ones its repository caches follow (cached: those of its live issue records and of the
-// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
-// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
-// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
-// tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
+// owner whose installation holds the repository now), with leftRepository as the rule a saved
+// bundle's restore reads whether the issue has left the bundle's repository by
+// (repositories.left, the rule the update round reads a pod by), with the repositories the
+// project works as the ones its repository caches follow (cached: those of its live issue records
+// and of the launches since their last read, workflowRuntime.cacheRepositories), with the store's
+// own workspace bundles as what a replacement pod's launcher is sent and what its restore drops,
+// and registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands
+// it no tokens, and sandbox.New's own refusal names what is missing. Boot has already run the
+// cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
 // root ("" is https://api.github.com), which the shared public leak check is read under
@@ -603,10 +606,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
+	serving func(ghrepo.Repository) ghrepo.Repository, leftRepository func(from, now string) bool, renames ghrepo.Renames,
+	installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
 	reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
+		writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
@@ -615,13 +620,19 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// arrives late takes no newer release's work with it. The read is the bundle's one restore
 		// attempt: the first pod that is not the one the work came off takes it, whether the
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
+		// answered for that bundle again. The take is project's alone (savedWorkspaceBundle). A
+		// bundle of a repository the issue has left is refused too, and that refusal is the one a
+		// person must read, so the take is wrapped with the message it writes on the issue
+		// (tellBundleRepositoryRefused).
+		opts.SavedWorkspaceBundle = tellBundleRepositoryRefused(st, opts.Project, leftRepository, writeOnIssue, opts.Log)
+		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceBundle
 		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
 		// mounts the volume the work was taken off. The runtime asks this drop first for such a
 		// pod, and the store deletes the bundle the take would answer, without its body, so the
-		// pod is sent nothing and the bundle holds the issue's pod no longer.
-		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project)
+		// pod is sent nothing and the bundle holds the issue's pod no longer. The drop reads the
+		// take's repository rule (heldWorkspaceBundle): a bundle of a repository the issue has left
+		// is kept for the take, which refuses it and tells the issue.
+		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project, leftRepository)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -665,12 +676,14 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 
 // savedWorkspaceBundle is st's take of a release's saved work for a pod of project, the runtime's
 // project token (sandbox.Options.Project), in the shape the runtime calls it
-// (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
-// (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
-// daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
-func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+// (runtime.SavedWorkspaceBundle), with left as the rule it reads whether the issue has left the
+// bundle's repository by (repositories.left). A bundle is project's only where project records
+// its issue (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another
+// project's daemon, a bundle of that project's issue is that daemon's, whatever pod of this
+// daemon asks.
+func savedWorkspaceBundle(st *store.Store, project string, left func(saved, recorded string) bool) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated, left)
 	}
 }
 
@@ -678,10 +691,14 @@ func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspac
 // project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
 // project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
 // project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
-// record is another project's daemon's, and a pod of this daemon drops none of it.
-func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
+// record is another project's daemon's, and a pod of this daemon drops none of it. It follows the
+// take's repository rule by the same left (repositories.left): a bundle of a repository the issue
+// has left is not dropped, because the volume holds that work in the old repository's workspace,
+// which the pod does not work in. The take that runs next refuses it, and the daemon writes on the
+// issue where the work is (tellBundleRepositoryRefused).
+func heldWorkspaceBundle(st *store.Store, project string, left func(saved, recorded string) bool) runtime.HeldWorkspaceBundleDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)
+		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince, left)
 	}
 }
 

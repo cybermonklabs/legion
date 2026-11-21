@@ -454,7 +454,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	rig.report("subagent")
 
 	rig.observe(runtime.Gone, false)
-	rig.conn.RefusePrompt(keptBusyRefusal)
+	rig.conn.FailPrompt(keptBusy)
 	rig.boot()
 	rig.conn.FailPrompt(nil)
 

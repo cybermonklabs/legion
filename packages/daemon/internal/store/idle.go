@@ -689,6 +689,9 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
+	if view.BundleRefusal, view.Head, err = workspaceBundleRefusal(ctx, tx, issue); err != nil {
+		return pods.IdleView{}, err
+	}
 	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
 	// pause (which says why): project_pauses and the pod holds carry its Dispatch key, which
 	// project, the token (claim.ProjectToken), lowercases for every key project_pauses admits.

@@ -93,12 +93,21 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
 //     slot, and the one parked-decision controller notice that names it, the decision, where in
-//     Dispatch, who made it, and a spec decision's version and a changes request's reason.
+//     Dispatch, who made it, and what spec says of it.
+//
+// spec is the notice that reported a spec decision (the daemon's parkDecision passes the one no
+// architect took), and the controller notice carries what it says as it says it: the version, a
+// changes request's reason, and Dispatch's mark of the review with the document reviewed
+// (Notice.Review, Notice.Artifact). A decision no notice reported, an ask's, passes the zero
+// Notice. The mark is the notice's own and never the time the decision is kept at, which is the
+// daemon's clock where the notice gave none (ParkedDecision.At), because the publish of a relayed
+// changes request asks again whether the person's approval followed it (the daemon's
+// controllerNotice), and asks it of that mark and that document.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, version int, reason string, steps []DesignStep) (RelayOutcome, error) {
+	decision ParkedDecision, spec Notice, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -124,8 +133,10 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
-		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
+	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice,
+		Decision: decision.Decision, Root: root.Key, Ref: decision.Ref, Actor: decision.Actor,
+		Version: spec.Version, Reason: spec.Reason, Review: spec.Review, Artifact: spec.Artifact},
+		decision.At)
 	if err != nil {
 		return RelayNone, err
 	}
@@ -149,6 +160,32 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
+	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), which a send
+	// asks the gate with (workflow.SupersedingApproval); it is no part of the row's identity.
+	Seq int64 `json:"seq,omitempty"`
+}
+
+// KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no
+// gate, once a later approval superseded it: the row of each decision of owed, decisions kept on
+// issues of tree, and each changes request of queued, the ones the outbox holds on the issues the
+// clear covers. The record holds no rule of its own for that: the workflow's forget is the one
+// rule (workflow.ForgetSuperseded, which a start, a ready and a send each run before they name
+// what a tree is owed, and workflow.SupersedingApproval for a queued request, which its delivery
+// asks), and a clear of a generation is handed it (Store.ClearGeneration), because the clear
+// deletes the gates the rule reads.
+type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions,
+	queued []QueuedChanges) error
+
+// QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
+// included: a design-changes-requested notice for an architect, or the parked-decision controller
+// notice that relays one (Kind, the row's kind, says which). Row is the row's id, Issue the issue
+// the request was made on (the row's), and Notice the decision the row carries, a relay read as
+// the Notice it is.
+type QueuedChanges struct {
+	Row    int64
+	Kind   OutboxKind
+	Issue  string
+	Notice Notice
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start

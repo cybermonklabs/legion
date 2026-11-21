@@ -15,14 +15,33 @@ import (
 // each configured rename's new name (`repository_renames`' `to`) over its old one (`from`) on every
 // stored column that holds a repository name, once GitHub shows the repository's transfer, at its
 // boot and at the end of an issue's pod (internal/daemon's renamePass), and
-// dispatch://INFRA-3532's own change removes it with these functions. PutIssue refuses a recorded
-// issue another repository, so the pass writes through RenameIssueRepository and nothing else does.
+// dispatch://INFRA-3532's own change removes it with these functions. PutIssue never moves a
+// recorded issue's repository, and the one writer that moves an issue onto another repository,
+// CorrectIssueRepository, records a correction: the repository the issue left and its moment,
+// which its next task names. A rename is no such move, since a pair's two names are one
+// repository (ghrepo.Renames.Same), so the pass writes beside that writer, through
+// RenameIssueRepository: it matches the old name it replaces rather than writing a copy read
+// earlier, so it writes no stale repository back, and a correction that reads Dispatch's old name
+// after it reads the pair as one repository and writes nothing (workflow's sameRepository).
 //
-// The columns are every one the migrations give a repository name: issues.repo and
-// issues.github_repo (0047, 0048), pull_requests.repo (0004), production_checks.repo (0049) and
-// repo_notes.resolved_repo (0047). No other column holds one: the claims' and claim
-// capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads and the bundles'
-// rows carry no repository, and processed_events.event_id only embeds one in a dedupe key. Every
+// The columns are every one the migrations give the repository an issue or its work is on now:
+// issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
+// production_checks.repo (0049), repo_notes.resolved_repo (0047) and workspace_bundles.repo
+// (20261112012123_issue_repository_correction), the repository a saved bundle's work is of.
+// That last one is written because the take compares it with the record's repository through
+// the pair (ghrepo.Renames.Left): left on the old name, a bundle saved before the pass would read
+// as work of a repository the issue left once the pair is removed from `repository_renames`, and
+// the next pod's restore would refuse it; and it is counted, so the rows the pass logs as left
+// hold the operator's removal of the pair back while a bundle names the old name. No other
+// column holds one the pass writes. The claims' and claim capabilities' locators name a tmux pane
+// or a Sandbox, the outbox's payloads carry no repository, and processed_events.event_id only
+// embeds one in a dedupe key. Three more columns hold a name the pass leaves as it is:
+// issues.repo_before, the repository a correction moved the issue off, which is that
+// correction's history and decides nothing that compares it with a pair;
+// issues.repo_change_pending, Dispatch's own name for a change still to be made, which the
+// issue's next event writes again from Dispatch; and workspace_bundles_refused.repo, work the
+// restore refused, which nothing in the daemon reads again and an operator carries out by hand.
+// Every
 // comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
 // name in the record is, so a row in any spelling of the old name is written; the new name is
 // written as the caller hands it, on every column alike, which the pass hands in GitHub's spelling
@@ -40,11 +59,13 @@ const (
 	RenameTablePullRequests     RenameTable = "pull_requests"
 	RenameTableProductionChecks RenameTable = "production_checks"
 	RenameTableRepoNotes        RenameTable = "repo_notes"
+	RenameTableWorkspaceBundles RenameTable = "workspace_bundles"
 )
 
 // RenameTables are the tables whose columns hold a repository name, in the order the rename pass
 // writes and logs them.
-var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableProductionChecks, RenameTableRepoNotes}
+var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableProductionChecks, RenameTableRepoNotes,
+	RenameTableWorkspaceBundles}
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling
@@ -79,6 +100,8 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 		{RenameTableRepoNotes, `select n.issue, n.resolved_repo, ''::text from repo_notes n
 			where lower(n.resolved_repo) = lower($2) and ($3::text[] is null or n.issue = any($3))
 			and (starts_with(n.issue, $1 || '-') or n.issue in (select key from issues where project = $1))`},
+		{RenameTableWorkspaceBundles, `select b.issue, b.repo, ''::text from workspace_bundles b join issues i on i.key = b.issue
+			where i.project = $1 and lower(b.repo) = lower($2) and ($3::text[] is null or b.issue = any($3))`},
 	} {
 		rows, err := tx.Query(ctx, read.sql, project, from, keys)
 		if err != nil {
@@ -140,9 +163,9 @@ type RenameCollision struct {
 
 // RenameIssueRepository writes to over from, compared without case, on each column of issue's
 // rows that holds a repository name: its record's repository and GitHub's spelling of it, its pull
-// request, its production check and its repository note. It runs in the caller's transaction, so
-// the rows of one issue are written together or not at all, and a write of rows that name to
-// already changes nothing.
+// request, its production check, its repository note and its saved bundle. It runs in the
+// caller's transaction, so the rows of one issue are written together or not at all, and a write
+// of rows that name to already changes nothing.
 //
 // Its pull request row is deleted instead where the new name would make it a second row of one
 // repository and branch: pull_requests_repo_branch (0004) is unique on (repo, branch), and the
@@ -191,6 +214,7 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	}{
 		{RenameTableProductionChecks, "update production_checks set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
 		{RenameTableRepoNotes, "update repo_notes set resolved_repo = $3 where issue = $1 and lower(resolved_repo) = lower($2)"},
+		{RenameTableWorkspaceBundles, "update workspace_bundles set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
 	} {
 		tag, err := tx.Exec(ctx, write.sql, issue, from, to)
 		if err != nil {

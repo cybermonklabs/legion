@@ -385,7 +385,7 @@ func (w *workflowRuntime) renameTransfer(ctx context.Context, pair ghrepo.Rename
 	}
 	spelled := to.recorded.Name
 	if !strings.EqualFold(spelled.String(), pair.To.String()) {
-		read, why, _ := w.readName(ctx, pair.To)
+		read, why, _ := w.readName(ctx, pair.To, false)
 		switch {
 		case why != "":
 			return ghrepo.Repository{}, why

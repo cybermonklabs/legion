@@ -3,13 +3,9 @@ package supervise
 import (
 	"context"
 	"errors"
-	"fmt"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // sealed reads the package's own source for what the table has to cover: every type that
@@ -27,24 +24,10 @@ import (
 // nobody gave rows to fails this test instead of passing it.
 func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerKind) {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	set, err := checkedSealedSet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := token.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(files, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed = append(parsed, file)
-	}
-	set := sealedSet(t, files, parsed)
 	for _, value := range set.states {
 		states = append(states, ClaimState(value))
 	}
@@ -58,7 +41,7 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 	return events, states, timers
 }
 
-// sealedSet is what the compiler sees of this package: every type that implements Event, and the
+// sealedSets is what the compiler sees of this package: every type that implements Event, and the
 // value of every ClaimState and TimerKind constant. It is read as the compiler sees it rather
 // than as the source spells it — a type that inherits isEvent by embedding, or declares it on a
 // pointer receiver, is an event a scan of isEvent declarations would not see, and a state or
@@ -70,38 +53,19 @@ type sealedSets struct {
 	timers []string
 }
 
-func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
-	t.Helper()
-	set, err := checkedSealedSet(files, parsed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return set
-}
-
 // checkedSealedSet type-checks this package once per test binary — the check reads the standard
 // library from source, which is seconds, and five tests ask for the sealed set.
-var checkedSealedSet = func() func(*token.FileSet, []*ast.File) (sealedSets, error) {
-	once := sync.OnceValues(func() (sealedSets, error) {
-		return sealedSets{}, errors.New("the sealed set was asked for before any file was parsed")
-	})
-	var files *token.FileSet
-	var parsed []*ast.File
-	return func(f *token.FileSet, p []*ast.File) (sealedSets, error) {
-		if files == nil {
-			files, parsed = f, p
-			once = sync.OnceValues(func() (sealedSets, error) { return readSealedSet(files, parsed) })
-		}
-		return once()
-	}
-}()
+var checkedSealedSet = sync.OnceValues(readSealedSet)
 
-func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error) {
-	config := types.Config{Importer: importer.ForCompiler(files, "source", nil)}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", files, parsed, nil)
+// readSealedSet reads the sealed set from the package's own source as the build compiles it
+// (testtypes.CheckPackage).
+func readSealedSet() (sealedSets, error) {
+	files := token.NewFileSet()
+	checked, err := testtypes.CheckPackage(files, importer.ForCompiler(files, "source", nil), supervisePath, ".")
 	if err != nil {
-		return sealedSets{}, fmt.Errorf("type-check the package: %w", err)
+		return sealedSets{}, err
 	}
+	pkg := checked.Types
 	event, ok := pkg.Scope().Lookup("Event").Type().Underlying().(*types.Interface)
 	if !ok {
 		return sealedSets{}, errors.New("Event is not an interface")

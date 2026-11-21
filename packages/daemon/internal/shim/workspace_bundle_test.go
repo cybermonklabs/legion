@@ -76,7 +76,10 @@ func TestABundleOverTheReleasesBoundIsRefusedWithItsSize(t *testing.T) {
 	}
 }
 
-// A shim with no workspace to bundle refuses by name rather than answering an empty bundle.
+// A shim with no workspace to bundle refuses by name rather than answering an empty bundle, and
+// names no size: only the refusal over the bound sets SizeBytes, which is what the daemon reads
+// that refusal from (stream.Conn.BundleWorkspace), so a size here would hold the pod until a push
+// for a cause no push cures.
 func TestABundleOfNoWorkspaceIsRefusedByName(t *testing.T) {
 	path := socketPath(t)
 	daemon := listen(t, path)
@@ -88,8 +91,8 @@ func TestABundleOfNoWorkspaceIsRefusedByName(t *testing.T) {
 	p.open(t)
 	p.send(t, shimwire.BundleWorkspace{ID: "bundle-3", Issue: "INFRA-945", MaxBytes: 40 << 20, TimeoutMs: 10_000})
 	got, ok := p.next(t).(shimwire.BundleWorkspaceResult)
-	if !ok || got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE") {
-		t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
+	if !ok || got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE") || got.SizeBytes != 0 {
+		t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE and no size", got)
 	}
 }
 

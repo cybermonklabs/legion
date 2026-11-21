@@ -10,8 +10,8 @@ import (
 )
 
 // renameFixture records issue key of project on repo, with a pull request on prRepo and branch,
-// a production check on repo and a repository note resolved to repo: one row in each table whose
-// columns hold a repository name.
+// a production check on repo, a repository note resolved to repo and a saved workspace bundle of
+// repo's work: one row in each table whose columns hold a repository name.
 func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, repo, prRepo, branch string) {
 	t.Helper()
 	records := NewStore()
@@ -24,6 +24,12 @@ func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, r
 	must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: key, Project: project, Tree: key, Repo: repo, Number: 7,
 		OpenedAt: opened, BoundAt: opened.Add(time.Hour)}))
 	must(t, records.PutRepoNote(ctx, tx, RepoNote{Issue: key, ResolvedRepo: repo, Note: "kept", PostedAt: opened}))
+	// The bundle is written as store.PutWorkspaceBundle writes its row, by its own statement: the
+	// table is the store's, which this package does not import.
+	if _, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, repo)
+		values ($1, 1, 'pod-'||$1, '\x00', 1, $2, 'head', $3)`, key, opened, repo); err != nil {
+		t.Fatalf("save a bundle of %s on %s: %v", key, repo, err)
+	}
 }
 
 // storedNames is each column of key's rows that holds a repository name, by table and column.
@@ -36,6 +42,7 @@ func storedNames(t *testing.T, ctx context.Context, tx pgx.Tx, key string) map[s
 		{"pull_requests.repo", "select repo from pull_requests where issue = $1"},
 		{"production_checks.repo", "select repo from production_checks where issue = $1"},
 		{"repo_notes.resolved_repo", "select resolved_repo from repo_notes where issue = $1"},
+		{"workspace_bundles.repo", "select repo from workspace_bundles where issue = $1"},
 	} {
 		var name string
 		switch err := tx.QueryRow(ctx, read.sql, key).Scan(&name); err {
@@ -70,8 +77,9 @@ func renameLeft(t *testing.T, ctx context.Context, tx pgx.Tx, project, from stri
 
 // The writer writes a pair's new name, as its caller hands it, on every stored column of an
 // issue that holds the old name in any spelling — the record's repository and GitHub's spelling,
-// the pull request, the production check and the repository note — and on nothing else: an issue
-// on another repository and an issue of another project on the old name are left as they are.
+// the pull request, the production check, the repository note and the saved bundle — and on
+// nothing else: an issue on another repository and an issue of another project on the old name
+// are left as they are.
 // The candidates are the issues of the project whose rows name the old name, the note of an issue
 // the project never recorded among them, and a write of rows already on the new name writes
 // nothing, so the pass that runs it twice writes once. Control: compared exactly in place of
@@ -92,8 +100,8 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		candidates, err := RenameCandidates(ctx, tx, "LEGION", from, nil)
 		must(t, err)
 		want := []RenameCandidate{
-			{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 1},
-				Spellings: []string{"SJAWHAR/Legion", "Sjawhar/legion"}},
+			{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 1,
+				RenameTableWorkspaceBundles: 1}, Spellings: []string{"SJAWHAR/Legion", "Sjawhar/legion"}},
 			{Issue: "LEGION-9", Rows: map[RenameTable]int{RenameTableRepoNotes: 1}, Spellings: []string{from}},
 		}
 		if !reflect.DeepEqual(candidates, want) {
@@ -103,7 +111,8 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("candidates of LEGION-9 and LEGION-2 = %+v, %v; want LEGION-9 alone", only, err)
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
-		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
+		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 2,
+			RenameTableWorkspaceBundles: 1}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -119,7 +128,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"pull_requests.repo": to, "production_checks.repo": to, "repo_notes.resolved_repo": to}; !reflect.DeepEqual(got, want) {
+			"pull_requests.repo": to, "production_checks.repo": to, "repo_notes.resolved_repo": to, "workspace_bundles.repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %s on every one", got, to)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-9"); got["repo_notes.resolved_repo"] != to {
@@ -136,12 +145,14 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
-		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0}; !reflect.DeepEqual(left, want) {
+		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0,
+			RenameTableWorkspaceBundles: 0}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
 		again, err := RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
 		must(t, err)
-		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0}; !reflect.DeepEqual(again.Rows, want) || again.Deleted != nil {
+		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0,
+			RenameTableWorkspaceBundles: 0}; !reflect.DeepEqual(again.Rows, want) || again.Deleted != nil {
 			t.Fatalf("a second write of LEGION-1 = %+v, want nothing written", again)
 		}
 	})
@@ -170,12 +181,13 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
-	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 {
-		t.Fatalf("rows written = %v, want the record, the check and the note, and no pull request", rows)
+	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 ||
+		rows[RenameTableWorkspaceBundles] != 1 {
+		t.Fatalf("rows written = %v, want the record, the check, the note and the bundle, and no pull request", rows)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"production_checks.repo": to, "repo_notes.resolved_repo": to}; !reflect.DeepEqual(got, want) {
+			"production_checks.repo": to, "repo_notes.resolved_repo": to, "workspace_bundles.repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %v and no pull request", got, want)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-2")["pull_requests.repo"]; got != to {

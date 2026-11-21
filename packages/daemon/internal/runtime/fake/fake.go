@@ -105,6 +105,7 @@ type Runtime struct {
 	probes       []ProbeResult
 	failures     map[string]error
 	drift        map[claim.Token][]string
+	repository   map[claim.Token]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
 	keptVolumes  map[string]time.Time
@@ -122,6 +123,7 @@ func NewRuntime() *Runtime {
 		Now:         time.Now,
 		failures:    map[string]error{},
 		drift:       map[claim.Token][]string{},
+		repository:  map[claim.Token]string{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
 		keptVolumes: map[string]time.Time{},
@@ -219,6 +221,22 @@ func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
 	r.gone[token] = true
 }
 
+// ScriptPodRepository makes every later PodRepository of token's claim answer repo, as the
+// Sandbox runtime answers with the repository the pod's own workspace fetch names. A claim no
+// call named answers "", which is a runtime whose processes share no such place and a pod that
+// clones no repository; "" clears this claim's answer. A replacement does not move it: the pod
+// built in the replaced one's stead is built from the configuration the daemon holds now, so a
+// test that relaunches a role into that pod scripts the repository that pod was built from.
+func (r *Runtime) ScriptPodRepository(token claim.Token, repo string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if repo == "" {
+		delete(r.repository, token)
+		return
+	}
+	r.repository[token] = repo
+}
+
 // ScriptIssuePod makes every later IssuePod of issue answer pod, as the Sandbox runtime answers
 // the uid of the pod the issue's Sandbox holds now: "" is a Sandbox that holds no pod, or no
 // Sandbox at all. An issue no call named is one the fake cannot read, which is the uninteresting
@@ -270,6 +288,9 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 
 // FailPodDrift makes every later PodDrift return err; nil clears it.
 func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
+
+// FailPodRepository makes every later PodRepository return err; nil clears it.
+func (r *Runtime) FailPodRepository(err error) { r.fail("PodRepository", err) }
 
 // FailReplacePod makes every later ReplacePod return err; nil clears it.
 func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
@@ -563,6 +584,23 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, runtime.ErrPodGone
 	}
 	return append([]string(nil), r.drift[k.Claim]...), nil
+}
+
+// PodRepository records its call and answers what ScriptPodRepository set for the claim, "" for
+// a claim no call named and for one with no process, as a runtime answers a claim that runs in
+// no place of its own. A claim ScriptPodGone named answers "" too: nothing is read of a pod that
+// is not there, and PodDrift is where that pod is reported gone.
+func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodRepository", Pod: copyKnown(k)})
+	if err := r.failures["PodRepository"]; err != nil {
+		return "", err
+	}
+	if k.Locator == nil || r.gone[k.Claim] {
+		return "", nil
+	}
+	return r.repository[k.Claim], nil
 }
 
 // IssuePod records its call and answers what ScriptIssuePod set for the issue, and read false for

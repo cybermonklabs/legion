@@ -701,12 +701,12 @@ type Prompt struct {
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 //
-// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
-// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
-// of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
-// is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
-// there). Nothing in the daemon reads it; it is modelled so the frame survives this package
-// whole, as PromptError.Code is.
+// Code is Oh My Pi's class of a refusal, where it gives one, and "" where it gives none: a refused
+// request's error response carries it at the top level, right after Error (`RpcResponse` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// For a `prompt` or `abort_and_prompt` its one value is `session_busy`: the prompt was refused, or
+// failed, because the agent was busy (docs/rpc.md there). It is what the daemon decides on; Error
+// is words for a person (CodeSessionBusy).
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -715,6 +715,15 @@ type Response struct {
 	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
+
+// CodeSessionBusy is the code of a refusal or a failure the agent gives because it is busy: Oh My
+// Pi's word for it on every RPC command that can meet it, and the code the Claude Code bridge
+// gives its own. At the pinned tag one code covers three refusals (rpc-busy-code.ts there): a
+// prompt sent while a turn streams, a session busy with maintenance or user work, and a prompt
+// that waited 30 s while another run held the agent. The daemon reads each as the agent's busy
+// answer, and it is the only way the daemon reads a busy agent; a refusal that says so in words
+// alone is not one (internal/stream's PromptRefusalOutcome).
+const CodeSessionBusy = "session_busy"
 
 // StateData is the get_state answer's payload. IsStreaming is absent rather than false when the
 // worker does not report it, which is the difference between "idle" and "unknown"
@@ -784,12 +793,13 @@ type PromptResult struct {
 // `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
 // prompt was refused, or it waited at least 30 s and another run still held the agent.
 //
-// Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
-// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
-// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
-// survives this package whole, the way every other frame does. A decode that kept only what
-// today's reader wants would quietly drop the class, the provider, the model and the status
-// behind a failure from anything that re-encodes it.
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
+// read, and internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own
+// PromptResult event. Code, not Message, is what a failure is told apart by (PromptResult.Code):
+// CodeSessionBusy is the agent's busy answer. Every member is modelled so the frame survives this
+// package whole, the way every other frame does. A decode that kept only what today's reader
+// wants would quietly drop the class, the provider, the model and the status behind a failure
+// from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
@@ -806,6 +816,15 @@ func (f PromptResult) Reason() string {
 		return ""
 	}
 	return f.Error.Message
+}
+
+// Code is Oh My Pi's machine-readable reason for work that ended in an error, and the empty
+// string for work that did not or for an error that carries none.
+func (f PromptResult) Code() string {
+	if f.Error == nil {
+		return ""
+	}
+	return f.Error.Code
 }
 
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
@@ -874,10 +893,15 @@ type BundleWorkspace struct {
 
 // BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
 // needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
+// local bookmark that pointed into the saved set. The result crosses the shim's lane as an
+// rpc_chunk sequence when it is larger than one line.
+//
+// SizeBytes is the bundle's length. A bundle larger than the request's MaxBytes is refused rather
+// than sent, with SizeBytes naming what it would have been, and no other refusal sets it: a
+// refusal whose SizeBytes is over the MaxBytes asked is the size refusal, which the daemon reads
+// from this number, never from Error's words (stream.Conn.BundleWorkspace), and holds the pod on
+// until the rule workflow.IdleHoldBundleTooLarge states ends the hold. Every shim that answers
+// this frame has set it so, since the frame's first release. Error is a sentence for a person.
 type BundleWorkspaceResult struct {
 	ID        string            `json:"id"`
 	OK        bool              `json:"ok"`

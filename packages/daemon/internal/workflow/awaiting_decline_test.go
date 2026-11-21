@@ -77,20 +77,35 @@ func architectSession(t *testing.T, pool *pgxpool.Pool, key string) string {
 }
 
 // resumeTaskOf is the one task the resume queued for key's architect, failing the test unless
-// exactly one start was written to the live claim's session, generation and tree.
+// exactly one start was written to the live claim's session, generation and tree. The start
+// carries the wait it answers and no text (record.SuperviseRequest.Awaiting), so the task is
+// written here as the daemon's rootTask writes it at the send: from the record as it stands now.
 func resumeTaskOf(t *testing.T, pool *pgxpool.Pool, key string) string {
 	t.Helper()
 	starts := superviseRowsOf(t, pool, key, "start")
 	if len(starts) != 1 {
 		t.Fatalf("%s queued %d starts, want the one resume of its architect", key, len(starts))
 	}
-	if starts[0].Role != claim.RoleArchitect || starts[0].Tree != key || starts[0].Generation != 1 {
-		t.Fatalf("the resume = %+v, want a start of %s's architect at generation 1", starts[0], key)
+	if starts[0].Role != claim.RoleArchitect || starts[0].Tree != key || starts[0].Generation != 1 || starts[0].Awaiting == nil || starts[0].Task != "" {
+		t.Fatalf("the resume = %+v, want a start of %s's architect at generation 1 carrying the wait it answers and no text", starts[0], key)
 	}
 	if got := architectSession(t, pool, key); got != askArchitect.ID {
 		t.Fatalf("the architect's claim holds session %q, want the resume to reach the session it was already running in, %q", got, askArchitect.ID)
 	}
-	return starts[0].Task
+	return renderedResume(t, pool, key, *starts[0].Awaiting)
+}
+
+// renderedResume is the resume task of key's architect for waiting as the record stands now,
+// under the design-gate policy the tests' engine runs (ResumeTask).
+func renderedResume(t *testing.T, pool *pgxpool.Pool, key string, waiting record.Awaiting) string {
+	t.Helper()
+	var task string
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		task, err = ResumeTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
+		return err
+	})
+	return task
 }
 
 // namesTheDecline fails unless task says a person declined ask and carries Dispatch's four

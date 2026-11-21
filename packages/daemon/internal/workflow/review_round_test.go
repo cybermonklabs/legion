@@ -100,7 +100,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "a transition's start of the first round", rows: []string{withNone}, raises: true,
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundOne(t)
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing." + handoffPartOf(t, "LEGION-208", "test", 1) +
 					" Tester's verdict: pass. Pull request: #42."
 			},
 		},
@@ -113,7 +113,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: only the reviewer is told them", role, task)
 					}
 				}
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing." + handoffPartOf(t, "LEGION-208", "test", 2) +
 					" Tester's verdict: pass. Pull request: #42."
 			},
 		},
@@ -538,7 +538,7 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 // where its row holds no commit or no entry's task and `none` for both outside reviewing, and
 // gives them to no other role. The controls are its three other cases: a woken role that is not
 // the reviewer, given the wake's task alone; a woken reviewer whose row the generation's clear
-// left with no task and no commit (record.Store.ClearGeneration); and a woken reviewer whose issue
+// left with no task and no commit (Engine.ClearGeneration); and a woken reviewer whose issue
 // has left reviewing, whose row still holds both, whose wake is delivered once the issue is back
 // in reviewing. The last two end with ` Last reviewed commit: none. Review entry: none.`, and the
 // start row of each of the three carries the fact the claim's send reads, so a wake queued outside
@@ -591,8 +591,9 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "a woken reviewer whose row the clear left with no task", role: claim.RoleReviewer, after: reviewedPartOf("none") + noEntryPart,
 			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
 				pool, engine, _ := reviewRoundTwo(t)
+				issue := issueRecord(t, pool, "LEGION-208")
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return record.NewStore().ClearGeneration(ctx, tx, "LEGION-208", engine.now())
+					return engine.ClearGeneration(ctx, tx, *issue, engine.now())
 				})
 				if row := reviewerRow(t, pool); row.EntryTask != "" || row.ReviewedHead != "" || row.Entry < 2 {
 					t.Fatalf("after the clear the reviewer's row holds entry %d, the task %q and the commit %q, want an entry and neither", row.Entry, row.EntryTask, row.ReviewedHead)

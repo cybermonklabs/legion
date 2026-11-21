@@ -194,6 +194,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
+		// The correction of the issue's repository and a change still to be made: what tells a
+		// reader of a record that names one repository that the issue worked another before, or
+		// that Dispatch has named a third the daemon has not applied, and why. Each is one value
+		// of the record, served as the wire's two flat keys of it.
+		if corrected := issue.RepoCorrection; corrected != nil {
+			at := corrected.At
+			view.RepoBefore, view.RepoCorrectedAt = corrected.Before, &at
+		}
+		if change := issue.RepoChange; change != nil {
+			view.RepoChangePending, view.RepoChangeReason = change.Pending, change.Reason
+		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any

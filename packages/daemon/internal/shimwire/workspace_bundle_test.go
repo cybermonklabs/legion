@@ -155,6 +155,48 @@ func TestABundleResultRefusalNamesTheSizeAndCarriesNoBundle(t *testing.T) {
 	}
 }
 
+// The daemon holds a pod on a size refusal it reads from the result's sizeBytes key, never from
+// its words (stream.Conn.BundleWorkspace), so the key is the contract between the two binaries,
+// which ship apart: the shim in the worker image, the daemon on its own. These are the lines a
+// shim writes, held as bytes so a renamed key fails here. A refusal with no sizeBytes key, the
+// words alone, decodes to no size, which the daemon reads as a refusal for another reason and
+// tries again; and a key this decoder does not know is ignored rather than refused, so a field a
+// later shim adds leaves an older daemon reading the frame as it always has.
+func TestABundleRefusalLineCarriesItsSizeUnderTheSizeBytesKey(t *testing.T) {
+	const words = "worker-shim: the workspace's unpushed work is 41943047 bytes, over the 41943040 the release carries"
+	for _, tc := range []struct {
+		name string
+		line string
+		size int
+	}{
+		{name: "the refusal over the bound",
+			line: `{"type":"bundle-workspace-result","id":"bundle-4","ok":false,"error":"` + words + `","sizeBytes":41943047,"at":"2026-11-13T13:42:50Z"}`,
+			size: 41943047},
+		{name: "the words with no size",
+			line: `{"type":"bundle-workspace-result","id":"bundle-4","ok":false,"error":"` + words + `","at":"2026-11-13T13:42:50Z"}`},
+		{name: "a key this decoder does not know",
+			line: `{"type":"bundle-workspace-result","id":"bundle-4","ok":false,"error":"` + words + `","sizeBytes":41943047,"refusal":{"code":"later"},"at":"2026-11-13T13:42:50Z"}`,
+			size: 41943047},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, err := Decode([]byte(tc.line + "\n"))
+			if err != nil {
+				t.Fatalf("decode %s: %v", tc.line, err)
+			}
+			got, ok := frame.(BundleWorkspaceResult)
+			if !ok {
+				t.Fatalf("the line decodes to a %s", frame.FrameType())
+			}
+			if err := got.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if got.OK || got.ID != "bundle-4" || got.Error != words || got.SizeBytes != tc.size {
+				t.Fatalf("the line decodes as ok=%v id=%q size=%d error=%q, want a refusal of size %d", got.OK, got.ID, got.SizeBytes, got.Error, tc.size)
+			}
+		})
+	}
+}
+
 // The launcher reads one frame per line and reassembles nothing of its own, so a bundle on its way
 // to a pod is sliced here: every slice inside the frame limit, every slice declaring the release
 // that saved the body and the digest of the body they rebuild, the sequence named by its caller's

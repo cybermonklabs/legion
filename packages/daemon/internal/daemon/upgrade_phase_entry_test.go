@@ -43,6 +43,14 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// deliveryResumeMigration is 20261112215432_delivery_resume, a migration above that release's
+// newest which the fixture applies all the same: this release's record.Store.PutIssue, which the
+// fixture records the tree with, writes the two issues columns it adds
+// (awaiting_answered_version and awaiting_answered_version_at), and nothing it adds
+// (pending_task_deliveries.resume, parked_decisions.seq and those two issues columns) is one the
+// phase entry reads or writes. So applying it first changes nothing the upgrade decides.
+const deliveryResumeMigration = 20261112215432
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -62,9 +70,9 @@ const (
 // though that release records no such version, because its version stands below that release's
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
-// or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// or writes. Every version above that release's newest (olderReleasesNewestMigration) but
+// deliveryResumeMigration is withheld with the phase entry, so Store.Migrate, which decides each
+// migration on its own row, applies the phase entry and those.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -85,7 +93,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || withheldByFixture(migration.Version) {
 			continue
 		}
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
@@ -107,9 +115,17 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
-func migrationsAbove(t *testing.T, version int) int {
+// withheldByFixture says whether preEntryStore withholds the migration of version beside the
+// phase entry: every one above the older release's newest but deliveryResumeMigration, which the
+// fixture applies. The fixture and the count of what the upgrade applies read this one rule, so
+// the two cannot disagree on which migrations the upgrade under test runs.
+func withheldByFixture(version int) bool {
+	return version > olderReleasesNewestMigration && version != deliveryResumeMigration
+}
+
+// migrationsAbove is how many embedded migrations preEntryStore withheld beside the phase entry
+// (withheldByFixture), and so what the upgrade under test applies beside it.
+func migrationsAbove(t *testing.T) int {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -117,7 +133,7 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if withheldByFixture(migration.Version) {
 			withheld++
 		}
 	}
@@ -420,7 +436,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// applies is the phase entry and whatever has landed above that release's newest since. The
 	// number is counted from the embedded set rather than written here, so a migration added later
 	// is not read as the fixture having withheld one of its own.
-	if want := 1 + migrationsAbove(t, olderReleasesNewestMigration); applied != want {
+	if want := 1 + migrationsAbove(t); applied != want {
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
 	}

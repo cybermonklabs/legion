@@ -64,6 +64,11 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// unrenamed is the rule a take of these rigs decides a left repository by (repositories.left)
+// where the rig configures no rename: names compared without regard to case, and an empty name
+// read as unknown.
+var unrenamed = newRepositories("LEGION", ghrepo.Renames{}).left
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -559,6 +564,7 @@ func (r *idleWakeRig) restart() {
 // stand-in, and an agent command it never has to run.
 func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
 	_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+	_ func(ctx context.Context, issue, body string) error,
 ) (legionruntime.Runtime, error) {
 	r.built.mu.Lock()
 	r.built.address = address
@@ -577,7 +583,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// releases save none one indexed read per role start, which answers no row: the save of a
 	// workspace with nothing unpushed stores nothing and deletes what the issue had
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
+	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project, unrenamed), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))

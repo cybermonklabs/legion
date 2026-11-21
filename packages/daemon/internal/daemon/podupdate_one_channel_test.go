@@ -22,29 +22,39 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
-// the rows the outbox holds now and every row the rig's lane has finished and deleted since
-// (runLane), which this read kept the first time it saw them.
+// asks is every update-ask row the sweep enqueued on the rig's issue, decoded, oldest first: the
+// rows the outbox holds now and every row the rig's lane has finished and deleted since
+// (runLane), which this read kept the first time it saw them (asksOn).
 func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
+	return r.asksOn(podUpdateIssue)
+}
+
+// asksOn is asks for issue, the rig's own or one secondIssue seeded. Each read records every row
+// the outbox holds with its issue, so a row the lane deletes later is still answered; a row of any
+// other issue fails, since nothing in the rig seeds one.
+func (r *podUpdateRig) asksOn(issue string) []record.UpdateAsk {
+	r.t.Helper()
 	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
-		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("update ask %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+		if row.Issue != podUpdateIssue && !r.second[row.Issue] {
+			r.t.Fatalf("update ask %d is on %s, want %s or an issue secondIssue seeded", row.ID, row.Issue, podUpdateIssue)
 		}
 		var ask record.UpdateAsk
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {
 			r.t.Fatalf("decode update ask %d: %v", row.ID, err)
 		}
-		r.asked[row.ID] = ask
+		r.asked[row.ID] = askedRow{issue: row.Issue, ask: ask}
 	}
 	ids := make([]int64, 0, len(r.asked))
-	for id := range r.asked {
-		ids = append(ids, id)
+	for id, row := range r.asked {
+		if row.issue == issue {
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids)
 	asks := make([]record.UpdateAsk, len(ids))
 	for i, id := range ids {
-		asks[i] = r.asked[id]
+		asks[i] = r.asked[id].ask
 	}
 	return asks
 }
@@ -203,13 +213,13 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 	}
 }
 
-// A daemon with no outbox (no workflow, so supervision's enqueue is nil) publishes no ask and
+// A daemon with no outbox (no workflow, so supervision's plan.enqueue is nil) publishes no ask and
 // marks no claim, and its round still runs: the claims record it, an answer is taken, and the pod
 // is replaced once every role has answered and no turn or claim's activity report holds the round
 // (roundEnd.holding).
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	rig.s.enqueue = nil
+	rig.s.plan.enqueue = nil
 	rig.drifts(podUpdateDrift)
 	before := rig.prompts()
 
@@ -240,7 +250,7 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 // An operator's spawn of another project's issue runs in a pod of this daemon's, which the
 // update-round sweep reads as it reads every pod, and the round over that pod asks its role as
 // every round does. But the ask is an outbox row keyed by that issue, which only that project's
-// daemon runs (claim.KeyOfProject), so the sweep's enqueue writes none (supervision.enqueue): the
+// daemon runs (claim.KeyOfProject), so the sweep's enqueue writes none (plan.enqueue): the
 // round asks nothing, logs no Warn and marks the claim asked at no sweep, while the round itself
 // is recorded and runs on. The daemon's records are wrapped as the daemon wraps them
 // (projectRecords), whose refusal of such a key is a writer's defect. Before the fix the ask
@@ -253,7 +263,7 @@ func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T
 		otherPod = "5b1e7d20-3c64-4a8f-b2d9-8e0f6a1c4d37"
 	)
 	rig := newPodUpdateRig(t)
-	rig.s.enqueue = (&workflowRuntime{pool: rig.pool, records: projectRecords{Store: rig.records, project: "LEGION", log: rig.log},
+	rig.s.plan.enqueue = (&workflowRuntime{pool: rig.pool, records: projectRecords{Store: rig.records, project: "LEGION", log: rig.log},
 		dispatchProject: "LEGION", log: rig.log}).enqueueOutbox
 	token := mustClaimToken(t, other, claim.RoleArchitect)
 	if err := rig.st.PutClaim(rig.ctx, supervise.Claim{Token: token, Project: podUpdateProject, Tree: other, Issue: other,

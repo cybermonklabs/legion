@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 202,
+    "daemon": 206,
     "caller": 199
   },
   "admission": {
@@ -369,6 +369,12 @@
           "pass": 1,
           "rounds": 1
         }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+        "state": "open"
       },
       "gatedSteps": [
         {

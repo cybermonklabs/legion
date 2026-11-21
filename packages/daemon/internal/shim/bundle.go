@@ -57,9 +57,11 @@ type workspaceSave struct {
 
 // bundleWorkspace answers `bundle-workspace`: the release's save of the unpushed work of the
 // workspace this shim runs in. A request the shim cannot act on is answered with the reason when
-// it names an id to answer, and a bundle over the request's bound is refused with its size, so
-// the daemon can stop the release and record why. The result crosses the lane as an rpc_chunk
-// sequence when it is larger than one line.
+// it names an id to answer, and a bundle over the request's bound is refused with its size in
+// SizeBytes, which only that refusal sets: the daemon reads the refusal from that number, not from
+// the error's words, and holds the pod until the rule workflow.IdleHoldBundleTooLarge states ends
+// the hold (shimwire.BundleWorkspaceResult).
+// The result crosses the lane as an rpc_chunk sequence when it is larger than one line.
 func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 	result := shimwire.BundleWorkspaceResult{ID: request.ID, OK: true, At: time.Now().UTC()}
 	if err := request.Validate(); err != nil {

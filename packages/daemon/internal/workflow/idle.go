@@ -26,6 +26,14 @@ const (
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
 	IdleHoldImage
+	// IdleHoldRepository: the pod was built from a repository the issue's record no longer
+	// holds, because Dispatch moved the issue and the daemon's record followed it
+	// (record.Store.CorrectIssueRepository). Such a pod is a replacement's to take and never a
+	// release's: every role in it works a clone of the repository the issue has left, and the
+	// bundle a release would save out of it is work no pod of the issue can ever restore
+	// (store.TakeWorkspaceBundleForRestore refuses it). It is the image hold's neighbour for
+	// that reason — a pod already behind is a relaunch's to replace, not a release's to save.
+	IdleHoldRepository
 	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
 	// daemon's current one.
 	IdleHoldPluginContract
@@ -60,12 +68,38 @@ const (
 	IdleHoldReleasing
 	// IdleHoldBundleUnrestored: a release of this pod saved a bundle of unpushed work whose
 	// restore no pod has confirmed. Releasing the pod again would store a bundle of a workspace
-	// that never had that work over the one that does.
+	// that never had that work over the one that does. A bundle refused because it is of a
+	// repository the issue has left is no such bundle: no pod can ever restore it, so it holds
+	// nothing (store's workspaceBundleUnrestored).
 	IdleHoldBundleUnrestored
-	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
-	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it.
+	// IdleHoldBundleTooLarge: the save of the issue's last release found the workspace's unpushed
+	// work over the bound a release carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept
+	// and the work with it until something changes what the next save finds. This is the one
+	// statement of when that hold ends in the code's comments: the layers that carry the refusal,
+	// from the shim to the store, point here rather than restate it. Three texts a person reads
+	// restate it in their own words and change with it: the message the save sends the worker
+	// (the daemon's bundleTooLargeMessage), docs/kubernetes.md, and the daemon's changelog
+	// fragment of the refused bundle (pr3712-a-refused-bundle-waits-for-a-push-or-a-turn.yaml).
+	//
+	// The store keeps the refusal (pods.BundleRefusal): the moment the refused release was marked,
+	// and the head of the issue's pull request as the daemon recorded it then, "" with no pull
+	// request. The hold ends at the first of two events. One is a write of a claim of the pod
+	// after that moment, which a role's turn, any other change of a claim's state and an activity
+	// report each make (pods.IdleView.QuietSince); the moment is the mark's, so a turn that ran
+	// while the bundle was built counts. The other is a head of the issue's pull request other
+	// than the refusal's: a push moves it, and so does a pull request opened for an issue that had
+	// none, since the refusal and the view both read no pull request as "". Until one of the two
+	// the next save finds the same work, and each release marked on the clock alone cost a bundle
+	// of the workspace over the worker stream and a hold record, once a tick. After either, the
+	// release is marked as any other is: once the pod has been quiet for the idle period and
+	// nothing else holds it.
+	//
+	// The save that finds the work over the bound tells the issue's worker, once for each head it
+	// is refused at, since only a push of that worker's own brings the work under the bound.
 	IdleHoldBundleTooLarge
 	// IdleHoldBundleSave: the bundle could not be built or could not be saved, so the pod is kept.
+	// The next idle tick marks the release again: such a cause is no worker's to cure, so the
+	// rule waits for no push or turn, which could keep an idle pod for as long as nobody acts.
 	IdleHoldBundleSave
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
 	// started or resumed, or holds a process, at any of the release's role stops or at its
@@ -147,6 +181,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldTreeNotLive:      "tree_not_live",
 	IdleHoldAwaitingPerson:   "awaiting_person",
 	IdleHoldImage:            "image",
+	IdleHoldRepository:       "repository",
 	IdleHoldPluginContract:   "plugin_contract",
 	IdleHoldUpdateRound:      "update_round",
 	IdleHoldInTurn:           "in_turn",
@@ -222,7 +257,12 @@ type IdleDecision struct {
 //   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
-//     that work and store it over the one that does;
+//     that work and store it over the one that does. A bundle the store refused because it is
+//     of a repository the issue has left waits for nothing and holds nothing
+//     (runtime.WorkspaceBundleRefusedRepository): the refusal moves it to a table of its own,
+//     where no release of the issue overwrites or deletes it and no pod is ever sent it, so a
+//     hold for it would never end. The daemon writes on the issue where the work is (store's
+//     workspaceBundleUnrestored);
 //
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
@@ -231,6 +271,15 @@ type IdleDecision struct {
 //   - the pod runs the image the configuration names, and each live claim speaks this daemon's
 //     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
 //     already behind is a relaunch's to replace, not a release's to save;
+//
+//   - the pod was built from the repository the issue's record holds now (repositoryDrifted,
+//     which the daemon reads of the pod itself against that record). A correction of the
+//     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
+//     the update round that replaces it opens on a later sweep: a release taken in between
+//     would save that pod's unpushed work, which the store then refuses to every pod of the
+//     issue, since no clone of the new repository can take commits of the old one
+//     (store.TakeWorkspaceBundleForRestore). The pod is replaced rather than released, as a pod
+//     on an image this daemon does not serve is;
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
@@ -256,13 +305,21 @@ type IdleDecision struct {
 //     phase worker's phase is open when the issue's current phase is that worker's role and its
 //     claim serves the current generation;
 //
-//   - the pod has done nothing the daemon recorded for the whole idle period.
+//   - the pod has done nothing the daemon recorded for the whole idle period;
+//
+//   - the pod is not under IdleHoldBundleTooLarge, the hold a save of the issue's last release
+//     sets when it finds the work over the bound a release carries (view.BundleRefusal); that
+//     hold's doc states what ends it. The conjunct is read after the quiet one because it
+//     compares the pod's quiet moment with the refusal's. A save that failed for a reason of its
+//     own (IdleHoldBundleSave) is no such hold: no push or turn cures a database error or a
+//     runtime that answers nothing, so its release is marked again on the next tick, as it
+//     always was.
 //
 // A pod round is a live claim's, as the claim records it, and a claim that left the round keeps
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
 // when the daemon clears it, so a pod is released once the round's own end has run and not
 // before.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract int) IdleDecision {
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage, repositoryDrifted bool, contract int) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -296,6 +353,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if !onConfiguredImage {
 		return IdleDecision{Hold: IdleHoldImage}
+	}
+	if repositoryDrifted {
+		return IdleDecision{Hold: IdleHoldRepository}
 	}
 	for _, c := range view.Claims {
 		if c.Live() && c.PluginContract != contract {
@@ -337,6 +397,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	since, ok := view.QuietSince()
 	if !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
+	}
+	if r := view.BundleRefusal; r != nil && r.Head == view.Head && !since.After(r.At) {
+		return IdleDecision{Hold: IdleHoldBundleTooLarge}
 	}
 	return IdleDecision{Release: true, Roles: roles}
 }
@@ -412,10 +475,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     dispatch://INFRA-3759), so a pod this rule would otherwise release is kept, and the hold
 //     says what kept it (IdleHoldPaused).
 //
-// The quiet conjunct comes last but one, where the idle rule's comes last, so that a pass records
-// a hold only for a pod that has already stood past the period: a pod inside it is simply not this
-// rule's yet, while every other hold names something true of a pod that has stood past it. The
-// pause's comes last, since a pause keeps only a pod this rule would release.
+// The quiet conjunct comes last but one, as it does in the idle rule, where only that rule's
+// refusal conjunct, which reads the quiet moment itself, comes after it. So a pass records a hold
+// only for a pod that has already stood past the period: a pod inside it is simply not this rule's
+// yet, while every other hold names something true of a pod that has stood past it. The pause's
+// comes last, since a pause keeps only a pod this rule would release.
 //
 // The decision names no roles. There is no live claim to suspend and no bundle to ask the pod
 // for, so the release this answers changes no claim at all: it takes the Sandbox, the pod and

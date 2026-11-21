@@ -157,5 +157,13 @@
     ],
     "since": 178,
     "noBody": false
+  },
+  {
+    "id": "owed",
+    "routes": [
+      "POST /legion/v1/claims/owed"
+    ],
+    "since": 206,
+    "noBody": false
   }
 ]

@@ -254,7 +254,8 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	if left := renameLines(t, logged.String(), renameLeftLine); len(left) != 0 {
 		t.Errorf("lines of a pair left = %+v, want none: GitHub shows the transfer", left)
 	}
-	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "production_checks": {written: 1}, "repo_notes": {written: 2}}
+	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "production_checks": {written: 1}, "repo_notes": {written: 2},
+		"workspace_bundles": {}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -263,7 +264,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	rebindHeldPorts(t, &cfg)
 	var again syncBuffer
 	renameBoot(t, cfg, &again)
-	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}}
+	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}, "workspace_bundles": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the second boot = %+v, want nothing written and nothing left", got)
 	}
@@ -312,7 +313,7 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 		t.Errorf("failure lines = %+v, want one WARN line naming %s and the database's refusal", failed, refused)
 	}
 	want := map[string]renameTableTally{"issues": {written: 1, failed: 1, left: 1}, "pull_requests": {failed: 1, left: 1},
-		"production_checks": {}, "repo_notes": {}}
+		"production_checks": {}, "repo_notes": {}, "workspace_bundles": {}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -327,7 +328,8 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 	if names := storedRepositoryNames(t, pool, refused); !namedAll(names, renameTo) {
 		t.Errorf("%s's stored names after the next boot = %v, want each on %s", refused, names, renameTo)
 	}
-	want = map[string]renameTableTally{"issues": {written: 1}, "pull_requests": {written: 1}, "production_checks": {}, "repo_notes": {}}
+	want = map[string]renameTableTally{"issues": {written: 1}, "pull_requests": {written: 1}, "production_checks": {}, "repo_notes": {},
+		"workspace_bundles": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the next boot = %+v, want %+v", got, want)
 	}
@@ -394,10 +396,10 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 // names the pair's `from`, and the end of that release's pod (outbox.releaseIssue, after its
 // teardown) writes the pair's `to` over it and keeps the bundle. The read of the live records the
 // pass wakes (wakeLive, refreshCacheRepositories) then caches the `to`; the issue's next launch's
-// spec (specs.repository, workflowRuntime.launchRepository) names the `to` at the record's default
-// branch; and the next pod's restore takes the bundle that release saved, which the store keeps by
-// issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the pass at
-// that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
+// spec (specs.repository, workflowRuntime.issueLaunchRepository) names the `to` at the record's
+// default branch; and the next pod's restore takes the bundle that release saved, which the store
+// keeps by issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the
+// pass at that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
 func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -455,7 +457,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	launches := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, repository: rig.w.launchRepository}
+	launches := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, repository: rig.w.issueLaunchRepository}
 	spec, err := launches.SpawnSpec(ctx, rig.machine.Claim())
 	if err != nil {
 		t.Fatalf("build the next launch of %s: %v", rig.token, err)
@@ -464,7 +466,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
 			spec.Repository, spec.DefaultBranch, renameTo)
 	}
-	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute))
+	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute), rig.w.repositories.left)
 	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
 		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
 			take, saved.Head, saved.PodUID, err, releasedPodUID)
@@ -1057,7 +1059,7 @@ func TestTheRenamePassSendsGitHubNoRequestForAPairNoRowNames(t *testing.T) {
 	if left := renameLines(t, boot.String(), renameLeftLine); len(left) != 0 {
 		t.Errorf("the boot's lines of a pair left = %+v, want none: no row names %s", left, renameFrom)
 	}
-	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}}
+	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}, "workspace_bundles": {}}
 	if got := renameTables(t, boot.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("the boot's table lines = %+v, want each table's, nothing written and nothing left", got)
 	}

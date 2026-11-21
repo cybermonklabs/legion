@@ -43,8 +43,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
-      // `read_record` and the reminder's record check read one issue's record
-      // (dispatch://INFRA-2694).
+      // `read_record` reads one issue's record (dispatch://INFRA-2694).
       if (path === "/legion/v1/issues/LEGION-208/record") {
         const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
         return Response.json(state.issues["LEGION-208"])

@@ -460,10 +460,23 @@ carries from an earlier one does not count), or, when the controller parked it f
 own, once the controller judges that a person's decision gives its work a next step or its walk
 finds the hold's cause gone or its event happened. The controller marks such a park with a comment
 on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
-the decision. Its JSON log names the issue and the root on each of these lines:
+the decision. Its JSON log names the issue and the root on each of these lines but one, which the
+list says:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
-  tree goes to the controller`: the controller received the decision.
+  tree goes to the controller`: the daemon queued the decision for the controller, which receives
+  it once a session holds the controller's claim. A changes request's publish first asks again
+  whether the person's approval followed it; when it did, the row ends with `outbox parked changes
+  request finished without publishing: the person's approval followed it`, which names the
+  approved version, and the controller is not told. When that approval sets the root back to
+  `todo` before the row runs, the re-admission's clear of the tree's generation ends the row
+  instead, with `workflow: a queued changes request finished unpublished at its generation's
+  clear: the person's approval followed it`, which names the approved version too.
+- `outbox parked decision not relayed: the person's approval followed it`: the person approved
+  that version or a later one after the decision, so the controller is not told of a decision the
+  approval replaced. The line names the approved version. The same rule ends a changes request
+  queued for a tree's own architect, with `outbox changes request finished without publishing:
+  the person's approval followed it`, the one line here that names the issue and not the root.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
@@ -1620,14 +1633,88 @@ back and no state there moves it. Read on GitHub what the base branch requires a
 checks say: that pair is what decides whether the pull request can merge, and the merger waits on
 GitHub for it.
 
-## A repository change was not applied
+## A repository change is not applied yet
 
-The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
-Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
-workspace and pull request live there, so a later change of the issue's own repository, or its
-parent's or the project's default it inherited, does not move it. Create a new issue on the other
-repository for the work that belongs there. The daemon says it once for each repository the issue
-is changed to.
+The issue says `Legion did not move this issue off <owner/name>: <why>. <what to do> <when>`.
+`<why>` names the GitHub App not installed on `<other>`, as `the implement App is not installed on
+<other>` (or the review App's, or `the implement and review Apps are not installed on <other>`),
+and `<what to do>` is `Install it on <other>, or set another repository (…).`
+A repository GitHub does not have reads the same way, because GitHub answers its installation
+read as it answers an App not installed.
+A name that is no `owner/name` is said with what is wrong with the name in place of `<why>`, and,
+since no App can be installed on such a name, `<what to do>` is `Set its repository (…).`
+`<when>` is `Legion moves the issue at its next event or at Legion's next boot, once both Legion
+Apps are installed on <other>.`, and for a name that is no `owner/name` `Legion moves the issue at
+its next event or at Legion's next boot, once Dispatch resolves it to a repository both Legion Apps
+are installed on.`
+
+An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
+ancestor's, else the project's default.
+The record follows that resolution.
+A change of it moves the record onto the new repository in the next pass that reads the
+resolution:
+an event of the issue from Dispatch,
+the hand-over that completes a child handed to Legion,
+or the pass over every recorded issue that the daemon makes once a boot is over.
+The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
+and whatever runs for it.
+
+A repository a role App is not installed on, or one GitHub does not have, is the one case the
+daemon does not move the record onto.
+The record keeps the repository it has, the daemon writes the line above on the issue once, and the
+record carries the change that waits:
+
+```sh
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {repo, repoChangePending, repoChangeReason}'
+```
+
+`repoChangePending` is the repository Dispatch resolves the issue to now, and `repoChangeReason` is
+why the daemon has not applied it, the `<why>` of the line above.
+Install both Apps on it, as for any repository the daemon leaves out
+([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start)), or set
+the issue's repository to one they are installed on.
+When you install a missing App, nothing tells the daemon, and nothing it reads again on a timer
+moves the issue.
+The daemon uses no read kept from an earlier pass to write the correction: it reads both Apps, the
+repository's name and its default branch from GitHub afresh at the issue's preparation, so the
+issue moves at the issue's next event from Dispatch or at the daemon's next boot.
+The boot's own listing writes nothing for the change; the boot asks for the pass over every
+recorded issue instead, which reads GitHub once the boot is over.
+Installing the App starts no pass by itself.
+Before #4493 the daemon read Dispatch's repository mapping, and a read that served a mapped
+repository again moved the issues waiting on it; the daemon reads no mapping now, so every waiting
+change, on a mapped repository or not, waits for the issue's next event or the next boot.
+To move the issue at once, restart the daemon.
+Create no new issue for the work.
+
+Dispatch resolving the issue to no repository is said the same way, as `Legion did not move this
+issue off <owner/name>: its repository resolves to none. Set its repository (…).` followed by
+`Legion moves the issue at its next event or at Legion's next boot, once Dispatch resolves it to a
+repository both Legion Apps are installed on.`,
+and leaves nothing waiting on the record:
+there is no repository to move to until the issue, an ancestor or the project names one.
+
+Under `runtime: kubernetes`, once the daemon has moved the record it replaces the issue's pod,
+because that pod holds the clone, the gh directories and the token of the repository the issue has
+left.
+Every role in the pod is asked to push its work and to answer the update round, as for any other
+pod replacement.
+The issue's branch and its pull request are on the repository the issue left, and the
+replacement makes no rescue: work a role has not pushed by the round's bound goes with the pod.
+Work a release saved as a bundle of that repository is restored into no pod, even if Dispatch
+later moves the issue back. The daemon moves it to the `workspace_bundles_refused` table, where no
+later release of the issue writes over it or deletes it and nothing holds back the release of a
+pod for it, and writes on the issue the issue key and `release_id` of the row that keeps it. Its
+`bundle` column is a git bundle, which an operator reads out with
+`psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>" | base64 -d > <KEY>.bundle`
+and unbundles into a clone of the repository the row's `repo` names. The daemon never deletes the
+row; delete it once the work is carried out.
+A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
+and no update round is opened, and each pane works the repository the issue left until its next
+launch, which provisions it a workspace of the new repository on the daemon's host.
+The next task of each worker of the issue names the new repository, the one the issue left and the
+moment of the move, which `legion state --json` also shows on the issue as `repoBefore` and
+`repoCorrectedAt`.
 
 ## A status change did not stick
 

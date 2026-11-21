@@ -144,8 +144,8 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. The re-admission cleared the work each role's entry named
-// with the rest of the generation (record.ClearTreeGeneration), so the promotion raises the
-// entry and writes the resume task it hands the role as the work of that entry
+// with the rest of the generation (workflow.Engine.ClearTreeGeneration), so the promotion raises
+// the entry and writes the resume task it hands the role as the work of that entry
 // (workflow.StartPromotedWorker): the row names the entry the start carries, and no completion
 // in flight is refused for an entry nothing ever delivered, since every earlier entry is below
 // it. And the claim this start brings back is the suspended one the tree's close left: the

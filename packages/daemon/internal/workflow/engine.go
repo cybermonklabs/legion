@@ -99,11 +99,12 @@ type Config struct {
 	// takes it into that repository's recovery whatever it resolves to by then. It keeps no state
 	// of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
-	// HearRepository is told, inside the transaction that writes a new issue record, of the
-	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
-	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
-	// the first issue on a repository gets the same event and cache service as every later
-	// one (daemon's hearRecorded). It is told every recording, including one on a
+	// HearRepository is told, inside the transaction that writes a new issue record or corrects
+	// a record onto another repository (ApplyRepositoryChange), of the repository GitHub spells
+	// that record's: the daemon has GitHub intake hear it and the runtime keep a repository
+	// cache of it from that moment, on the transaction's commit, so the first issue on a
+	// repository gets the same event and cache service as every later one (daemon's
+	// hearRecorded). It is told every recording and every correction, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
@@ -338,13 +339,13 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if issue == nil {
 		return e.recordChildUnderLiveTree(ctx, tx, fact)
 	}
-	// The record keeps the repository it was recorded with, so a newer event resolving the issue
-	// to another is not applied, which the issue is told. This runs before any fence below: an
-	// edit of the repository alone changes no status. So does the telling of a root a person has
-	// made a child of a live tree (tellReparented), which is a parent change and often no status
-	// change at all.
+	// The record's repository is Dispatch's fact, so an event resolving the issue to another moves
+	// the record onto it, written from what the event's preparation read from GitHub for that
+	// repository (ApplyRepositoryChange). This runs before any fence below: an edit of the
+	// repository alone changes no status. So does the telling of a root a person has made a child
+	// of a live tree (tellReparented), which is a parent change and often no status change at all.
 	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
-		if err := e.NoteRepositoryKept(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
+		if err := e.ApplyRepositoryChange(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
 		if err := e.tellReparented(ctx, tx, issue, fact); err != nil {
@@ -680,11 +681,12 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	return e.drawExperiments(ctx, tx, fact.Key)
 }
 
-// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
-// that writes the record (Config.HearRepository). It makes no stream call under the lock and
-// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
-// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
-// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// HearRepository QUEUES the repository an issue has just been recorded on, or its record corrected
+// onto, inside the transaction that writes the record (Config.HearRepository). It makes no stream
+// call under the lock and cannot fail the transaction: hearRecorded publishes once the transaction
+// has returned, and only then does GitHub intake hear the repository and the runtime keep a
+// repository cache of it. Admission calls it for the roots and orphans it records, and the engine
+// for the children it records and the records it corrects; a deployment that configures none is
 // told nothing.
 func (e *Engine) HearRepository(ctx context.Context, repo string) {
 	if hear := e.cfg.HearRepository; hear != nil {
@@ -751,7 +753,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, child, e.now()); err != nil {
 		return err
 	}
 	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {

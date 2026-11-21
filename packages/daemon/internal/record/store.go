@@ -65,10 +65,13 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
-// assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
+// it was written. It reads a changes request's version (awaiting_answered_version) only beside the
+// answer it was written with: a daemon of an earlier release writes a later answer and leaves the
+// version as it was, and that answer then reads as one with no version (PutIssue). The four
+// issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
+// (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but the
+// back-fill of 20261111045636_experiment_assignments.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_version, 0) else 0 end, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -222,7 +225,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if issue.Hold != nil {
 		heldFrom, holdReason = string(issue.Hold.From), issue.Hold.Reason
 	}
-	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, sinceSeq, since any
+	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, answeredVersion, sinceSeq, since any
 	var answeredBy Answer
 	var answeredDetail string
 	if issue.Awaiting != nil {
@@ -237,18 +240,24 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		if issue.Awaiting.AnsweredAt != nil {
 			answeredAt = *issue.Awaiting.AnsweredAt
+			if issue.Awaiting.AnsweredVersion > 0 {
+				answeredVersion = issue.Awaiting.AnsweredVersion
+			}
 		}
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
-	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
-	// spelling it was recorded with: a write naming others changes no row, and is refused below.
-	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, moved_at is MarkIssueMoved's, and released_for_wait_at is
-	// ReleaseSlotForWait's and ClearReleasedForWait's, so a copy of the issue read before any of
-	// them never writes them back. That is what keeps the movement safe, since every write site
-	// that marks one holds a copy of the issue read before its own fact and records the issue
-	// through this statement in that same transaction. An insert names moved_at nowhere
+	// Eight columns are named nowhere in the update set, so a copy of the issue read before a
+	// write of any of them never writes the stored value back: repo, default_branch and
+	// github_repo; handout_seq, declared_seq and declared_at, which are StartHandout's,
+	// TakeInThrough's, Declare's and ClearDeclared's alone; moved_at, which is MarkIssueMoved's;
+	// and released_for_wait_at, which is ReleaseSlotForWait's and ClearReleasedForWait's. For the
+	// repository that is what lets a correction stand: an observation prepared before it carries
+	// the old repository and writes none of it, and a correction has a writer of its own,
+	// CorrectIssueRepository, beside which this release's rename pass writes a configured rename's
+	// new name (RenameIssueRepository). For the movement it is what keeps it safe, since every
+	// write site that marks one holds a copy of the issue read before its own fact and records the
+	// issue through this statement in that same transaction. An insert names moved_at nowhere
 	// either, so a newly recorded issue takes the column's default, the moment of its own write,
 	// and tree_stalled_told_at, which is MarkTreeStalledTold's alone, is named in neither half,
 	// so a root recorded again carries the stall it was already told about with it. The four
@@ -264,11 +273,19 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// them finds its data. awaiting_slot_notice_at is named nowhere because the column is gone
 	// with the notice it marked (20261109060737_drop_awaiting_slot_notice): a root keeps its row
 	// through its wait, so no architect is ever told a slot has freed under it.
-	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
+	// awaiting_answered_version is written with the answer's own moment beside it
+	// (awaiting_answered_version_at), because a daemon of an earlier release names neither column:
+	// its write of a later answer leaves both as they were, and the read (issueColumns) takes the
+	// version only while that moment is the answer's now standing.
+	var answeredVersionAt any
+	if answeredVersion != nil {
+		answeredVersionAt = answeredAt
+	}
+	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
-		ancestry, handed_over_from, told_parent)
+		ancestry, handed_over_from, told_parent, awaiting_answered_version, awaiting_answered_version_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
-		coalesce($28::text[], '{}'), $29, nullif($30::text, ''))
+		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), $31, $32)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -279,23 +296,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_artifact = excluded.awaiting_artifact,
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
 		awaiting_answered_detail = excluded.awaiting_answered_detail,
+		awaiting_answered_version = excluded.awaiting_answered_version, awaiting_answered_version_at = excluded.awaiting_answered_version_at,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
-		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from, told_parent = excluded.told_parent
-		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
+		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from, told_parent = excluded.told_parent`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
-		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent,
+		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, answeredVersion, answeredVersionAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
-	}
-	if tag.RowsAffected() == 0 {
-		var repo, branch, github string
-		if err := tx.QueryRow(ctx, "select repo, default_branch, github_repo from issues where key = $1", issue.Key).Scan(&repo, &branch, &github); err != nil {
-			return fmt.Errorf("put issue %s: read the repository it is recorded on: %w", issue.Key, err)
-		}
-		return fmt.Errorf("record issue %s: it is recorded on %s@%s (GitHub's %s), and a record keeps its repository and default branch: only the one-time rename pass writes another repository name on it", issue.Key, repo, branch, github)
 	}
 	return nil
 }
@@ -441,6 +451,39 @@ func (s *Postgres) NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo
 	return nil
 }
 
+// CorrectIssueRepository's one statement matches only a row that is on another repository, so a
+// pass that reads the same correction twice writes nothing the second time: the repository the
+// record held is kept once, as repo_before, rather than being overwritten with the new one by a
+// repeat. The row's current repo is read into repo_before in the same statement that writes the
+// new one, because every expression of an update reads the row as it stands.
+func (s *Postgres) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error) {
+	if repo == "" || defaultBranch == "" || githubRepo == "" {
+		return false, fmt.Errorf("correct the repository of %s: the repository, its default branch and GitHub's spelling of it are required", key)
+	}
+	if !strings.EqualFold(repo, githubRepo) {
+		return false, fmt.Errorf("correct the repository of %s: GitHub's spelling %s names another repository than %s", key, githubRepo, repo)
+	}
+	tag, err := tx.Exec(ctx, `update issues set repo = $2, default_branch = $3, github_repo = $4,
+		repo_before = repo, repo_corrected_at = $5, repo_change_pending = '', repo_change_reason = ''
+		where key = $1 and repo <> $2`, key, repo, defaultBranch, githubRepo, at)
+	if err != nil {
+		return false, fmt.Errorf("correct the repository of %s: %w", key, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *Postgres) NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key string, change *RepositoryChange) error {
+	var pending, reason string
+	if change != nil {
+		pending, reason = change.Pending, change.Reason
+	}
+	if _, err := tx.Exec(ctx, "update issues set repo_change_pending = $2, repo_change_reason = $3 where key = $1",
+		key, pending, reason); err != nil {
+		return fmt.Errorf("note the repository change of %s: %w", key, err)
+	}
+	return nil
+}
+
 func (s *Postgres) RepoNote(ctx context.Context, tx pgx.Tx, issue string) (*RepoNote, error) {
 	var note RepoNote
 	err := tx.QueryRow(ctx, "select issue, resolved_repo, note, posted_at from repo_notes where issue = $1", issue).
@@ -492,17 +535,29 @@ func scanIssue(row scanner) (*Issue, error) {
 	var awaitingArtifact string
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
+	var answeredVersion int
+	var repoBefore, repoChangePending, repoChangeReason string
 	var sinceSeq *int64
-	var since, declaredAt, treeStalledToldAt, releasedForWaitAt *time.Time
+	var since, declaredAt, repoCorrectedAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
-		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
+		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &repoBefore, &repoCorrectedAt, &repoChangePending, &repoChangeReason,
+		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail, &answeredVersion,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
+	}
+	// A correction is the repository it moved the record off and its moment, and a correction
+	// off no repository moved the issue off nothing (RepositoryCorrection). A change is the
+	// repository still to be changed to, with its reason, and no repository is nothing waiting.
+	if repoCorrectedAt != nil && repoBefore != "" {
+		issue.RepoCorrection = &RepositoryCorrection{Before: repoBefore, At: repoCorrectedAt.UTC()}
+	}
+	if repoChangePending != "" {
+		issue.RepoChange = &RepositoryChange{Pending: repoChangePending, Reason: repoChangeReason}
 	}
 	// The column is not null, so the movement is scanned straight into the record; it is read in
 	// UTC as every other time the record answers is.
@@ -528,7 +583,7 @@ func scanIssue(row scanner) (*Issue, error) {
 			answeredAt = &utc
 		}
 		issue.Awaiting = &Awaiting{Artifact: awaitingArtifact, AnsweredAt: answeredAt, AnsweredBy: Answer(answeredBy),
-			AnsweredDetail: answeredDetail, Since: scannedMark(sinceSeq, since)}
+			AnsweredDetail: answeredDetail, AnsweredVersion: answeredVersion, Since: scannedMark(sinceSeq, since)}
 		if awaitingAsk != nil {
 			issue.Awaiting.Ask = *awaitingAsk
 		}
@@ -541,7 +596,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, reviewed_head from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -562,16 +617,16 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 }
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised and whether
-// its task is one to send as written, in one statement, keyed by issue and role. The rows of an
-// issue the record holds none of are simply absent, which every reader takes as the zero entry.
-// entry_raised_at is the row's one nullable column (PutPhase), null on a row no entry has been
-// raised on, and reads back as the zero moment.
+// a resume raised it (entry_awaiting holds a wait), in one statement, keyed by issue and role. The
+// rows of an issue the record holds none of are simply absent, which every reader takes as the
+// zero entry. entry_raised_at is null on a row no entry has been raised on (PutPhase), and reads
+// back as the zero moment.
 func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
 	entries := make(map[PhaseRole]PhaseEntry, len(issues))
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_awaiting is not null from phases where issue = any($1)`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -581,7 +636,7 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 		var role string
 		var entry PhaseEntry
 		var raisedAt *time.Time
-		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt, &entry.Verbatim); err != nil {
+		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt, &entry.Resumed); err != nil {
 			return nil, fmt.Errorf("read a phase entry: %w", err)
 		}
 		if raisedAt != nil {
@@ -614,14 +669,22 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	// entry_raised_at is the one nullable column of the row: a row no entry has been raised on
-	// has no moment to record, and the zero time would read as one.
+	// entry_raised_at is null on a row no entry has been raised on, which has no moment to
+	// record, and the zero time would read as one. entry_awaiting is null on every entry no resume
+	// raised.
 	var raisedAt any
 	if !phase.EntryRaisedAt.IsZero() {
 		raisedAt = phase.EntryRaisedAt
 	}
+	var awaiting []byte
+	if phase.EntryAwaiting != nil {
+		var err error
+		if awaiting, err = json.Marshal(phase.EntryAwaiting); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the wait the entry's resume answers: %w", phase.Role, phase.Issue, err)
+		}
+	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head)
+		decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, reviewed_head)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
@@ -630,12 +693,12 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
-		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_awaiting = excluded.entry_awaiting,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back,
 		reviewed_head = excluded.reviewed_head`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead,
+		phase.Entry, phase.EntryTask, awaiting, raisedAt, phase.EntryMovedBack, phase.ReviewedHead,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -646,11 +709,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision, backwardMoves []byte
+	var decision, backwardMoves, awaiting []byte
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead); err != nil {
+		&phase.Entry, &phase.EntryTask, &awaiting, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -661,6 +724,12 @@ func scanPhase(row scanner) (PhaseRow, error) {
 		phase.Decision = &ReviewDecision{}
 		if err := json.Unmarshal(decision, phase.Decision); err != nil {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
+		}
+	}
+	if awaiting != nil {
+		phase.EntryAwaiting = &Awaiting{}
+		if err := json.Unmarshal(awaiting, phase.EntryAwaiting); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the wait the entry's resume answers: %w", err)
 		}
 	}
 	// A row that counted no backward move reads as a nil map and never as an empty one: the
@@ -1001,11 +1070,11 @@ var (
 )
 
 func (s *Postgres) AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error {
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at) values ($1, $2, $3, $4, $5)
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq) values ($1, $2, $3, $4, $5, nullif($6::bigint, 0))
 		on conflict (issue, ref) do update set decision = excluded.decision, actor = excluded.actor,
-		at = excluded.at, claimed_by = null, held_by_claim = null, held_by_delivery = null
+		at = excluded.at, seq = excluded.seq, claimed_by = null, held_by_claim = null, held_by_delivery = null
 		where parked_decisions.at <= excluded.at`,
-		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At); err != nil {
+		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At, decision.Seq); err != nil {
 		return fmt.Errorf("keep the decision %s on %s: %w", decision.Ref, decision.Issue, err)
 	}
 	return nil
@@ -1047,8 +1116,9 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // parkedDecisions is every decision owed to tree — every row whose issue stands in tree now — or
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.claimed_by, 0),
-		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
+	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at,
+		coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0), coalesce(kept.held_by_claim, ''),
+		coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
 	if err != nil {
@@ -1058,8 +1128,9 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	var decisions []ParkedDecision
 	for rows.Next() {
 		var decision ParkedDecision
-		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At,
-			&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery); err != nil {
+		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor,
+			&decision.At, &decision.Seq, &decision.ClaimedBy, &decision.HeldBy.Claim,
+			&decision.HeldBy.Delivery); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
 		}
 		decisions = append(decisions, decision)
@@ -1433,24 +1504,116 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gate and its recorded handoffs. now is when the
-// publication a cleared gate queues is due.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
+// the counters of one still open, its design gates and its recorded handoffs, once forget has
+// been run over the decisions kept on it and the changes requests queued on it (forgetKept), and
+// answers the issues whose gates it emptied (clearGates): issue itself where it held a gate, else
+// none.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error) {
+	describe := fmt.Sprintf("clear the generation of %s", issue.Key)
+	if err := s.forgetKept(ctx, tx, issue.Tree, issue.Key, forget, describe); err != nil {
+		return nil, err
+	}
+	return s.clearGeneration(ctx, tx, clearedIssue, issue.Key, describe)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree), now)
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error) {
+	describe := fmt.Sprintf("clear the generation of tree %s", tree)
+	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
+		return nil, err
+	}
+	return s.clearGeneration(ctx, tx, clearedTree, tree, describe)
 }
 
-// clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table. The design gates go
-// with them, in a statement of their own (clearGates).
-func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
+// The issues a clear covers, as the where clause of a statement over a table keyed by issue, with
+// the key as $1: one issue's (ClearGeneration) or every issue of a tree's (ClearTreeGeneration).
+const (
+	clearedIssue = "issue = $1"
+	clearedTree  = "issue in (select key from issues where tree = $1)"
+)
+
+// forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
+// forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
+// "", whoever claims or holds them, as one KeptDecisions, and the changes requests the outbox
+// holds on the same issues (queuedChanges). Only the cleared issues' are handed over: a decision
+// is asked of the gates of the issue it was made on, and every other issue keeps its gates. The
+// set carries no kept approval: the forget deletes none (workflow.ForgetSuperseded). A nil forget
+// is refused before anything is read or written, so a clear handed no forget clears nothing.
+func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
+	if forget == nil {
+		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)
+	}
+	decisions, err := s.ParkedDecisions(ctx, tx, tree)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	var owed KeptDecisions
+	for _, d := range decisions {
+		if issue == "" || d.Issue == issue {
+			owed.Decisions = append(owed.Decisions, d.Mark())
+		}
+	}
+	where, key := clearedTree, tree
+	if issue != "" {
+		where, key = clearedIssue, issue
+	}
+	queued, err := queuedChanges(ctx, tx, where, key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := forget(ctx, tx, tree, owed, queued); err != nil {
+		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
+	}
+	return nil
+}
+
+// queuedChanges is every person's changes request the outbox holds on the issues where selects
+// with key as $1, a row a runner has leased included, oldest first: each design-changes-requested
+// notice, and each parked-decision controller notice that relays one (QueuedChanges).
+func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
+		and ((kind = $2 and payload->>'kind' = $3)
+			or (kind = $4 and payload->>'kind' = $5 and payload->>'decision' = $6))
+		order by id`, key, string(OutboxKindNotice), "design-changes-requested",
+		string(OutboxKindControllerNotice), string(ParkedDecisionNotice),
+		string(DecisionDesignChangesRequested))
+	if err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	defer rows.Close()
+	var queued []QueuedChanges
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan a changes request the outbox holds: %w", err)
+		}
+		payload, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		request := QueuedChanges{Row: row.ID, Kind: row.Kind, Issue: row.Issue}
+		switch payload := payload.(type) {
+		case Notice:
+			request.Notice = payload
+		case ControllerNotice:
+			request.Notice = Notice(payload)
+		default:
+			return nil, fmt.Errorf("outbox row %d of kind %s carries %T, no notice", row.ID, row.Kind, payload)
+		}
+		queued = append(queued, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	return queued, nil
+}
+
+// clearGeneration runs each statement with key as $1, where selecting the cleared issues' rows by
+// their issue column (clearedIssue, clearedTree). The design gates go with them, in a statement
+// of their own (clearGates), whose emptied issues it answers.
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
@@ -1478,8 +1641,8 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// and writes the task of that entry beside it (admit's startMidPhaseMembers). That the
 		// number is never reset is also what keeps a review of the old entry from moving the
 		// reviewer's commit after the promotion: its footer names a number the row has left
-		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about. The time the entry was
+		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The wait
+		// a resume kept on the entry goes with the task it was about. The time the entry was
 		// raised stays with the number it belongs to, and so does the move that raised it
 		// (entry_moved_back), which that same promotion writes again. The counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
@@ -1488,42 +1651,36 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// decision: the new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_verbatim = false where " + where,
+			"entry_task = '', entry_awaiting = null where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
-			return fmt.Errorf("%s: %w", describe, err)
+			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 	}
-	return s.clearGates(ctx, tx, where, key, describe, now)
+	return s.clearGates(ctx, tx, where, key, describe)
 }
 
-// clearGates deletes the design gates of every issue the clear covers and queues one publication
-// of the empty set for each issue it emptied: those gates recorded a document until this
-// statement, and Dispatch holds the set they recorded until something tells it otherwise. The
-// delete names the issues it emptied rather than the clear naming every issue it covers, so an
-// issue that held no gate row — the ordinary child of a re-entry, and every member of a
-// re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
-// for each step, so an issue gated on several steps is published once.
-//
-// The publication is queued through this store, which knows nothing of the lanes beside it, so no
-// lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
-// status writes the clearing pass queues with it.
-func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string, now time.Time) error {
+// clearGates deletes the design gates of every issue the clear covers and answers each issue it
+// emptied, once, in key order: those gates recorded a document until this statement, and
+// Dispatch holds the set they recorded until something tells it otherwise, so the clear's caller
+// queues a publication of the empty set for each (workflow's Engine.ClearGeneration). The
+// caller queues it, not this store, because the caller's store is the one that wakes the
+// issue's board lane when the clear commits (the daemon's projectRecords), which this store
+// knows nothing of. The delete names the issues it emptied rather than the clear naming every
+// issue it covers, so an issue that held no gate row — the ordinary child of a re-entry, and
+// every member of a re-admitted tree whose architect registered nothing — costs no Dispatch
+// write. A row comes back for each step, so an issue gated on several steps is answered once.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
 	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
 	if err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	slices.Sort(emptied)
-	for _, issue := range slices.Compact(emptied) {
-		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
-			return fmt.Errorf("%s: %w", describe, err)
-		}
-	}
-	return nil
+	return slices.Compact(emptied), nil
 }
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
@@ -3198,6 +3355,13 @@ func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string
 func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2", string(OutboxKindDispatchStatus), issue); err != nil {
 		return fmt.Errorf("drop the queued status writes of %s: %w", issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
+		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
 	}
 	return nil
 }

@@ -311,7 +311,8 @@ type built struct {
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
-			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
+			_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
 			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
@@ -383,9 +384,10 @@ func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	build := o.runtime
 	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+		writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 		cancel()
-		return build(buildCtx, listener, address, apps, repository, st, mapped)
+		return build(buildCtx, listener, address, apps, repository, st, mapped, writeOnIssue)
 	}
 	return run(ctx, cfg, quietLogger(), o)
 }

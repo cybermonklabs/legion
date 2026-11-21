@@ -541,12 +541,12 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 
 // A launch of an issue whose record names a repository the cache set does not hold — a production
 // check's look on a done issue, whose repository no live record names any longer — prepares that
-// repository first and adds it to the cache set and the heard set (launchRepository, INFRA-4401
-// D8), so the pod it launches finds the repository's cache, with no restart. The launch works the
-// record's repository at the record's default branch. Control (dispatch://INFRA-4401 check a-go,
-// item 3b): with the launch's preparation deleted (repositoryOf's launch path), the repository is
-// neither cached nor heard. The done record is written through the bare store, so no read of the
-// live records it would ask for replaces the cache set the launch adds to.
+// repository first and adds it to the cache set and the heard set (issueLaunchRepository,
+// INFRA-4401 D8), so the pod it launches finds the repository's cache, with no restart. The launch
+// works the record's repository at the record's default branch. Control (dispatch://INFRA-4401
+// check a-go, item 3b): with the launch's preparation deleted (repositoryOf's launch path), the
+// repository is neither cached nor heard. The done record is written through the bare store, so
+// no read of the live records it would ask for replaces the cache set the launch adds to.
 func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 	ctx := context.Background()
 	w, _, installs, stream := preparationRig(t, &installations{})
@@ -555,9 +555,9 @@ func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 	if slices.Contains(repositoryNames(w.cacheRepositories()), strangerNamed) || slices.Contains(githubFilterSubjects(t, stream), heard) {
 		t.Fatalf("%s cached or heard before the launch, want neither: no live record names it and the boot did not read its record", strangerNamed)
 	}
-	repo, branch, err := w.launchRepository(ctx, "LEGION-942")
+	repo, branch, err := launchedRepository(ctx, w, "LEGION-942")
 	if err != nil || repo.String() != strangerNamed || branch != "trunk" {
-		t.Fatalf("launchRepository = %s@%s, %v; want the record's %s@trunk", repo, branch, err, strangerNamed)
+		t.Fatalf("issueLaunchRepository = %s@%s, %v; want the record's %s@trunk", repo, branch, err, strangerNamed)
 	}
 	if reads := installs.reads("implement " + strangerNamed); reads != 1 {
 		t.Fatalf("the launch made %d reads of the implement App's installation on %s, want its preparation's one", reads, strangerNamed)

@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  An issue's repository in Legion's record follows the repository Dispatch resolves it to, in the
+  pass that reads the change: a live event, the boot listing, or a hand-over. The daemon replaces
+  the issue's pod, each worker's next task names both repositories, and a saved bundle of the old
+  repository is kept in `workspace_bundles_refused` and never restored into the new clone. A
+  microVM pod's kept volume (`keep_volume`) does not drop that bundle: the volume holds the work
+  only in the old repository's workspace, which the new pod does not work in. A correction reads
+  GitHub at that event (both Apps' installation, the spelling and the default branch) and never
+  writes from an earlier read. A repository a role App is not installed on waits on the record,
+  with its reason, and the issue is told what a person can do; the change is applied at the issue's
+  next event or at the next boot, since the daemon reads no repository mapping any more. The boot's
+  listing reads no GitHub, so it leaves each change it finds to one pass after the boot, which
+  writes the corrections it has read within its bound and reads the issues it did not reach at its
+  next pass. The one-time rename pass writes a configured pair's new name on a saved bundle too,
+  so the bundle is still restored once the pair is removed.

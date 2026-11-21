@@ -3,24 +3,33 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -61,6 +70,9 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// bundleVia, when set, answers the save in place of bundle and bundleErr: the rig's role
+	// asked over a real worker stream, as the Kubernetes runtime asks it (idleRig.shimAnswers).
+	bundleVia func(ctx context.Context, issue string) (runtime.WorkspaceBundle, error)
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -78,11 +90,15 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.bundled = append(r.bundled, role)
-	return r.bundle, r.bundleErr
+	via, bundle, err := r.bundleVia, r.bundle, r.bundleErr
+	r.mu.Unlock()
+	if via != nil {
+		return via(ctx, issue)
+	}
+	return bundle, err
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -235,8 +251,15 @@ func newIdleRig(t *testing.T) *idleRig {
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
 	// reads the claims' (projectID).
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
+	// The repository hold reads what the daemon's own attach wires it to read
+	// (attachIdleRelease): the pod through the runtime the supervisor holds, and the record
+	// through the workflow's own read of it. The rig's pods are scripted no repository, so every
+	// pod of it is on the repository its record holds until a test says otherwise
+	// (idleRig.podRepository).
+	s := &supervision{log: quietLogger(), supervisor: sup, plan: plan{recordedRepository: recordedRepositoryOf(w.recordedIssue)}}
+	w.idleRepositoryDrifted = s.podRepositoryDrifted
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -795,7 +818,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
+	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
 	}
@@ -867,6 +890,290 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A release refused because the workspace's unpushed work is over the bound a release carries is
+// not marked again on the clock. Until something changes the workspace or the branch, every
+// later save finds the same work over the same bound: each idle tick that marked the release
+// again asked the pod's shim for a bundle over the worker stream and wrote one more hold, about
+// one a minute (BET-487's pod had 18 such releases between 13:42:50Z and 13:59:49Z on
+// 2026-11-13). So the rule marks it again only after one of the events that can change the
+// outcome, which workflow.IdleHoldBundleTooLarge states; this test drives a push and then a turn.
+// The worker is told once for each head a release was refused at, with the size and the bound,
+// since only a push of its own brings the work under the bound.
+//
+// The refusal reaches the release two ways, and both are held. The shim refuses the bundle
+// itself and answers its size over the worker stream, which is the path of every refusal
+// measured on BET (25 of them, each in the shim's words); the stand-in here sends the frame a
+// current shim sends, and the daemon reads it from the size, never the words. A runtime that
+// answered the bundle whole over the bound is refused by the daemon's own check.
+func TestABundleOverTheBoundIsAskedForAgainOnlyAfterAPushOrATurn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// refuse makes every save of rig find size bytes of unpushed work, and answers how many
+		// saves were asked of the pod.
+		refuse func(t *testing.T, rig *idleRig, size int) (attempts func() int)
+	}{
+		{name: "the shim refuses it over the worker stream", refuse: func(t *testing.T, rig *idleRig, size int) func() int {
+			return rig.shimAnswers(t, func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimSizeRefusal(request, size)
+			})
+		}},
+		{name: "the runtime answers it whole", refuse: func(_ *testing.T, rig *idleRig, size int) func() int {
+			rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, size), Head: "abc", Tips: []string{"abc"},
+				At: time.Now().UTC(), PodUID: releasedPodUID}
+			return func() int {
+				bundled, _ := rig.rt.reads()
+				return len(bundled)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			size := runtime.MaxWorkspaceBundleBytes + 1
+			aRefusalWaitsForAPushOrATurn(t, rig, size, tc.refuse(t, rig, size))
+		})
+	}
+}
+
+func aRefusalWaitsForAPushOrATurn(t *testing.T, rig *idleRig, size int, attempts func() int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		return rig.issues.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
+			Repo: "acme/widgets", Number: 42, Branch: claim.IssueBranch(rig.issue.Key), HeadSHA: "head-one"})
+	}); err != nil {
+		t.Fatalf("seed the issue's pull request: %v", err)
+	}
+	pass := func() {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	told := func() []string {
+		var bodies []string
+		for _, p := range rig.runner.notices.(*outboxPublisher).publishes() {
+			if p.topic == notify.RoleTopicPrefix+string(rig.token) {
+				bodies = append(bodies, p.message)
+			}
+		}
+		return bodies
+	}
+
+	pass()
+	if got := attempts(); got != 1 {
+		t.Fatalf("bundle attempts after the first idle tick = %d, want 1", got)
+	}
+	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+		t.Fatalf("the claim = %s by %s, want the refused release to have left it running", got.State, got.SuspendedBy)
+	}
+
+	// Three more ticks with no push and no turn: the work is what it was, so nothing is asked.
+	for range 3 {
+		pass()
+	}
+	if got := attempts(); got != 1 {
+		t.Fatalf("bundle attempts after three more idle ticks with no push and no turn = %d, want the first one alone", got)
+	}
+	bodies := told()
+	if len(bodies) != 1 {
+		t.Fatalf("the implementer was told %d times (%q), want once for the refusal", len(bodies), bodies)
+	}
+	for _, want := range []string{rig.issue.Key, strconv.Itoa(size), strconv.Itoa(runtime.MaxWorkspaceBundleBytes), "Push"} {
+		if !strings.Contains(bodies[0], want) {
+			t.Errorf("the message to the implementer does not name %q:\n%s", want, bodies[0])
+		}
+	}
+	if rig.marked(t) {
+		t.Fatal("a release is marked while nothing changed since the refusal")
+	}
+	holds := rig.records(t).Holds
+	if len(holds) == 0 {
+		t.Fatal("the refused release recorded no hold")
+	}
+	for _, hold := range holds {
+		if hold.Reason != workflow.IdleHoldBundleTooLarge.String() {
+			t.Fatalf("holds = %+v, want each %s", holds, workflow.IdleHoldBundleTooLarge)
+		}
+	}
+
+	// A push moves the head of the issue's pull request: the next tick asks once, and the
+	// worker is told again, since the work it pushed did not bring the rest under the bound.
+	if _, err := rig.pool.Exec(ctx, `update pull_requests set head_sha = 'head-two' where issue = $1`, rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	pass()
+	pass()
+	if got := attempts(); got != 2 {
+		t.Fatalf("bundle attempts after a push and two idle ticks = %d, want 2", got)
+	}
+	if got := len(told()); got != 2 {
+		t.Fatalf("the implementer was told %d times after the push, want twice", got)
+	}
+
+	// A turn after the refusal, ended and then quiet for the idle period: the next tick asks
+	// once, and the worker is not told again, since the head is the one it was told about.
+	if _, err := rig.pool.Exec(ctx, `update workspace_bundle_refusals set at = at - interval '1 hour' where issue = $1`,
+		rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now() - interval '20 minutes',
+		activity_at = now() - interval '19 minutes' where issue = $1`, rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	pass()
+	pass()
+	if got := attempts(); got != 3 {
+		t.Fatalf("bundle attempts after a turn and two idle ticks = %d, want 3", got)
+	}
+	if got := len(told()); got != 2 {
+		t.Fatalf("the implementer was told %d times after the turn, want still twice", got)
+	}
+}
+
+// A refusal over the bound holds the pod past the ticks that follow, and past a daemon restart:
+// the refusal is a row of the store, not a field of the process, so the first tick of the daemon
+// that starts after it asks the pod for nothing either.
+func TestABundleRefusalHoldsThePodAcrossTicksAndARestart(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1), PodUID: releasedPodUID}
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+
+	// A new workflow runtime over the same store is the daemon after a restart: it holds
+	// nothing in memory of the ticks before.
+	restarted := &workflowRuntime{pool: rig.pool, records: rig.issues, projectID: "legion", dispatchProject: "LEGION",
+		log: quietLogger(), idleStore: rig.st, idleRuntime: rig.rt, idlePeriod: rig.w.idlePeriod,
+		idleRepositoryDrifted: rig.w.idleRepositoryDrifted}
+	restarted.releaseIdlePods(ctx)
+	rig.drain(t)
+	if bundled, _ := rig.rt.reads(); len(bundled) != 1 {
+		t.Fatalf("bundle attempts after three ticks and a restart's first tick = %d, want the first one alone", len(bundled))
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 1 {
+		t.Fatalf("messages published = %d, want the one that told the worker", got)
+	}
+}
+
+// A save that failed for a reason of its own — the launcher answered nothing, the database
+// refused a write — is tried again on the next idle tick, as before. No push and no turn cures
+// such a cause, so waiting for one would keep an idle pod for as long as no role of it acts,
+// which is the cost the release exists to end. Nothing tells the worker either: the failure
+// names nothing a worker can do.
+func TestASaveThatFailedIsTriedAgainOnTheNextIdleTick(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.rt.bundleErr = errors.New("the launcher answered nothing")
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	if bundled, _ := rig.rt.reads(); len(bundled) != 3 {
+		t.Fatalf("bundle attempts after three idle ticks over a save that fails = %d, want one each tick", len(bundled))
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 0 {
+		t.Fatalf("messages published = %d, want none", got)
+	}
+}
+
+// A refusal that names no size is a save that failed, whatever its words say: the shim's
+// sentence about the bound alone, with no sizeBytes beside it, is tried again on the next idle
+// tick and tells the worker nothing, as every refusal was before the daemon read the size. The
+// daemon never holds a pod on a reason it would have to read from another process's words.
+func TestAShimRefusalThatNamesNoSizeIsTriedAgainOnTheNextIdleTick(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	attempts := rig.shimAnswers(t, func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+		refusal := shimSizeRefusal(request, runtime.MaxWorkspaceBundleBytes+1)
+		refusal.SizeBytes = 0
+		return refusal
+	})
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	if got := attempts(); got != 3 {
+		t.Fatalf("bundle attempts after three idle ticks over a refusal with no size = %d, want one each tick", got)
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 0 {
+		t.Fatalf("messages published = %d, want none", got)
+	}
+	holds := rig.records(t).Holds
+	if len(holds) == 0 {
+		t.Fatal("the stopped releases recorded no hold")
+	}
+	for _, hold := range holds {
+		if hold.Reason != workflow.IdleHoldBundleSave.String() {
+			t.Fatalf("holds = %+v, want each %s", holds, workflow.IdleHoldBundleSave)
+		}
+	}
+}
+
+// shimSizeRefusal is the frame a current shim sends for a bundle of size bytes over the request's
+// bound (shim's bundleWorkspace and runBundle): a refusal, its size, and the shim's sentence.
+func shimSizeRefusal(request shimwire.BundleWorkspace, size int) shimwire.BundleWorkspaceResult {
+	return shimwire.BundleWorkspaceResult{ID: request.ID, SizeBytes: size, At: time.Now().UTC(),
+		Error: fmt.Sprintf("worker-shim: the workspace's unpushed work is %d bytes, over the %d the release carries", size, request.MaxBytes)}
+}
+
+// shimAnswers puts the rig's implementer on a real worker stream, dialed and greeted as `legion
+// worker-shim` greets it, and makes the runtime's save that stream's own BundleWorkspace, wrapped
+// as the Kubernetes runtime wraps it (sandbox.Runtime.BundleWorkspace). The stand-in shim answers
+// each bundle-workspace frame with answer's result. It returns how many bundle-workspace frames
+// crossed the stream.
+func (r *idleRig) shimAnswers(t *testing.T, answer func(shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult) func() int {
+	t.Helper()
+	const bootToken = "the-implementer-boot-token"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	resolve := func(boot string) (claim.Token, uint64, bool, bool, error) {
+		return r.token, 1, false, boot == bootToken, nil
+	}
+	listener, err := stream.Listen(ctx, "unix://"+filepath.Join(shortTempDir(t), "worker-stream.sock"), resolve,
+		stream.Options{RPCTimeout: 5 * time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	worker := dialShim(t, listener.Addr(), bootToken)
+	conn, err := listener.Await(ctx, r.token)
+	if err != nil {
+		t.Fatalf("the stand-in shim's connection: %v", err)
+	}
+	// dialShim's read of the hello_ack set a deadline; the stand-in waits as long as the test runs.
+	if err := worker.conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	var asked atomic.Int64
+	go func() {
+		for {
+			line, err := worker.lines.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			frame, err := shimwire.Decode(line)
+			if err != nil {
+				continue
+			}
+			if request, ok := frame.(shimwire.BundleWorkspace); ok {
+				asked.Add(1)
+				if err := worker.writer.WriteFrame(answer(request)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	r.rt.mu.Lock()
+	defer r.rt.mu.Unlock()
+	r.rt.bundleVia = func(ctx context.Context, issue string) (runtime.WorkspaceBundle, error) {
+		bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+		if err != nil {
+			return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, r.token, err)
+		}
+		return bundle, nil
+	}
+	return func() int { return int(asked.Load()) }
 }
 
 // Release is off unless the deployment asks for it: `idle_minutes: 0`, a runtime that is not

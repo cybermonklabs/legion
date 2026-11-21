@@ -289,14 +289,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerOwed:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerOwed arrived whole with its route at repositoryCorrectionContract, so no older
+		// contract records any of the four at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -558,6 +560,8 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: repositoryCorrectionContract, issue: withoutRepositoryCorrection,
+		dropped: "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -971,9 +975,29 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
+
+// repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
+// repository left on its record (version.go's 206, dispatch://INFRA-3136): `repoBefore` and
+// `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
+// correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
+// the daemon has not applied and why. A plugin before it is served every issue without the four
+// (withoutRepositoryCorrection): one built before sjawhar/legion#2788 reads the state with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips the key instead, so the band keeps the body its own contract's record describes. A pod's
+// reading counts no claim at shapedAnswersContract or above (podContracts), so a caller from
+// shapedAnswersContract to below this contract meets the band by the contract its header states.
+// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
+// caller from repositoriesLiveContract to below this contract is served the live block without
+// the four. The same contract added the claim route `POST /legion/v1/claims/owed` with its answer
+// (answers.go's AnswerOwed), which no contract below it records.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is. It moves only with
+// dispatch://INFRA-3136's own number, and the arrival of the owed answer moves with it.
+const repositoryCorrectionContract = 206
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1030,6 +1054,21 @@ func withoutAssignments(issue Issue) (Issue, bool) {
 func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
+	return issue, moved
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
 	return issue, moved
 }
 

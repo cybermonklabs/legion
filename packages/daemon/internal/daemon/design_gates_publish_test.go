@@ -391,18 +391,19 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 }
 
 // Every path that empties an issue's design gates queues one publication of the empty set for each
-// issue it emptied (record.Postgres.clearGates): those rows recorded a document until the delete,
-// and Dispatch holds the set they recorded until something tells it otherwise. The delete names
-// the issues it emptied rather than the clear naming every issue it covers, so an issue of the
-// tree that held no gate row costs Dispatch no write.
+// issue it emptied (record's clearGates names them, and workflow's publishEmptied queues each
+// through the engine's store): those rows recorded a document until the delete, and Dispatch
+// holds the set they recorded until something tells it otherwise. The delete names the issues it
+// emptied rather than the clear naming every issue it covers, so an issue of the tree that held
+// no gate row costs Dispatch no write.
 //
 // The three deletes are the three the daemon makes, each driven here through the fact that makes
 // it: an adoption, which moves a queued root and its whole tree into a live tree and clears each
 // member's generation (workflow.Engine.Adopt); a re-admission, which starts a new generation of
-// the root's whole tree (record.ClearTreeGeneration); and a child set back to todo under a live
-// tree, which clears its own run alone (workflow.Engine.ReenterChild). Each tree holds more than
-// one member, so a clear that published the issue it was keyed by rather than the issues it
-// emptied would be caught.
+// the root's whole tree (workflow.Engine.ClearTreeGeneration); and a child set back to todo under
+// a live tree, which clears its own run alone (workflow.Engine.ReenterChild). Each tree holds
+// more than one member, so a clear that published the issue it was keyed by rather than the
+// issues it emptied would be caught.
 func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 	empty := []dispatch.DesignGateDocument{}
 	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}

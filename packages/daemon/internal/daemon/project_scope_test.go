@@ -317,12 +317,13 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 // whichever of their writes of a row by key it is (claim.KeyOfProject): such a row is run only by
 // the daemon whose project its key names, against that daemon's own claims, so writing it is
 // writing into that daemon's work. Each write — an insert, a start that takes out the start an
-// issue owes, an expedite, an upsert that replaces a pending payload and its lease, a drop, and the
-// clear of a generation, which queues the publication of the gates it empties — leaves the rows of
-// the other project's key as they stand: it writes none, deletes none and changes none. It returns
-// no error, since a row the daemon would never run must not fail the caller's own work, but for
-// EnqueueID: every caller of that one names the row by the id it answers, and an id of no row
-// names nothing, so it refuses with claim.ErrKeyOfAnotherProject and the caller's transaction
+// issue owes, an expedite, an upsert that replaces a pending payload and its lease, and a drop —
+// leaves the rows of the other project's key as they stand: it writes none, deletes none and
+// changes none. So does the clear of a generation, which writes no row itself, its caller
+// publishing the gates it empties, and which deletes no fact of the other project's issue. Each
+// returns no error, since a row the daemon would never run must not fail the caller's own work,
+// but for EnqueueID: every caller of that one names the row by the id it answers, and an id of no
+// row names nothing, so it refuses with claim.ErrKeyOfAnotherProject and the caller's transaction
 // rolls back. Each refusal is logged at Warn with the row's kind, its key and the project, so
 // nothing is dropped in silence. The same write of a row of this project's own key goes through.
 func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) {
@@ -521,8 +522,10 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 			t.Errorf("the project's own rows keyed LEGION-7 after the drop = %q, want its status write dropped", got)
 		}
 	})
-	// A clear of a generation deletes the design gates it covers and queues, keyed by each issue
-	// it emptied, the publication of the empty set (record.Postgres.clearGates).
+	// A clear of a generation deletes the design gates it covers and answers each issue it
+	// emptied, whose publication of the empty set its caller queues (record.Postgres.clearGates,
+	// workflow's Engine.ClearGeneration). A clear of another project's issue empties nothing and
+	// answers nothing.
 	gated := func(t *testing.T, project, key string) {
 		t.Helper()
 		write(t, func(tx pgx.Tx) error {
@@ -533,29 +536,53 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 			return raw.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-1", LatestVersion: 1})
 		})
 	}
+	forgetNothing := func(context.Context, pgx.Tx, string, record.KeptDecisions, []record.QueuedChanges) error {
+		return nil
+	}
+	gateStands := func(t *testing.T, key string) bool {
+		t.Helper()
+		var stands bool
+		write(t, func(tx pgx.Tx) error {
+			gates, err := raw.GatesOf(ctx, tx, key)
+			stands = record.SpecGate(gates) != nil
+			return err
+		})
+		return stands
+	}
 	for _, generation := range []struct {
 		name        string
 		theirs, own string
-		clear       func(tx pgx.Tx, key string) error
+		clear       func(tx pgx.Tx, key string) ([]string, error)
 	}{
-		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) error { return records.ClearGeneration(ctx, tx, key, now) }},
-		{"ClearTreeGeneration", "OTHERPROJECT-9", "LEGION-9", func(tx pgx.Tx, key string) error { return records.ClearTreeGeneration(ctx, tx, key, now) }},
+		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) ([]string, error) {
+			return records.ClearGeneration(ctx, tx, record.Issue{Key: key, Tree: key}, forgetNothing)
+		}},
+		{"ClearTreeGeneration", "OTHERPROJECT-9", "LEGION-9", func(tx pgx.Tx, key string) ([]string, error) {
+			return records.ClearTreeGeneration(ctx, tx, key, forgetNothing)
+		}},
 	} {
 		t.Run(generation.name, func(t *testing.T) {
 			gated(t, "OTHERPROJECT", generation.theirs)
-			write(t, func(tx pgx.Tx) error { return generation.clear(tx, generation.theirs) })
-			refused(t, record.OutboxKindDesignGatesPublish, generation.theirs, nil)
+			var emptied []string
 			write(t, func(tx pgx.Tx) error {
-				gates, err := raw.GatesOf(ctx, tx, generation.theirs)
-				if err == nil && record.SpecGate(gates) == nil {
-					t.Errorf("the gate of %s after the project's clear = %v, want OTHERPROJECT's gate standing", generation.theirs, gates)
-				}
+				var err error
+				emptied, err = generation.clear(tx, generation.theirs)
 				return err
 			})
+			refused(t, record.OutboxKindDesignGatesPublish, generation.theirs, nil)
+			if len(emptied) != 0 || !gateStands(t, generation.theirs) {
+				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want nothing emptied and OTHERPROJECT's gate standing",
+					generation.theirs, emptied, gateStands(t, generation.theirs))
+			}
 			gated(t, "LEGION", generation.own)
-			write(t, func(tx pgx.Tx) error { return generation.clear(tx, generation.own) })
-			if got := rowsOf(t, generation.own); len(got) != 1 {
-				t.Errorf("the project's own rows keyed %s after the clear = %q, want the one publication of its emptied gates", generation.own, got)
+			write(t, func(tx pgx.Tx) error {
+				var err error
+				emptied, err = generation.clear(tx, generation.own)
+				return err
+			})
+			if !slices.Equal(emptied, []string{generation.own}) || gateStands(t, generation.own) {
+				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want its own gate emptied and named",
+					generation.own, emptied, gateStands(t, generation.own))
 			}
 		})
 	}
