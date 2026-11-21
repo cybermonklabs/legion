@@ -259,13 +259,13 @@ func (r *Reconciler) appAbsent(ctx context.Context, row string, mapped bool, err
 // to say so, since nothing ever looked at that repository.
 //
 // The issues half reads every issue, closed ones included, and that is deliberate. An issue
-// naming no repository resolves to the nearest repository above it on `child_of`, whatever the
-// status of the issue that names it (refs.IssueRepoTerms), so an open issue under a closed one
-// works in the closed one's repository: a half bounded to open issues would leave that issue's
-// heads unread. Holding it to the issues whose chain is still open would walk every issue in
-// the database, and what a status filter would save is the cost of a repository no open issue
-// names, which is one conditional read and one query a pass, or, where the App is not installed
-// on it, one read every AbsentAppRecheck (resolve).
+// naming no repository resolves to the nearest repository above it on `child_of` in its own
+// project, whatever the status of the issue that names it (refs.IssueRepoTerms), so an open
+// issue under a closed one works in the closed one's repository: a half bounded to open issues
+// would leave that issue's heads unread. Holding it to the issues whose chain is still open
+// would walk every issue in the database, and what a status filter would save is the cost of a
+// repository no open issue names, which is one conditional read and one query a pass, or, where
+// the App is not installed on it, one read every AbsentAppRecheck (resolve).
 //
 // It is the issue's own repository that is read rather than the one it resolves to
 // (refs.IssueRepoResolved), because resolving adds nothing here: an issue naming none resolves

@@ -77,8 +77,11 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 
 // IssueRepoTerms resolve the repository of every issue of `subjects`, the one-column term of
 // issue keys each statement that splices these defines before them (api's issueComponentsTerms
-// reads the same one): the nearest issue on its parent chain (itself first) whose own `repo` is
-// set, else the project's default mapping, else null. One walk climbs every subject's chain
+// reads the same one): the nearest issue of its own project on its parent chain (itself first)
+// whose own `repo` is set, else the project's default mapping, else null. The walk carries the
+// subject's project and climbs only to a parent of that project, so it ends at the first ancestor
+// of another project as at a root: one project's deployment works each issue, and a parent of
+// another project passes on no repository. One walk climbs every subject's chain
 // together and one join reads the defaults of every project at once, so a read of many issues
 // pays one set of joins rather than a walk and a default lookup per row. A chain stops climbing
 // at the first issue that names a repository or at IssueDepthCap links up, which writes never
@@ -99,11 +102,11 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 // issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
-		select s.key as start, i.parent_key, i.repo, 0 as depth
+		select s.key as start, i.project_key, i.parent_key, i.repo, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
-		select c.start, p.parent_key, p.repo, c.depth + 1
-		from repo_chain c join issues p on p.key = c.parent_key
+		select c.start, c.project_key, p.parent_key, p.repo, c.depth + 1
+		from repo_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.repo is null and c.depth < ` + issueDepthCapSQL + `
 	), repo as (
 		select c.start as key,
@@ -148,11 +151,12 @@ var issueRepositoryQuery = `
 	where i.key = $1`
 
 // IssueRepository is the repository the issue key resolves to, read through q: its own, the
-// nearest one above it on `child_of`, or its project's default mapping; nil when none resolves,
-// and nil for an issue no row has and for the empty key. It runs IssueRepoTerms for one key, the
-// terms the issue reads run for a whole page, so it answers exactly what the issue page shows; a
-// chain the walk could not finish is an error rather than the project's default, which would be
-// a wrong answer. The results route makes this read for the issue of a check.
+// nearest one above it on `child_of` in its own project, or its project's default mapping; nil
+// when none resolves, and nil for an issue no row has and for the empty key. It runs
+// IssueRepoTerms for one key, the terms the issue reads run for a whole page, so it answers
+// exactly what the issue page shows; a chain the walk could not finish is an error rather than
+// the project's default, which would be a wrong answer. The results route makes this read for
+// the issue of a check.
 func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error) {
 	if key == "" {
 		return nil, nil

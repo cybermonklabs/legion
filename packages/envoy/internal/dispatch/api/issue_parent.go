@@ -61,8 +61,11 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by
-// $1: whether that issue, or any issue on its parent chain, carries the legion label. It lives
-// here because it is one more parent-chain walk bounded by parentDepthCap, like the ones above.
+// $1: whether that issue, or any issue of its own project on its parent chain, carries the legion
+// label. The walk climbs only to a parent of the issue's project, so it ends at the first
+// ancestor of another project as at a root: the label hands an issue to its own project's daemon,
+// and a parent of another project passes on none. It lives here because it is one more
+// parent-chain walk bounded by parentDepthCap, like the ones above.
 // Labels keep the case they were typed in and are only de-duplicated case-insensitively, so
 // `Legion` is a real stored value and the match is on lower(label). The walk starts at the issue
 // itself, so one query answers both its own labels and its ancestors'. A chain deeper than the
@@ -70,22 +73,23 @@ const legionLabel = "legion"
 // runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
 // issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
 // deep needs a reparent that refuseParentTooDeep would have refused.
-var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
+var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
-// than read - $1 its parent_key, $2 its labels - for a write that reads its advice before it
-// writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
-var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
+// than read - $1 its parent_key, $2 its labels, $3 its project - for a write that reads its
+// advice before it writes that row (writeAdviceBefore). The walk above it, and the depth cap,
+// are the same.
+var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, $3::text as project_key, 0 as depth`)
 
 // legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
-// parent_key, its labels and depth 0.
+// parent_key, its labels, its project and depth 0. Each step joins only a parent of that project.
 func legionWalkSQL(start string) string {
 	return `
 	with recursive chain as (
 		` + start + `
 		union
-		select p.parent_key, p.labels, c.depth + 1
-		from issues p join chain c on p.key = c.parent_key
+		select p.parent_key, p.labels, c.project_key, c.depth + 1
+		from issues p join chain c on p.key = c.parent_key and p.project_key = c.project_key
 		where c.depth < ` + parentDepthCapSQL + `
 	)
 	select exists (
@@ -108,10 +112,10 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 }
 
 // legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
-// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
-func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
+// labels, which the write has not written yet, and its project (legionManagedStatusOfRowSQL).
+func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key, project string, parent *string, labels []string) (bool, error) {
 	var managed bool
-	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {
+	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels, project).Scan(&managed); err != nil {
 		return false, fmt.Errorf("resolve whether Legion manages the status of %s: %w", key, err)
 	}
 	return managed, nil

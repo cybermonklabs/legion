@@ -487,12 +487,13 @@ type ExternalLink struct {
 }
 
 // IssueComponents is an issue's effective component attachment, resolved on
-// read: the nearest ancestor with its own attachment (either mode) decides,
-// and InheritedFrom names it when that ancestor is not the issue itself. Mode
-// "inherit" with no InheritedFrom means no issue on the parent chain chose —
-// the issue is unassigned. IDs is the effective set of live component ids;
-// Unknown the effective member ids a re-import has since retired (kept, never
-// dropped). Reason is set for mode "none".
+// read: the nearest ancestor of the issue's own project with its own
+// attachment (either mode) decides, and InheritedFrom names it when that
+// ancestor is not the issue itself. Mode "inherit" with no InheritedFrom means
+// no issue of its project on the parent chain chose — the issue is unassigned.
+// IDs is the effective set of live component ids; Unknown the effective member
+// ids a re-import has since retired (kept, never dropped). Reason is set for
+// mode "none".
 type IssueComponents struct {
 	Mode          string   `json:"mode"`
 	IDs           []string `json:"ids"`
@@ -584,7 +585,7 @@ type Issue struct {
 	// or not a project maps it; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's in its own project, else its project's default mapping, else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
