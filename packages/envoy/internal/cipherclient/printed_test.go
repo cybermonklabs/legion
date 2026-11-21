@@ -26,7 +26,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // printedSecret stands for a credential in a place it does not belong. No printed text holds it.

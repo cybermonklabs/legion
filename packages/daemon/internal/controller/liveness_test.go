@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 var probeNow = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
@@ -198,9 +200,8 @@ func TestProbeIsUnknown(t *testing.T) {
 	}
 	t.Run("the listener is unreachable", func(t *testing.T) {
 		var log bytes.Buffer
-		server := httptest.NewServer(http.NotFoundHandler())
-		url := server.URL
-		server.Close()
+		// A port the test holds and nothing listens on: every dial to it is refused.
+		url := "http://" + testport.Refused(t)
 		if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 			t.Fatalf("Probe = %s, want unknown", got)
 		}

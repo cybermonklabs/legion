@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // metadataServer stands in for a Google machine's metadata server (googleidentity.MetadataHostVar
@@ -66,18 +66,6 @@ func (s *sendStand) taken() []identityCall {
 	return calls
 }
 
-// closedHost is a loopback host and port nothing listens on: a machine with no metadata server.
-func closedHost(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold a loopback port: %v", err)
-	}
-	host := listener.Addr().String()
-	_ = listener.Close()
-	return host
-}
-
 // On Google Cloud, Dispatch presents its machine's service account (WithGoogleIdentity): the
 // metadata server mints an identity token for the listener's audience, which Dispatch keeps until
 // shortly before its own exp, and a send for a role is made on it, marked. A metadata server that
@@ -117,7 +105,9 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 	})
 
 	t.Run("a metadata server that does not answer for a moment: the send for a role fails as ErrAccountToken, never as no identity, and is not made on the shared token", func(t *testing.T) {
-		t.Setenv(googleidentity.MetadataHostVar, closedHost(t))
+		// A port the test holds and nothing listens on: a metadata server that does not answer, and
+		// one no other process can take and answer as (testport.Refused).
+		t.Setenv(googleidentity.MetadataHostVar, testport.Refused(t))
 		var logs bytes.Buffer
 		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 		_, err := client.Send(context.Background(), marked)
@@ -136,7 +126,7 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 	})
 
 	t.Run("a machine with no metadata server refuses to start, naming the setting", func(t *testing.T) {
-		t.Setenv(googleidentity.MetadataHostVar, closedHost(t))
+		t.Setenv(googleidentity.MetadataHostVar, testport.Refused(t))
 		err := CheckGoogleIdentity(context.Background())
 		if !errors.Is(err, googleidentity.ErrNoMetadataServer) || !strings.Contains(err.Error(), "ENVOY_ACCOUNT_GOOGLE_AUDIENCE") {
 			t.Fatalf("the start-time check with no metadata server = %v, want ErrNoMetadataServer naming ENVOY_ACCOUNT_GOOGLE_AUDIENCE", err)

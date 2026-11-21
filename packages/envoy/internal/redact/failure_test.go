@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 // failureSecret stands for a credential a person put where a setting expected a URL, a host or a
@@ -30,12 +32,9 @@ func TestClassPrintsTheFailuresKindAlone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, parseErr := url.Parse("https://user:" + failureSecret + "@host.example/%zz")
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
+	// A port the test holds and nothing listens on, so the dial is refused and no other process can
+	// take the port and answer (testport.Refused).
+	closed := testport.Refused(t)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+failureSecret+"@"+closed+"/?token="+failureSecret, nil)
 	if err != nil {
 		t.Fatal(err)

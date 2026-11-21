@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // TestATLSAlertReadsAsTheUpstreamAnswering: a mint's call that met a real TLS alert over TCP - the

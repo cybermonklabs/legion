@@ -5,7 +5,6 @@
 package main
 
 import (
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // edgeListenerAccount is the ServiceAccount BROKER_NATS_SERVICES lists as the edge listener of
@@ -194,15 +194,9 @@ func natsCalloutEnv(t *testing.T, services string) []string {
 		}
 		return path
 	}
-	// A port this test held and let go, so nothing answers there.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hub := "nats://" + listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// A port the test holds and nothing listens on, so nothing answers there and no other process
+	// can take it and answer (testport.Refused).
+	hub := "nats://" + testport.Refused(t)
 	return []string{
 		"BROKER_NATS_URLS=" + hub,
 		"BROKER_NATS_SEED_FILE=" + write("user.seed", nkeys.CreateUser),

@@ -42,6 +42,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -524,25 +526,26 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 }
 
 // startTries bounds the starts start makes, each on a fresh address and ports, while Docker
-// refuses to publish a port because something took the probed one first (loopbackPorts).
+// refuses to publish a port because something took the probed one first (testport.LoopbackPorts).
 const startTries = 5
 
 // start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
 // monitoring ports on a loopback address of its own and ports the kernel chose there
-// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
-// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
-// refuses the publish because a probed port was taken in between; an error names every refusal
-// before it as well as its own failure. It waits for the line nats-server logs once its listeners
-// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
-// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
-// client reaches the server. A container Docker created and never saw ready (a readiness wait that
-// timed out under load, or a refused publish) comes back beside the error, and is removed before
-// start returns: no test's end would remove a container the package shares.
+// (testport.LoopbackPorts), so a client another test left dialing an earlier container's port
+// cannot reach this one, and tries again on a fresh address and ports, up to startTries starts,
+// when Docker refuses the publish because a probed port was taken in between; an error names every
+// refusal before it as well as its own failure. It waits for the line nats-server logs once its
+// listeners are up, in place of the NATS module's own wait, a dial of the client port at
+// localhost, where the port is not published; each caller's own connect (connect, ready,
+// answering) is the proof a client reaches the server. A container Docker created and never saw
+// ready (a readiness wait that timed out under load, or a refused publish) comes back beside the
+// error, and is removed before start returns: no test's end would remove a container the package
+// shares.
 func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
-		host, ports, err := loopbackPorts(2)
+		host, ports, err := testport.LoopbackPorts(2)
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
@@ -556,7 +559,7 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 			return started, nil
 		}
 		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
-		if !addressInUse(err) {
+		if !testport.AddressInUse(err) {
 			return started, errors.Join(append(refused, err)...)
 		}
 		refused = append(refused, err)

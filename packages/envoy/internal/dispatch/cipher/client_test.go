@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // capturedRequest snapshots what the client actually put on the wire, so a subtest can assert

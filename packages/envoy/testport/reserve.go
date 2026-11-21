@@ -20,9 +20,6 @@ import (
 //
 // Unlike Refused, the reservation sets SO_REUSEADDR, so a process the caller starts can bind the
 // port; Refused sets neither reuse option, so nothing can.
-//
-// The daemon module's copy of this package (testport.go's comment) has no Reserve: it has no
-// caller there.
 func Reserve(addr syscall.Sockaddr, setup ...func(fd int) error) (int, int, error) {
 	family := syscall.AF_INET
 	if _, ok := addr.(*syscall.SockaddrInet6); ok {
