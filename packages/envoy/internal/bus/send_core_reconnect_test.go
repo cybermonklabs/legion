@@ -112,7 +112,12 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 		t.Fatalf("the flush timed out, so no answer was read; the test proves nothing: %v", got.err)
 	}
 
-	// The restarted server accepted every subscription it was sent.
+	// The restarted server accepted every subscription it was sent. nats.go reads CONNECTED before
+	// it sends the subscriptions again, under the connection's lock, so this flush's PING follows
+	// them and its PONG comes once the server has read, and traced, every one.
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the reconnected connection: %v", err)
+	}
 	trace := server.Log()
 	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
 	if sent := strings.Count(trace, "<<- [SUB "+subject+" "+queue+" "); sent == 0 {
