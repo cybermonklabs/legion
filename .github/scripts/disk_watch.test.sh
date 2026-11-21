@@ -204,10 +204,21 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'moun
   # in the state file is the sampler's pid inside its own PID namespace, so nothing here signals
   # it: `report`, which would, is left to the cases of the shared sampler. What the namespace's
   # commands print goes to $private_log, and is printed below when the setup fails.
+  # The write waits for the sampler's first sample: the sampler appends its first series line only
+  # once that sample's readings are in, so the write comes after a reading taken before it, and a
+  # watch that reads the disk once and repeats that reading fails the fall below whatever the
+  # timing. Without the wait, a first reading that came after the write - one held 0.6 s did - let
+  # such a watch pass.
   exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork sh -c '
     exec >"$7" 2>&1
     mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
     env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || { echo 91 >"$6"; exit; }
+    i=0
+    until [ -s "$5.series" ]; do
+      i=$((i + 1))
+      [ "$i" -le 200 ] || { echo 93 >"$6"; exit; }
+      sleep 0.05
+    done
     dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
     echo 0 >"$6"
     cat >/dev/null
@@ -235,7 +246,7 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'moun
     check "the sampler runs in the namespaces, seen by its command line" \
       "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
   else
-    printf '    setup status %s (90: mount, 91: start, 92: dd, none: no status in 20 s); its output:\n' \
+    printf '    setup status %s (90: mount, 91: start, 92: dd, 93: no first sample in 10 s, none: no status in 20 s); its output:\n' \
       "${private_status:-none}" >&2
     sed 's/^/    /' "$private_log" >&2 || true
   fi
