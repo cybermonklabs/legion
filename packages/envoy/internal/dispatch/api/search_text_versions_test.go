@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -333,15 +334,27 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // lock is released, reads answer within 800 ms, and for the 10 s after the slow read ended the
 // cursor still stands; then the fill says it continues and the cursor moves, and every event,
 // those written under the lock included, gets its rows.
+//
+// The fill is still catching up when the read turns slow because the test holds it there: a
+// share lock on search_text_versions, which only the fill writes, holds the fill's first batch at
+// its insert until the read is slow, and is then released, so that batch is the one in flight.
+// The fill asks the pause before each batch, and one with nothing left to write asks nothing, so
+// a fill left to run on its own was caught up before the read turned slow wherever its batches
+// are quicker than the read takes to turn slow: on a fast machine all 4,000 events were written
+// in 0.7 s.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	server := newKeywordServer(t)
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
+	inFlight, _ := textversionstest.BeginTransaction(t, server.database)
+	defer func() { _ = inFlight.Rollback(context.Background()) }()
+	if _, err := inFlight.Exec(t.Context(), `lock table search_text_versions in share mode`); err != nil {
+		t.Fatalf("lock search_text_versions: %v", err)
+	}
 	fill := startKeywordFill(t, server)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
-	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
-		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
+	if queued := storetest.WaitForLockWaiters(t, inFlight, 1, time.Minute); queued < 1 {
+		t.Fatalf("the fill's first batch did not wait on the keyword table's lock within a minute:\n%s", fill.Log())
 	}
 
 	holder, _ := textversionstest.BeginTransaction(t, server.database)
@@ -357,6 +370,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
+	if err := inFlight.Rollback(t.Context()); err != nil {
+		t.Fatalf("release search_text_versions: %v", err)
+	}
 	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
