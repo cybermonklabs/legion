@@ -10,10 +10,10 @@
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
-# the waits 1 s and 2 s, or 1 s. The control sets the knob to 100000 and reads that the ladder
-# asked for no wait; a wait made some other way (an absolute path to sleep, `read -t`) is no
-# record, so the control also runs that drive under a real `timeout 120` and holds it to exit 0,
-# which such a wait of 100000 s cannot reach.
+# the waits 1 s and 2 s, or 1 s. The control reads that a gh answering at once makes the drive
+# wait for nothing at all, by any means: it runs that drive under strace and holds it to no
+# timed-wait system call (TIMED_WAITS below), which a `sleep` by any path, a `read -t` and any
+# other wait with a timeout make, whatever its length.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
@@ -117,6 +117,19 @@ real_timeout=$(type -P timeout) ||
   { echo "dispatch-browser-run-reads.test.sh needs /proc (Linux) for the cases that stage a" \
       "killed wrapper" >&2
     exit 1; }
+
+# The control's tracer, refused by name where there is none, in the shape of the guards above.
+# GitHub's runner image carries no strace, so ci.yaml's test job installs it before this step.
+real_strace=$(type -P strace) ||
+  { echo "dispatch-browser-run-reads.test.sh needs strace on PATH for its negative control" >&2
+    exit 1; }
+# The system calls that wait with a timeout, on x86_64 and on arm64 (which has no select, poll or
+# epoll_wait): a sleep binary and bash's sleep builtin make clock_nanosleep or nanosleep, `read -t`
+# makes pselect6, and the rest are the other ways a process can wait out a clock. A regex, so
+# strace matches only the calls the host's architecture has. The drive at this file's head makes
+# none of them: traced on 2026-11-21, it made 0, and a `/usr/bin/sleep 1` after gh answered made
+# clock_nanosleep, a `read -t 1` on a FIFO pselect6.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep|select|pselect6|poll|ppoll|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait)$'
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
 # whole argument list of every call it is given, one file per call, whether or not it stands in
@@ -560,20 +573,24 @@ check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
-# The two cases above read the waits the ladder asked of `sleep`, and this one holds that it asks
-# for none when gh answers at once. The knob is 100000, so a wait the stand-in does not record -
-# `sleep` by its absolute path, `read -t`, any wait after the answer - ends this drive at the
-# real `timeout 120` with status 124 instead of 0.
+# The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
+# answering at once makes the drive wait for nothing. A wait the stand-in does not record - a
+# sleep binary by its absolute path, `read -t`, any wait after the answer, of any length - makes
+# a system call TIMED_WAITS names, so the drive runs under strace and the trace must hold none.
+# The knob is 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the
+# knob also ends it with 124.
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_timeout" 120 \
-  "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_strace" -f -qq -e signal=none \
+  -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
-check "exits 0 within 120 s, so it waited for nothing however it might" "$(is "$status" 0)"
+check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
+check "and makes no timed wait of any kind" "$(is "$(wc -l < "$work/waits")" 0)"
+[ ! -s "$work/waits" ] || sed 's/^/    traced: /' "$work/waits"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

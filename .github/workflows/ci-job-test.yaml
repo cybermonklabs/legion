@@ -498,7 +498,11 @@ jobs:
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
-      # refusal messages are checked here rather than on a runner against GitHub.
+      # refusal messages are checked here rather than on a runner against GitHub. Its negative
+      # control traces the drive's timed waits with strace, which the runner image does not carry.
+      - name: Install strace for the browser lane's run reads
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
       - name: Test the browser lane's run reads
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
         run: .github/scripts/dispatch-browser-run-reads.test.sh
