@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "./host-tools";
+import {
+  hostTool,
+  requireHostTools,
+  skipOutsideCI,
+  skipOutsideCIBecause,
+  skipWithout,
+} from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -80,4 +86,72 @@ test("the warning names the calling file under a path that holds a space", () =>
   const run = Bun.spawnSync([process.execPath, caller], { stdout: "pipe", stderr: "pipe" });
   expect(run.exitCode).toBe(0);
   expect(run.stderr.toString()).toContain(`Skipped the tests in ${caller}.`);
+});
+
+/** Runs `body` with GITHUB_ACTIONS set to `value`, or unset for undefined, and restores it. */
+function underActions<T>(value: string | undefined, body: () => T): T {
+  const before = process.env.GITHUB_ACTIONS;
+  if (value === undefined) delete process.env.GITHUB_ACTIONS;
+  else process.env.GITHUB_ACTIONS = value;
+  try {
+    return body();
+  } finally {
+    if (before === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = before;
+  }
+}
+
+test("skipOutsideCI is false and prints nothing when the host has every program, in CI or not", () => {
+  for (const value of [undefined, "true"]) {
+    let skipped: boolean | undefined;
+    const warnings = warningsFrom(() => {
+      skipped = underActions(value, () => skipOutsideCI("sh"));
+    });
+    expect({ value, skipped, warnings }).toEqual({ value, skipped: false, warnings: [] });
+  }
+});
+
+test("skipOutsideCI outside CI is true and prints one warning, of the missing programs and this file", () => {
+  let skipped: boolean | undefined;
+  const warnings = warningsFrom(() => {
+    skipped = underActions(undefined, () => skipOutsideCI(ABSENT, "sh", ABSENT_TOO));
+  });
+  expect(skipped).toBe(true);
+  expect(warnings).toHaveLength(1);
+  const warning = warnings[0] ?? "";
+  expect(warning).toContain(`Skipped the tests in ${import.meta.path}.`);
+  expect(warning).toContain(`does not have: ${ABSENT}, ${ABSENT_TOO}.`);
+});
+
+test("skipOutsideCI under GITHUB_ACTIONS throws, naming the missing programs and this file, and skips nothing", () => {
+  const warnings = warningsFrom(() => {
+    expect(() => underActions("true", () => skipOutsideCI(ABSENT, "sh", ABSENT_TOO))).toThrow(
+      `The tests in ${import.meta.path} cannot run on this CI runner. This host does not have: ${ABSENT}, ${ABSENT_TOO}.`
+    );
+  });
+  expect(warnings).toEqual([]);
+});
+
+test("skipOutsideCIBecause takes the caller's own reason: none is false, one skips outside CI and throws in it", () => {
+  expect(underActions("true", () => skipOutsideCIBecause(""))).toBe(false);
+  let skipped: boolean | undefined;
+  const warnings = warningsFrom(() => {
+    skipped = underActions(undefined, () => skipOutsideCIBecause("This host has no libpq."));
+  });
+  expect(skipped).toBe(true);
+  expect(warnings).toEqual([
+    `Skipped the tests in ${import.meta.path}. This host has no libpq. Install what is missing and run the tests again.`,
+  ]);
+  expect(() => underActions("true", () => skipOutsideCIBecause("This host has no libpq."))).toThrow(
+    `The tests in ${import.meta.path} cannot run on this CI runner. This host has no libpq.`
+  );
+});
+
+test("requireHostTools passes where the host has every program and throws naming the missing ones, in CI or not", () => {
+  for (const value of [undefined, "true"]) {
+    underActions(value, () => requireHostTools("sh"));
+    expect(() => underActions(value, () => requireHostTools(ABSENT, "sh", ABSENT_TOO))).toThrow(
+      `This test needs ${ABSENT}, ${ABSENT_TOO} on PATH, which this host does not have; it fails rather than skips.`
+    );
+  }
 });

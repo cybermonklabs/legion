@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
@@ -13,7 +13,7 @@ import { procRootOf } from "./proc-root";
 // (lib/proc-root.ts), so its time is its own and not the host's process count.
 const leftovers = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
-const skip = skipWithout("perl", "sleep", "find");
+const skip = skipOutsideCI("perl", "sleep", "find");
 const prefix = "legion-e2e-leftovers-test";
 
 const started: number[] = [];

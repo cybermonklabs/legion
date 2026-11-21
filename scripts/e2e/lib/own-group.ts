@@ -23,9 +23,9 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
  * or Bun.spawn's `detached`) is the wrong tool: its group is orphaned from the start.
  *
  * Everything a harness shell started this way runs in the background (`&`, job control off) stays
- * in the shell's group, which is its own. A file whose rows call ownGroup skips them by name where
- * the host has no perl (skipWithout("perl")); ownGroup itself throws, naming perl, for a caller that
- * did not.
+ * in the shell's group, which is its own. A file whose rows call ownGroup gates them on perl
+ * (skipOutsideCI("perl"): skipped by name outside CI, failed by name under GITHUB_ACTIONS);
+ * ownGroup itself throws, naming perl, for a caller that did not.
  */
 let perl = "";
 

@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
@@ -16,10 +16,10 @@ import { scriptFunctions } from "./script-functions";
 // run's directory, found by that variable, and a helper working inside it. tmux kill-server ends
 // the pane and leaves all three alive, as the brokers outlived cleanup-is-complete in the devbox
 // run at 6512c7fc. The pane the stand-in broker starts is a real tmux pane, and the teardown this
-// test is about is tmux kill-server's, so a host with no tmux runs nothing here and says what is
-// missing. CI is not such a host: its `test` job runs `bun test scripts/e2e/lib` before its
-// `Install tmux` step (.github/workflows/ci.yaml), and the row runs there anyway, because the
-// ubuntu-24.04 image the job runs on already carries tmux.
+// test is about is tmux kill-server's, so a host with no tmux skips the row naming tmux, and under
+// GITHUB_ACTIONS fails it naming tmux (skipOutsideCI). CI's `test` job
+// (.github/workflows/ci-job-test.yaml) installs no tmux of its own: the ubuntu-24.04-arm image it
+// runs on already carries it.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
 const scriptPath = join(e2e, "parked-decision-devbox.sh");
@@ -28,7 +28,7 @@ const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
 
 // Read once, at module scope: a call inside the test body would print the warning per row.
-const skip = skipWithout("tmux");
+const skip = skipOutsideCI("tmux");
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
@@ -267,37 +267,34 @@ wait
 // and a name that holds a newline cut a first-line read short of the session field, so a broker so
 // named was tied to no broker.pid and outlived the run. The walk reads a proc root of the broker
 // alone (lib/proc-root.ts), so the row's time is its own and not the host's process count.
-test.skipIf(skipWithout("python3"))(
-  "stops a broker's session whose leader's name holds a newline and a `) `",
-  async () => {
-    const work = join(dir, "newline-broker");
-    const runtime = join(work, "state", "omp-daemon");
-    mkdirSync(runtime, { recursive: true });
-    const pidFile = join(runtime, "broker.pid");
-    // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
-    // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
-    const broker = Bun.spawn(
-      [
-        "python3",
-        "-I",
-        "-c",
-        'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
-        pidFile,
-      ],
-      {
-        env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
-        stdout: "ignore",
-        stderr: "ignore",
-      }
-    );
-    teardowns.push(() => {
-      if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
-    });
-    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
-    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
-    const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
-    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-    await until("the broker to end", () => !alive(broker.pid));
-  },
-  30_000
-);
+test("stops a broker's session whose leader's name holds a newline and a `) `", async () => {
+  requireHostTools("python3");
+  const work = join(dir, "newline-broker");
+  const runtime = join(work, "state", "omp-daemon");
+  mkdirSync(runtime, { recursive: true });
+  const pidFile = join(runtime, "broker.pid");
+  // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
+  // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
+  const broker = Bun.spawn(
+    [
+      "python3",
+      "-I",
+      "-c",
+      'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
+      pidFile,
+    ],
+    {
+      env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
+      stdout: "ignore",
+      stderr: "ignore",
+    }
+  );
+  teardowns.push(() => {
+    if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+  });
+  await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+  expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
+  const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
+  expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+  await until("the broker to end", () => !alive(broker.pid));
+}, 30_000);

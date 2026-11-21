@@ -5,7 +5,7 @@ import https from "node:https";
 import net, { type AddressInfo } from "node:net";
 import { join } from "node:path";
 import tls from "node:tls";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
@@ -21,7 +21,7 @@ const keyFile = join(scratch, "key.pem");
 const closers: (() => void)[] = [];
 let tlsFiles: { readonly cert: Buffer; readonly key: Buffer };
 
-const skip = skipWithout("openssl");
+const skip = skipOutsideCI("openssl");
 
 beforeAll(() => {
   if (skip) return;

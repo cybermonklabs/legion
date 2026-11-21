@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
@@ -38,7 +38,7 @@ if (!onLinux) {
   );
 }
 // Both gates are read, so a host that has neither says so about both.
-const withoutGo = skipWithout("go");
+const withoutGo = skipOutsideCI("go");
 const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {

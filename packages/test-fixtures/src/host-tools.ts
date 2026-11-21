@@ -25,7 +25,56 @@ export function skipWithout(...names: string[]): boolean {
 }
 
 /**
- * The file that called `skipWithout`: the first frame of the stack that is not this module's own.
+ * The gate for a test that needs host programs, under the repository's convention for a test a
+ * machine cannot run (skipOutsideCI in packages/daemon/internal/launcher/rolenamespace_test.go):
+ * outside CI it is `skipWithout`, true with one warning naming every missing program and the
+ * file; under GITHUB_ACTIONS a missing program is a broken runner, never a green job with the
+ * proof gone from it, so it throws, naming them and the file, and the file fails. With no names,
+ * or with every program present, it is false and prints nothing. Call it once, at module scope.
+ */
+export function skipOutsideCI(...names: string[]): boolean {
+  const missing = names.filter((name) => hostTool(name) === null);
+  return skipOutsideCIBecause(
+    missing.length === 0 ? "" : `This host does not have: ${missing.join(", ")}.`
+  );
+}
+
+/**
+ * `skipOutsideCI` for a reason of the caller's own, a sentence such as "This host has no libpq.":
+ * an empty reason is false and prints nothing; any other skips outside CI, warning with the reason
+ * and the file, and throws them under GITHUB_ACTIONS.
+ */
+export function skipOutsideCIBecause(reason: string): boolean {
+  if (reason === "") return false;
+  const file = callerFile(new Error().stack);
+  const where = file === undefined ? "in this file" : `in ${file}`;
+  if (process.env.GITHUB_ACTIONS === "true") {
+    throw new Error(
+      `The tests ${where} cannot run on this CI runner. ${reason} ` +
+        "The job must provide it: under GITHUB_ACTIONS a test this machine cannot run fails, never skips."
+    );
+  }
+  console.warn(
+    `Skipped the tests ${where}. ${reason} Install what is missing and run the tests again.`
+  );
+  return true;
+}
+
+/**
+ * For a test that never skips: throws, naming every program of `names` the host lacks, so the test
+ * fails by name rather than at whichever line first runs the program. Call it in the test's body.
+ */
+export function requireHostTools(...names: string[]): void {
+  const missing = names.filter((name) => hostTool(name) === null);
+  if (missing.length === 0) return;
+  throw new Error(
+    `This test needs ${missing.join(", ")} on PATH, which this host does not have; it fails rather than skips.`
+  );
+}
+
+/**
+ * The file that called a gate of this module: the first frame of the stack that is not this
+ * module's own.
  * Without it the warning says only which programs are missing, and a reader of a run of hundreds of
  * files cannot tell whose tests did not run.
  *

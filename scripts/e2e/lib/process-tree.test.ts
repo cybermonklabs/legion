@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostTool, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -17,7 +17,7 @@ const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
 // perl: run starts every harness through ownGroup (lib/own-group.ts).
-const skip = skipWithout("bash", "sleep", "sh", "perl");
+const skip = skipOutsideCI("bash", "sleep", "sh", "perl");
 const program = join(dir, "program");
 const literalPattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const other = join(dir, "other");
@@ -357,7 +357,7 @@ echo "none: status $st: \${why%%:*}"
 // calls one is named in the log, and the row fails. The traced row, where strace is on the host,
 // also holds that the helpers list no directory but the task directory of a process they ask about
 // and open no other process's entry.
-const noStrace = skipWithout("strace");
+const noStrace = skipOutsideCI("strace");
 const logPsPgrepPkillCalls = `mkdir -p "$scratch/bin"
 for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
 PATH="$scratch/bin:$PATH"`;
@@ -740,6 +740,9 @@ echo "agent $agent"
   );
 });
 
+// ps: the row of the block below that answers through ps where there is no /proc.
+const noPs = skipOutsideCI("ps");
+
 // proc_start gives a zombie no start, since a zombie runs nothing any more and a signal held to its
 // start would reach no process; and the environment readers (env_of, env_has, env_length,
 // names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
@@ -770,7 +773,7 @@ echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
   // of an instance that may have exited already), and a failure ends that caller with no word of
   // why. The row makes the helper's own test of /proc/self read false, and the host's ps answers
   // through a wrapper that counts its calls, so the row shows the fallback was the path taken.
-  test.skipIf(hostTool("ps") === null)(
+  test.skipIf(noPs)(
     "proc_parent, proc_group and proc_start answer through ps where there is no /proc: nothing, and success, for a process that is gone, and a live one's own",
     () => {
       const r = run(`mkdir -p "$scratch/bin"

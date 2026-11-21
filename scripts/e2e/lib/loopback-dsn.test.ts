@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { requireHostTools, skipOutsideCIBecause } from "@legion/test-fixtures/host-tools";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
 // last block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
-// sources, and pins the connection string it answers with. A host with no python3 or no libpq
-// skips them, naming what it lacks.
+// sources, and pins the connection string it answers with. A host with no python3 fails them,
+// naming it; a host with no libpq skips them naming it, and fails them so under GITHUB_ACTIONS.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -58,17 +58,14 @@ function rewrite(dsn: string, database: string): { code: number; url: string; re
   };
 }
 
-const withoutPython = skipWithout("python3");
+// Every row runs the helper under python3, so a host without it fails the file by name.
+requireHostTools("python3");
 // The helper refuses every DSN where this host has no libpq, and says so in that refusal.
-const withoutLibpq =
-  !withoutPython && guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq");
-if (withoutLibpq) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. The helper reads each DSN with libpq, and ` +
-      `ctypes.util.find_library("pq") finds none on this host; install libpq5.`
-  );
-}
-const skip = withoutPython || withoutLibpq;
+const skip = skipOutsideCIBecause(
+  guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq")
+    ? 'The helper reads each DSN with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.'
+    : ""
+);
 
 describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {
   test("the DSN a run is given prints its host", () => {

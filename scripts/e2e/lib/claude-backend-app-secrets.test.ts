@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostTool, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
@@ -97,7 +97,7 @@ const tools = [
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-in PATH below is built from.
 const found = new Map(tools.map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout(...tools);
+const skip = skipOutsideCI(...tools);
 
 // Nothing below is read by a run that will not happen, so a host that skips builds none of it;
 // and it is built in a hook, below the one the reservation registered, so a run that selects no

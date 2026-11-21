@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { skipOutsideCIBecause } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
@@ -133,10 +134,10 @@ if ((process.env.HOME ?? "") === "") {
       "version manager's shim"
   );
 }
-const skip = reasons.length > 0;
-if (skip) {
-  console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
-}
+// Outside CI the row skips, naming why; under GITHUB_ACTIONS it fails so (skipOutsideCIBecause).
+const skip = skipOutsideCIBecause(
+  reasons.length > 0 ? `The row that runs the rig cannot run: ${reasons.join("; ")}.` : ""
+);
 const keyFile = join(dir, "model-key");
 
 // The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module

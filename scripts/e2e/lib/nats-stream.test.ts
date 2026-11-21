@@ -2,14 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, type NatsConnection } from "nats";
 import { readLast } from "./nats-stream";
 
 // The NATS server these rows read is a container this file starts, so a host with no docker runs
 // none of them.
-const skip = skipWithout("docker");
+const skip = skipOutsideCI("docker");
 const root = join(import.meta.dir, "..", "..", "..");
 const container = `legion-nats-stream-${randomUUID()}`;
 const stream = `NATS_STREAM_${randomUUID().replaceAll("-", "_")}`;

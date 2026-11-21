@@ -156,6 +156,15 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test under `scripts/e2e/lib` gates on a host program with `skipOutsideCI` from the same module
+  instead: outside CI it skips as `skipWithout` does, naming the program, and under
+  `GITHUB_ACTIONS` it fails the file naming the program, since the job that runs those tests
+  carries every program they need, and a skip there would be a green job with the proof gone
+  (`skipOutsideCI` in `packages/daemon/internal/launcher/rolenamespace_test.go` is the same rule).
+  `skipOutsideCIBecause` takes a reason of the caller's own (a library such as libpq). A test that
+  never skips for a program calls `requireHostTools` in its body, which fails it naming the program
+  on any host: the rows that run python3 do.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f

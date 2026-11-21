@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostTool, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { ownGroup, untilRunning } from "./own-group";
 
-const skip = skipWithout("perl", "bash", "sleep", "true");
+const skip = skipOutsideCI("perl", "bash", "sleep", "true");
 
 const started: number[] = [];
 afterEach(() => {

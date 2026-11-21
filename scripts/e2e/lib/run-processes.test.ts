@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
@@ -19,9 +19,9 @@ const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
-// python3: the newline-name row renames its process through prctl (ctypes).
-const withoutPython = skipWithout("python3");
+const skip = skipOutsideCI("perl");
+// python3: the newline-name row renames its process through prctl (ctypes), and fails by name
+// without it rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -629,9 +629,10 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip || withoutPython)(
+test.skipIf(skip)(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
+    requireHostTools("python3");
     // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
     // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
     // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing

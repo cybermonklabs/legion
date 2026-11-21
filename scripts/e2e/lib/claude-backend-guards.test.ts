@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostTool, requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -33,7 +33,7 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep", "sh", "perl");
+const skip = skipOutsideCI("bash", "sleep", "sh", "perl");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -353,6 +353,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
       // environment and passed as data, not the first python3 on PATH: under `env -i` a version
       // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      requireHostTools("python3");
       const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
       const python = resolved.stdout.toString().trim();
       if (resolved.exitCode !== 0 || !isAbsolute(python)) {
