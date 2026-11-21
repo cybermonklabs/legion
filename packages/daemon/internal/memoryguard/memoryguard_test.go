@@ -9678,6 +9678,276 @@ func TestMemoryGuardCountsItsProgramsGrowthSinceTheKillForAForkTheSearchReadBefo
 	}
 }
 
+// A process whose reads at the reading of a kill, both before that kill, are first a fork's read
+// and then, once it runs a program of its own, a read that is no fork's, has its size as of the
+// kill from the read of the program it runs now, and that size counts whatever it runs next
+// (asOfKill, anotherProgram, keepGrowth; INFRA-3531 R1 of spec version 43: "ends the next process
+// in the same order at once, but only while a process it may end has grown since the previous
+// kill"; INFRA-3368's architect's decision of 2026-11-20 that keepKillSizes states: "the lowest of
+// the process's reads of the program it runs now"). This is the finding of thread
+// PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273, and the deep review's
+// probe at 6b8c4d9b (forkExecsAtTheMark): at the reading at the mark the reads again read pid 301,
+// a fork of pid 300 that runs its program at 260 MiB, as a fork's read; between that read and the
+// assessment's read of the same reading pid 301 runs python3 build.py of 150 MiB, and act then ends
+// pid 300. Pid 301 is flat after the kill and the next reading has not fallen, so nothing grew
+// since the kill: no go-on. In the control pid 301 runs its parent's program throughout, and its
+// size as of the kill is its fork's read of 260 MiB. At 6b8c4d9b forkAtReading flagged both reads
+// of the exec case a fork's, so pid 301's size as of the kill was 150 MiB from a fork's read, which
+// counts from 0 once pid 301 is no fork: the guard saw 150 MiB of growth since the kill and ended
+// pid 301 too, the kills [300 301]. The tester's mutants a2 and a4 (test handoff version 20) keep
+// that fork test and fail here as the head does. The mutant a1, the newest read's flag with no read
+// of another program skipped, passes, since the new program's read is the lower one here; the next
+// test kills it.
+func TestMemoryGuardTakesNoGrowthSinceAKillFromAForkThatRunsItsOwnProgramBetweenTwoReadsOfTheKillsReading(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exec forkExec
+		// want is pid 301's size as of the kill of pid 300.
+		want forkRead
+	}{
+		{"control: pid 301 stays a fork", noExec, forkRead{size: 260 * mib, fork: true}},
+		{"pid 301 runs its own program between its two reads before the kill", execBetweenTheReads, forkRead{size: 150 * mib}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, asOf := forkExecsAtTheMark(t, 260, 260, tc.exec)
+			if asOf != tc.want {
+				t.Errorf("pid 301's size as of the kill of pid 300 is %d MiB from a read with fork=%t, want %d MiB with fork=%t: the size of the program pid 301 runs at its newest read before the kill",
+					asOf.size/mib, asOf.fork, tc.want.size/mib, tc.want.fork)
+			}
+			if got := h.signal.kills(); !slices.Equal(got, []int{300}) {
+				t.Fatalf("the guard killed %v, want [300]: pid 301 is flat since the kill of pid 300 and the reading has not fallen, so there is no go-on; it ended %+v; the log:\n%s",
+					got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+			}
+			h.requireKilled(300)
+		})
+	}
+}
+
+// As TestMemoryGuardTakesNoGrowthSinceAKillFromAForkThatRunsItsOwnProgramBetweenTwoReadsOfTheKillsReading,
+// but the fork's read at the mark is the lower one: pid 301, at 260 MiB in the band, holds 100 MiB
+// at the reads again, a fork's read, and then runs python3 build.py of 150 MiB before the
+// assessment's read (forkExecsAtTheMark). Its size as of the kill of pid 300 is 150 MiB, no fork's,
+// the read of the program it runs now: its fork's read of 100 MiB is of another program, so it is
+// no size of that program (asOfKill, anotherProgram; INFRA-3531 R1 of spec version 43; INFRA-3368's
+// architect's decision of 2026-11-20 that keepKillSizes states: "the lowest of the process's reads
+// of the program it runs now"). Pid 301 is flat at 150 MiB after the kill and the next reading has
+// not fallen, so the guard does not go on. This kills the tester's mutant a1 of thread
+// PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273 (test handoff version 20):
+// the newest read's flag given to every read of the kill's reading, with no read of another program
+// skipped, takes the fork's 100 MiB as a size that is no fork's, sees 50 MiB of growth since the
+// kill and ends pid 301. At 6b8c4d9b, and with the mutants a2 and a4, the size is 100 MiB from a
+// fork's read, which counts from 0 now that pid 301 is no fork, and the guard ends pid 301 too: the
+// finding of that thread.
+func TestMemoryGuardTakesTheNewProgramsReadAsTheSizeAsOfAKillWhereTheForksReadAtThatReadingIsLower(t *testing.T) {
+	h, asOf := forkExecsAtTheMark(t, 260, 100, execBetweenTheReads)
+	if want := (forkRead{size: 150 * mib}); asOf != want {
+		t.Errorf("pid 301's size as of the kill of pid 300 is %d MiB from a read with fork=%t, want %d MiB with fork=%t: its read of python3 build.py, and not its lower read of its parent's program",
+			asOf.size/mib, asOf.fork, want.size/mib, want.fork)
+	}
+	if got := h.signal.kills(); !slices.Equal(got, []int{300}) {
+		t.Fatalf("the guard killed %v, want [300]: pid 301's program held 150 MiB at a read before the kill of pid 300 and is flat since, and the reading has not fallen, so there is no go-on; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+	h.requireKilled(300)
+}
+
+// A process that runs a program of its own between the band's last reading and the reading of the
+// kill has its size as of the kill from its reads at that reading, and not from its last read
+// before it, a fork's read of its parent's program, though that read is the lower one (asOfKill,
+// anotherProgram; INFRA-3531 R1 of spec version 43; INFRA-3368's architect's decision of 2026-11-20
+// that keepKillSizes states: "the lowest of the process's reads of the program it runs now, from
+// its last read that finished before the kills' reading up to the decision's read", and of
+// 2026-11-20T08:13Z, item 1, by which a read is of another program than a later one where it was a
+// fork's read and the later one is not). Pid 301, a fork of pid 300 at 260 MiB in the band, holds
+// 100 MiB at the band's last reading, a fork's read, and runs python3 build.py of 150 MiB before the
+// reading at the mark (forkExecsAtTheMark), so both its reads there, before the kill of pid 300, are
+// of that program. Its size as of the kill is 150 MiB, no fork's; it is flat after the kill and the
+// next reading has not fallen, so the guard does not go on. This kills the tester's mutant a4 of
+// thread PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273 (test handoff version
+// 20): the reading before's read taken whatever its program keeps the fork's read of 100 MiB, which
+// counts from 0 now that pid 301 is no fork, sees 150 MiB of growth since the kill and ends pid 301.
+func TestMemoryGuardTakesTheNewProgramsReadAsTheSizeAsOfAKillWhereTheReadingBeforeReadAForkLower(t *testing.T) {
+	h, asOf := forkExecsAtTheMark(t, 100, 0, execBeforeTheMark)
+	if want := (forkRead{size: 150 * mib}); asOf != want {
+		t.Errorf("pid 301's size as of the kill of pid 300 is %d MiB from a read with fork=%t, want %d MiB with fork=%t: its reads of python3 build.py at the kill's reading, and not its lower fork's read at the reading before",
+			asOf.size/mib, asOf.fork, want.size/mib, want.fork)
+	}
+	if got := h.signal.kills(); !slices.Equal(got, []int{300}) {
+		t.Fatalf("the guard killed %v, want [300]: pid 301's program held 150 MiB at each read of the kill's reading and is flat since, and the reading has not fallen, so there is no go-on; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+	h.requireKilled(300)
+}
+
+// forkExec is where pid 301 of forkExecsAtTheMark runs a program of its own.
+type forkExec int
+
+const (
+	// noExec: it runs its parent's program throughout.
+	noExec forkExec = iota
+	// execBetweenTheReads: between the reads again at the mark (endHeld) and the assessment's read
+	// of that reading, both before the kill.
+	execBetweenTheReads
+	// execBeforeTheMark: between the band's last reading and the reading at the mark.
+	execBeforeTheMark
+)
+
+// forkExecsAtTheMark runs the deep review's probe of thread PRRT_kwDORFy7ds66ZPu6 of review round 6
+// of cybermonklabs/legion#4273 (6b8c4d9b), and answers the harness after the reading after the
+// kill, with pid 301's size as of the kill as the reading at the mark kept it (atKill). The agent,
+// pid 100, is protected at 2 GiB; pid 300, python3 pool.py, holds 600 MiB; pid 301, its fork, runs
+// its program at 200 MiB at the band's first reading, at 260 MiB from the next, and at last MiB at
+// the band's last reading; pid 303, python3 big.py, holds 500 MiB; and pid 302, python3 new.py of
+// 450 MiB, starts before the band's last reading, so it is new to the stay at the mark. Pid 301
+// holds atMark MiB at the reading at the mark, 3500 MiB, below the urgent share, where exec is not
+// execBeforeTheMark. Nothing has grown by the held reads there, so the reads again read pid 301,
+// which grew in the band, and pid 302, and choose pid 302 by the new tier; pid 302 has ended when
+// its kill is to go (onOpen), so endHeld sends nothing and the assessment of the same reading reads
+// pid 301 again. Where exec says, pid 301 runs python3 build.py of 150 MiB, a program of its own.
+// Its band reads of 260 MiB are in the window at the mark, so no read of it there grew over the
+// window, and act ends pid 300, the largest. The next reading, 3500 MiB, has not fallen, and pid
+// 301 is flat. It fails unless pid 301's reads are those of the case: a fork's read of last MiB at
+// the band's last reading, and two reads at the mark, both before the kill, each a fork's read of
+// atMark MiB before the exec and a read of 150 MiB that is no fork's after it.
+func forkExecsAtTheMark(t *testing.T, last, atMark uint64, exec forkExec) (*harness, forkRead) {
+	t.Helper()
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "pool.py"}, anon: 600 * mib}
+	fork := fakeProcess{pid: 301, ppid: 300, start: 3010, args: []string{"python3", "pool.py"}, anon: 200 * mib}
+	own := fakeProcess{pid: 301, ppid: 300, start: 3010, args: []string{"python3", "build.py"}, anon: 150 * mib}
+	pod.add(agent(2*gib), parent, fork, fakeProcess{pid: 303, ppid: 100, start: 3030, args: []string{"python3", "big.py"}, anon: 500 * mib})
+	pod.setAnon(3000 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	armed := false
+	h.signal.onOpen = func(pid int) {
+		if pid != 302 || !armed {
+			return
+		}
+		armed = false
+		// Pid 302 has ended since its read: its kill is not sent.
+		pod.remove(302)
+		if exec == execBetweenTheReads {
+			pod.add(own)
+		}
+	}
+	h.run()
+	pod.setAnon(3100 * mib)
+	h.tick()
+	// Pid 301 grows in the band, then is flat for the window before the band's last reading.
+	pod.resize(&fork, 260*mib)
+	pod.setAnon(3150 * mib)
+	h.tick()
+	for _, r := range []uint64{3200, 3250, 3300} {
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	pod.add(fakeProcess{pid: 302, ppid: 100, start: 3020, args: []string{"python3", "new.py"}, anon: 450 * mib})
+	pod.resize(&fork, last*mib)
+	pod.setAnon(3350 * mib)
+	h.tick()
+	h.requireKilled()
+	// Pid 301's reads at the mark: a fork's read of atMark MiB while it runs its parent's program,
+	// and a read that is no fork's once it runs its own.
+	want := []forkRead{{size: atMark * mib, fork: true}, {size: atMark * mib, fork: true}}
+	switch exec {
+	case execBeforeTheMark:
+		pod.add(own)
+		want[0], want[1] = forkRead{size: own.anon}, forkRead{size: own.anon}
+	case execBetweenTheReads:
+		pod.resize(&fork, atMark*mib)
+		want[1] = forkRead{size: own.anon}
+	default:
+		pod.resize(&fork, atMark*mib)
+	}
+	armed = true
+	pod.setAnon(3500 * mib)
+	h.tick()
+	if got := h.signal.kills(); !slices.Equal(got, []int{300}) {
+		t.Fatalf("at the mark the guard killed %v, want [300]; it ended %+v; the log:\n%s", got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+	key := procKey{pid: 301, start: 3010}
+	if r, before := h.g.sizes[key], (forkRead{size: last * mib, fork: true}); !r.readBefore || r.before != before || r.beforeKill != 2 || !slices.Equal(r.atReading, want) {
+		t.Fatalf("pid 301's last read before the reading at the mark is %+v (kept %t), and its reads there are %+v, %d of them before the kill; want %+v, and %+v, both before the kill: the case this test is about did not occur; the log:\n%s",
+			r.before, r.readBefore, r.atReading, r.beforeKill, before, want, strings.Join(h.log.all(), "\n"))
+	}
+	asOf := h.g.atKill[key]
+	// Not fallen, below the urgent share; pid 301 is flat.
+	pod.setAnon(3500 * mib)
+	h.tick()
+	return h, asOf
+}
+
+// A fork that the guard first reads after a kill, at the kill's reading, has its size as of the
+// kill from a fork's read where its last read there, made after its parent's, is a fork's read,
+// though its first read there came before its parent's and has no fork flag: so once it runs a
+// program of its own, that size counts from 0, all that program holds is growth since the kill,
+// and the guard goes on (asOfKill, keepGrowth; INFRA-3531 R1 of spec version 43: "ends the next
+// process in the same order at once, but only while a process it may end has grown since the
+// previous kill"; INFRA-3368's architect's decision of 2026-11-20 that keepKillSizes states: "its
+// first read after the kills only where the guard never read it before them", and its ruling of
+// 2026-11-20 by which a size as of a kill from a fork's read counts from 0 at a reading that finds
+// the process running another program; INFRA-3368's architect, 2026-11-21T08:54Z, item 2). The
+// stay is forkReadBeforeItsParentAtTheFirstKill's, each smaps read at the mark taking 20 ms: the
+// first reading at the mark, 3800 MiB, at or above the urgent share, reads pid 300 again and ends
+// it, the stay's first kill; the search after that kill reads pid 402, then pid 401, a fork of pid
+// 400 that runs its program and reports 305 MiB, and stops before pid 400, so that read of pid 401
+// has no fork flag; the full read after the kill reads pid 400 and flags its own read of pid 401 a
+// fork's. Pid 401 then runs python3 build.py of 140 MiB, and the next reading, 3800 MiB, has not
+// fallen: pid 401's program has grown 140 MiB since the kill, counted from 0, so the guard goes on
+// and ends pid 402, the largest new to the stay. This kills the tester's mutant a2 of thread
+// PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273 (test handoff version 20):
+// the first read's own flag after the kill keeps 305 MiB as a size that is no fork's, so the 140
+// MiB of pid 401's program are no growth since the kill, and the guard ends nothing.
+func TestMemoryGuardCountsItsProgramsGrowthSinceTheKillForAForkTheSearchReadBeforeItsParentAfterTheKill(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "grow.py"}, anon: 420 * mib}
+	pod.add(agent(2*gib), grower)
+	pod.setAnon(3000 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	reads := recordReads(h)
+	_, each := slowMark(h)
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	pod.setAnon(3400 * mib)
+	h.tick()
+	pod.resize(&grower, 484*mib)
+	pod.add(fakeProcess{pid: 400, ppid: 100, start: 4000, args: []string{"python3", "pool.py"}, anon: 300 * mib},
+		fakeProcess{pid: 401, ppid: 400, start: 4010, args: []string{"python3", "pool.py"}, anon: 305 * mib},
+		fakeProcess{pid: 402, ppid: 100, start: 4020, args: []string{"python3", "new.py"}, anon: 450 * mib})
+	each.Store(int64(20 * time.Millisecond))
+	atMark := len(reads())
+	pod.setAnon(3800 * mib)
+	h.tick()
+	each.Store(0)
+	h.requireKilled(300)
+	var afterKill []int
+	for _, r := range reads()[atMark:] {
+		if !r.scan && r.killsBefore > 0 && (r.pid == 400 || r.pid == 401) {
+			afterKill = append(afterKill, r.pid)
+		}
+	}
+	key := procKey{pid: 401, start: 4010}
+	want := []forkRead{{size: 305 * mib}, {size: 305 * mib, fork: true}}
+	if r := h.g.sizes[key]; !slices.Equal(afterKill, []int{401, 400, 401}) || r.readBefore || r.beforeKill != 0 || !slices.Equal(r.atReading, want) {
+		t.Fatalf("after the kill of pid 300 the guard read the smaps of %v of pids 400 and 401 in that order, and pid 401's reads at that reading are %+v, %d of them before the kill (an earlier read %t); want [401 400 401], and %+v, none before the kill and none earlier: the case this test is about did not occur; the log:\n%s",
+			afterKill, r.atReading, r.beforeKill, r.readBefore, want, strings.Join(h.log.all(), "\n"))
+	}
+	if asOf, kept := h.g.atKill[key]; !kept || asOf != (forkRead{size: 305 * mib, fork: true}) {
+		t.Errorf("pid 401's size as of the kill of pid 300 is %d MiB from a read with fork=%t (kept %t), want 305 MiB from a fork's read, which counts from 0 once pid 401 runs a program of its own (keepGrowth): its last read at the kill's reading is a fork's read",
+			asOf.size/mib, asOf.fork, kept)
+	}
+	// Pid 401 runs a program of its own; the reading has not fallen.
+	pod.add(fakeProcess{pid: 401, ppid: 400, start: 4010, args: []string{"python3", "build.py"}, anon: 140 * mib})
+	pod.setAnon(3800 * mib)
+	h.tick()
+	if got := h.signal.kills(); !slices.Equal(got, []int{300, 402}) {
+		t.Fatalf("the guard killed %v, want [300 402]: at 3800 MiB, not fallen, pid 401's program has grown 140 MiB since the kill of pid 300, counted from 0, so the guard goes on and ends pid 402, the largest new to the stay; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+	h.requireKilled(300, 402)
+}
+
 // At an urgent reading of the wait after a kill, a process that the reads again read before their
 // first kill and that grew since the previous kill, but at whose read the floor did not hold, ends
 // with that first kill by rule=urgent, before the next read and before the full read, though it
