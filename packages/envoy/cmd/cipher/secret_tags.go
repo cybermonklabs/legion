@@ -15,18 +15,24 @@ import (
 // ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
 const ownerMe = "me"
 
-// checkOwnerTier answers the owner --owner names - me, shared, or a person's email, lowercased,
-// which must be one the broker accepts as a person owner (policy.ValidPersonOwner) - and refuses
-// any other --owner and a --tier that is neither agent nor human; "" passes either, for a form
-// where it is optional. A value it refuses is not printed, as no tag flag's is (valueNotPrinted).
+// checkOwnerTier answers the owner --owner names - me, shared, a person's email, lowercased,
+// which must be one the broker accepts as a person owner (policy.ValidPersonOwner), or a group as
+// group: and its lowercase email (policy.ValidGroupOwner) - and refuses any other --owner and a
+// --tier that is neither agent nor human; "" passes either, for a form where it is optional. A
+// group is refused rather than lowercased when it holds an upper-case letter, as a requesters
+// entry naming it is (policy.ErrRequestersEntry): a group-owned google-service-account secret's
+// list names its owner group exactly as the owner tag does (policy.RequesterRule), so the two are
+// written alike. A value it refuses is not printed, as no tag flag's is (valueNotPrinted).
 func checkOwnerTier(owner, tier string) (string, error) {
 	var errs []error
 	switch lower := strings.ToLower(owner); {
-	case owner == "", owner == ownerMe, owner == policy.OwnerShared:
+	case owner == "", owner == ownerMe, owner == policy.OwnerShared, policy.ValidGroupOwner(owner):
+	case policy.ValidGroupOwner(lower):
+		errs = append(errs, fmt.Errorf("--owner group:EMAIL names a group by its lowercase email, as every requesters entry naming the group does, so it is written in lower case %s", valueNotPrinted))
 	case policy.ValidPersonOwner(lower):
 		owner = lower
 	default:
-		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email %s", ownerMe, policy.OwnerShared, valueNotPrinted))
+		errs = append(errs, fmt.Errorf("--owner is %s, %s, a person's email or group:EMAIL, a group's lowercase email %s", ownerMe, policy.OwnerShared, valueNotPrinted))
 	}
 	if tier != "" && tier != policy.TierAgent && tier != policy.TierHuman {
 		errs = append(errs, fmt.Errorf("--tier is %s or %s %s", policy.TierAgent, policy.TierHuman, valueNotPrinted))
@@ -133,16 +139,18 @@ func checkGitHubOwnersFor(secretType, owners string, named bool) error {
 }
 
 // checkRequesters is --requesters' rule, the broker's own (policy.ParseRequesterShapes): people
-// by their lowercase sign-in email and services by their registered name, separated by spaces,
-// which the shell quotes as one argument; a comma is refused. This CLI checks shapes rather than
-// the registered list, since it holds none: an entry naming a service is checked for a service
-// name's shape alone here, and a name the deployment does not register is caught by the broker's
-// answer to the reread that follows the write. none is a sentinel, not a requester: alone, and
-// only where orNone allows it (retag), it removes the tag; given on create, or beside a
-// requester, it is refused, since it would otherwise be written as a service named none or
-// dropped as the removal (optionalTags), leaving a secret nobody but none may ask for. It
-// answers the list as the broker reads it, sorted, each entry once and single-spaced, so the tag
-// is written as it will be served.
+// by their lowercase sign-in email, Google groups as group: and the group's lowercase email, and
+// services by their registered name, separated by spaces, which the shell quotes as one argument;
+// a comma is refused. This CLI checks shapes rather than the registered list, since it holds
+// none: an entry naming a service is checked for a service name's shape alone here, and a name
+// the deployment does not register is caught by the broker's answer to the reread that follows
+// the write. Nor does it read a group's members: an entry naming a group is checked for the
+// form's shape alone, and the broker reads who is in the group. none is a sentinel, not a
+// requester: alone, and only where orNone allows it (retag), it removes the tag; given on
+// create, or beside a requester, it is refused, since it would otherwise be written as a service
+// named none or dropped as the removal (optionalTags), leaving a secret nobody but none may ask
+// for. It answers the list as the broker reads it, sorted, each entry once and single-spaced, so
+// the tag is written as it will be served.
 func checkRequesters(list string, orNone bool) (string, error) {
 	if list == "" || (orNone && list == tagNone) {
 		return list, nil
@@ -307,16 +315,17 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		// true beside it: a secret owned by shared is answered for its owner however its list
 		// and tier read, and a list naming a service at agent tier is answered for the tier and
 		// not for the person it leaves out.
-		switch policy.RequesterRule(set) {
+		switch fault := policy.RequesterRule(set); fault {
 		case policy.RequesterFaultOwnerNotPerson:
-			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, or to the members of the one group that does, and %q is neither a person nor a group: own it with --owner me or --owner group:EMAIL, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultServiceBelowHumanTier:
 			_, services, _ := policy.SplitRequesters(set.Requesters)
 			return usageErr{fmt.Errorf("%s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", withArticle(set.Type), services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
-		case policy.RequesterFaultNotTheOwnerOnce:
+		case policy.RequesterFaultNotTheOwnerOnce, policy.RequesterFaultNotTheOwnerGroupOnce:
 			// One message for every way a list fails to name the owner exactly once — no list
-			// at all, a list of services alone, a list naming another person — because one
-			// write fixes them all: the owner, beside the registered services the list already
+			// at all, a list of services alone, a list naming another person or a group, and
+			// for a group owner a list naming a person or another group — because one write
+			// fixes them all: the owner, beside the registered services the list already
 			// names, which a human-tier secret of this type may keep. A list the secret holds
 			// is quoted too, so the reader sees what the suggestion replaces.
 			_, services, _ := policy.SplitRequesters(set.Requesters)
@@ -324,6 +333,9 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			held := ""
 			if set.Requesters != "" {
 				held = fmt.Sprintf(", not %q", set.Requesters)
+			}
+			if fault == policy.RequesterFaultNotTheOwnerGroupOnce {
+				return usageErr{fmt.Errorf("%s secret owned by a group is served to the group's members, beside the registered services a %s-tier one may list, so its requesters name %s once and no person%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 			}
 			return usageErr{fmt.Errorf("%s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 		}

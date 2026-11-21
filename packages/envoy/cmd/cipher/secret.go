@@ -55,11 +55,11 @@ func init() {
 			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json]",
 			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--max-grant DURATION] [--default-grant session]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--max-grant DURATION] [--default-grant session]",
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. Read its value from standard input, or type it at a\nprompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--max-grant DURATION|none] [--default-grant session|none]",
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--max-grant DURATION|none] [--default-grant session|none]",
 			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nmax grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a type, GitHub owners, requesters, scopes, the admin mark, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
@@ -877,9 +877,10 @@ func (s *secretSession) requireTypeTag(name, secretType string) error {
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
-// email, or, for me, the email of the person the sign-in names (backend.personEmail), which only
-// --owner me asks for. A sign-in that names no person, or names one by an email the broker does
-// not accept as an owner, is refused naming --owner <email>, which names the owner instead.
+// email, a group's group: form, or, for me, the email of the person the sign-in names
+// (backend.personEmail), which only --owner me asks for. A sign-in that names no person, or names
+// one by an email the broker does not accept as an owner, is refused naming --owner <email>,
+// which names the owner instead.
 func (s *secretSession) ownerTag(owner string) (string, error) {
 	if owner != ownerMe {
 		return owner, nil
@@ -1304,11 +1305,11 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	const form = "secret create"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
 	flags := secretFlags(form, stderr)
-	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
+	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, a person's email, or group: and a Google group's lowercase email")
 	tier := flags.String("tier", "", "agent (its owner's agents use it without asking) or human (a person approves each use)")
 	secretType := flags.String("type", "", strings.Join(policy.Types, ", ")+" or none (the default)")
 	githubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, separated by spaces ("<login> <login>")`)
-	requesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email) and registered services that may ask for this secret at all, separated by spaces ("<email> <service>"); an admin secret and a google-service-account one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
+	requesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"); an admin secret and a google-service-account one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
 	scopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"); read on that type alone, and a secret without it mints cloud-platform`)
 	admin := flags.String("admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")

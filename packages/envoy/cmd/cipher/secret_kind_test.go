@@ -229,7 +229,7 @@ func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 		{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
 		// A secret owned by shared can carry this type under no list and no tier, so that is
 		// what the refusal names, and not the service beside it.
-		{want: "is no person", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
+		{want: "is neither a person nor a group", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
 		// A human-tier list of services alone: the owner goes beside them, never in their place.
 		{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
 	} {
@@ -470,6 +470,98 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 	}
 	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--max-grant", "2h"); code != 0 {
 		t.Fatalf("retag --max-grant 2h once no one is listed: exit %d stderr %q", code, stderr)
+	}
+}
+
+// groupOwner is the owner tag of a secret a Google group owns, as the broker reads it
+// (policy.ValidGroupOwner): group: and the group's lowercase email.
+const groupOwner = "group:approvers@example.com"
+
+// TestSecretCreateWritesTheGroupForm: --owner and --requesters take a group as group: and its
+// lowercase email, the form the broker reads, so on both stores create writes a group-owned
+// google-service-account secret whose owner tag is the group and whose requesters tag is the
+// list as given: the group once, beside a registered service, which a human-tier secret of that
+// type may list (policy.RequesterRule).
+func TestSecretCreateWritesTheGroupForm(t *testing.T) {
+	const requesters = "builder " + groupOwner
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		useStdin(t, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+		_, stderr, code := runSecret("create", "GROUP_KEY", "--owner", groupOwner, "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--requesters", requesters, "--max-grant", "1h")
+		if code != 0 {
+			t.Fatalf("create --owner %s: exit %d, stderr %q", groupOwner, code, stderr)
+		}
+		tags := store.tags(t, "GROUP_KEY")
+		if tags[policy.TagOwner] != groupOwner || tags[policy.TagRequesters] != requesters || tags[policy.TagTier] != policy.TierHuman {
+			t.Fatalf("create tags = %v, want owner %s, requesters %q and tier %s", tags, groupOwner, requesters, policy.TierHuman)
+		}
+	})
+}
+
+// TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester: a google-service-account
+// secret a group owns is served to the group's members, so its requesters name that group once
+// and no person (policy.RequesterFaultNotTheOwnerGroupOnce). A retag whose list would name a
+// person, alone or beside the group or a service, or another group, is refused with a usage error
+// before anything is written, naming --requesters and the write that fixes it: the owner group,
+// beside the registered services the list already names. Control: that write lands.
+func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *testing.T) {
+	held := policytest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+	local := secrets.NewLocal(held)
+	startSecretBroker(t, servedBy(local))
+	writes := &countingTagWrites{Local: local}
+	useAWS(t, writes, testAccount, adaSignIn)
+	for _, tc := range []struct{ requesters, want string }{
+		{"ada@example.com", `name group:approvers@example.com once and no person, not "ada@example.com": write --requesters "group:approvers@example.com"`},
+		{"ada@example.com " + groupOwner, `write --requesters "group:approvers@example.com"`},
+		{"ada@example.com builder", `not "ada@example.com builder": write --requesters "group:approvers@example.com builder"`},
+		{"group:others@example.com", `write --requesters "group:approvers@example.com"`},
+	} {
+		_, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", tc.requesters)
+		if code != exitUsageError || !strings.Contains(stderr, tc.want) || !strings.Contains(stderr, policy.ReasonRequestersNotOwner) {
+			t.Fatalf("retag --requesters %q: exit %d stderr %q; want %d naming %q and %s", tc.requesters, code, stderr, exitUsageError, tc.want, policy.ReasonRequestersNotOwner)
+		}
+	}
+	if writes.tags != 0 || writes.untags != 0 {
+		t.Fatalf("refused retags made %d TagResource and %d UntagResource calls, want none", writes.tags, writes.untags)
+	}
+	if _, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", groupOwner+" builder"); code != 0 {
+		t.Fatalf("retag to the write the refusal names: exit %d stderr %q", code, stderr)
+	}
+	if tags := secrets.TagMap(describe(t, local, "GROUP_KEY").Tags); tags[policy.TagRequesters] != "builder "+groupOwner || tags[policy.TagOwner] != groupOwner {
+		t.Fatalf("tags = %v, want the group beside builder and the group owner kept", tags)
+	}
+}
+
+// TestOwnerGroupWithAnUppercaseAddressIsAUsageError: a group owner is group: and the group's
+// lowercase email, refused rather than lowercased, as a requesters entry naming the group is, so
+// --owner holding an upper-case letter in either part is refused on create and on retag with a
+// usage error naming the lowercase form and no part of the value, before anything is read or
+// written.
+func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
+	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+	startSecretBroker(t, servedBy(local))
+	writes := &countingTagWrites{Local: local}
+	useAWS(t, writes, testAccount, adaSignIn)
+	const says = "--owner group:EMAIL names a group by its lowercase email"
+	for _, owner := range []string{"group:Approvers@example.com", "GROUP:approvers@example.com"} {
+		for _, args := range [][]string{
+			{"create", "NEW_KEY", "--owner", owner, "--tier", policy.TierAgent},
+			{"retag", "HELD_KEY", "--owner", owner},
+		} {
+			useStdin(t, "stored-value")
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, says) || !strings.Contains(stderr, valueNotPrinted) {
+				t.Fatalf("%v: exit %d stderr %q; want %d naming %q", args, code, stderr, exitUsageError, says)
+			}
+			if strings.Contains(strings.ToLower(stderr), "approvers") {
+				t.Fatalf("%v: stderr %q prints the value", args, stderr)
+			}
+		}
+	}
+	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
+		t.Fatal("a refused create made NEW_KEY")
+	}
+	if writes.tags != 0 || writes.untags != 0 || writes.describes != 0 {
+		t.Fatalf("refused commands made %d TagResource, %d UntagResource and %d DescribeSecret calls; want none", writes.tags, writes.untags, writes.describes)
 	}
 }
 
