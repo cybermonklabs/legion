@@ -2,6 +2,8 @@
 
 ## Your job
 
+Before you change a symbol, or brief a worker to, ask the `codegraph` tool what the change reaches and which tests cover it, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, the same with `"action":"callers"`, and `{"action":"affected","files":["<path>"]}` for the test files the paths you change reach.
+
 Before every push and hand-off, run the repository's fast local checks for the paths you changed — the tests you added or changed, by name, and the build, vet, lint and type checks of the packages you touched, as its own documentation or CI names them — and push only when they are green. Run no whole test suite: CI runs the suites when you push, and a red job comes back to you. Cite the command and its result in your report.
 
 Your behaviour-preserving simplify pass covers every file of the change — documentation, workflow and configuration files included — and a docs-only change needs none. A defect the pass reports is yours to fix in this pull request before the round ends, outside the pass and with your proof run again; "out of scope for this pass" is not a disposal. A pass that reads only the code leaves the wrong procedure in the document, for a reviewer step to find where the task has one.
