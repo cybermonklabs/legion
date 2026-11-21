@@ -108,6 +108,13 @@ func (d *socks5Dialer) bounded(remaining time.Duration) *socks5Dialer {
 	return &socks5Dialer{address: d.address, proxy: d.proxy, timeout: remaining, lastErr: d.lastErr}
 }
 
+// detached is d with its timeout cut to remaining when that is shorter and a record of its own:
+// an admission proof's dialer (Client.ProveAdmission), whose failed dial must never become the
+// cause the client's own next connect reports.
+func (d *socks5Dialer) detached(remaining time.Duration) *socks5Dialer {
+	return &socks5Dialer{address: d.address, proxy: d.proxy, timeout: min(d.timeout, remaining), lastErr: new(atomic.Pointer[error])}
+}
+
 // Dial connects through the proxy and records the error it returns.
 func (d *socks5Dialer) Dial(network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)

@@ -23,9 +23,9 @@ import (
 type ConnectOption interface{ apply(*connectOpts) }
 
 // DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
-// WithPromptReconnect and WithReconnectErrClock. Dial's name and environment are its parameters,
-// so WithName and WithEnvironment are not DialOptions, and neither are the options of a client's
-// JetStream (WithReplicas, WithPublishAcknowledgementClock).
+// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment are
+// its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the options
+// of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -50,12 +50,14 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
+	inboxPrefix                 string
+	skipStreamSubjects          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the redial waits of WithPromptReconnect, each when the client asked
-// for it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect and the reply inboxes of
+// WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -64,10 +66,25 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	if o.promptReconnect {
 		settings = append(settings, promptRedial)
 	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
+	}
 	if len(settings) == 1 {
 		return credential
 	}
 	return allOf(settings...)
+}
+
+// freshSettings is connectionSettings with a credential of its own, read anew from the
+// environment at each call (credential): what an admission proof's connection applies
+// (Client.proofSettings), so the proof never presents through, or writes, the credential the
+// client's own connections share.
+func (o connectOpts) freshSettings() (nats.Option, error) {
+	credential, err := credential(o.environment)
+	if err != nil {
+		return nil, err
+	}
+	return o.connectionSettings(credential), nil
 }
 
 // parseConnectOptions applies options over the defaults every connect starts from.
@@ -224,6 +241,27 @@ func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
 }
 
+// WithInboxPrefix has every connection the client makes, a proof's included (ProveAdmission), name
+// its inboxes under prefix in place of nats.go's _INBOX (nats.CustomInboxPrefix): its request
+// replies, and every inbox named by the connection's NewInbox, which is how this module names
+// each one (StartRequestStoredTo, a window's Request). A client whose grant subscribes only
+// prefix+".>", as Dispatch's hub-admission proof's does, then makes a request without the server
+// refusing its inbox subscription. prefix must be one or more subject tokens with no wildcard and
+// no trailing dot (nats.CustomInboxPrefix), or every connect fails naming it.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
+}
+
+// WithoutStreamSubjects has a client that owns no stream never read the deployed stream's
+// subjects: not at connect, not at its first connection, and not every streamSubjectsRefresh. It
+// decides each topic's transport by the subjects this build compiles, as a client the server
+// refuses the read does (DeployedStreamCaptures). It is for a client that publishes nothing and
+// whose grant refuses the read, Dispatch's hub-admission proof's, which would otherwise log the
+// server's refusal at every connection. A client that owns the stream reads it whatever this says.
+func WithoutStreamSubjects() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.skipStreamSubjects = true })
+}
+
 type subscriptionTransport uint8
 
 const (
@@ -286,11 +324,17 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
-	js                          nats.JetStreamContext
-	urls                        []string
-	name                        string
-	connectionSettings          nats.Option
+	Conn               *nats.Conn
+	js                 nats.JetStreamContext
+	urls               []string
+	name               string
+	connectionSettings nats.Option
+	// proofSettings is connectionSettings for each admission proof (ProveAdmission), built afresh
+	// at each call with a credential of the proof's own, read anew from the client's environment
+	// (credential): a service credential records the token its last CONNECT presented, which the
+	// keeper beside the client's own connection reads, so a proof must never present through
+	// connectionSettings' credential.
+	proofSettings               func() (nats.Option, error)
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
@@ -418,8 +462,9 @@ type Client struct {
 // environment names (credential), through the SOCKS5 proxy it names (socks5Proxy). A caller
 // that needs core pub/sub on a connection of its own uses it: nats.go re-subscribes core
 // subscriptions on reconnect by itself, so it needs none of Client's recovery, and it touches no
-// stream. It refuses a NATS server that is not this machine's on the same terms as Connect,
-// reading ENVOY_ALLOW_REMOTE_NATS from environment too, which answers as os.LookupEnv does
+// stream. It refuses a server list that names no server, and a NATS server that is not this
+// machine's, on the same terms as Connect (refuseNoServer, refuseRemoteNATS), reading
+// ENVOY_ALLOW_REMOTE_NATS from environment too, which answers as os.LookupEnv does
 // (WithEnvironment).
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
@@ -430,6 +475,9 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	if err := refuseNoServer(urls); err != nil {
+		return nil, err
+	}
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -464,10 +512,13 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
 // names: an nkey seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) or a service's platform token
 // (NATS_SERVICE_TOKEN_FILE or NATS_SERVICE_GOOGLE_AUDIENCE; credential). An unusable one is an error
-// before any dial; none set connects without a credential. It connects through the
-// SOCKS5 proxy the environment names (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it
-// names none. Every connection the client dials later, to recover, is the same user's, through
-// the same proxy.
+// before any dial; none set connects without a credential. urls must name a server, and each entry
+// a server of its own: an entry that is blank, names no host, names the unspecified address (0.0.0.0
+// or ::), or names a numeric host that is no address in canonical form (0, 0x0, 127.1) is refused
+// before any dial, as is an empty list (refuseNoServer), since nats.go would dial a server on this
+// machine in its place. It connects through the SOCKS5 proxy the environment names
+// (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it names none. Every connection the
+// client dials later, to recover, is the same user's, through the same proxy.
 //
 // For the JetStream stream this codebase owns, use ConnectOwningStream.
 func Connect(urls []string, options ...ConnectOption) (*Client, error) {
@@ -502,6 +553,9 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // first connection's reconnect hook once its ensure has succeeded (startKeeperOnce), so its
 // keeper runs no pass before that ensure.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
+	if err := refuseNoServer(urls); err != nil {
+		return nil, err
+	}
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
 	}
@@ -517,6 +571,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		urls:                        urls,
 		name:                        opts.name,
 		connectionSettings:          opts.connectionSettings(credential),
+		proofSettings:               opts.freshSettings,
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
@@ -536,11 +591,13 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		// The first connection is a connection event, so the hooks this registers before the
 		// caller can add one of its own do what the constructor of a client that waits does at
 		// connect: an owning client ensures the stream, and every other reads the deployed
-		// subjects. The keeper starts once the first ensure has succeeded (startKeeperOnce), not
-		// here: a pass before it could write back a subject the ensure replaced.
+		// subjects unless it was built WithoutStreamSubjects. The keeper starts once the first
+		// ensure has succeeded (startKeeperOnce), not here: a pass before it could write back a
+		// subject the ensure replaced.
+		follow := ownsStream || !opts.skipStreamSubjects
 		if ownsStream {
 			c.AddReconnectHook(c.startKeeperOnce(opts.keptBuckets, opts.keepInterval))
-		} else {
+		} else if follow {
 			c.AddReconnectHook(c.readDeployedSubjectsUntilRead)
 		}
 		// onConnect counts the first connection only once it is c.Conn, which install makes it. An
@@ -558,7 +615,9 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
 			return nil, err
 		}
-		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		if follow {
+			go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		}
 		return c, nil
 	}
 	nc, err := dial(nil)
@@ -581,7 +640,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		c.AddReconnectHook(c.ensureStreamOn)
 		c.startKeeper(stream, opts.keptBuckets, opts.keepInterval)
 	} else {
-		readable = c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
+		readable = !opts.skipStreamSubjects && c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
 	}
 	if readable {
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
@@ -2302,7 +2361,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
-	inbox := nats.NewInbox()
+	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
@@ -2386,4 +2445,149 @@ func readPublishAcknowledgement(data []byte) (publishAcknowledgement, bool) {
 		return publishAcknowledgement{}, false
 	}
 	return ack, ack.Error != nil || (ack.Stream != "" && ack.Seq > 0)
+}
+
+// Servers is the client's servers as a log line names them: comma-separated, each without its
+// userinfo (serverList), so a report or an error can name the hub without its credential.
+func (c *Client) Servers() string {
+	return serverList(c.urls)
+}
+
+// ProveAdmission asks each of the client's servers afresh whether it admits this client: for each
+// server, in the client's order, it dials one new connection to that server alone, with the
+// client's name and proxy and a credential of the proof's own, read anew from the client's
+// environment as every connect of the client reads it; it requires that the server asked for
+// authentication, and that a server of a cluster is the one its URL names, makes one round trip on
+// the connection (a PING and its PONG), and closes it. It answers nil only when every server
+// admitted its connection, required authentication, was the server its URL names and answered the
+// round trip, within ctx; otherwise why not for the first server that did not, which it names
+// without its userinfo, the server's refusal among them. It never reads or tests c.Conn: a hub
+// whose auth service admitted that connection keeps it after the service stops answering, so only
+// a new connection is a decision made now. Every client names at least one server, since Connect
+// refuses a list that names none (refuseNoServer), so every proof asks at least one.
+//
+// A connection reaches only the server it was dialled for, never one that server's INFO names
+// (IgnoreDiscoveredServers), so no server's refusal is passed by another server's admission. A
+// server that requires no authentication admits every CONNECT without asking an auth service, so
+// its admission decides nothing, and the proof refuses it.
+//
+// A server that reports a cluster (its INFO's cluster name) must be reached through a URL whose
+// host's first DNS label is the server's own name (its INFO's server_name; urlNamesServer), as a
+// clustered hub's per-pod name does (<pod>.<name>-headless.<namespace>.svc.cluster.local, the pod
+// and the server both named <name>-<ordinal>). A cluster's server tags are each server's own, and
+// a render that tags them rolls the servers one at a time, so a URL that balances over the
+// servers, a Service's, reaches whichever one it picks: its admission says nothing of the others,
+// and the proof refuses it, naming the server it reached. The proof cannot see whether the list
+// names every server of the cluster: a cluster that advertises no server to its clients
+// (no_advertise, as every clustered hub does) sends none in its INFO, so naming every one is the
+// list's own job (busprojects.NewHubAdmission).
+//
+// A connection makes one attempt and never reconnects, and carries none of the client's handlers
+// and not the client's credential: a service credential records the token its last CONNECT
+// presented, and the keeper beside the client's connection (natscred's Keeper) reads that record
+// to move the connection to a later token before its own lapses, so a proof that presented
+// through the client's credential would write it. The proof's own credential's keeper never
+// starts. Through a proxy it dials with a record of its own (socks5Dialer.detached), so its failed
+// dial is never the cause the client's next connect reports, and its asynchronous errors go
+// nowhere, where nats.go would print them. So a proof logs nothing and changes nothing of the
+// client's: Dispatch proves every minute, and a proof's connect and close are no connection event
+// of the client's.
+func (c *Client) ProveAdmission(ctx context.Context) error {
+	settings, err := c.proofSettings()
+	if err != nil {
+		return fmt.Errorf("bus: admission proof: %w", err)
+	}
+	for _, url := range c.urls {
+		if err := c.proveServer(ctx, url, settings); err != nil {
+			return fmt.Errorf("bus: admission proof: %s: %w", natsURLWithoutUserinfo(url), err)
+		}
+	}
+	return nil
+}
+
+// proveServer is ProveAdmission's proof of the one server at url, its connection applying
+// settings. Once ctx has ended it dials nothing, as connectWithContext makes no attempt then: a
+// dial begun after that would only be closed again when it lands.
+func (c *Client) proveServer(ctx context.Context, url string, settings nats.Option) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	opts := options(c.name, []string{url}, nil, nil, nil, nil, c.reconnectErrClock)
+	if settings != nil {
+		if err := settings(&opts); err != nil {
+			return err
+		}
+	}
+	opts.IgnoreDiscoveredServers = true
+	opts.AllowReconnect, opts.RetryOnFailedConnect = false, false
+	opts.ConnectedCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
+	opts.DisconnectedErrCB, opts.ReconnectErrCB = nil, nil
+	opts.AsyncErrorCB = func(*nats.Conn, *nats.Subscription, error) {}
+	bound := opts.Timeout
+	deadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		bound = min(bound, remaining)
+	}
+	opts.Timeout = bound
+	if c.dialer != nil {
+		dialer := c.dialer.detached(bound)
+		opts.CustomDialer = dialer
+		// As connectWithContext: the proxy, not this process, resolves the server's name.
+		opts.SkipHostLookup = true
+		// As connectWithContext: a failure names the setting and the proxy, and a refused dial,
+		// which nats.go reports as ErrNoServers alone, carries the proxy's own dial error.
+		defer func() {
+			if err == nil {
+				return
+			}
+			if last := dialer.LastError(); last != nil && errors.Is(err, nats.ErrNoServers) {
+				err = fmt.Errorf("%w: %w", err, last)
+			}
+			err = fmt.Errorf("through the SOCKS5 proxy %s=%s: %w", SOCKS5ProxyEnvVar, dialer.Address(), err)
+		}()
+	}
+	type dialed struct {
+		conn *nats.Conn
+		err  error
+	}
+	result := make(chan dialed, 1)
+	go func() {
+		conn, err := opts.Connect()
+		result <- dialed{conn: conn, err: err}
+	}()
+	var conn *nats.Conn
+	select {
+	case d := <-result:
+		if d.err != nil {
+			return fmt.Errorf("the new connection was not admitted: %w", d.err)
+		}
+		conn = d.conn
+	case <-ctx.Done():
+		go func() {
+			if d := <-result; d.conn != nil {
+				d.conn.Close()
+			}
+		}()
+		return ctx.Err()
+	}
+	defer conn.Close()
+	if !conn.AuthRequired() {
+		return errors.New("the server requires no authentication, so no auth service decided the new connection")
+	}
+	if cluster := conn.ConnectedClusterName(); cluster != "" && !urlNamesServer(url, conn.ConnectedServerName()) {
+		return fmt.Errorf("the URL reached server %q of cluster %q, which it does not name: a clustered hub's entry names each server by its own name (<pod>.<name>-headless), never a Service that balances over the servers, since each server's admission is its own", conn.ConnectedServerName(), cluster)
+	}
+	if hasDeadline {
+		err = conn.FlushWithContext(ctx)
+	} else {
+		err = conn.FlushTimeout(bound)
+	}
+	if err != nil {
+		return fmt.Errorf("the admitted connection did not answer a round trip: %w", err)
+	}
+	return nil
 }

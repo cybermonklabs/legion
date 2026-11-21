@@ -36,16 +36,16 @@ func unsignedToken(expiry time.Time) string {
 		encode(map[string]any{"sub": serviceTokenAccount, "iat": time.Now().Unix(), "exp": expiry.Unix()}) + ".unsigned"
 }
 
-// A bus connection presenting a service's token file moves to the later token the file holds,
-// natscred.ServiceRenewBefore ahead of the one it connected with, by one reconnect, and stays up.
-// The keeper first dials a throwaway connection with the later token and reconnects only once
-// that is admitted, so the auth service is presented the later token twice, by that probe and by
-// the connection's one reconnect.
-func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
+// serviceTokenHub runs a hub with an auth callout and, as its auth service, natscallout admitting
+// serviceTokenAccount's token, read unverified, as a listener service. It answers the hub's URL, a
+// writer of files in a directory of the test's, and how many times the auth service has been
+// presented a given token.
+func serviceTokenHub(t *testing.T) (url string, write func(name, text string) string, count func(token string) int) {
+	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	url = testnats.StartWithCallout(t, keys)
 	dir := t.TempDir()
-	write := func(name, text string) string {
+	write = func(name, text string) string {
 		path := filepath.Join(dir, name)
 		require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
 		return path
@@ -83,7 +83,7 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, service.Ready(ready))
-	count := func(token string) int {
+	count = func(token string) int {
 		mu.Lock()
 		defer mu.Unlock()
 		n := 0
@@ -94,6 +94,16 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 		}
 		return n
 	}
+	return url, write, count
+}
+
+// A bus connection presenting a service's token file moves to the later token the file holds,
+// natscred.ServiceRenewBefore ahead of the one it connected with, by one reconnect, and stays up.
+// The keeper first dials a throwaway connection with the later token and reconnects only once
+// that is admitted, so the auth service is presented the later token twice, by that probe and by
+// the connection's one reconnect.
+func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
+	url, write, count := serviceTokenHub(t)
 
 	first := unsignedToken(time.Now().Add(natscred.ServiceRenewBefore + 2*time.Second))
 	tokenFile := write("token", first)
@@ -113,6 +123,39 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	})
 	testwait.Eventually(t, "the connection back up", nc.IsConnected)
 	require.Never(t, func() bool { return count(later) > 2 || nc.Stats().Reconnects > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
+	require.Equal(t, 1, count(first))
+}
+
+// An admission proof presents a credential of its own, never the client's: a service credential
+// records the token its CONNECT presented, and the keeper beside the client's connection reads
+// that record as the token its connection holds. The token file moves to a later token and a
+// proof runs at once, both before the keeper wakes, natscred.ServiceRenewBefore ahead of the first
+// token's expiry. The proof presents the later token, and the keeper still moves the client's
+// connection to it, by its probe and one reconnect, as it does with no proof: the record still
+// names the first token.
+//
+// Control: have ProveAdmission apply the client's connectionSettings, the client's own
+// credential, in place of proofSettings; the proof records the later token as the connection's,
+// the keeper takes it for a reconnect of nats.go's own and never moves the connection, so the
+// server would drop it when the first token lapses, and the test fails at its wait.
+func TestAnAdmissionProofLeavesTheClientsCredentialAlone(t *testing.T) {
+	url, write, count := serviceTokenHub(t)
+	first := unsignedToken(time.Now().Add(natscred.ServiceRenewBefore + 3*time.Second))
+	tokenFile := write("token", first)
+	environment := map[string]string{bus.ServiceTokenFileEnvVar: tokenFile, bus.AllowRemoteEnvVar: "1"}
+	client, err := bus.Connect([]string{url}, bus.WithName("admission-proof-test"), bus.WithoutStreamSubjects(),
+		bus.WithEnvironment(func(name string) (string, bool) { value, set := environment[name]; return value, set }))
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+	require.True(t, client.Connected())
+
+	later := unsignedToken(time.Now().Add(50 * time.Minute))
+	require.NoError(t, os.WriteFile(tokenFile, []byte(later), 0o600))
+	require.NoError(t, client.ProveAdmission(t.Context()), "the hub refused the proof")
+	require.Equal(t, 1, count(later), "the proof did not present the later token")
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the keeper's probe and reconnect with the later token, after the proof", func() bool {
+		return count(later) == 3 && client.Connection().Stats().Reconnects == 1
+	})
 	require.Equal(t, 1, count(first))
 }
 
