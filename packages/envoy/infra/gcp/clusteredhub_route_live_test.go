@@ -133,7 +133,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 		}
 		within(t, 30*time.Second, "the three servers' mesh", func() error {
 			for _, s := range servers {
-				remotes, err := routeRemotesAt(s.monitor)
+				remotes, err := routeRemotesAt("127.0.0.1", s.monitor)
 				if err != nil {
 					return err
 				}
@@ -167,7 +167,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 					return nil
 				})
 				for _, s := range servers {
-					remotes, err := routeRemotesAt(s.monitor)
+					remotes, err := routeRemotesAt("127.0.0.1", s.monitor)
 					require.NoError(t, err)
 					require.NotContains(t, remotes, "rogue", "%s routes to the rogue", s.name)
 				}
@@ -179,7 +179,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 			open := startRouteServer(t, renders["env"], natsServer, renders["env"].release+"-0", reservePorts(t, 3), nil)
 			p := startRogue(t, natsServer, "rogue", reservePorts(t, 3), []string{fmt.Sprintf("nats://127.0.0.1:%d", open.route)})
 			within(t, 15*time.Second, "the rogue in the open server's routes", func() error {
-				remotes, err := routeRemotesAt(open.monitor)
+				remotes, err := routeRemotesAt("127.0.0.1", open.monitor)
 				if err != nil {
 					return err
 				}

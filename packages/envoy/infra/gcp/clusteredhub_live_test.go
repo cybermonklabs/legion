@@ -499,15 +499,16 @@ func (s *hubServer) commandArgs() []string {
 	)
 }
 
-// routeRemotesAt is the set of servers the /routez of the server whose monitoring port is monitor
-// names at the other end of its routes. Every live test reads a server's routes through it.
-func routeRemotesAt(monitor int) (map[string]bool, error) {
+// routeRemotesAt is the set of servers the /routez of the server whose monitoring port is
+// host:monitor names at the other end of its routes. Every live test reads a server's routes
+// through it, a hubServer at its own host (hubServer.routeRemotes).
+func routeRemotesAt(host string, monitor int) (map[string]bool, error) {
 	var routez struct {
 		Routes []struct {
 			RemoteName string `json:"remote_name"`
 		} `json:"routes"`
 	}
-	if err := getJSON(fmt.Sprintf("http://127.0.0.1:%d/routez", monitor), &routez); err != nil {
+	if err := getJSON("http://"+net.JoinHostPort(host, strconv.Itoa(monitor))+"/routez", &routez); err != nil {
 		return nil, err
 	}
 	remotes := map[string]bool{}
@@ -516,6 +517,9 @@ func routeRemotesAt(monitor int) (map[string]bool, error) {
 	}
 	return remotes, nil
 }
+
+// routeRemotes is routeRemotesAt at the server's own host, where it listens alone.
+func (s *hubServer) routeRemotes() (map[string]bool, error) { return routeRemotesAt(s.host, s.monitor) }
 
 // start starts the server and waits until it listens on all three of its ports (its last bind is
 // the route port's); the test kills it by its PID when it ends if it is still running. A restart
@@ -1152,7 +1156,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 			if varz.ServerName != s.name || varz.Cluster.Name != clusterName[1] {
 				return fmt.Errorf("%s's /varz names server %q in cluster %q", s.name, varz.ServerName, varz.Cluster.Name)
 			}
-			remotes, err := routeRemotesAt(s.monitor)
+			remotes, err := s.routeRemotes()
 			if err != nil {
 				return err
 			}

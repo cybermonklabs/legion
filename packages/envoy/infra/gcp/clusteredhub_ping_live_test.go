@@ -96,7 +96,7 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	a.routeURLs = []string{proxy.URL()}
 	a.start(t)
 	within(t, 30*time.Second, "A routes to B", func() error {
-		remotes, err := routeRemotesAt(a.monitor)
+		remotes, err := a.routeRemotes()
 		if err != nil {
 			return err
 		}
