@@ -10,12 +10,15 @@ body: |-
   `AGENT_SECRETS_PROJECTS` lists. Each trade runs under the login's lock, so two sessions of one
   machine never spend one refresh token, and none refreshes while another presents the access
   token that refresh would end.
-  A stale lock is taken by one caller alone, and a holder that lost its lock while it was stopped
-  refreshes and keeps nothing. A kept access token the broker refuses as one it no longer honours
-  is refreshed at once, so a revoked login names `dispatch login --device` at its next trade. A
+  A stale lock is taken by one caller alone, a holder that lost its lock while it was stopped
+  refreshes and keeps nothing, and a holder that lets go of its lock never removes a lock another
+  caller took from it. A kept access token the broker refuses as one it no longer honours is
+  refreshed at once, so a revoked login names `dispatch login --device` at its next trade. A
   second `dispatch login --device` names the earlier login's credential, which stays live until it
-  lapses or is revoked, and says where to revoke it. The broker must be https, or http on this
-  machine's loopback, and the login's directory must be this user's own, one this user can enter
-  and write and others cannot write, which the command checks before it asks for a code. A
-  process with `PERSON_SIGNIN_TRADE=off` is refused a device login, since the broker trades it as
-  the person who approved it.
+  lapses or is revoked, and says where to revoke it; of two run at once, the one kept second names
+  the other's. The broker must be https, or http on this machine's loopback, the login's directory
+  must be this user's own, one this user can enter and write and others cannot write, and the
+  file's setting must not name a directory, which the command checks before it asks for a code. A
+  login approved and then not kept names its credential and where to revoke it, and keeps a copy
+  of the login it wrote whole beside the file. A process with `PERSON_SIGNIN_TRADE=off` is refused
+  a device login, since the broker trades it as the person who approved it.

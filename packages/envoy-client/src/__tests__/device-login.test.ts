@@ -9,7 +9,7 @@
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
@@ -23,8 +23,13 @@ const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("d
 
 const PERSON = "ada@example.com";
 
-/** `dispatch` run with `argv` in `env`, as a person runs it in a terminal: no host, no session. */
-async function dispatch(argv: readonly string[], env: Record<string, string>) {
+/** `dispatch` run with `argv` in `env`, as a person runs it in a terminal: no host, no session.
+ *  `sleep` is each wait before a poll of the code; by default none. */
+async function dispatch(
+  argv: readonly string[],
+  env: Record<string, string>,
+  sleep: (ms: number) => Promise<void> = async () => {}
+) {
   let stdout = "";
   let stderr = "";
   const code = await runDispatchCli(argv, env, {
@@ -36,7 +41,7 @@ async function dispatch(argv: readonly string[], env: Record<string, string>) {
     },
     readText: () => "",
     cwd: tempDir(),
-    sleep: async () => {},
+    sleep,
   });
   return { code, stdout, stderr };
 }
@@ -85,6 +90,77 @@ test("a second dispatch login --device names the earlier login's credential, whi
   });
   expect(first.code, first.stdout).toBe(0);
   expect(first.stdout).not.toContain("Machine logins on");
+});
+
+test("of two dispatch login --device at once, the one kept second names the other's credential", async () => {
+  const first = broker({ credentialId: "cred-first-1" });
+  const second = broker({ credentialId: "cred-second-1" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const env = (url: string) => ({
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+  });
+  const argv = ["login", "--device", "--person", PERSON];
+  // Both start while the machine holds no login. The first is approved and kept while the second
+  // still waits for its approval; the second is approved then, and its file replaces the first's.
+  const secondWaits = Promise.withResolvers<void>();
+  const one = dispatch(argv, env(first.url), async () => {
+    await secondWaits.promise;
+  });
+  const two = dispatch(argv, env(second.url), async () => {
+    secondWaits.resolve();
+    await one;
+  });
+  const [kept1, kept2] = await Promise.all([one, two]);
+  expect(kept1.code, kept1.stdout).toBe(0);
+  expect(kept2.code, kept2.stdout).toBe(0);
+  expect(kept1.stdout).not.toContain("Machine logins on");
+  // The second is told the credential its file replaced, which stays live.
+  expect(kept2.stdout).toContain(
+    "the earlier login of this machine, launcher credential cred-first-1"
+  );
+  expect(JSON.parse(readFileSync(file, "utf8")).credential_id).toBe("cred-second-1");
+});
+
+test("dispatch login refuses a file setting that names a directory, before any code is asked for", async () => {
+  const stub = broker();
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  mkdirSync(file, { recursive: true });
+  chmodSync(path.dirname(file), 0o700);
+  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: stub.url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+  });
+  expect(code, stdout).toBe(2);
+  expect(stdout).toContain("AGENT_SECRETS_DEVICE_LOGIN_FILE");
+  expect(stdout).toContain("is a directory");
+  // Named by its setting, never by its path.
+  expect(stdout).not.toContain(file);
+  expect(stub.authorizations).toHaveLength(0);
+});
+
+test("a login approved and then not kept names its credential and where to revoke it", async () => {
+  const stub = broker({ credentialId: "cred-unkept-1" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  // The file's place passes the check before the code is asked for; a directory is made there
+  // while the person approves, so the save after the approval cannot keep the login there.
+  const { code, stdout } = await dispatch(
+    ["login", "--device", "--person", PERSON],
+    { HOME: tempDir(), AGENT_SECRETS_URL: stub.url, AGENT_SECRETS_DEVICE_LOGIN_FILE: file },
+    async () => {
+      mkdirSync(file, { recursive: true });
+    }
+  );
+  expect(code, stdout).toBe(1);
+  // The credential is live at the broker: the person is told which it is and where to revoke it.
+  expect(stdout).toContain("cred-unkept-1");
+  expect(stdout).toContain("is a directory");
+  expect(stdout).toContain(`revoke it in Machine logins on ${stub.url}/credentials/machine`);
+  expect(stdout).not.toContain(file);
+  // The save stopped before it wrote anything: no copy of the login and no temporary file.
+  expect(readdirSync(path.dirname(file))).toEqual(["device-login.json"]);
 });
 
 test("dispatch --help names dispatch login, and dispatch login --help says what it reads", async () => {

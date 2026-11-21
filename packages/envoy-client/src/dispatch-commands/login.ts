@@ -19,7 +19,6 @@ import {
   deviceLoginHost,
   deviceLoginPlace,
   finishDeviceLogin,
-  readDeviceLogin,
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
 import {
@@ -95,10 +94,12 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
 /**
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
  * code: 0 once the login is approved and kept; 1 when the broker refused it, the person denied it,
- * its code expired, or it could not be kept; 2 for a usage error, before any request: no
- * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
- * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), or a
- * login directory others may write to, another user owns, or this user cannot enter and write to.
+ * its code expired, or it could not be kept (the message then names its credential, live at the
+ * broker, and any copy of it kept); 2 for a usage error, before any request: no `--device`, no
+ * person (`--person`, else `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login
+ * may use (https, or http on this machine's loopback), a login directory others may write to,
+ * another user owns, or this user cannot enter and write to, or a login file setting that names a
+ * directory.
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -140,8 +141,9 @@ export async function loginCommand(
   let path: string;
   try {
     // An http broker off this machine's loopback is refused here, before any request, and so is
-    // a login directory another user could replace the login in, or one this user cannot enter
-    // and write to: no person approves a login this machine could not keep.
+    // a login directory another user could replace the login in, one this user cannot enter and
+    // write to, and a file setting that names a directory: no person approves a login this
+    // machine could not keep.
     deviceLoginBroker(brokerUrl);
     path = deviceLoginFile(env);
     await deviceLoginPlace(path);
@@ -149,12 +151,6 @@ export async function loginCommand(
     return refuse(messageFor(error), USAGE);
   }
   const host = deviceLoginHost(hostname());
-  // The login this one replaces, where the machine holds one it can read: its credential stays
-  // live at the broker until it lapses or is revoked, so the person is told which to revoke.
-  const earlier = await readDeviceLogin(path).then(
-    (login) => login.credentialId,
-    () => ""
-  );
   try {
     const started = await startDeviceLogin({
       brokerUrl,
@@ -170,13 +166,15 @@ export async function loginCommand(
         `dispatch login: the code is good until ${started.expiresAt.toISOString()}; waiting for the approval.`,
       ].join("\n")
     );
+    // The login it replaced is read under the lock its save holds: its credential stays live at
+    // the broker until it lapses or is revoked, so the person is told which to revoke.
     const login = await finishDeviceLogin(started, { path, fetch: io.fetchImpl, sleep: io.sleep });
     const lines = [
       `dispatch login: approved. This machine's device login is kept in ${DEVICE_LOGIN_FILE_NAMED}; its launcher credential ${login.credentialId} lasts until ${login.expiresAt.toISOString()}, and each refresh moves that on.`,
     ];
-    if (earlier !== "" && earlier !== login.credentialId) {
+    if (login.replaced !== "" && login.replaced !== login.credentialId) {
       lines.push(
-        `dispatch login: the earlier login of this machine, launcher credential ${earlier}, stays live until it lapses or is revoked, and a copy of its file still works; revoke it in Machine logins on ${started.verificationUri}.`
+        `dispatch login: the earlier login of this machine, launcher credential ${login.replaced}, stays live until it lapses or is revoked, and a copy of its file still works; revoke it in Machine logins on ${started.verificationUri}.`
       );
     }
     if ((env[IDENTITY_VAR] ?? "").trim() !== IDENTITY_DEVICE_LOGIN) {

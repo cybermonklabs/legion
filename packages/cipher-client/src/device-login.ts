@@ -37,7 +37,7 @@
 
 import { createPrivateKey, generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { access, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -62,7 +62,7 @@ import {
   withLoginLock,
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
-import { readErrorCode } from "./error-text";
+import { messageOf, readErrorCode } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -306,10 +306,10 @@ async function checkLoginDirectory(dir: string): Promise<void> {
 
 /**
  * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
- * user could replace the login in ({@link checkLoginDirectory}) or one this user cannot enter and
- * write to (a 0555 directory, or the 0600 one a `chmod -R 600` leaves). `dispatch login --device`
- * runs it before it asks for a code, so no person approves a login this machine could not keep
- * there.
+ * user could replace the login in ({@link checkLoginDirectory}), one this user cannot enter and
+ * write to (a 0555 directory, or the 0600 one a `chmod -R 600` leaves), and a `path` that is a
+ * directory, which no save can replace with the login. `dispatch login --device` runs it before it
+ * asks for a code, so no person approves a login this machine could not keep there.
  */
 export async function deviceLoginPlace(path: string): Promise<void> {
   const dir = dirname(path);
@@ -326,6 +326,18 @@ export async function deviceLoginPlace(path: string): Promise<void> {
     // Only a mode this user can change has chmod for a cure; a read-only mount, say, has not.
     throw new Error(
       `this user cannot enter and write to the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${code}${code === "EACCES" ? "; run chmod 700 on it" : ""}`
+    );
+  }
+  let info: Stats;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (readErrorCode(error) === "ENOENT") return;
+    throw new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+  }
+  if (info.isDirectory()) {
+    throw new Error(
+      `${DEVICE_LOGIN_FILE_NAMED} is a directory, so no login can be kept in its place; remove it, or set ${DEVICE_LOGIN_FILE_VAR} to a file's path`
     );
   }
 }
@@ -413,24 +425,47 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
 }
 
 /**
+ * Keeps `temp`, a whole copy of a new login that could not be saved to the login's file at `path`
+ * (`error` says why), beside that file as `<path>.kept-<uuid>`, a name no save removes, and
+ * answers the error naming the copy by the suffix its name has, never by its path: the person
+ * moves it into place, or revokes its credential. Where even that rename fails, `error` is
+ * answered as it is, and the save removes its temporary file as it removes any other.
+ */
+async function keptCopy(temp: string, path: string, error: unknown): Promise<unknown> {
+  const suffix = `.kept-${randomUUID()}`;
+  try {
+    await rename(temp, `${path}${suffix}`);
+  } catch {
+    return error;
+  }
+  return new Error(
+    `${messageOf(error)}; a copy of the new login is kept beside ${DEVICE_LOGIN_FILE_NAMED}, under that file's name with ${suffix} added: move the copy over the file to use the login`,
+    { cause: error }
+  );
+}
+
+/**
  * Writes `login` to `path`, mode 0600, creating its directory 0700 where it is absent and refusing
  * one another user could replace the login in ({@link checkLoginDirectory}): through a new
  * temporary file beside it (a fresh name, created exclusively and 0600, so no file or link already
  * there is followed), synced, then renamed over `path`, so the file is always one whole login, the
  * old or the new. A save that fails, or whose lock is no longer the caller's, removes its
- * temporary file, and its error names the file by its setting. It first removes what a save or a
- * take-over that died left beside the file: a
- * temporary copy of a login, which holds its key and refresh token, and a lock moved aside, each
- * untouched for the lock's stale bound, as the Go helper's `RemoveLeftoverMachineTemps` removes its
- * own; a younger one may be a live caller's. A caller holds the login's lock
- * ({@link withDeviceLoginLock}), so no other process's refresh writes between its read and this
- * write; `held` reads that lock again just before the rename, and a lock that is no longer the
- * caller's keeps nothing. What is left is the instant between that look and the rename.
+ * temporary file, and its error names the file by its setting; but where `keep` is set, as it is
+ * for a new login, a copy written whole is kept ({@link keptCopy}), since the broker already holds
+ * its credential live and no other copy of its key and refresh token exists. It first removes what
+ * a save or a take-over that died left beside the file: a temporary copy of a login, which holds
+ * its key and refresh token, and a lock moved aside, each untouched for the lock's stale bound, as
+ * the Go helper's `RemoveLeftoverMachineTemps` removes its own; a younger one may be a live
+ * caller's. A caller holds the login's lock ({@link withDeviceLoginLock}), so no other process's
+ * refresh writes between its read and this write; `held` reads that lock again just before the
+ * rename, and a lock that is no longer the caller's keeps nothing in the file. What is left is the
+ * instant between that look and the rename.
  */
 async function saveDeviceLogin(
   path: string,
   login: DeviceLogin,
-  held: () => Promise<boolean>
+  held: () => Promise<boolean>,
+  keep = false
 ): Promise<void> {
   const dir = dirname(path);
   const data = JSON.stringify({
@@ -452,6 +487,8 @@ async function saveDeviceLogin(
   const temp = join(dir, `.device-login-${randomUUID()}.json.tmp`);
   const saveFailed = (error: unknown): Error =>
     new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+  // Whether the temporary file holds the whole login, synced: only such a copy is worth keeping.
+  let whole = false;
   try {
     try {
       const handle = await open(temp, "wx", 0o600);
@@ -464,12 +501,16 @@ async function saveDeviceLogin(
     } catch (error) {
       throw saveFailed(error);
     }
-    if (!(await held())) throw lockLost();
+    whole = true;
+    if (!(await held()))
+      throw keep ? lockLost("the new login was not kept in its place") : lockLost();
     await rename(temp, path).catch((error: unknown) => {
       throw saveFailed(error);
     });
+  } catch (error) {
+    throw keep && whole ? await keptCopy(temp, path, error) : error;
   } finally {
-    // After the rename there is no temporary file, and this removes nothing.
+    // After the rename, or once the copy is kept, there is no temporary file to remove.
     await rm(temp, { force: true });
   }
   // The rename is what readers see; syncing the directory is what keeps it across a power cut.
@@ -677,18 +718,29 @@ export async function startDeviceLogin(options: {
   };
 }
 
+/** A login {@link finishDeviceLogin} kept, and `replaced`: the launcher credential of the login
+ *  its file held just before, which this one replaced, or "" where the file held none that reads
+ *  as a login. That credential stays live at the broker until it lapses or is revoked. */
+export interface KeptDeviceLogin extends DeviceLogin {
+  readonly replaced: string;
+}
+
 /**
  * Polls the device code `started` answered until the person decides, and keeps the login an
  * approval issues at `path` ({@link saveDeviceLogin}, under {@link withDeviceLoginLock}), answering
- * it. Each poll waits the interval first (RFC 8628 Section 3.5), five seconds longer after each
- * `slow_down`, and proves the login's key. `authorization_pending` and `slow_down` poll again, and
- * so does a poll the broker did not answer, its 429 and a 5xx, as the Go helper's `pollLogin`
- * does; `access_denied` is a denial, and `expired_token`, `invalid_grant` (a code the broker no
- * longer knows) or the code's own lifetime passing is an expiry. Any other answer of a 4xx, with
- * an OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate` challenge), is one
- * no later poll answers differently, so it stops the poll at once, naming the status, rather than
- * polling until the code lapses and saying it expired. Each refusal names
- * {@link DEVICE_LOGIN_COMMAND}, and none writes a file.
+ * it with the credential it replaced ({@link KeptDeviceLogin}), which is read under the same lock
+ * as the save, so a login another `dispatch login` kept there while this one waited for its
+ * approval is the one named. Each poll waits the interval first (RFC 8628 Section 3.5), five
+ * seconds longer after each `slow_down`, and proves the login's key. `authorization_pending` and
+ * `slow_down` poll again, and so does a poll the broker did not answer, its 429 and a 5xx, as the
+ * Go helper's `pollLogin` does; `access_denied` is a denial, and `expired_token`, `invalid_grant`
+ * (a code the broker no longer knows) or the code's own lifetime passing is an expiry. Any other
+ * answer of a 4xx, with an OAuth error or without one (a proxy's HTML page, a bare
+ * `WWW-Authenticate` challenge), is one no later poll answers differently, so it stops the poll at
+ * once, naming the status, rather than polling until the code lapses and saying it expired. Each
+ * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
+ * cannot be kept is refused naming its credential, which the broker holds live, and where to
+ * revoke it, and a copy of it written whole is kept beside the file ({@link keptCopy}).
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -697,7 +749,7 @@ export async function finishDeviceLogin(
     readonly fetch?: typeof fetch | undefined;
     readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   }
-): Promise<DeviceLogin> {
+): Promise<KeptDeviceLogin> {
   const wait = options.sleep ?? ((ms: number) => sleep(ms, undefined, true));
   const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, {
     key: loginDpopKey(started.key),
@@ -744,8 +796,22 @@ export async function finishDeviceLogin(
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
-    await withDeviceLoginLock(options.path, (held) => saveDeviceLogin(options.path, login, held));
-    return login;
+    try {
+      const replaced = await withDeviceLoginLock(options.path, async (held) => {
+        const earlier = await readDeviceLogin(options.path).then(
+          (kept) => kept.credentialId,
+          () => ""
+        );
+        await saveDeviceLogin(options.path, login, held, true);
+        return earlier;
+      });
+      return { ...login, replaced };
+    } catch (error) {
+      throw new Error(
+        `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: where no copy of it is kept, revoke it in Machine logins on ${started.verificationUri} and log in again with: ${DEVICE_LOGIN_COMMAND}`,
+        { cause: error }
+      );
+    }
   }
 }
 
@@ -882,10 +948,13 @@ export class DeviceLoginIdentity implements TokenSource {
   }
 }
 
-/** The refusal of a holder whose lock another caller took while it was stopped. */
-function lockLost(): Error {
+/** The refusal of a holder whose lock another caller took while it was stopped; `then` says what
+ *  the holder did and did not do. */
+function lockLost(
+  then = "this trade refreshes and keeps nothing, and the next one reads the login again"
+): Error {
   return new Error(
-    `the lock beside ${DEVICE_LOGIN_FILE_NAMED} is no longer this process's: it stopped for over ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s while it held it (a laptop asleep, a process stopped), and another process took it; this trade refreshes and keeps nothing, and the next one reads the login again`
+    `the lock beside ${DEVICE_LOGIN_FILE_NAMED} is no longer this process's: it stopped for over ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s while it held it (a laptop asleep, a process stopped), and another process took it; ${then}`
   );
 }
 
