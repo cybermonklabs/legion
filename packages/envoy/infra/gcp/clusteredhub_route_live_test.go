@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // routeLiteral finds a route credential written into nats.conf as a literal: a quoted password
@@ -119,21 +120,26 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 
 	t.Run("the route credential fences the cluster", func(t *testing.T) {
 		password := "routePassword" + strings.Repeat("Cd", 16)
-		drawn := reservePorts(t, 9)
+		// Every server of this row, the rogues and the control's open server among them, listens
+		// at one loopback address of the test's own: a client another test left dialing 127.0.0.1,
+		// at a port the kernel has since given a server here, would otherwise reach it, and a
+		// refused login it makes is the "authentication error" the rogue rows count.
+		host := testport.LoopbackIP().String()
+		drawn := reservePortsOn(t, host, 9)
 		var routeURLs []string
 		for i := range 3 {
-			routeURLs = append(routeURLs, fmt.Sprintf("nats://route:%s@127.0.0.1:%d", password, drawn[3*i+2]))
+			routeURLs = append(routeURLs, fmt.Sprintf("nats://route:%s@%s", password, net.JoinHostPort(host, strconv.Itoa(drawn[3*i+2]))))
 		}
 		r := renders["authorization"]
 		servers := make([]*routeServer, 3)
 		for i := range servers {
-			servers[i] = startRouteServer(t, r, natsServer, fmt.Sprintf("%s-%d", r.release, i), drawn[3*i:3*i+3], []string{
+			servers[i] = startRouteServer(t, r, natsServer, fmt.Sprintf("%s-%d", r.release, i), host, drawn[3*i:3*i+3], []string{
 				"NATS_ROUTE_PASSWORD=" + password, "NATS_ROUTE_URLS=[" + strings.Join(routeURLs, ", ") + "]",
 			})
 		}
 		within(t, 30*time.Second, "the three servers' mesh", func() error {
 			for _, s := range servers {
-				remotes, err := routeRemotesAt("127.0.0.1", s.monitor)
+				remotes, err := routeRemotesAt(host, s.monitor)
 				if err != nil {
 					return err
 				}
@@ -151,13 +157,13 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 			t.Run(rogue.name, func(t *testing.T) {
 				var targets []string
 				for _, s := range servers {
-					targets = append(targets, fmt.Sprintf("nats://%s127.0.0.1:%d", rogue.userinfo, s.route))
+					targets = append(targets, fmt.Sprintf("nats://%s%s", rogue.userinfo, net.JoinHostPort(host, strconv.Itoa(s.route))))
 				}
 				before := make([]int, len(servers))
 				for i, s := range servers {
 					before[i] = strings.Count(s.proc.Output.String(), rogue.peerLog)
 				}
-				p := startRogue(t, natsServer, "rogue", reservePorts(t, 3), targets)
+				p := startRogue(t, natsServer, "rogue", host, reservePortsOn(t, host, 3), targets)
 				within(t, 15*time.Second, "every peer refusing the rogue", func() error {
 					for i, s := range servers {
 						if strings.Count(s.proc.Output.String(), rogue.peerLog) == before[i] {
@@ -167,7 +173,7 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 					return nil
 				})
 				for _, s := range servers {
-					remotes, err := routeRemotesAt("127.0.0.1", s.monitor)
+					remotes, err := routeRemotesAt(host, s.monitor)
 					require.NoError(t, err)
 					require.NotContains(t, remotes, "rogue", "%s routes to the rogue", s.name)
 				}
@@ -176,10 +182,10 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 		}
 
 		t.Run("control: a server with no credential joins the env render", func(t *testing.T) {
-			open := startRouteServer(t, renders["env"], natsServer, renders["env"].release+"-0", reservePorts(t, 3), nil)
-			p := startRogue(t, natsServer, "rogue", reservePorts(t, 3), []string{fmt.Sprintf("nats://127.0.0.1:%d", open.route)})
+			open := startRouteServer(t, renders["env"], natsServer, renders["env"].release+"-0", host, reservePortsOn(t, host, 3), nil)
+			p := startRogue(t, natsServer, "rogue", host, reservePortsOn(t, host, 3), []string{"nats://" + net.JoinHostPort(host, strconv.Itoa(open.route))})
 			within(t, 15*time.Second, "the rogue in the open server's routes", func() error {
-				remotes, err := routeRemotesAt("127.0.0.1", open.monitor)
+				remotes, err := routeRemotesAt(host, open.monitor)
 				if err != nil {
 					return err
 				}
@@ -224,23 +230,24 @@ func withoutRouteVars(env []string) []string {
 }
 
 // routeServer is one nats-server on a rendered nats.conf whose routes and authorization are the
-// file's own (writeRouteServerConf, routeServerArgs).
+// file's own (writeRouteServerConf, routeServerArgs), listening at host.
 type routeServer struct {
 	name                   string
+	host                   string
 	client, monitor, route int
 	proc                   *cmdtest.Process
 }
 
 // writeRouteServerConf writes r's nats.conf and auth.conf into dir as one local server's, the
-// pod's store_dir and route port replaced by the server's own, on 127.0.0.1, and each of local's
-// keys by its value; the rendered file must set each once. The routes and the authorization stay
-// the file's: no command-line flag sets them, since nats-server's --cluster flag clears the file's
-// cluster authorization (server/opts.go, overrideCluster).
-func writeRouteServerConf(t *testing.T, r *clusteredHubRender, dir string, route int, local map[string]string) {
+// pod's store_dir and route port replaced by the server's own, the route port on routeHost, and
+// each of local's keys by its value; the rendered file must set each once. The routes and the
+// authorization stay the file's: no command-line flag sets them, since nats-server's --cluster flag
+// clears the file's cluster authorization (server/opts.go, overrideCluster).
+func writeRouteServerConf(t *testing.T, r *clusteredHubRender, dir, routeHost string, route int, local map[string]string) {
 	t.Helper()
 	replace := map[string]string{
 		`"store_dir": "/data"`: fmt.Sprintf(`"store_dir": %q`, filepath.Join(dir, "data")),
-		`"port": 6222`:         fmt.Sprintf(`"host": "127.0.0.1", "port": %d`, route),
+		`"port": 6222`:         fmt.Sprintf(`"host": %q, "port": %d`, routeHost, route),
 	}
 	maps.Copy(replace, local)
 	conf := r.natsConf
@@ -254,33 +261,33 @@ func writeRouteServerConf(t *testing.T, r *clusteredHubRender, dir string, route
 
 // routeServerArgs are r's nats container's arguments for a local server whose configuration
 // writeRouteServerConf wrote into dir: the pod's configuration directory dir, and its client and
-// monitoring ports and PID file, on 127.0.0.1.
-func routeServerArgs(t *testing.T, r *clusteredHubRender, dir string, client, monitor int) []string {
+// monitoring ports and PID file, on host.
+func routeServerArgs(t *testing.T, r *clusteredHubRender, dir, host string, client, monitor int) []string {
 	t.Helper()
 	return append(podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": dir + "/"}),
-		"-a", "127.0.0.1", "-p", strconv.Itoa(client), "-m", strconv.Itoa(monitor), "-P", filepath.Join(dir, "nats.pid"))
+		"-a", host, "-p", strconv.Itoa(client), "-m", strconv.Itoa(monitor), "-P", filepath.Join(dir, "nats.pid"))
 }
 
 // startRouteServer starts a server named name on r's nats.conf and auth.conf, on the three ports
-// drawn, with vars in its environment beside SERVER_NAME.
-func startRouteServer(t *testing.T, r *clusteredHubRender, natsServer, name string, drawn []int, vars []string) *routeServer {
+// drawn at host, with vars in its environment beside SERVER_NAME.
+func startRouteServer(t *testing.T, r *clusteredHubRender, natsServer, name, host string, drawn []int, vars []string) *routeServer {
 	t.Helper()
 	dir := t.TempDir()
-	writeRouteServerConf(t, r, dir, drawn[2], nil)
-	s := &routeServer{name: name, client: drawn[0], monitor: drawn[1], route: drawn[2]}
-	cmd := exec.Command(natsServer, routeServerArgs(t, r, dir, drawn[0], drawn[1])...)
+	writeRouteServerConf(t, r, dir, host, drawn[2], nil)
+	s := &routeServer{name: name, host: host, client: drawn[0], monitor: drawn[1], route: drawn[2]}
+	cmd := exec.Command(natsServer, routeServerArgs(t, r, dir, host, drawn[0], drawn[1])...)
 	cmd.Env = append(withoutRouteVars(os.Environ()), append([]string{"SERVER_NAME=" + name}, vars...)...)
-	s.proc = startReady(t, name, cmd, listeningForRoutes(drawn[2]))
+	s.proc = startReady(t, name, cmd, listeningForRoutesOn(host, drawn[2]))
 	return s
 }
 
 // startRogue starts a nats-server named name with no configuration file and no JetStream, in the
-// hub's cluster by name, soliciting routes, on the three reserved ports drawn.
-func startRogue(t *testing.T, natsServer, name string, drawn []int, routes []string) *cmdtest.Process {
+// hub's cluster by name, soliciting routes, on the three reserved ports drawn at host.
+func startRogue(t *testing.T, natsServer, name, host string, drawn []int, routes []string) *cmdtest.Process {
 	t.Helper()
-	return startReady(t, name, exec.Command(natsServer, "-n", name, "-a", "127.0.0.1", "-p", strconv.Itoa(drawn[0]), "-m", strconv.Itoa(drawn[1]),
-		"--cluster_name", "envoy-nats", "--cluster", fmt.Sprintf("nats://127.0.0.1:%d", drawn[2]), "--routes", strings.Join(routes, ",")),
-		listeningForRoutes(drawn[2]))
+	return startReady(t, name, exec.Command(natsServer, "-n", name, "-a", host, "-p", strconv.Itoa(drawn[0]), "-m", strconv.Itoa(drawn[1]),
+		"--cluster_name", "envoy-nats", "--cluster", "nats://"+net.JoinHostPort(host, strconv.Itoa(drawn[2])), "--routes", strings.Join(routes, ",")),
+		listeningForRoutesOn(host, drawn[2]))
 }
 
 // stopRogue stops the rogue and waits for it to exit, so the next row starts with no rogue left.

@@ -28,16 +28,23 @@ import (
 
 	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
-// stagedServer is one server of a stagedHub: a nats-server named as a hub pod, on 127.0.0.1 and
-// ports of its own, on the nats.conf of the stage it has reached, with the route variables a pod
-// has from the env stage on. restarts and startedAt are what the API server would report for its
-// container: the number of times it was started again, and when the running one started. stamps
-// is when each line of its output was first seen, as the container runtime stamps each line.
+// stagedServer is one server of a stagedHub: a nats-server named as a hub pod, on ports of its
+// own, on the nats.conf of the stage it has reached, with the route variables a pod has from the
+// env stage on. Its client and monitoring ports listen at host, a loopback address of the test's
+// own, so a client another test left dialing 127.0.0.1 cannot reach them and write a line into the
+// log the check reads. Its route port listens on 127.0.0.1, its pod IP here (stagedHub.Pods): on
+// loopback every connection comes from 127.0.0.1 whatever address it dials, so a route a server
+// accepts reads as from 127.0.0.1, and the route address must be that pod IP for the check to see
+// the hub's own routes as its pods'. restarts and startedAt are what the API server would report
+// for its container: the number of times it was started again, and when the running one started.
+// stamps is when each line of its output was first seen, as the container runtime stamps each line.
 type stagedServer struct {
 	name                   string
 	dir                    string
+	host                   string
 	client, monitor, route int
 	args, vars             []string
 	restarts               int32
@@ -122,17 +129,19 @@ func newStagedHub(t *testing.T, renders map[string]*clusteredHubRender, natsServ
 	t.Helper()
 	r := renders["env"]
 	require.Equal(t, r.authConf, renders["authorization"].authConf, "the stages change no user")
-	drawn := reservePorts(t, 9)
+	host := testport.LoopbackIP().String()
+	drawn := reservePortsOn(t, host, 6)
+	routePorts := reservePorts(t, 3)
 	h := &stagedHub{renders: renders, natsServer: natsServer, release: r.release}
 	var urls []string
 	for i := range 3 {
-		h.routePorts = append(h.routePorts, drawn[3*i+2])
-		urls = append(urls, fmt.Sprintf("nats://route:%s@127.0.0.1:%d", password, drawn[3*i+2]))
+		h.routePorts = append(h.routePorts, routePorts[i])
+		urls = append(urls, fmt.Sprintf("nats://route:%s@127.0.0.1:%d", password, routePorts[i]))
 	}
 	h.passwordVar, h.routesVar = "NATS_ROUTE_PASSWORD="+password, "NATS_ROUTE_URLS=["+strings.Join(urls, ", ")+"]"
 	for i := range 3 {
-		s := &stagedServer{name: fmt.Sprintf("%s-%d", r.release, i), dir: t.TempDir(), client: drawn[3*i], monitor: drawn[3*i+1], route: drawn[3*i+2]}
-		s.args = routeServerArgs(t, r, s.dir, s.client, s.monitor)
+		s := &stagedServer{name: fmt.Sprintf("%s-%d", r.release, i), dir: t.TempDir(), host: host, client: drawn[2*i], monitor: drawn[2*i+1], route: routePorts[i]}
+		s.args = routeServerArgs(t, r, s.dir, s.host, s.client, s.monitor)
 		s.vars = []string{"SERVER_NAME=" + s.name, h.passwordVar, h.routesVar}
 		h.writeConf(t, s, "env")
 		h.servers = append(h.servers, s)
@@ -155,7 +164,7 @@ func (h *stagedHub) writeConf(t *testing.T, s *stagedServer, stage string) {
 			local[fmt.Sprintf("nats://%s-%d.%s-headless:6222", h.release, i, h.release)] = fmt.Sprintf("nats://127.0.0.1:%d", port)
 		}
 	}
-	writeRouteServerConf(t, h.renders[stage], s.dir, s.route, local)
+	writeRouteServerConf(t, h.renders[stage], s.dir, "127.0.0.1", s.route, local)
 }
 
 // start runs s on its arguments and route variables, in UTC, the zone of the hub's nats image,
@@ -249,7 +258,9 @@ func (h *stagedHub) serverIDs(t *testing.T) map[string]string {
 		var varz struct {
 			ID string `json:"server_id"`
 		}
-		within(t, 15*time.Second, s.name+"'s /varz", func() error { return getJSON(fmt.Sprintf("http://127.0.0.1:%d/varz", s.monitor), &varz) })
+		within(t, 15*time.Second, s.name+"'s /varz", func() error {
+			return getJSON("http://"+net.JoinHostPort(s.host, strconv.Itoa(s.monitor))+"/varz", &varz)
+		})
 		ids[s.name] = varz.ID
 	}
 	return ids
@@ -261,7 +272,7 @@ func (h *stagedHub) awaitMesh(t *testing.T) {
 	ids := h.serverIDs(t)
 	within(t, 30*time.Second, "the three servers' mesh", func() error {
 		for _, s := range h.servers {
-			routez, err := routezOf("127.0.0.1", s.monitor)
+			routez, err := routezOf(s.host, s.monitor)
 			if err != nil {
 				return err
 			}
@@ -335,7 +346,7 @@ func (h *stagedHub) Monitor(_ context.Context, pod, path string) ([]byte, error)
 	if s == nil {
 		return nil, fmt.Errorf("no pod %s", pod)
 	}
-	return monitorGet(fmt.Sprintf("http://127.0.0.1:%d%s", s.monitor, path))
+	return monitorGet("http://" + net.JoinHostPort(s.host, strconv.Itoa(s.monitor)) + path)
 }
 
 // Log is the server's whole output since its start, as `kubectl logs --timestamps` gives the
@@ -389,33 +400,38 @@ func (r rotatedLog) Log(ctx context.Context, pod string) ([]byte, error) {
 	return []byte(rest), nil
 }
 
-// startPeer starts a nats-server named name on host, in the hub's cluster by name, soliciting
-// routes to the hub's servers on routeTo, and advertising its own route address: on loopback every
-// outbound connection comes from 127.0.0.1, so the address a hub server would see on a pod network
-// is the one the peer advertises, which the hub's other servers then dial as an implicit route
-// (nats-server 2.15.1 server/route.go:859-871). A reload onto authorization closes the routes a
-// server accepted, so the peer's own routes close there; the ones the hub's servers dialed stay.
-func startPeer(t *testing.T, natsServer, name, host string, routeTo []int) (*cmdtest.Process, int) {
+// startPeer starts a nats-server named name whose route port is on routeHost, in the hub's cluster
+// by name, soliciting routes to the hub's servers on routeTo, and advertising its own route
+// address: on loopback every outbound connection comes from 127.0.0.1, so the address a hub server
+// would see on a pod network is the one the peer advertises, which the hub's other servers then
+// dial as an implicit route (nats-server 2.15.1 server/route.go:859-871). A reload onto
+// authorization closes the routes a server accepted, so the peer's own routes close there; the
+// ones the hub's servers dialed stay. Its client and monitoring ports listen at a loopback address
+// of its own (testport.LoopbackIP), apart from the route address the rows name it by, so a client
+// another test left dialing 127.0.0.1 cannot reach them; it returns the monitoring endpoint.
+func startPeer(t *testing.T, natsServer, name, routeHost string, routeTo []int) (*cmdtest.Process, string) {
 	t.Helper()
-	drawn := reservePorts(t, 3)
+	host := testport.LoopbackIP().String()
+	drawn := reservePortsOn(t, host, 2)
+	route := reservePorts(t, 1)[0]
 	var urls []string
 	for _, port := range routeTo {
 		urls = append(urls, fmt.Sprintf("nats://127.0.0.1:%d", port))
 	}
 	p := startReady(t, name, exec.Command(natsServer, "-n", name, "-a", host, "-p", strconv.Itoa(drawn[0]), "-m", strconv.Itoa(drawn[1]),
-		"--cluster_name", "envoy-nats", "--cluster", "nats://"+net.JoinHostPort(host, strconv.Itoa(drawn[2])),
-		"--cluster_advertise", net.JoinHostPort(host, strconv.Itoa(drawn[2])), "--routes", strings.Join(urls, ",")),
-		listeningForRoutesOn(host, drawn[2]))
-	return p, drawn[1]
+		"--cluster_name", "envoy-nats", "--cluster", "nats://"+net.JoinHostPort(routeHost, strconv.Itoa(route)),
+		"--cluster_advertise", net.JoinHostPort(routeHost, strconv.Itoa(route)), "--routes", strings.Join(urls, ",")),
+		listeningForRoutesOn(routeHost, route))
+	return p, net.JoinHostPort(host, strconv.Itoa(drawn[1]))
 }
 
-// peerID is the server id of the peer whose monitoring port is host:monitor.
-func peerID(t *testing.T, host string, monitor int) string {
+// peerID is the server id of the peer whose monitoring endpoint is monitor, a host:port.
+func peerID(t *testing.T, monitor string) string {
 	t.Helper()
 	var varz struct {
 		ID string `json:"server_id"`
 	}
-	within(t, 15*time.Second, "the peer's /varz", func() error { return getJSON("http://"+net.JoinHostPort(host, strconv.Itoa(monitor))+"/varz", &varz) })
+	within(t, 15*time.Second, "the peer's /varz", func() error { return getJSON("http://"+monitor+"/varz", &varz) })
 	return varz.ID
 }
 
@@ -431,7 +447,7 @@ func routedTo(h *stagedHub, ip, id string) (bool, error) {
 
 // routedBy is whether s's /routez lists a route with ip or remote_id.
 func routedBy(s *stagedServer, ip, id string) (bool, error) {
-	routez, err := routezOf("127.0.0.1", s.monitor)
+	routez, err := routezOf(s.host, s.monitor)
 	if err != nil {
 		return false, err
 	}
@@ -586,12 +602,12 @@ func refusedRouteLogin(t *testing.T, local string, port int) string {
 	return strings.TrimSpace(answer)
 }
 
-// clientLine connects to a hub server's client port as a client with no credential, which the
-// hub's no_auth_user takes, and sends one -ERR, whose text the server logs whole at the end of a
+// clientLine connects to s's client port as a client with no credential, which the hub's
+// no_auth_user takes, and sends one -ERR, whose text the server logs whole at the end of a
 // "Client Error" line (client.go:2268); it returns the server's answer to the CONNECT's PING.
-func clientLine(t *testing.T, port int, text string) string {
+func clientLine(t *testing.T, s *stagedServer, text string) string {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.host, strconv.Itoa(s.client)), 5*time.Second)
 	require.NoError(t, err)
 	defer conn.Close()
 	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
