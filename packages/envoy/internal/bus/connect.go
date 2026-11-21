@@ -118,7 +118,7 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 				<-*gate
 			}
 			refusals.reset()
-			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", NATSURLWithoutUserinfo(nc.ConnectedUrl())))
 			if connectedCB != nil {
 				connectedCB(nc)
 			}
@@ -225,11 +225,11 @@ func handshaking(nc *nats.Conn) bool {
 }
 
 // serverList is urls as a log line names them: comma-separated, each without its userinfo
-// (natsURLWithoutUserinfo).
+// (NATSURLWithoutUserinfo).
 func serverList(urls []string) string {
 	servers := make([]string, len(urls))
 	for i, raw := range urls {
-		servers[i] = natsURLWithoutUserinfo(raw)
+		servers[i] = NATSURLWithoutUserinfo(raw)
 	}
 	return strings.Join(servers, ",")
 }
@@ -281,7 +281,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// empty while reconnecting. The line goes through the package-level slog, like every other bus
 	// line, because a listener process test fails if a bus line stops being Go's text format
 	// (cmd/listener/startup_test.go:598-612 names the deployed metric filters). Each server is
-	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
+	// written without its userinfo (NATSURLWithoutUserinfo), because nats.go authenticates with a
 	// URL's userinfo, a token or a user and password, when the URL carries one. The NATS credential
 	// never reaches a line: options never sees it, since credential is applied to the options
 	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer, or a
@@ -307,7 +307,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
 		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
 		// ConnectedUrlRedacted keeps a token, which is a user name alone.
-		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", NATSURLWithoutUserinfo(nc.ConnectedUrl())))
 		if reconnectCB != nil {
 			reconnectCB(nc)
 		}

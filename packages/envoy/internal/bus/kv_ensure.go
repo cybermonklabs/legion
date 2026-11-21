@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
+	"weak"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -115,6 +117,14 @@ func namedRequest(request string, err error) error {
 // ctx is the context the caller runs under, so a stop that ends it ends a start that waits: the
 // listener's start, which a signal ends at once, runs under no other; the legion agent registry's
 // retry passes the retry's context, and the webhook redelivery sweep the context of its pass.
+//
+// A bucket a listener copies (CopiedBuckets) is never created here, but on a connection a test
+// fixture marked as its own (CreateCopiedBucketsOn): a missing one is ErrBucketMissing, named for
+// its stream (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). A bucket deleted while one
+// of its writers runs must not come back while that writer runs, since a write the deleted bucket
+// acknowledged is in no bucket after it, and its writer was told it landed. The operator creates
+// such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other bucket is created
+// when missing.
 func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	return ensureKeyValue(ctx, startHangGuard, conn, js, config)
 }
@@ -122,6 +132,43 @@ func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamConte
 // ensureKeyValue is EnsureKeyValue with guard, its hang guard, named by the caller: a test of the
 // guard shortens it, and every other caller is EnsureKeyValue, which passes startHangGuard.
 func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	mode := openOnly
+	if _, fixture := fixtureConns.Load(weak.Make(conn)); fixture || !slices.Contains(CopiedBuckets(), config.Bucket) {
+		mode = openOrCreate
+	}
+	return openKeyValue(ctx, guard, conn, js, config, mode)
+}
+
+// bucketOpen is what openKeyValue does with a bucket the server holds and with one it does not.
+type bucketOpen int
+
+const (
+	// openOnly opens a bucket the server holds, raising its copies to the deployment's, and
+	// answers one it does not hold ErrBucketMissing: EnsureKeyValue's, for a bucket a listener
+	// copies.
+	openOnly bucketOpen = iota
+	// openOrCreate opens a bucket the server holds, raising its copies, and creates one it does
+	// not: EnsureKeyValue's for every other bucket, and CreateCopiedBucket's.
+	openOrCreate
+	// createOnly creates a bucket the server does not hold, and answers ErrBucketExists for one it
+	// holds, found by the lookup or made by another client between the lookup and the create,
+	// opening, raising and updating nothing: CreateMissingCopiedBucket's.
+	//
+	// Its create is nats.go's (CreateKeyValue), the normal path's. JetStream answers a create of
+	// a stream that exists with the same configuration as done, which changes nothing, and with
+	// another as "stream name already in use". nats.go follows that answer with an update only
+	// when the stream it then reads equals the configuration asked for in all but the discard
+	// policy and direct get, its metadata included (nats.go@v1.53.1 kv.go:525-545). nats-server
+	// 2.15.1, the hubs' version, answers every stream with metadata of its own (_nats.ver,
+	// _nats.level, _nats.req.level), which that configuration never carries, so there the update
+	// is never sent (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
+	createOnly
+)
+
+// openKeyValue is EnsureKeyValue, CreateCopiedBucket and CreateMissingCopiedBucket, with guard,
+// the hang guard: mode says what it does with a bucket the server holds and with one it does not
+// (bucketOpen).
+func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, mode bucketOpen) (KeyValue, error) {
 	ctx, cancel := hangGuard(ctx, guard)
 	defer cancel()
 	// One run of reads for every read of this open, so a delay one step measured holds for the
@@ -146,6 +193,8 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	kv, err := lookUpBucket()
 	created, createdElsewhere := false, false
 	switch {
+	case errors.Is(err, nats.ErrBucketNotFound) && mode == openOnly:
+		err = namedRequest(lookup, ErrBucketMissing)
 	case errors.Is(err, nats.ErrBucketNotFound):
 		// A create the server leaves unanswered is sent again, where an unanswered update is not
 		// (updateStream, internal/bus/stream.go). A second identical create finds the
@@ -165,7 +214,13 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// request of the step the server refuses under the connection's grant ends the step at
 		// that send instead (refusedBy): it would be refused again.
 		kv, err = sentAgain(ctx, create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
-		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		switch {
+		case errors.Is(err, nats.ErrStreamNameAlreadyInUse) && mode == createOnly:
+			// Another client made the bucket between this call's lookup and its create, with
+			// another configuration: a create-only open leaves it as it is, and neither waits a
+			// member out for it nor opens it.
+			err = namedRequest(create, fmt.Errorf("%w: another client made it after the lookup: %w", ErrBucketExists, err))
+		case errors.Is(err, nats.ErrStreamNameAlreadyInUse):
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
 			// either: the lookup is taken again until it has. The copies are not raised here, as
@@ -180,13 +235,15 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// end the start the create above has just carried through.
 			createdElsewhere = true
 			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
-		} else if unanswered(err) || ctx.Err() != nil {
+		case unanswered(err) || ctx.Err() != nil:
 			// No answer, or the wait ended: the server refused nothing, so no setting is named.
 			err = namedRequest(create, err)
-		} else {
+		default:
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
+	case err == nil && mode == createOnly:
+		err = namedRequest(lookup, ErrBucketExists)
 	case err == nil:
 		// The bucket is there: its stream is read for its copies and its leader, sent again while
 		// the server leaves the read unanswered as the lookup is (nats.go's lookup answers a

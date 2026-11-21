@@ -45,7 +45,7 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 		if LocalNATSURL(raw) {
 			continue
 		}
-		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, natsURLWithoutUserinfo(raw), AllowRemoteEnvVar)
+		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, NATSURLWithoutUserinfo(raw), AllowRemoteEnvVar)
 	}
 	return nil
 }
@@ -72,7 +72,7 @@ func LocalNATSURL(raw string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
+// NATSURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
 // that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
 // (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
 // user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
@@ -80,7 +80,7 @@ func LocalNATSURL(raw string) bool {
 // carries no userinfo and comes back as written. Any other comes back as nothing that preceded an
 // "@" in it: parsed and rendered without its userinfo when that leaves no "@", and otherwise -
 // a URL that does not parse, or one with an "@" past its authority - as what follows its last "@".
-func natsURLWithoutUserinfo(raw string) string {
+func NATSURLWithoutUserinfo(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "@") {
 		return trimmed

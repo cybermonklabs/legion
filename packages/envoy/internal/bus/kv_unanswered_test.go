@@ -68,6 +68,9 @@ type unansweredRelay struct {
 	pass     int
 	drops    int
 	sends    int
+	// to, when set, is where the relay sends each send it would drop, with the same reply subject
+	// and payload, in place of dropping it (misdirect).
+	to string
 }
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
@@ -108,6 +111,7 @@ func (r *unansweredRelay) arm(drops int) {
 	r.pass = 0
 	r.drops = drops
 	r.sends = 0
+	r.to = ""
 }
 
 // passThenDrop lets the next pass sends of the subject through and drops the drops after them,
@@ -120,6 +124,22 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	r.pass = pass
 	r.drops = drops
 	r.sends = 0
+	r.to = ""
+}
+
+// misdirect lets the next pass sends of the subject through and sends the n after them to the
+// subject to instead, counting the sends from now. The server answers each of those as a request
+// about to, so a lookup sent to a stream that is not there (openSubject of another bucket) is
+// answered "stream not found", the answer a member that has not applied a create gives
+// (bucketAppliedInterval): deterministically, where a real cluster's member catches up too fast to
+// be caught behind.
+func (r *unansweredRelay) misdirect(pass, n int, to string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = pass
+	r.drops = n
+	r.sends = 0
+	r.to = to
 }
 
 // sent is how many sends of its subject the client has made since the relay was armed.
@@ -129,25 +149,32 @@ func (r *unansweredRelay) sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
-func (r *unansweredRelay) send(subject string) bool {
+// send records one send of subject and answers what becomes of it: "" when it is passed on as it
+// is, and otherwise the subject it is sent to instead, dropped ("-") while drops are left with no
+// misdirect set, each such send spending one.
+func (r *unansweredRelay) send(subject string) string {
 	if subject != r.subject {
-		return false
+		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false
+		return ""
 	}
 	if r.drops > 0 {
 		r.drops--
-		return true
+		if r.to != "" {
+			return r.to
+		}
+		return droppedSend
 	}
-	return false
+	return ""
 }
+
+// droppedSend is what send answers for a send the relay leaves out.
+const droppedSend = "-"
 
 // serve joins each connection the relay accepts to the server until the listener closes.
 func (r *unansweredRelay) serve(target string) {
@@ -203,8 +230,13 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		if r.send(fields[1]) {
+		switch to := r.send(fields[1]); to {
+		case "":
+		case droppedSend:
 			continue
+		default:
+			fields[1] = to
+			line = strings.Join(fields, " ") + "\r\n"
 		}
 		if _, err := io.WriteString(server, line); err != nil {
 			return

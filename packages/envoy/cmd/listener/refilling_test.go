@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -165,6 +166,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -201,7 +203,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		registry.StopWatch()
 		sessions.StopWatch()
 	})
-	rig.caches = listenerCaches(registry, sessions, nil)
+	rig.caches = listenerCaches(registry, sessions, nil, nil)
 	hookCaches := rig.caches
 	if options.hookCaches != nil {
 		hookCaches = options.hookCaches(rig.caches)

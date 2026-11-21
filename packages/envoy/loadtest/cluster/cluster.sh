@@ -826,6 +826,7 @@ set_run() {
   RUN_DIR=$CLUSTER_ROOT/$RUN
   STATE=$RUN_DIR/state.json
   LOADGEN=$RUN_DIR/loadgen
+  FIXTUREBUCKETS=$RUN_DIR/fixturebuckets
   STORED_ORDER_BIN=$RUN_DIR/envoy-dispatch
   BROWSERTYPE_BIN=$RUN_DIR/browsertype
 }
@@ -1606,20 +1607,59 @@ kv_replicas_add() {
   obj=$(jq -c --arg b "$1" --arg n "$n" '. + {($b): ($n | tonumber? // .)}' <<<"$obj")
 }
 
+# nats_purge: ENVOY_NOTIFICATIONS, every KV bucket and the fixture's marker stream
+# (internal/bus/bustest's ENVOY_TEST_FIXTURE) removed, so the reset's nats_provision makes the
+# buckets again: fixturebuckets leaves a server that holds the marker as it is.
 nats_purge() {
-  local streams
+  local streams s
   streams=$(nats_box stream ls --names) || die "nats stream ls failed through nats-box"
-  if grep -qx ENVOY_NOTIFICATIONS <<<"$streams"; then
-    nats_box stream rm ENVOY_NOTIFICATIONS -f >/dev/null || die "nats stream rm ENVOY_NOTIFICATIONS failed"
-  fi
+  for s in ENVOY_NOTIFICATIONS ENVOY_TEST_FIXTURE; do
+    if grep -qx "$s" <<<"$streams"; then
+      nats_box stream rm "$s" -f >/dev/null || die "nats stream rm $s failed"
+    fi
+  done
   each_kv_bucket kv_delete
 }
 
 kv_delete() { nats_box kv del "$1" -f >/dev/null || die "nats kv del $1 failed"; }
 
-# start_copy: the listener first, so it creates ENVOY_NOTIFICATIONS on three replicas, then
-# Dispatch, until /healthz reports ok and nats; then the replica check.
+# nats_provision: the buckets a listener copies, made on the copy's NATS on three replicas, since
+# no listener creates one: before up's first start of the listener, and before each
+# reset's, after nats_purge deleted them. fixturebuckets provisions only a server on this
+# machine's loopback, so it reaches NATS through a kubectl port-forward of the nats Service on a
+# local port the kernel chose, which ends with it. The buckets are the copy's, so the lock is read
+# first, as for every write into the copy.
+nats_provision() {
+  local log=$RUN_DIR/logs/nats-provision.log pf port="" deadline rc=0
+  copy_is_ours "the copy's NATS" ||
+    die "refusing to create the KV buckets of the copy's NATS in $NS: the lock does not give this run that NATS (above)"
+  [ -x "$FIXTUREBUCKETS" ] || die "no fixturebuckets at $FIXTUREBUCKETS; cluster.sh up builds it"
+  timeout 300 kubectl -n "$NS" port-forward svc/nats :4222 >"$log" 2>&1 &
+  pf=$!
+  deadline=$((EPOCHSECONDS + 60))
+  while :; do
+    port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9][0-9]*\) -> 4222$/\1/p' "$log")
+    port=${port%%$'\n'*}
+    [ -z "$port" ] || break
+    if ! kill -0 "$pf" 2>/dev/null || ((EPOCHSECONDS >= deadline)); then
+      kill "$pf" 2>/dev/null || true
+      wait "$pf" 2>/dev/null || true
+      die "kubectl port-forward of svc/nats in $NS forwarded no local port within 60 s: $(tr '\n' ' ' <"$log")"
+    fi
+    sleep 0.5
+  done
+  "$FIXTUREBUCKETS" -url "nats://127.0.0.1:$port" -replicas 3 >>"$log" 2>&1 || rc=$?
+  kill "$pf" 2>/dev/null || true
+  wait "$pf" 2>/dev/null || true
+  ((rc == 0)) || die "fixturebuckets could not create the KV buckets of the copy's NATS on 3 replicas: $(tail -n 3 "$log" | tr '\n' ' ')"
+  note "the copy's NATS holds the buckets a listener copies, on 3 replicas (fixturebuckets through a port-forward of svc/nats)"
+}
+
+# start_copy: the buckets a listener copies (nats_provision), then the listener, so it creates
+# ENVOY_NOTIFICATIONS on three replicas, then Dispatch, until /healthz reports ok and nats; then
+# the replica check.
 start_copy() {
+  nats_provision
   scale_to listener 1
   scale_to dispatch 1
   wait_dispatch_healthy
@@ -3133,10 +3173,12 @@ replay_prepare_run() {
   [ "$before" = "$want_before" ] || die "the restored seed is at migration $before, the manifest says $want_before"
   s_restore=$(elapsed_since "$t0")
 
-  # The listener first (it creates ENVOY_NOTIFICATIONS on three replicas), then Dispatch at the
-  # run's commit, which migrates the seed forward before it serves /healthz.
+  # The buckets a listener copies made again on the purged NATS (nats_provision), the listener
+  # first (it creates ENVOY_NOTIFICATIONS on three replicas), then Dispatch at the run's commit,
+  # which migrates the seed forward before it serves /healthz.
   t0=$EPOCHREALTIME
   nats_purge
+  nats_provision
   scale_to listener 1
   note "starting Dispatch at $(state .dispatch_commit) on the seed (migration $before); it migrates it forward"
   scale_to dispatch 1 1800
@@ -3569,8 +3611,10 @@ up_run() {
   chmod 600 "$STATE"
   start_daemon heartbeat
 
-  note "building loadgen (static) into $LOADGEN"
+  note "building loadgen and fixturebuckets (static) into $LOADGEN and $FIXTUREBUCKETS"
   (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$FIXTUREBUCKETS" ./internal/testnats/cmd/fixturebuckets) ||
+    die "go build of fixturebuckets failed"
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables
     state_set '.browsertype = {commit: $c, sha256: $s}' --arg c "$bt_commit" --arg s "$(sha256_of "$BROWSERTYPE_BIN")"

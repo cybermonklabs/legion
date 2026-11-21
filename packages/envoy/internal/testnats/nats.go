@@ -773,6 +773,11 @@ func (g *NkeyGrant) Grant(t testing.TB, allow ...string) {
 	}
 }
 
+// Log is the server's log, with the debug and protocol trace: a publish the grant refuses is
+// there as `Permissions Violation for Publish to "<subject>"`, on the line of the connection
+// (`cid:<id>`, nats.Conn.GetClientID) that sent it.
+func (g *NkeyGrant) Log() string { return g.srv.Log() }
+
 func publishGrantConfig(user string, allow []string) string {
 	return grantConfig(user, "publish", allow)
 }

@@ -24,7 +24,8 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# there at all, and the broker binds its metrics on a port the kernel picks, and fixturebuckets
+# provisioned natsd's own server, by the port natsd reported; (c) "dev-stack:
 # ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
@@ -386,6 +387,17 @@ CLIENT
       chmod +x "$target"
       continue
       ;;
+    # fixturebuckets runs once and exits: its stub says what it was given, into the log
+    # dev-stack.sh keeps of it.
+    fixturebuckets)
+      cat >"$target" <<'FIXTUREBUCKETS'
+#!/usr/bin/env bash
+echo "fake fixturebuckets: $*" >&2
+exit 0
+FIXTUREBUCKETS
+      chmod +x "$target"
+      continue
+      ;;
     *)
       echo "fake go: unhandled build target $package" >&2
       exit 1
@@ -546,6 +558,10 @@ assert_instance_ready() {
   # of two stacks on a machine could hold.
   grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
     fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+  # No listener creates a bucket it copies, so fixturebuckets provisioned the run's
+  # own natsd, by the port natsd reported, before the listener started.
+  grep -qxF "fake fixturebuckets: -url nats://127.0.0.1:${process_port[natsd]}" "${work_dir}/logs/fixturebuckets.log" ||
+    fail "$label: fixturebuckets did not provision natsd's own server: $(cat "${work_dir}/logs/fixturebuckets.log" 2>/dev/null)"
   # The listener serves on its keeper's socket: the port it reported is the one its keeper holds,
   # which held-port.py put in its ENVOY_PUBLIC_URL, so a restart (l) serves that same port.
   local listener_kept_port
@@ -889,7 +905,8 @@ prebuilt="${temporary_dir}/prebuilt"
 # not its binary's name is renamed after the fake build.
 prebuilt_entries=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
   listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
-  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe
+  fixturebuckets=./internal/testnats/cmd/fixturebuckets)
 prebuilt_packages=("${prebuilt_entries[@]#*=}")
 prebuilt_binaries=("${prebuilt_entries[@]%%=*}")
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \

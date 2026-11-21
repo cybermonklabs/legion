@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -408,7 +409,9 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 // githubWebhookEnv mounts the listener's GitHub webhook route, the one route that uses the CI store.
 var githubWebhookEnv = []string{"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET=ci-route-secret", "ENVOY_REVIEWER_APP_ID=1"}
 
-// seedDueCIRecord creates the CI bucket as the listener creates it and stores one commit of
+// seedDueCIRecord creates the CI bucket as `envoy-infra buckets` creates a deployment's
+// (bus.CopiedBucketConfig at one copy), on a server the listener has not started on, so the
+// harness's provisioning finds it there and leaves it as it is, and stores one commit of
 // owner/repo#number at sha whose checks finished a minute ago and have not settled, so any
 // summary loop reading the bucket settles it at its first pass after the record reaches its
 // cache, on the next tick of the loop's grid. It returns the bucket and the record's key.
@@ -569,7 +572,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 		t.Fatalf("connect bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), bustest.Fixture(client.Conn), store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
@@ -677,12 +680,17 @@ const v1OpenWithoutTheBucket = 5000
 
 // A listener whose NATS user may not open the known-session bucket opens /v1 without waiting the
 // bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
-// production applies them in - with no restart.
+// production applies them in - with no restart. The bucket is there before the listener starts, as
+// `envoy-infra buckets` leaves it: the harness provisions the server while the user's grant
+// carries everything, and the grant is then narrowed to the listener's before it starts.
 func TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet(t *testing.T) {
 	seed, public := testnats.User(t)
-	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
+	grant := testnats.StartNkeyGranted(t, public, ">")
 	t.Setenv("NATS_NKEY_SEED", seed)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), grant.URL, "test-machine", "NATS_NKEY_SEED="+seed)
+	env := []string{"NATS_NKEY_SEED=" + seed}
+	provisionListenerServer(t, grant.URL, env)
+	grant.Grant(t, grantBeforeKnownSessions()...)
+	listener := startListenerProcessAsIs(t, cmdtest.Build(t, "envoy-listener"), grant.URL, "test-machine", env...)
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the listener's output:\n%s", listener.Output.String())

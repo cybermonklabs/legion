@@ -7,12 +7,16 @@ import (
 	"math"
 	"os"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 )
 
 // runRecreate deletes the bucket's stream and adds it again with the config it had, so the
 // listener's watcher finds a stream with a new creation time (its stream probe, or kvwatch Check),
 // then fills it. With -fill-log it writes a fillLog: when the stream was deleted, created and
-// filled, both streams' last sequences, and when each record of the fill was acknowledged.
+// filled, both streams' last sequences, and when each record of the fill was acknowledged. It acts
+// only on a server a fixture provisioned (bustest.RequireFixtureServer): it recreates a bucket a
+// listener copies, which nothing but the operator's `envoy-infra buckets` may do anywhere else.
 func runRecreate(args []string) error {
 	flags := flag.NewFlagSet("recreate", flag.ContinueOnError)
 	url := flags.String("nats", "", "NATS URL")
@@ -37,6 +41,9 @@ func runRecreate(args []string) error {
 		return err
 	}
 	defer conn.Close()
+	if err := bustest.RequireFixtureServer(js); err != nil {
+		return err
+	}
 	stream := "KV_" + config.Bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {

@@ -133,6 +133,9 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 	if err != nil {
 		return nil, err
 	}
+	// Each bucket is one a listener copies, which bus.EnsureKeyValue creates only through a test
+	// fixture's connection (bus.CreateCopiedBucketsOn), and otherwise answers
+	// bus.ErrBucketMissing.
 	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
 	if err != nil {
 		return nil, err
@@ -290,6 +293,78 @@ func (r *Registry) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	r.roleKV = roleKV
 	r.kvMu.Unlock()
 	return r.roleWatcher.Rewatch(ctx, conn)
+}
+
+// WatcherCache is one of the registry's two watchers, over its one bucket, as a cache the listener
+// checks, rewatches and ends on its own (InterestCache, RoleClaimCache): a missing role bucket
+// then leaves the interest watcher in every check and rewatch, as a missing interest bucket leaves
+// the role claim watcher, where the registry as one cache (Ping, WatchErr, Rewatch) answers for
+// both and was skipped whole while either bucket was missing. Its methods are the registry's, for
+// its watcher alone.
+type WatcherCache struct {
+	r     *Registry
+	roles bool
+}
+
+// InterestCache is the interest watcher over the interest bucket (WatcherCache).
+func (r *Registry) InterestCache() WatcherCache { return WatcherCache{r: r} }
+
+// RoleClaimCache is the role claim watcher over the role bucket (WatcherCache).
+func (r *Registry) RoleClaimCache() WatcherCache { return WatcherCache{r: r, roles: true} }
+
+func (c WatcherCache) watcher() *kvwatch.Watcher {
+	if c.roles {
+		return c.r.roleWatcher
+	}
+	return c.r.watcher
+}
+
+// Ping verifies the watcher's bucket is reachable and reports the watcher's terminal error, its
+// bucket recreated under it included (kvwatch.Watcher.Check).
+func (c WatcherCache) Ping() error {
+	if err := c.watcher().Check(); err != nil {
+		return err
+	}
+	return c.watcher().Err()
+}
+
+// WatchErr is the watcher's terminal error, or nil while it runs.
+func (c WatcherCache) WatchErr() error { return c.watcher().Err() }
+
+// NeedsRead reports whether the copy does not follow its bucket with no read under way to make it
+// (kvwatch.Watcher.NeedsRead).
+func (c WatcherCache) NeedsRead() bool { return c.watcher().NeedsRead() }
+
+// Disconnected says the connection the watcher reads through was lost (kvwatch.Watcher.Disconnected).
+func (c WatcherCache) Disconnected() { c.watcher().Disconnected() }
+
+// StopWatch retires the watcher for a shutdown (kvwatch.Watcher.Stop).
+func (c WatcherCache) StopWatch() { c.watcher().Stop() }
+
+// EndWatch ends the watcher within ctx, while the connection still carries requests
+// (kvwatch.Watcher.End).
+func (c WatcherCache) EndWatch(ctx context.Context) { c.watcher().End(ctx) }
+
+// Rewatch moves the watcher onto conn (kvwatch.Watcher.Rewatch), waiting on nothing past ctx. The
+// role claim watcher's move opens the role bucket on conn first, which the registry's role writes go
+// through, so a failure to open it moves nothing, as Registry.Rewatch's does; the interest handle
+// moves with its watcher (interests).
+func (c WatcherCache) Rewatch(ctx context.Context, conn *nats.Conn) error {
+	if !c.roles {
+		return c.r.watcher.Rewatch(ctx, conn)
+	}
+	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	if err != nil {
+		return fmt.Errorf("open role registry JetStream: %w", err)
+	}
+	roleKV, err := bus.OpenKeyValue(ctx, conn, js, c.r.roles().Bucket())
+	if err != nil {
+		return fmt.Errorf("open role KV bucket: %w", err)
+	}
+	c.r.kvMu.Lock()
+	c.r.roleKV = roleKV
+	c.r.kvMu.Unlock()
+	return c.r.roleWatcher.Rewatch(ctx, conn)
 }
 
 // CachedInterest returns sessionID's interest from the cache alone, and whether the cache holds

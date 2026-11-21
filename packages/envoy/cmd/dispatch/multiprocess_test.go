@@ -50,6 +50,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -349,8 +350,9 @@ const (
 	sessionHeartbeat = 30 * time.Second
 )
 
-// sessionRig is the test's own NATS connection, the role-claim and session buckets it registers
-// sessions in, and the HTTP client it writes comments through.
+// sessionRig is the test's own NATS connection, a fixture's (bustest.Connect), the role-claim and
+// session buckets it registers sessions in, which it creates, and the HTTP client it writes
+// comments through.
 type sessionRig struct {
 	natsURL  string
 	conn     *natsgo.Conn
@@ -361,7 +363,7 @@ type sessionRig struct {
 
 func newSessionRig(t *testing.T, natsURL string) *sessionRig {
 	t.Helper()
-	conn := testnats.Connect(t, natsURL)
+	conn := bustest.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
 	roles, err := envoystore.Open(t.Context(), conn)
 	if err != nil {

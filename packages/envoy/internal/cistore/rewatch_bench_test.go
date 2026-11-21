@@ -11,6 +11,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -156,7 +157,7 @@ func BenchmarkRewatch(b *testing.B) {
 
 func benchmarkStoreRewatch(b *testing.B, keys int) {
 	_, uri := testnats.Start(b)
-	conn := testnats.Connect(b, uri)
+	conn := bustest.Connect(b, uri)
 	b.Cleanup(conn.Close)
 	js, err := conn.JetStream()
 	if err != nil {

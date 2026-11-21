@@ -797,7 +797,11 @@ services_up() {
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
+  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
+    go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
+  # No listener creates a bucket it copies: the batch provisions its own NATS with
+  # them before the listener starts.
+  provision_fixture_buckets "$S/fixturebuckets" "nats://127.0.0.1:$nats_port" "$S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {

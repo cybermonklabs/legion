@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -127,6 +128,7 @@ func listener(properties map[string]any) map[string]any {
 func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 
@@ -174,6 +176,7 @@ func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 func TestLiveAdoptionPreviewsClean(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)

@@ -180,6 +180,13 @@ var listenerSignals = []struct {
 		},
 		description: "An Envoy listener start gave up setting up its durable subscription 135 s after its first attempt (`subscribe failed after max attempts, shutting down`). ECS had already stopped the old task, so every replacement exits 1 the same way once its own bind gives up. Read the line's `error` in /ecs/envoy-listener: `consumer is already bound to a subscription` means something still holds the durable's push binding (find it with `nats consumer info ENVOY_NOTIFICATIONS listener-<machine id>`, push_bound, and stop it); any other error is JetStream failing the consumer lookup, create or update.",
 	},
+	{
+		alarm: "bucket-missing", metric: "BucketsMissing",
+		filters: [][2]string{
+			{"bucket-missing-filter", `{ $.level = "ERROR" && $.msg = "listener KV bucket is missing" }`},
+		},
+		description: "An Envoy listener found a KV bucket it copies missing (`listener KV bucket is missing`, the line's `bucket` names it): no listener creates one, since a bucket created again under a running listener loses every write the deleted bucket acknowledged. Until it is back, every write that needs it answers 503, and `/healthz` answers 200 `degraded` with `missing_buckets`; a start waits at its gate, serving no route, and its `/healthz` answers 503 `waiting`, which the container health check reads as unhealthy. Make it with `envoy-infra buckets create`, with `--break-glass` until the auth service's cutover, which needs no listener stopped, by the runbook (cybermonklabs/legion packages/envoy/infra/README.md#envoy-infra-buckets). Read /ecs/envoy-listener for the bucket.",
+	},
 }
 
 // readPolicy is the execution-role policy that reads one secret, as the reference's json.dumps
@@ -331,7 +338,7 @@ func TestWebhookListenerTagsEachChildWithItsService(t *testing.T) {
 			tagged++
 		}
 	}
-	require.Equal(t, 10, tagged, "the log group, Cloud Map service, task definition, service and six alarms")
+	require.Equal(t, 11, tagged, "the log group, Cloud Map service, task definition, service and seven alarms")
 }
 
 // The task definition comes after the policies its execution role reads the secrets with, and the
@@ -426,7 +433,7 @@ func TestWebhookListenerAlarmsNameItsLogGroup(t *testing.T) {
 			require.Equal(t, "/ecs/example-hooks", c.Inputs["logGroupName"].StringValue(), "%s's log group", name)
 		}
 	}
-	require.Equal(t, 6, alarms)
+	require.Equal(t, 7, alarms)
 }
 
 // natsUrls may be known only in the apply, so core.ListenerConfig.Env refuses a bad one there and

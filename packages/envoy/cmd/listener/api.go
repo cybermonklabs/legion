@@ -3068,14 +3068,26 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// The session is known for the next 30 days, with the topics just stored, which are the
 		// filter of the consumer the registration gave it: a registration reaches here only once
 		// that consumer call landed, since every one that could not get its consumer was refused
-		// above with nothing recorded. A failed write is this WARN and nothing else: the
-		// registration is answered whatever it did (session.KnownSessions).
+		// above with nothing recorded. A record the store cannot write because its bucket is
+		// missing (bus.ErrBucketMissing: the store's open found none, or a read of its stream after
+		// a failed write found none) refuses the registration with the bus-unavailable 503, as every
+		// other write to a missing bucket does, and the client registers again once the operator
+		// has created it. Any other failure - a write that ran out of the request's budget, after
+		// the entry, the interests and the consumer have all landed, or a connection that dropped -
+		// is this WARN and nothing else, and the registration is answered, as before the bucket
+		// could be missing. A store whose user may not read the bucket yet writes nothing and
+		// answers nil (session.KnownSessions.RecordWithin).
 		if err := d.known.RecordWithin(ctx, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,
 			Capabilities: body.Capabilities,
 			Topics:       item.Topics,
-		}); err != nil {
+		}); errors.Is(err, bus.ErrBucketMissing) {
+			logger.Warn("listener known-session record not written: its bucket is missing, and the registration is refused",
+				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			writeBusUnavailable(w, fmt.Errorf("write the session's 30-day record: %w", err))
+			return
+		} else if err != nil {
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 		}
