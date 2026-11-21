@@ -116,6 +116,7 @@ import {
 } from "@legion/pi-shared/jj-attribution"
 import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
+import { processStarted } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
 import { parseHookArguments } from "./hook-arguments"
@@ -184,9 +185,36 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up.
+ *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up,
+ *  and `refresher`, the refresher it started (null when it started none), so a test waits on that
+ *  process's end rather than on a scan of every process on the machine. The hook writes the file
+ *  whole (`writeAtomically`) as soon as it started a refresher, naming it, so a test that ended
+ *  the hook before it exited still knows that refresher, and again as it exits.
  *  Unset, as Claude Code runs it, the hook writes nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
+/** The refresher this hook process started, for `ANSWERS_TIMING_FILE`: its pid, and when it
+ *  started (`processStarted`), which a later process given the same pid does not share; null when
+ *  it started none. */
+let startedRefresher: { readonly pid: number; readonly started: string | null } | null = null
+
+/** Writes `timing` and `startedRefresher` to `ANSWERS_TIMING_FILE` when that is set. */
+function writeAnswersTiming(timing: Record<string, number | null>): void {
+  const timingFile = process.env[ANSWERS_TIMING_FILE]
+  if (timingFile === undefined) return
+  try {
+    writeAtomically(timingFile, JSON.stringify({ ...timing, refresher: startedRefresher }))
+  } catch {
+    // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
+  }
+}
+
+/** Names the refresher `pid` in `ANSWERS_TIMING_FILE` at once, when that is set: right after its
+ *  spawn, while it can be no other process's pid. */
+function nameRefresher(pid: number): void {
+  if (process.env[ANSWERS_TIMING_FILE] === undefined) return
+  startedRefresher = { pid, started: processStarted(pid) ?? null }
+  writeAnswersTiming({})
+}
 
 const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
@@ -452,12 +480,12 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      detached: true,
-    }).unref()
+    const refresher = Bun.spawn(
+      [process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true },
+    )
+    refresher.unref()
+    nameRefresher(refresher.pid)
   }
   const file = join(directory, REFRESH_OUTCOME)
   for (;;) {
@@ -567,14 +595,7 @@ async function answers(text: string): Promise<never> {
   } catch (error) {
     process.stderr.write(`envoy: people's answers were not added — ${messageFor(error)}\n`)
   }
-  const timingFile = process.env[ANSWERS_TIMING_FILE]
-  if (timingFile !== undefined) {
-    try {
-      writeFileSync(timingFile, JSON.stringify({ began, printed, ended: performance.now() }))
-    } catch {
-      // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
-    }
-  }
+  writeAnswersTiming({ began, printed, ended: performance.now() })
   // Exits rather than returns: a read still running would hold the process open.
   process.exit(0)
 }
