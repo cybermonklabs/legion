@@ -361,6 +361,11 @@ type Machine struct {
 	// broker with sign-in on left or leaves pending (denyUndecidable); every name the policy
 	// grants at once is granted as ever.
 	SignInOff bool
+	// Groups is the broker's group reader (groups.Reader), the one the policy's sets carry
+	// (policy.Loader.Groups): who is a member of a group approver, for a decision
+	// (ApplyDecision), a revoke (RevokeByApprover) and the lists of a member's pending records
+	// and grants (PendingForApprover, GrantsForApprover). A nil reader admits nobody to a group.
+	Groups record.Directory
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -1794,6 +1799,9 @@ type decider struct {
 	// refusal is why the judge refused a request it holds (DenyJudged), written as the
 	// denial's detail for its agent to read; empty for every other decision.
 	refusal string
+	// groups is who is a member of a group approver now (Machine.Groups), which a person's
+	// decision is held to when the approver is a group; nil admits nobody to one.
+	groups record.Groups
 }
 
 // byPerson is the decider of a decision a person made on the broker's own approval page: the
@@ -1863,9 +1871,11 @@ func (d decider) eventLogin() *string {
 // for the judge the record's own approver — the owner's login, or record.AnyoneApprover for a
 // shared secret — since the judge approves in that approver's stead and holds none of their
 // rights over the grant afterwards (D1: the grant's approver is what GrantsForApprover lists and
-// what mayRevoke reads).
+// what mayRevoke reads). A grant a member of a group approver decided records the group, as
+// written, and not the member: the grant is the group's to list and revoke, every member's as it
+// was the one owner's, while requests.decided_by and the record's decision name the member.
 func (d decider) grantApprover(recordApprover string) string {
-	if d.isJudge() {
+	if _, group := record.GroupOf(record.CanonicalLogin(recordApprover)); d.isJudge() || group {
 		return recordApprover
 	}
 	return d.login
@@ -1888,7 +1898,7 @@ func (d decider) maySettle(policyApprover, recordApprover string) bool {
 	if d.isJudge() {
 		return record.CanonicalLogin(policyApprover) == record.CanonicalLogin(recordApprover)
 	}
-	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login)
+	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login, d.groups)
 }
 
 // enrollmentHoldsForItsSession is "enrollment e still holds something for its session": a live
@@ -2049,7 +2059,8 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			}
 		}
 	} else {
-		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login)
+		who.groups = m.Groups
+		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login, who.groups)
 		if err != nil {
 			return Decision{}, false, err
 		}
@@ -2391,8 +2402,14 @@ func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID str
 		return "", nil
 	}
 	if _, err := m.Chain.Verify(ctx, *id); err != nil {
+		// A group approval whose group cannot vouch for its decider now (stale, or never read)
+		// has lapsed: the grant is no longer live, and no chain failed. The typed error is kept
+		// beneath, so noteLapsedApprover reads its group and decider.
+		if errors.Is(err, record.ErrApproverNotAdmittedNow) {
+			return *id, fmt.Errorf("%w: %w", ErrGrantNotLive, err)
+		}
 		if errors.Is(err, record.ErrChainBroken) {
-			return *id, fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
+			return *id, fmt.Errorf("%w: %w", ErrGrantChainInvalid, err)
 		}
 		return *id, err
 	}
@@ -2467,7 +2484,7 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 		from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1 for no key update of e`, grantID).Scan(&session, &requestID, &approver, &operator); err != nil {
 		return err
 	}
-	allowed, asOperator := mayRevoke(login, approver, operator)
+	allowed, asOperator := mayRevoke(login, approver, operator, m.Groups)
 	if !allowed {
 		return ErrNotApprover
 	}
@@ -2563,9 +2580,11 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // end: the model judge approved it in anyone's stead, so it names no person who could end it,
 // and GrantsForApprover lists it to everyone for that same reason. The revoke is the approver's
 // and not the operator's, since whoever ends it stands in for the record's approver and withholds
-// nothing from a session that is not theirs. The sentinel is no signed-in person itself, and
-// neither is an empty login: neither revokes anything.
-func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
+// nothing from a session that is not theirs. A grant whose approver is a group (grantApprover) is
+// each member's to end, by the members groups holds now, as the one owner ends their own; a
+// login outside the group, or any login once the group is stale, ends nothing. The sentinel is no
+// signed-in person itself, and neither is an empty login: neither revokes anything.
+func mayRevoke(login string, approver, operator *string, groups record.Groups) (allowed, asOperator bool) {
 	login = record.CanonicalLogin(login)
 	switch {
 	case login == "" || login == record.AnyoneApprover:
@@ -2575,6 +2594,10 @@ func mayRevoke(login string, approver, operator *string) (allowed, asOperator bo
 	case approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover:
 		return true, false
 	case approver != nil && record.CanonicalLogin(*approver) == login:
+		return true, false
+	case approver != nil && record.MayDecide(record.KindAgentSecret, *approver, "", login, groups):
+		// Reached only for a group approver: a person's is the case above, and the sentinel
+		// the one before it.
 		return true, false
 	}
 	return false, false
@@ -2620,6 +2643,15 @@ func anyServiceOwned(set *policy.Set, granted []requestedSecret) bool {
 // gate's two callers from telling the sorts apart.
 func anyListed(set *policy.Set, granted []requestedSecret) bool {
 	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.Secrets[g.name].Requesters != "" })
+}
+
+// anyGroupOwned is the release re-check's gate (checkRelease, reuseLiveGrant) for a group's
+// secret: who is a member of the group rests on the group reader's last read, which the policy's
+// version does not cover, so a grant holding a name a group owns is re-checked on every use, and
+// an automatic grant of it ends at its next use once the group is stale or the member left. A
+// group entry in a requesters tag is anyListed's already.
+func anyGroupOwned(set *policy.Set, granted []requestedSecret) bool {
+	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.GroupOwned(g.name) })
 }
 
 // personPodGrant reports whether enr is a person's pod: a pod enrollment that carries an

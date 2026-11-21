@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,6 +99,34 @@ const RequestEndedBrokerMovedMessage = "broker: a pending request's record is si
 // broken is a decision and no release, and writes none either.
 const GrantChainInvalidMessage = "broker: a grant's approval chain does not verify; it releases nothing"
 
+// GrantApproverLapsedMessage is logged, at WARN, each time a release or a reuse refuses a grant a
+// member of a group approver decided because the group does not admit that decider now
+// (record.ApproverNotAdmittedError, noteLapsedApprover): the group is stale or was never read, a
+// lapsed grant, which writes no GrantChainInvalidMessage beside it; or the group is fresh and does
+// not list the decider, which is a broken chain too and writes that line beside this one. It
+// carries grant=, record_id=, secret=<the grant's names, comma-joined>, decider=<the login that
+// decided>, group=<the group's address>, reason=decider is not a member now and at= (values,
+// airlock or reuse), and nothing else: no value and no token.
+const GrantApproverLapsedMessage = "group approval lapsed"
+
+// noteLapsedApprover writes GrantApproverLapsedMessage for grant grantID, whose chain rests on
+// recordID, refused at at, when err holds a record.ApproverNotAdmittedError, fresh or not, and
+// writes nothing for any other error. The grant's names are read for the line; a failed read
+// writes the line without them, since the refusal stands either way.
+func (m *Machine) noteLapsedApprover(ctx context.Context, grantID, recordID, at string, err error) {
+	var lapsed record.ApproverNotAdmittedError
+	if !errors.As(err, &lapsed) {
+		return
+	}
+	var names []string
+	if err := m.Store.Pool.QueryRow(ctx, `select coalesce(array_agg(s.name order by s.name), '{}') from grants g
+		join request_secrets s on s.request_id=g.request_id where g.id=$1 and s.decision <> 'deny'`, grantID).Scan(&names); err != nil {
+		names = nil
+	}
+	slog.Warn(GrantApproverLapsedMessage, "grant", grantID, "record_id", recordID, "secret", strings.Join(names, ","),
+		"decider", lapsed.Login, "group", lapsed.Group, "reason", "decider is not a member now", "at", at)
+}
+
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
 // rest.
@@ -121,18 +150,20 @@ type grantRelease struct {
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
 // Values and AirlockValues so that what the broker proxies and what it hands over are held to
 // one rule. It re-checks the enrollment and the grant, re-verifies the grant's whole approval
-// chain (verifyChainForRelease, which logs a chain that fails), and — when the policy has
+// chain (verifyChainForRelease, which logs a chain that fails, and noteLapsedApprover, which logs
+// a group approval whose decider the group does not admit now), and — when the policy has
 // changed since the grant's request was decided, any granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove), any granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts), or the grant is a person's pod's (personPodGrant: the
-// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to)
-// — that the current policy still allows the session, with the names its operator withheld from
-// it, every granted name under the login that decided it, or, for a grant the model judge
-// decided, under the judge the rules still give that name (stillAllowed), that no granted name's
-// max-grant is now shorter than the lifetime the grant's request signed (overMaxGrant), and that
-// no granted name's airlock entry has changed since the request recorded its fingerprint, which
-// ends the grant for good.
+// matches by those same accounts, and one naming a group by the group's members), any granted
+// name is a group's (anyGroupOwned: the version does not cover the group's members), or the
+// grant is a person's pod's (personPodGrant: the policy's version does not cover which person
+// BROKER_POD_OPERATORS maps the pod's account to) — that the current policy still allows the
+// session, with the names its operator withheld from it, every granted name under the login that
+// decided it, or, for a grant the model judge decided, under the judge the rules still give that
+// name (stillAllowed), that no granted name's max-grant is now shorter than the lifetime the
+// grant's request signed (overMaxGrant), and that no granted name's airlock entry has changed
+// since the request recorded its fingerprint, which ends the grant for good.
 //
 // For a person's pod, the session is the pod as requester reads it now. When the setting no
 // longer maps the pod's account to its person, an automatic grant the pod got as that person is
@@ -172,7 +203,8 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	if !live {
 		return grantRelease{}, ErrGrantNotLive
 	}
-	if err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
+	if recordID, err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
+		m.noteLapsedApprover(ctx, grantID, recordID, at, err)
 		return grantRelease{}, err
 	}
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
@@ -187,7 +219,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || personPodGrant(enr) {
 		requester, err := m.requester(ctx, m.Store.Pool, enr)
 		if err != nil {
 			return grantRelease{}, err
@@ -234,15 +266,16 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // Create's reuse of a live grant (reuseLiveGrant). A chain that fails, ErrGrantChainInvalid and
 // only that, writes GrantChainInvalidMessage naming at, the release, with the error's text as its
 // reason; any other error, a database failure inside the check among them, writes nothing, since
-// it is no failed chain. The error is returned as verifyChain answered it, so each caller refuses
-// or passes over exactly as before the line. ApplyDecision, which also answers
-// ErrGrantChainInvalid, is a decision and no release, and does not come through here.
-func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) error {
+// it is no failed chain. The error is returned as verifyChain answered it, beside the id of the
+// record the chain rests on, so each caller refuses or passes over exactly as before the line.
+// ApplyDecision, which also answers ErrGrantChainInvalid, is a decision and no release, and does
+// not come through here.
+func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 	}
-	return err
+	return recordID, err
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -606,10 +639,13 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 }
 
 // stillAllowed re-checks one granted name against a policy newer than the one its request was
-// decided under. The policy must still serve the name and still let this requester have it: a
-// deny refuses; so does a name granted automatically that the current policy wants approved,
-// since no human ever approved it; and so does a name the current policy wants approved by
-// someone decidedBy, the login that decided the request, is not (record.MayDecide). So an
+// decided under, or against the group reader's members now for a group's name. The policy must
+// still serve the name and still let this requester have it: a deny refuses; so does a name
+// granted automatically that the current policy wants approved, since no human ever approved it;
+// and so does a name the current policy wants approved by someone decidedBy, the login that
+// decided the request, is not (record.MayDecide, with the set's group reader). Where that
+// approver is a group, the refusal is a record.ApproverNotAdmittedError, Fresh as the set's group
+// reader answers it, wrapped in ErrGrantNotLive, so the caller logs it (noteLapsedApprover). So an
 // approval keeps its grant while the secret stays the approver's, or becomes shared, whose
 // approver is anyone, or once the policy gives this requester the secret without asking; and a
 // secret handed to a person stops every grant of it that person must approve and did not. A name
@@ -652,7 +688,12 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
 		return judgeStillDecides(set, rules, name, lifetime)
-	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy):
+	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy, set.Groups()):
+		if group, ok := record.GroupOf(record.CanonicalLogin(d.Approver)); ok && record.CanonicalLogin(decidedBy) != "" {
+			groups := set.Groups()
+			lapsed := record.ApproverNotAdmittedError{Group: group, Login: record.CanonicalLogin(decidedBy), Fresh: groups != nil && groups.Fresh(group)}
+			return fmt.Errorf("%w: %s: %w", ErrGrantNotLive, name, lapsed)
+		}
 		return fmt.Errorf("%w: %s now needs its owner's approval, which this grant does not have", ErrGrantNotLive, name)
 	}
 	return nil
@@ -1158,6 +1199,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 	if err != nil {
 		return Request{}, false, err
 	}
+candidates:
 	for _, match := range matches {
 		var rulesVersion, decidedBy string
 		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
@@ -1167,13 +1209,14 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err != nil {
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || personPodGrant(enr) {
 			requester, err := m.requester(ctx, m.Store.Pool, enr)
 			if err != nil {
 				return Request{}, false, err
 			}
 			for _, g := range granted {
 				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				var lapsed record.ApproverNotAdmittedError
 				switch {
 				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
 					// The list dropped this requester while the grant was live, or the secret
@@ -1184,6 +1227,18 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 						return Request{}, false, ended
 					}
 					return Request{}, false, nil
+				case errors.As(err, &lapsed):
+					// A member of the group decided it, and the group does not admit them now:
+					// one lapsed line, and, where the group is fresh and so the decision is one
+					// nobody in it made now, the chain's own line too; then the next candidate.
+					var recordID string
+					if lapsed.Fresh {
+						recordID, _ = m.verifyChainForRelease(ctx, match.grantID, enr.ID, "reuse")
+					} else {
+						recordID, _ = m.grantRecordID(ctx, match.grantID)
+					}
+					m.noteLapsedApprover(ctx, match.grantID, recordID, "reuse", err)
+					continue candidates
 				case errors.Is(err, ErrGrantNotLive):
 					return Request{}, false, nil
 				case err != nil:
@@ -1196,7 +1251,9 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 			return Request{}, false, err
 		}
 		if r.GrantID != nil {
-			if err := m.verifyChainForRelease(ctx, *r.GrantID, enr.ID, "reuse"); errors.Is(err, ErrGrantChainInvalid) {
+			if _, err := m.verifyChainForRelease(ctx, *r.GrantID, enr.ID, "reuse"); errors.Is(err, ErrGrantChainInvalid) || errors.Is(err, ErrGrantNotLive) {
+				// A chain that fails, or a group approval that has lapsed, is passed over for the
+				// next candidate.
 				continue
 			} else if err != nil {
 				return Request{}, false, err
@@ -1358,13 +1415,15 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // An agent_secret record waiting on $2, record.AnyoneApprover, is listed for the person its
 // notify column names, and for everyone where it names none (responsiblePerson), in both
 // statements. A launcher_credential record carries no notify, so the filter lists it for everyone.
+// A record waiting on a group, group:<address>, is listed for each of the groups $3 names, the
+// fresh groups the group reader lists the person in (Machine.Groups' GroupsOf), in the group form.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
 		s.state, ` + recordDeadlineSQL + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
 	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
-	where (cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1)) and `
+	where (cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1) or cr.approver = any($3::text[])) and `
 
 // pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
 // (PendingStates' zero value): every record of the approver still pending by what is stored,
@@ -1403,17 +1462,17 @@ const pendingForApproverQuery = pendingListFrom + `(
 	) order by cr.created_at desc`
 
 // pendingOrExpiredForApproverQuery is PendingForApprover's statement for a caller that asks for
-// states, $3 for the pending records and $4 for the expired ones: the records of the approver
-// recordStateSQL reads 'pending' while $3 holds, and those it reads 'expired' that have no row in
-// credential_request_dismissals (migration 0033) while $4 holds. The pending rows come first and
+// states, $4 for the pending records and $5 for the expired ones: the records of the approver
+// recordStateSQL reads 'pending' while $4 holds, and those it reads 'expired' that have no row in
+// credential_request_dismissals (migration 0033) while $5 holds. The pending rows come first and
 // the expired ones after them, each newest first, so a caller that cuts the list into pages from
 // the front never pushes a record a person can still decide off its first page to show records
 // nobody can.
 // TestPendingForApproverAvoidsSequentialScans holds the dismissal's NOT EXISTS to the table's
 // primary key, as it holds the rest of this statement to pendingForApproverQuery's indexes.
 const pendingOrExpiredForApproverQuery = pendingListFrom + `(
-		s.state = 'pending' and $3::boolean
-		or s.state = 'expired' and $4::boolean and not exists (
+		s.state = 'pending' and $4::boolean
+		or s.state = 'expired' and $5::boolean and not exists (
 			select 1 from credential_request_dismissals d where d.record_id = cr.id)
 	) order by s.state = 'expired', cr.created_at desc`
 
@@ -1426,13 +1485,15 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // says whether it is pending or expired, and when its deadline is, by the one rule a decision
 // refuses an expired record by (recordStateSQL), which ReadRecord and Dismiss read as well.
 //
-// An approver's records are every record naming approver; every request for a shared human-tier
-// secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
-// for the agent that made it, or names no such person (credential_requests.notify, Create's
-// responsiblePerson), so it waits where everyone sees it; and every service's machine login, whose
-// approver is record.AnyoneApprover too. Who may decide is not this list's to say: anyone signed
-// in decides a shared secret's request from its page whether or not it is listed for them
-// (record.MayDecide). A service's login a broker from before that rule opened names a person
+// An approver's records are every record naming approver; every record naming a group the group
+// reader lists approver in now (Machine.Groups), so each member of a group owner is asked; every
+// request for a shared human-tier secret, whose approver is record.AnyoneApprover, that names
+// approver as the person responsible for the agent that made it, or names no such person
+// (credential_requests.notify, Create's responsiblePerson), so it waits where everyone sees it;
+// and every service's machine login, whose approver is record.AnyoneApprover too. Who may decide
+// is not this list's to say: anyone signed in decides a shared secret's request from its page
+// whether or not it is listed for them (record.MayDecide). A service's login a broker from before
+// that rule opened names a person
 // instead and is listed for that person alone, though anyone who types its code may decide it
 // (record.MayDecide). Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
@@ -1458,7 +1519,8 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // can act on. A list with no state reads an expired record only until the sweep ends it, and its
 // one line is the one it always wrote.
 func (m *Machine) PendingForApprover(ctx context.Context, approver string, states PendingStates) ([]PendingSummary, error) {
-	query, args := pendingForApproverQuery, []any{record.CanonicalLogin(approver), record.AnyoneApprover}
+	login := record.CanonicalLogin(approver)
+	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login)}
 	byState := states != (PendingStates{})
 	if byState {
 		query, args = pendingOrExpiredForApproverQuery, append(args, states.Pending, states.Expired)
@@ -1723,8 +1785,9 @@ type ApproverGrant struct {
 }
 
 // GrantsForApprover lists every live grant approver may revoke, newest first: each grant of a
-// session approver operates, approved or automatic, and each grant approver approved on anyone's
-// session.
+// session approver operates, approved or automatic, each grant approver approved on anyone's
+// session, and each grant a group approver approved whose group the group reader lists approver
+// in now (grantApprover records the group, mayRevoke admits its members).
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
@@ -1765,9 +1828,9 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		join enrollments e on e.id=g.enrollment_id
 		join launcher_credentials c on c.id=e.launcher_credential_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
-		and (g.approver=$1 or e.operator=$1 or g.approver=$2
+		and (g.approver=$1 or e.operator=$1 or g.approver=$2 or g.approver = any($3::text[])
 			or (g.approver is null and e.operator is null and c.service is not null))
-		order by g.created_at desc`, login, record.AnyoneApprover)
+		order by g.created_at desc`, login, record.AnyoneApprover, m.groupApprovers(login))
 	if err != nil {
 		return nil, err
 	}
@@ -1785,4 +1848,29 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// groupApprovers is every group the group reader admits login to now, each in the group form a
+// record's and a grant's approver holds it in (record.GroupPrefix), and an empty list with no
+// reader: what PendingForApprover and GrantsForApprover match a member's records and grants by.
+func (m *Machine) groupApprovers(login string) []string {
+	if m.Groups == nil {
+		return []string{}
+	}
+	groups := m.Groups.GroupsOf(login)
+	approvers := make([]string, 0, len(groups))
+	for _, group := range groups {
+		approvers = append(approvers, record.GroupPrefix+group)
+	}
+	return approvers
+}
+
+// grantRecordID is the id of the credential-request record grantID's chain rests on, "" for an
+// automatic grant, which has none.
+func (m *Machine) grantRecordID(ctx context.Context, grantID string) (string, error) {
+	var id *string
+	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&id); err != nil || id == nil {
+		return "", err
+	}
+	return *id, nil
 }

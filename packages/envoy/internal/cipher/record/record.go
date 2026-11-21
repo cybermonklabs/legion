@@ -568,15 +568,16 @@ func ParseBody(canonical string) (Body, error) {
 
 // ApproverLogin canonicalizes login and returns it when it may decide this record, a record of
 // kind whose verified request object names service (RequestObject.Service), and ErrNotApprover
-// otherwise (MayDecide). A record's approver is resolved when it is created — a secret's owner,
+// otherwise (MayDecide, with groups the members of a group approver). A record's approver is
+// resolved when it is created — a secret's owner, a group owner as group:<address>,
 // AnyoneApprover for a shared human-tier secret, a person's machine login's login_hint, or
 // AnyoneApprover for a service's login — and a service's login is decided by the service its
 // signed request names whatever approver its record stored, so this one comparison is every
 // decision's and every chain re-check's approver rule, and the login it returns is the one a
 // decision records.
-func (b Body) ApproverLogin(kind, service, login string) (string, error) {
+func (b Body) ApproverLogin(kind, service, login string, groups Groups) (string, error) {
 	login = CanonicalLogin(login)
-	if !MayDecide(kind, b.Approver, service, login) {
+	if !MayDecide(kind, b.Approver, service, login, groups) {
 		return "", ErrNotApprover
 	}
 	return login, nil
@@ -585,13 +586,16 @@ func (b Body) ApproverLogin(kind, service, login string) (string, error) {
 // MayDecide reports whether login may decide a record of kind whose approver is approver and whose
 // signed request names service: for a machine login that names a service, any login at all, since
 // its credential acts as that service and as no person; for an agent_secret record whose approver
-// is AnyoneApprover, any login; and otherwise the person the approver names. No login is
-// AnyoneApprover itself, and no empty login decides anything. A person's machine login's approver
-// is the person whose machine it becomes, so AnyoneApprover there admits no one, whatever binary
-// opened the record. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
+// is AnyoneApprover, any login; for an agent_secret record whose approver is a group
+// (group:<address>, GroupOf), a login groups admits to that group now, and nobody when groups is
+// nil or the group is stale; and otherwise the person the approver names. No login is
+// AnyoneApprover itself, no login spelled as a group is the group, and no empty login decides
+// anything. A person's machine login's approver is the person whose machine it becomes, so
+// AnyoneApprover there admits no one, whatever binary opened the record, and a group there admits
+// no one either. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
 // approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
 // spelled "judge:..." makes no record the judge's to approve as a person.
-func MayDecide(kind, approver, service, login string) bool {
+func MayDecide(kind, approver, service, login string, groups Groups) bool {
 	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
 	_, judge := JudgeLogin(login)
 	switch {
@@ -603,6 +607,9 @@ func MayDecide(kind, approver, service, login string) bool {
 		return true
 	case kind == KindAgentSecret && approver == AnyoneApprover:
 		return true
+	}
+	if group, ok := GroupOf(approver); ok {
+		return kind == KindAgentSecret && groups != nil && groups.HasMember(group, login)
 	}
 	return login == approver
 }

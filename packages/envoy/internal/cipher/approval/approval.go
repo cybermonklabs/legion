@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -100,6 +101,10 @@ type Config struct {
 	Store *store.Store
 	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision).
 	Machine *requests.Machine
+	// Groups is the broker's group reader (groups.Reader), which says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide). A nil
+	// reader shows no member of any group the buttons.
+	Groups record.Groups
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.

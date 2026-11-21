@@ -191,9 +191,9 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // approverHint is approver as a login_hint: the person's own login, and nothing for a shared
-// secret, whose approver is anyone signed in.
+// secret, whose approver is anyone signed in, or a group's, whose approver is no one login.
 func approverHint(approver string) string {
-	if approver == record.AnyoneApprover {
+	if _, group := record.GroupOf(approver); approver == record.AnyoneApprover || group {
 		return ""
 	}
 	return approver
@@ -208,7 +208,7 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		Reason:            d.Reason, Lifetime: "until the session ends",
 		RequestedAt: d.RequestedAt.UTC().Format(timeLayout), ExpiresAt: d.ExpiresAt.UTC().Format(timeLayout),
 		Approver: approverText(d.Approver), State: d.State,
-		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login),
+		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Groups),
 	}
 	if d.Session.Request != "" && d.Session.Request != d.Session.Enrollment {
 		v.RequestSession = d.Session.Request
@@ -271,6 +271,9 @@ func approverText(approver string) string {
 	if approver == record.AnyoneApprover {
 		return "anyone signed in to this broker"
 	}
+	if group, ok := record.GroupOf(approver); ok {
+		return "a member of the group " + group
+	}
 	return approver
 }
 
@@ -300,24 +303,25 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 				return nil, err
 			}
 		}
-		lines = append(lines, outcome(d, login, now))
+		lines = append(lines, outcome(d, login, now, p.cfg.Groups))
 	}
 	return lines, nil
 }
 
-// outcome says what became of a record a decision named, from its state now.
+// outcome says what became of a record a decision named, from its state now, to login, whom
+// groups says is or is not a member of a group approver.
 //
 // "already decided: " opens the line whenever somebody other than the reader decided the record,
 // the model judge and the current policy included: the reader clicked Approve and got the
 // broker's refusal, and what they must read first is that the record was already decided and by
 // whom. A record nobody decided — one that expired, or that its requesting session withdrew —
 // has no decider to compare, and its own line says what became of it.
-func outcome(d requests.RecordDetail, login string, now time.Time) string {
+func outcome(d requests.RecordDetail, login string, now time.Time, groups record.Groups) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
 	case d.Kind != record.KindAgentSecret:
 		return what + "a machine login, which is decided by typing its code on Dispatch's machine-login page."
-	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login):
+	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, groups):
 		return what + "not yours to decide; only " + approverText(d.Approver) + " may."
 	case d.Decided == nil && !d.ExpiresAt.After(now):
 		return what + "expired before anyone decided it."
