@@ -86,6 +86,46 @@ func TestOnlyAnAppliedIssueFactHoldsBackAnOlderListingOrView(t *testing.T) {
 	}
 }
 
+// Reconcile answers the key of each summary it found older than an issue fact of its issue the
+// daemon applied, so a recovery keeps that issue in the scope of its next pass, and it finds it so
+// whether or not the consumer has reached its target: a stale summary is answered before it could
+// be held, since release, which would apply a held one later, answers nothing. A summary no older
+// than any applied fact is not answered.
+func TestReconcileAnswersEachSummaryOlderThanAnAppliedFact(t *testing.T) {
+	const stale, fresh = "LEGION-STALE", "LEGION-FRESH"
+	for _, tc := range []struct {
+		name             string
+		target, ackFloor int64
+	}{
+		{name: "the consumer caught up", target: 10, ackFloor: 10},
+		{name: "the consumer behind", target: 10, ackFloor: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			mirror := blockers.NewMirror(record.NewStore(), testProject)
+			applyWith(t, pool, "at-6", intake.DispatchIssue{Key: stale, ResolvedRepo: "acme/unread", Seq: 6, Type: "issue.updated",
+				Status: "todo", Title: "stale", Rank: "A", HandedOver: handed}, mirror, admission)
+			refused := reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
+				{Key: stale, ResolvedRepo: "acme/widgets", Title: "stale", Status: "todo", Rank: "A", HandedOver: handed, LastSeq: 5},
+				{Key: fresh, ResolvedRepo: "acme/unread", Title: "fresh", Status: "todo", Rank: "B", HandedOver: handed, LastSeq: 5},
+			}, tc.target, tc.ackFloor, false)
+			if len(refused) != 1 || refused[0] != stale {
+				t.Fatalf("Reconcile answered %q, want only %s, whose summary at 5 is older than its event at 6", refused, stale)
+			}
+			if got := maybeIssue(t, pool, stale); got != nil {
+				t.Fatalf("%s recorded from its stale summary = %#v, want none", stale, got)
+			}
+			admission.mu.Lock()
+			_, held := admission.pending[stale]
+			admission.mu.Unlock()
+			if held {
+				t.Fatalf("%s is held for release, want it answered instead: release would refuse it and answer nothing", stale)
+			}
+		})
+	}
+}
+
 // applyWith applies fact through the daemon's three handlers in the daemon's order: the copy of
 // Dispatch's issues (mirror), the workflow, then admission.
 func applyWith(t *testing.T, pool *pgxpool.Pool, id string, fact intake.Fact, mirror *blockers.Mirror, admission *Admission) {

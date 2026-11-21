@@ -742,7 +742,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 	scoped, committed := intake.WithCommitHooks(context.Background())
 	scoped, settle := intake.OpenSettlers(scoped, admission)
 	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		if _, err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)
