@@ -38,8 +38,8 @@ const (
 	codeRedirectURIMismatch = "redirect_uri_mismatch"
 	codeInvalidGrant        = "invalid_grant"
 	// The issuer could not be asked or could not answer: its discovery document could not be read,
-	// or its token endpoint answered the code exchange with no refusal (a 5xx, a 408 or a 429, or no
-	// answer at all), both oidc.ErrIssuerUnavailable.
+	// or its token endpoint answered the code exchange a 5xx, a 408 or a 429, or not at all
+	// (oauthrefusal.Outage), both oidc.ErrIssuerUnavailable.
 	codeIssuerUnreachable = "issuer_unreachable"
 	// From the ID token's own verification (oidc.Reason's classes) and its nonce.
 	codeBadIssuer    = "bad_issuer"
@@ -59,8 +59,10 @@ func signInFailureCode(err error) string {
 	case oauthrefusal.Refusal(err) != "":
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field. It is read only from an answer whose status is a refusal (oauthrefusal.Refusal):
-		// any other answer is the issuer unreachable, which the case above has already answered.
+		// field. It is read only from a refusal, a 4xx that is no outage (oauthrefusal.Refusal).
+		// Every answer that is no outage is the endpoint answering, so the case above has not
+		// taken it: a refusal naming no error or one outside the four, and a 2xx or 3xx naming
+		// one, write nothing, and the status keeps its last named failure.
 		switch code := oauthrefusal.Refusal(err); code {
 		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
 			return code

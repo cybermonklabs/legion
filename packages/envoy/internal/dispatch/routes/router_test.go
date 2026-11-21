@@ -477,10 +477,11 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 	}
 }
 
-// A callback whose code exchange the token endpoint does not refuse but cannot answer (a 5xx, a 408
-// or a 429, whatever error its body names, or no answer at all) answers 503 SIGNIN_UNAVAILABLE and
-// no session, as an exchange that meets an undiscovered issuer does. One the token endpoint
-// refuses, a 400 or 403 naming invalid_grant, answers 502 as before.
+// A callback whose code exchange the token endpoint cannot answer (a 5xx, a 408 or a 429, whatever
+// error its body names, or no answer at all) answers 503 SIGNIN_UNAVAILABLE and no session, as an
+// exchange that meets an undiscovered issuer does. Every other answer is the token endpoint
+// answering, and is 502 as before: a 4xx with or without an OAuth error, a 200 naming one, and a
+// 3xx.
 func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -494,6 +495,12 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable},
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusBadGateway},
 		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, http.StatusBadGateway},
+		{"400 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "") }, http.StatusBadGateway},
+		{"401 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "") }, http.StatusBadGateway},
+		{"403 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "") }, http.StatusBadGateway},
+		{"404 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusNotFound, "") }, http.StatusBadGateway},
+		{"200 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusOK, "invalid_grant") }, http.StatusBadGateway},
+		{"302 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusFound, "") }, http.StatusBadGateway},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rig := newSignInRig(t, "")

@@ -70,6 +70,58 @@ func TestRefusesNamesTheStatusesARefusalComesWith(t *testing.T) {
 	}
 }
 
+// TestOutageIsTheClosedSetOfAnUnansweringServer pins the statuses that are a server that could not
+// answer: every 5xx, 408 and 429. Every other status, a 2xx and a 3xx among them, is the server
+// answering.
+func TestOutageIsTheClosedSetOfAnUnansweringServer(t *testing.T) {
+	for status, want := range map[int]bool{
+		http.StatusOK:                  false,
+		http.StatusTemporaryRedirect:   false,
+		http.StatusBadRequest:          false,
+		http.StatusForbidden:           false,
+		http.StatusNotFound:            false,
+		http.StatusRequestTimeout:      true,
+		http.StatusTooManyRequests:     true,
+		http.StatusInternalServerError: true,
+		http.StatusServiceUnavailable:  true,
+		599:                            true,
+	} {
+		if got := oauthrefusal.Outage(status); got != want {
+			t.Errorf("Outage(%d) = %t, want %t", status, got, want)
+		}
+	}
+}
+
+// TestRefusedIsTheStatusAlone pins that the status alone decides a refusal: an answer whose status
+// Refuses is refused whatever error its body names, or none, and an answer of any other status is
+// not, whatever error its body names. No answer is no refusal.
+func TestRefusedIsTheStatusAlone(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"400 naming no error", answered(http.StatusBadRequest, ""), true},
+		{"401 naming no error", answered(http.StatusUnauthorized, ""), true},
+		{"404 naming no error", answered(http.StatusNotFound, ""), true},
+		{"403 unauthorized_client", answered(http.StatusForbidden, "unauthorized_client"), true},
+		{"a wrapped 400 naming no error", fmt.Errorf("exchange: %w", answered(http.StatusBadRequest, "")), true},
+		{"200 invalid_grant", answered(http.StatusOK, "invalid_grant"), false},
+		{"307 naming no error", answered(http.StatusTemporaryRedirect, ""), false},
+		{"408 invalid_grant", answered(http.StatusRequestTimeout, "invalid_grant"), false},
+		{"429 invalid_grant", answered(http.StatusTooManyRequests, "invalid_grant"), false},
+		{"503 invalid_grant", answered(http.StatusServiceUnavailable, "invalid_grant"), false},
+		{"an answer with no response", &oauth2.RetrieveError{ErrorCode: "invalid_grant"}, false},
+		{"no answer", errors.New("dial tcp: connection refused"), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := oauthrefusal.Refused(c.err); got != c.want {
+				t.Fatalf("Refused(%v) = %t, want %t", c.err, got, c.want)
+			}
+		})
+	}
+}
+
 // TestEndsGrantIsA400Or401InvalidGrantAlone pins the one answer that ends a grant: a 400 or 401
 // naming invalid_grant, wrapped or not. Any other refusal, invalid_grant at another status, and
 // every failure that is no refusal end nothing.

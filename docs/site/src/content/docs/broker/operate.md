@@ -1008,10 +1008,12 @@ deployment whose sign-in broke. What an operator reads from each field:
   provider, and when. Each pod checks it at startup and every hour after, by asking the token
   endpoint to redeem an invalid code with the broker's client credentials. `ready` is the provider
   accepting the client, `client_rejected` is the provider refusing it (nobody can sign in: the
-  client id, its secret or its registration is wrong), and `issuer_unreachable` is a provider that
-  could not be asked, or answered `408`, `429` or a `5xx` whatever OAuth error its body named,
-  which says nothing about the client. A check neither answers a person nor stops the broker: it
-  writes this row, and it logs only a change. When it finds `client_rejected` or
+  client id, its secret or its registration is wrong), and `issuer_unreachable` is a check with no
+  verdict on the client: a provider that could not be asked or could not answer (`408`, `429` or a
+  `5xx`, whatever OAuth error its body named), or one whose answer named neither `invalid_grant`
+  nor `invalid_client` at a refusal's status (a `4xx` naming no error or another, or a `2xx`
+  naming one). The check's log line says which. A check neither answers a person nor stops the
+  broker: it writes this row, and it logs only a change. When it finds `client_rejected` or
   `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in client
   check`. When it finds `ready` after such a line, it logs `broker: the sign-in client check finds
   the client ready again` ([Health and logs](#health-and-logs)). So a provider that stays away for
@@ -1021,12 +1023,14 @@ deployment whose sign-in broke. What an operator reads from each field:
 - `last_failed_sign_in_at` and `last_failed_sign_in_reason`: when a sign-in last failed at the code
   exchange or at the ID-token check, and why, as one of `invalid_client`, `unauthorized_client`,
   `redirect_uri_mismatch`, `invalid_grant`, `issuer_unreachable`, `bad_issuer`, `bad_audience`,
-  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The first four are the
-  token endpoint's own error, written only from a `4xx` answer other than `408` and `429`: a code
-  exchange it answers `408`, `429` or `5xx`, whatever error its body names, or does not answer, is
-  `issuer_unreachable`, as is a discovery document that could not be read. The first three are
-  the client's registration, `not_in_domain` and `email_not_verified` are the person rather than
-  the deployment, and a failure none of the eleven names leaves the row alone and is logged
+  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The status of the token
+  endpoint's answer alone decides whether it answered: a code exchange it answers `408`, `429` or
+  `5xx`, whatever error its body names, or does not answer, is `issuer_unreachable`, as is a
+  discovery document that could not be read; every other answer is the endpoint answering, a
+  failed sign-in refused `403`. The first four are that answer's own error, written only from a
+  `4xx`; a `4xx` naming no error or another, and a `2xx` naming one, write nothing. The first three
+  are the client's registration, `not_in_domain` and `email_not_verified` are the person rather
+  than the deployment, and a failure none of the eleven names leaves the row alone and is logged
   instead.
 - `last_decision_at`: when a person last approved or denied a request on the page.
 
@@ -1610,7 +1614,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in login=<email>` / `approval sign-out login=<email>` | A person signed in to, or out of, the approval page. |
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
-| `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR, and the page answered `503` naming the issuer: at the start of a sign-in, the provider's discovery document could not be read; at its callback, the discovery document could not be read, or the token endpoint answered the code exchange `408`, `429` or a `5xx`, or did not answer. A failure at the callback writes `issuer_unreachable` to `last_failed_sign_in_reason` in `GET /signin/status`; one at the start writes no status, and `client_check` says `issuer_unreachable` once a client check, at startup or on the hour, finds the provider down ([What the sign-in is doing](#what-the-sign-in-is-doing)). A callback whose browser left during the exchange is not this line: it logs `approval sign-in refused`, and writes no status. |
+| `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR, and the page answered `503` naming the issuer: at the start of a sign-in, the provider's discovery document could not be read; at its callback, the discovery document could not be read, or the token endpoint answered the code exchange `408`, `429` or a `5xx`, or did not answer. That closed set is the provider down; every other answer of the token endpoint is the provider answering, which this line never logs: the sign-in is refused `403` and logs `approval sign-in refused`. A failure at the callback writes `issuer_unreachable` to `last_failed_sign_in_reason` in `GET /signin/status`; one at the start writes no status, and `client_check` says `issuer_unreachable` once a client check, at startup or on the hour, finds the provider down ([What the sign-in is doing](#what-the-sign-in-is-doing)). A callback whose browser left during the exchange is not this line: it logs `approval sign-in refused`, and writes no status. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |

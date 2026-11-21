@@ -25,8 +25,9 @@ const (
 	// status - the client was deleted, its id is not this issuer's, or its secret has been rotated
 	// out from under the caller. No person can sign in until it is fixed.
 	ClientCheckRejected ClientCheck = "client_rejected"
-	// ClientCheckIssuerUnreachable: the issuer could not be asked, or answered something the
-	// check cannot read as either of the two above. It says nothing about the client.
+	// ClientCheckIssuerUnreachable: the issuer could not be asked or could not answer, or answered
+	// something the check cannot read as either of the two above. It says nothing about the
+	// client; the error a check returns with it says which it was.
 	ClientCheckIssuerUnreachable ClientCheck = "issuer_unreachable"
 )
 
@@ -36,10 +37,14 @@ const (
 //
 // An issuer that knows the client and takes its secret gets as far as the code and refuses that,
 // invalid_grant, which is ClientCheckReady; one that refuses the client itself answers
-// invalid_client, which is ClientCheckRejected. Either is read only from an answer whose status is
-// a refusal (oauthrefusal.Refusal): a 5xx, a 408 or a 429 is an issuer that cannot answer now,
-// whatever error its body names. Any other answer, and a discovery or transport failure, is
-// ClientCheckIssuerUnreachable: the check has no verdict on the client, and must not report one.
+// invalid_client, which is ClientCheckRejected. Either is read only from a refusal, an answer whose
+// status is a 4xx that is no outage (oauthrefusal.Refusal). The status alone decides whether the
+// issuer answered (oauthrefusal.Outage): a 5xx, a 408 or a 429, whatever error its body names, and
+// a discovery or transport failure are an issuer that could not answer; every other answer is the
+// issuer answering - a refusal naming no OAuth error or another one, a 2xx or 3xx naming an error -
+// with no verdict on the client. Each of those is ClientCheckIssuerUnreachable, the closed set's one
+// word for a check with no verdict, which must not report one; its error says whether the issuer
+// could not answer or answered with none.
 //
 // The request names no redirect_uri, since no code of this client's exists for one to match, and
 // the code is freshly random, so no live code is ever spent by a check. The discovery document is
@@ -71,6 +76,9 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckReady, nil
 	case oauthrefusal.Refusal(err) == "invalid_client":
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
+	}
+	if oauthrefusal.Outage(retrieve.Response.StatusCode) {
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q, which says nothing about the client: %w",
 		issuer, retrieve.Response.StatusCode, retrieve.ErrorCode, err)

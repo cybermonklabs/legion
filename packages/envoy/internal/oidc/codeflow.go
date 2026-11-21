@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -247,23 +248,26 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // exchange is the steps both exchanges share: discover the issuer, trade code for its tokens
 // there with options (the online exchange's PKCE verifier, and none for the other), verify the
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
-// refused as well, since it binds the token to no sign-in. A token endpoint that refuses the code
-// or the client, an answer naming an OAuth error at a status oauthrefusal.Refusal reads, fails the
-// exchange as that refusal. One whose own ctx ended first (the browser left the callback) fails
-// with ctx's error, since the issuer was not shown unable to answer. Any other failure of the
-// request, a 5xx, a 408 or a 429 whatever error its body names, or no answer at all, is an issuer
-// that could not answer and matches ErrIssuerUnavailable, as Refresh reads it.
+// refused as well, since it binds the token to no sign-in. The token endpoint's answer decides by
+// its status alone (oauthrefusal.Outage): a 5xx, a 408 or a 429, whatever error its body names,
+// and no answer at all are an issuer that could not answer, and match ErrIssuerUnavailable, as
+// Refresh reads them. Every other answer is the endpoint answering and fails the exchange as that
+// answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error (whose
+// code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or holds
+// no token. An exchange whose own ctx ended before any answer came (the browser left the callback)
+// fails with ctx's error, since the issuer was not shown unable to answer.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
 		return Session{}, err
 	}
-	token, err := issuer.config.Exchange(f.tokenContext(ctx), code, append(redirectTo(redirectURL), options...)...)
+	answered, last := f.answeredContext(ctx)
+	token, err := issuer.config.Exchange(answered, code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		switch {
-		case oauthrefusal.Refusal(err) != "":
+		switch status := last.status(); {
+		case status != 0 && !oauthrefusal.Outage(status):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
-		case ctx.Err() != nil:
+		case status == 0 && ctx.Err() != nil:
 			return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ctx.Err(), err)
 		}
 		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
@@ -473,3 +477,37 @@ func jsonString(value json.RawMessage) string {
 func (f *CodeFlow) tokenContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, f.http)
 }
+
+// answeredContext hands oauth2 a copy of the bounded client tokenContext does, whose transport keeps
+// the status of the last answer it carried (lastAnswer), so a caller reads the status of the
+// answer an error came from, an answer x/oauth2 reports in no *oauth2.RetrieveError among them (a
+// 2xx with no token, or one whose body did not read).
+func (f *CodeFlow) answeredContext(ctx context.Context) (context.Context, *lastAnswer) {
+	client := *f.http
+	last := &lastAnswer{base: client.Transport}
+	if last.base == nil {
+		last.base = http.DefaultTransport
+	}
+	client.Transport = last
+	return context.WithValue(ctx, oauth2.HTTPClient, &client), last
+}
+
+// lastAnswer is a transport that keeps the status of the last answer its base carried, and zero
+// while a request has no answer: each request starts it at zero, so after a request that failed
+// unanswered it reads no earlier answer's status.
+type lastAnswer struct {
+	base http.RoundTripper
+	code atomic.Int64
+}
+
+func (l *lastAnswer) RoundTrip(request *http.Request) (*http.Response, error) {
+	l.code.Store(0)
+	response, err := l.base.RoundTrip(request)
+	if response != nil {
+		l.code.Store(int64(response.StatusCode))
+	}
+	return response, err
+}
+
+// status is the last answer's status, zero for none.
+func (l *lastAnswer) status() int { return int(l.code.Load()) }

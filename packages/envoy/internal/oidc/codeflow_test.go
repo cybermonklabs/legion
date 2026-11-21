@@ -264,13 +264,13 @@ func TestCodeFlowExchangeRefusesACodeTheIssuerRefuses(t *testing.T) {
 	}
 }
 
-// A code exchange the token endpoint refuses, an answer naming an OAuth error at a status that is a
-// refusal (oauthrefusal.Refusal: every 4xx but 408 and 429), fails as that refusal. Any other
-// failure of the request, a 5xx, a 408 or a 429 whatever error its body names,
-// or no answer at all, is an issuer that could not answer, and matches ErrIssuerUnavailable in
-// both modes, so a caller answers the person as it answers an issuer it cannot reach rather than
-// as a sign-in that did not verify.
-func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *testing.T) {
+// A code exchange's answer decides by its status alone (oauthrefusal.Outage). A 5xx, a 408 or a 429,
+// whatever error its body names, and no answer at all are an issuer that could not answer, and
+// match ErrIssuerUnavailable in both modes, so a caller answers the person as it answers an issuer
+// it cannot reach. Every other answer is the token endpoint answering, and fails the exchange as
+// that answer: a 4xx with or without an OAuth error, a 2xx that names an error or holds no token,
+// and a 3xx.
+func TestCodeFlowExchangeReadsOnlyAnOutageAsTheIssuerUnavailable(t *testing.T) {
 	for _, c := range []struct {
 		name        string
 		fail        func(issuer *oidctest.Issuer)
@@ -279,6 +279,14 @@ func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *t
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, false},
 		{"401 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "invalid_client") }, false},
 		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"403 unauthorized_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "unauthorized_client") }, false},
+		{"400 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "") }, false},
+		{"401 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "") }, false},
+		{"403 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "") }, false},
+		{"404 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusNotFound, "") }, false},
+		{"200 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusOK, "invalid_grant") }, false},
+		{"200 holding no token", func(i *oidctest.Issuer) { i.FailToken(http.StatusOK, "") }, false},
+		{"302 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusFound, "") }, false},
 		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, true},
 		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, true},
 		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, true},

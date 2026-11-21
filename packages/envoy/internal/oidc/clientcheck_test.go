@@ -129,6 +129,46 @@ func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
 	}
 }
 
+// TestCheckClientTellsAnAnswerWithNoVerdictFromAnOutage pins what a check says of an answer that
+// is neither ready nor client_rejected. The status alone tells an issuer that answered from one
+// that could not (oauthrefusal.Outage): a 4xx naming no OAuth error or one the check does not read,
+// and a 200 naming an error, are the token endpoint answering with no verdict on the client; a
+// 5xx, a 408 or a 429 is an issuer that could not answer. The check's closed set of words has none
+// for "answered, no verdict", so both are issuer_unreachable, which says nothing about the client,
+// and the error the caller logs says which it was.
+func TestCheckClientTellsAnAnswerWithNoVerdictFromAnOutage(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+	for _, c := range []struct {
+		status   int
+		code     string
+		answered bool
+	}{
+		{http.StatusBadRequest, "", true},
+		{http.StatusUnauthorized, "", true},
+		{http.StatusNotFound, "", true},
+		{http.StatusForbidden, "unauthorized_client", true},
+		{http.StatusOK, "invalid_grant", true},
+		{http.StatusServiceUnavailable, "", false},
+		{http.StatusRequestTimeout, "invalid_client", false},
+		{http.StatusTooManyRequests, "invalid_grant", false},
+	} {
+		t.Run(fmt.Sprintf("%d %s", c.status, c.code), func(t *testing.T) {
+			issuer.FailToken(c.status, c.code)
+			t.Cleanup(func() { issuer.FailToken(0, "") })
+			check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret)
+			if check != ClientCheckIssuerUnreachable || err == nil || !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
+				t.Fatalf("CheckClient against a token endpoint answering %d %q = (%q, %v), want %q with an error naming the status",
+					c.status, c.code, check, err, ClientCheckIssuerUnreachable)
+			}
+			if said := strings.Contains(err.Error(), "could not answer"); said == c.answered {
+				t.Fatalf("CheckClient against a token endpoint answering %d %q: %v; saying the issuer could not answer is %t, want %t",
+					c.status, c.code, err, said, !c.answered)
+			}
+		})
+	}
+}
+
 // TestCheckClientIsOneTokenRequest pins that a check asks the token endpoint once, the way the
 // issuer's discovery document lists, whatever the verdict: a ready client, whose invented code the
 // issuer refuses, and a rejected one are each one request, by HTTP Basic under Google's list (the
