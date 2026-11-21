@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -284,15 +285,53 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
-func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
+// fleetLockMargin is how long before the test binary's deadline a fleet test's own transaction
+// stops waiting for a lock (setFleetLockTimeout). It is shorter than testwait's own margin, so a
+// wait of the test that waits on such a transaction gives up first and names what it waited for;
+// a transaction no wait of the test watches still ends before Go's alarm panics the binary.
+const fleetLockMargin = 10 * time.Second
+
+// setFleetLockTimeout bounds tx's lock waits by the test binary's deadline less fleetLockMargin, so
+// a lock wait that is merely slow is never refused by a span of the clock, and one that never ends
+// still fails rather than hangs. Under -timeout 0 the binary has no deadline and the waits no
+// bound. A deadline already less than the margin away leaves a bound of 1 ms, since 0 would turn
+// the bound off.
+func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return nil
+	}
+	left := max(time.Until(deadline)-fleetLockMargin, time.Millisecond)
+	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", left.Milliseconds()))
+	return err
+}
+
+// waitRegistrationsOut gives owner_lock_legacy_registration, in s's database alone, the bound
+// setFleetLockTimeout gives a fleet test's own transactions in place of its registrationGateBound,
+// for a row whose subject is not that bound. Such a row holds the gate across steps of its own while
+// a registration waits for it, and on a machine slow enough to take longer than the function's 5 s
+// over those steps, the function's own bound would refuse the registration and fail the row by the
+// clock. TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
+func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
+	t.Helper()
+	bound := "0"
+	if deadline, ok := t.Deadline(); ok {
+		bound = fmt.Sprintf("%dms", max(time.Until(deadline)-fleetLockMargin, time.Millisecond).Milliseconds())
+	}
+	if _, err := s.Pool.Exec(ctx, "alter function public.owner_lock_legacy_registration() set lock_timeout = '"+bound+"'"); err != nil {
+		t.Fatalf("give owner_lock_legacy_registration the test's own bound: %v", err)
+	}
+}
+
+// arriveOn runs arrival for key in a transaction of its own on conn, its lock waits bounded by the
+// test binary's deadline (setFleetLockTimeout), and commits it.
+func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return err
 	}
 	if err := arrival.arrive(ctx, tx, key); err != nil {
@@ -302,35 +341,33 @@ func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArriv
 }
 
 // arrive runs arrival for key on a connection of the pool's (arriveOn).
-func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key string) error {
+func arrive(ctx context.Context, t *testing.T, s *Store, arrival earlierBuildArrival, key string) error {
 	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
-	return arriveOn(ctx, conn, arrival, key)
+	return arriveOn(ctx, t, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
+// build's arrival waits for it, and fails the test when what it runs, named what, ends first
+// (ended). Its one bound is the test binary's deadline less testwait's margin (testwait.Until),
+// whose failure prints the gate as pid last held or waited for it.
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
+	testwait.Until(t, what+" to wait for the owner lock gate exclusively", func() (string, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return "", true
 		}
 		select {
 		case err := <-ended:
 			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted), false
+	})
 }
 
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,
@@ -532,14 +569,15 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own.
-func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error {
+// registry's lock, in a transaction of its own whose lock waits are bounded by the test binary's
+// deadline (setFleetLockTimeout).
+func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
