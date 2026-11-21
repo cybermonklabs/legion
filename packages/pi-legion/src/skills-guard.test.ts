@@ -425,6 +425,31 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// A review round's pair is recorded as one row per half rather than prose, so a half that did not
+// run, or whose findings the reviewer set aside, shows in the body. The reviewer answers a
+// `CHANGES` from either half in its review, and approves only when both halves ran at the reviewed
+// head or both rows read `not run` for a diff that touches no runtime code.
+test("the pair is recorded as a row per half, and the reviewer approves only past both", () => {
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).toContain(
+    "over <the whole change | <last-reviewed-sha>..<sha>>, one row per half: - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them"
+  );
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain(
+    "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand"
+  );
+  expect(mergeGate).toContain("Your `APPROVE` needs both halves run at the reviewed head");
+  expect(mergeGate).toContain(
+    "or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code"
+  );
+});
+
 // The pair's own text bounds what it reads and what it reports: a range its task names limits
 // what it must read, and a defect it sees in code the pull request changed before that range is
 // still a finding, while code the pull request leaves unchanged stays out of its findings, because

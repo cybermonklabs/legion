@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -64,10 +65,17 @@ var (
 	childToken = claim.Token("legion-legion-legion-209-implementer")
 )
 
+// testLeakCheck is the shared public leak check every test's deployment names, a stand-in
+// repository and checker (leakguard.Setting): the runtime a test configures tells its roles the
+// install and the checker, and pushes the check to a launcher that names its pin, as a
+// deployment that runs one has it done.
+var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
+
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), with budgets short enough that
-// a wait the test expects to end never slows the suite.
+// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
+// check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
+// the suite.
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -101,8 +109,9 @@ func testOptions() Options {
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
 		},
-		Mapped: func() []ghrepo.Repository { return nil },
-		Log:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Mapped:           func() []ghrepo.Repository { return nil },
+		LeakCheckSetting: testLeakCheck,
+		Log:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }
 
@@ -538,6 +547,10 @@ type rig struct {
 	refuseLeakCheck    string
 	silentLeakCheck    bool
 	causelessLeakCheck bool
+	// resumesBySession is what every fake launcher's hello says of looking a session up by its id
+	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
+	// built before it could.
+	resumesBySession bool
 }
 
 type rigOption func(*rig, *Options)
@@ -581,6 +594,10 @@ func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silen
 func withCauselessLeakCheck() rigOption {
 	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
 }
+
+// withResumesBySession has every fake launcher's hello say it can look a session up by its id and
+// resume the file it finds, as a launcher of this release says.
+func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
 // carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
@@ -1149,7 +1166,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
-		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
+		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))

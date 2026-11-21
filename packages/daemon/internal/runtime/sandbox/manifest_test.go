@@ -353,9 +353,10 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // TestTheProbePodCarriesNoGKEExtendedDurationAnnotation): Karpenter's own, which protects a pod on
 // an AWS cluster, and the Cluster Autoscaler's, which GKE Autopilot honours; GKE ignores
 // Karpenter's, so a pod on Autopilot without the second can be evicted mid-turn by consolidation or
-// a node upgrade. Each carries, beside them and as the only other annotation of its template, the
-// configuration it was built from, its own kind's in its own sandbox (podShapeAnnotation): the one
-// record an update round reads a pod's drift from (podShapeDrift), written here and nowhere else.
+// a node upgrade. Each carries, beside them, the configuration it was built from, its own kind's
+// in its own sandbox (podShapeAnnotation): the one record an update round reads a pod's drift from
+// (podShapeDrift), written here and nowhere else; and, under a configured leak check setting, the
+// checker it was built under (leakCheckerAnnotation), which a launch keeping the pod tells its role.
 func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -372,6 +373,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 				doNotDisruptAnnotation: "true",
 				safeToEvictAnnotation:  "false",
 				podShapeAnnotation:     podShape(r, l.kind, l.microVM),
+				leakCheckerAnnotation:  testLeakCheck.ManifestSHA256,
 			}
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
@@ -2078,7 +2080,8 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
 // of a spec's or the operator's, under an enrollment that names an exchange audience and under one
-// that names none, whose pods carry none of the exchange identity. Among the goldens' cases is a
+// that names none, whose pods carry none of the exchange identity, and under a session store that
+// names a writer audience and one that names none. Among the goldens' cases is a
 // Claude Code worker, which alone is
 // told three of the variables; none of them works a repository the project names, so the worker
 // below, which does, is built here for the one variable such a pod alone carries. A piece added
@@ -2097,21 +2100,17 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
 	} {
 		t.Run(name, func(t *testing.T) {
-			opts := opts
-			opts.AgentSecrets = agentSecrets
-			r, err := configure(opts)
-			if err != nil {
-				t.Fatal(err)
-			}
+			var r *Runtime
 			volumes, mounts, env := map[string]bool{}, map[string]bool{}, map[string]bool{}
 			carry := func(pod corev1.PodSpec, agent corev1.Container) {
 				for _, volume := range pod.Volumes {
 					volumes[volume.Name] = true
 				}
 				for _, mount := range agent.VolumeMounts {
-					// Every role's own mounts lie under RolesDir, which is reserved whole; an issue
-					// pod's roles container holds what belongs under the home under HomeMountsDir,
-					// which is reserved whole too, at the path each is bound back at.
+					// Every role's own mounts lie under RolesDir, which is reserved whole; a
+					// container that runs the launcher's roles-dir form holds what belongs under the
+					// home under HomeMountsDir, which is reserved whole too, at the path each is
+					// bound back at.
 					switch path := mount.MountPath; {
 					case path == RolesDir || strings.HasPrefix(path, RolesDir+"/"):
 						mounts[RolesDir] = true
@@ -2126,20 +2125,33 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 					env[variable.Name] = true
 				}
 			}
-			for _, tc := range manifestCases(t) {
-				spec := tc.spec
-				spec.Env, spec.Secrets = nil, nil
-				pod := podOf(t, r, spec)
-				carry(pod, workerOf(t, r, spec))
+			// Each session store the pods are built under: the goldens' own, and one that names a
+			// writer audience, whose pods carry the session writer token (sessionWriterTokenVolume,
+			// under RolesDir) and whose controller lays its role out under RolesDir as an issue pod
+			// does, mounting nothing at the fixed paths its single-role form mounts at. Neither
+			// store's pods carry every name of Legion's alone.
+			for _, store := range []ompsessions.Store{opts.SessionStore, cloudSQLWriterStore} {
+				opts := opts
+				opts.AgentSecrets, opts.SessionStore = agentSecrets, store
+				var err error
+				if r, err = configure(opts); err != nil {
+					t.Fatal(err)
+				}
+				for _, tc := range manifestCases(t) {
+					spec := tc.spec
+					spec.Env, spec.Secrets = nil, nil
+					pod := podOf(t, r, spec)
+					carry(pod, workerOf(t, r, spec))
+				}
+				// A pane whose repository the project names is told the issue key it stamps its
+				// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
+				stamping := workerSpec(t)
+				stamping.Env, stamping.Secrets = nil, nil
+				stamping.IssueTrailer = stamping.Issue
+				carry(podOf(t, r, stamping), workerOf(t, r, stamping))
+				probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
+				carry(probe, containerNamed(t, probe, probeContainer))
 			}
-			// A pane whose repository the project names is told the issue key it stamps its
-			// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
-			stamping := workerSpec(t)
-			stamping.Env, stamping.Secrets = nil, nil
-			stamping.IssueTrailer = stamping.Issue
-			carry(podOf(t, r, stamping), workerOf(t, r, stamping))
-			probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
-			carry(probe, containerNamed(t, probe, probeContainer))
 			// The one path no container mounts: role-init binds the pod's test server log there in
 			// every role's namespace, over the file the worker image makes.
 			mounts[TestPGLogFile] = true
@@ -2803,8 +2815,8 @@ func keptReadings(t *testing.T, s sandbox) (decoded, stored bool) {
 	return ownsKeptVolume(&s), storedOwnsKeptVolume(u)
 }
 
-// A microVM pod carries the two stop-eviction annotations a gVisor pod does, and its kind's pod
-// shape in a microVM as the only other one
+// A microVM pod carries the two stop-eviction annotations a gVisor pod does, its kind's pod
+// shape in a microVM, and the checker it was built under
 // (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
 // nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
@@ -2813,7 +2825,8 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 	if got := renderedSandbox(t, template); got != SandboxMicroVM {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
-	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM())}
+	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM()),
+		leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}

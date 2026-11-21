@@ -1,6 +1,6 @@
 // Package natsgrant is the one table of NATS grants Envoy's clients hold: the sets a hub renders
 // into its static authorization (packages/envoy/infra/core wraps each as the rules a User takes) and
-// the grants the auth service answers a connection with (internal/broker/natscallout). Both read
+// the grants the auth service answers a connection with (internal/cipher/natscallout). Both read
 // the same functions, so a hub's static user and a connection the auth service admits for the same
 // kind hold the same lists, built from the names internal/bus and internal/contracts export.
 //
@@ -408,7 +408,7 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 // list to that direction (server/accounts.go, client.go), so a user answered with one may publish,
 // or subscribe, to every subject but the ones a deny list names. A deny list beside it narrows
 // that and closes nothing, so an empty allow list is open whatever PublishDeny or SubscribeDeny
-// hold, and the auth service refuses every grant this names (internal/broker/natscallout).
+// hold, and the auth service refuses every grant this names (internal/cipher/natscallout).
 // A blank entry is the same fault: jwt skips an empty entry when it adds it to a user
 // (StringList.Add skips ""), so a list of "" encodes as an empty one, and a whitespace entry names
 // no subject any grant of this package means.

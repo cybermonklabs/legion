@@ -274,6 +274,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
 | `e2e/issue-page-h.e2e.ts` | the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload |
+| `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
