@@ -154,6 +154,33 @@ func TestARefreshThatDoesNotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	}
 }
 
+// TestARefreshTheBrokerCouldNotAnswerKeepsTheLoginWhateverItsBodyNames: the helper reads the
+// broker's invalid_grant as the login's end only from a 400 or 401 answer. A 5xx whose body names
+// invalid_grant is a broker that could not answer, so the refresh is retried and the credential
+// and the machine file stay as they were.
+func TestARefreshTheBrokerCouldNotAnswerKeepsTheLoginWhateverItsBodyNames(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			f := newFakeBroker(t)
+			b := loggedInBroker(t, f, "ada@example.com")
+			held := b.cred.Load()
+			f.mu.Lock()
+			f.refreshOutcome, f.oauthErrorStatus = "invalid_grant", status
+			f.mu.Unlock()
+			if err := b.refresh(context.Background()); err == nil {
+				t.Fatalf("a refresh the broker answered %d invalid_grant settled; want it retried", status)
+			}
+			if b.cred.Load() != held {
+				t.Fatalf("a refresh the broker answered %d invalid_grant dropped or replaced the credential", status)
+			}
+			kept, err := LoadMachineFile(b.MachineFile)
+			if err != nil || kept.RefreshToken != held.refreshToken {
+				t.Fatalf("the machine file after a refresh answered %d invalid_grant: %+v %v; want the held login unchanged", status, kept, err)
+			}
+		})
+	}
+}
+
 // TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts: a refresh with no answer
 // from the broker (a refused dial, a DNS failure, no route, a timeout, a lost answer, a cancelled
 // request) or a 5xx waits the fixed 15 s retry every time, however long the run, with no switch to

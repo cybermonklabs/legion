@@ -362,13 +362,13 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 }
 
 // grantRefused reports whether err is the token endpoint's 400 or 401 naming invalid_grant.
-func grantRefused(err error) bool { return refusal(err) == "invalid_grant" }
+func grantRefused(err error) bool { return Refusal(err) == "invalid_grant" }
 
-// refusal is the OAuth error code (RFC 6749 section 5.2) err names when err is the token
-// endpoint's answer 400 or 401, the statuses an issuer refuses a grant or a client with, and empty
-// for every other failure: a 5xx or a 429 is an issuer that cannot answer now, whatever error its
-// body names.
-func refusal(err error) string {
+// Refusal is the OAuth error code (RFC 6749 section 5.2) err names when err is a token endpoint's
+// answer 400 or 401, the statuses an issuer refuses a grant or a client with, and empty for every
+// other failure: a 5xx or a 429 is an issuer that cannot answer now, whatever error its body
+// names.
+func Refusal(err error) string {
 	var retrieve *oauth2.RetrieveError
 	if !errors.As(err, &retrieve) || retrieve.Response == nil {
 		return ""

@@ -66,9 +66,9 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve) || retrieve.Response == nil:
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
-	case refusal(err) == "invalid_grant":
+	case Refusal(err) == "invalid_grant":
 		return ClientCheckReady, nil
-	case refusal(err) == "invalid_client":
+	case Refusal(err) == "invalid_client":
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q, which says nothing about the client: %w",

@@ -120,7 +120,9 @@ func TestSignInStatusReportsWhatHappenedOnThePage(t *testing.T) {
 
 // TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet drives each failure the codes name through
 // the real callback and pins the word written for it. A failure none of them names writes
-// nothing at all rather than a word meaning "something else": the last named failure stands.
+// nothing at all rather than a word meaning "something else": the last named failure stands, at
+// the time it was written. The token endpoint's own code is written only from a 400 or 401, the
+// statuses it refuses with: a 5xx or a 429 naming one is a provider that could not answer.
 func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -130,7 +132,11 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 		claims map[string]any
 		// sign re-arms the provider's client with a key it does not publish.
 		foreignKey bool
-		want       string
+		// tokenStatus, when set, has the token endpoint answer the exchange with that status and
+		// tokenCode as its OAuth error.
+		tokenStatus int
+		tokenCode   string
+		want        string
 	}{
 		{name: "a wrong issuer", spoil: func(c map[string]any) { c["iss"] = "https://issuer.example.com" }, want: "bad_issuer"},
 		{name: "a wrong audience", spoil: func(c map[string]any) { c["aud"] = "another-client" }, want: "bad_audience"},
@@ -140,6 +146,11 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 		{name: "an unverified email", claims: map[string]any{"sub": "sub-" + ada, "email": ada, "email_verified": false, "hd": domain}, want: "email_not_verified"},
 		{name: "an ID token naming no email", claims: map[string]any{"sub": "sub-" + ada, "email_verified": true, "hd": domain}, want: ""},
 		{name: "an expired ID token", spoil: func(c map[string]any) { c["exp"] = time.Now().Add(-time.Hour).Unix() }, want: ""},
+		{name: "a 401 naming invalid_client", tokenStatus: http.StatusUnauthorized, tokenCode: "invalid_client", want: "invalid_client"},
+		{name: "a 503 naming invalid_client", tokenStatus: http.StatusServiceUnavailable, tokenCode: "invalid_client", want: ""},
+		{name: "a 503 naming invalid_grant", tokenStatus: http.StatusServiceUnavailable, tokenCode: "invalid_grant", want: ""},
+		{name: "a 500 naming redirect_uri_mismatch", tokenStatus: http.StatusInternalServerError, tokenCode: "redirect_uri_mismatch", want: ""},
+		{name: "a 429 naming unauthorized_client", tokenStatus: http.StatusTooManyRequests, tokenCode: "unauthorized_client", want: ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -152,13 +163,18 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 				q.Set("code", "forged-code")
 				u.RawQuery = q.Encode()
 			})
-			if status, body := r.signInStatus(t); status.LastFailedSignInReason == nil || *status.LastFailedSignInReason != "invalid_grant" {
+			first, body := r.signInStatus(t)
+			if first.LastFailedSignInReason == nil || *first.LastFailedSignInReason != "invalid_grant" || first.LastFailedSignInAt == nil {
 				t.Fatalf("the first refused sign-in = %s, want invalid_grant", body)
 			}
 
 			if c.spoil != nil {
 				r.issuer.SpoilIDTokens(c.spoil)
 				t.Cleanup(func() { r.issuer.SpoilIDTokens(nil) })
+			}
+			if c.tokenStatus != 0 {
+				r.issuer.FailToken(c.tokenStatus, c.tokenCode)
+				t.Cleanup(func() { r.issuer.FailToken(0, "") })
 			}
 			claims := c.claims
 			if claims == nil {
@@ -170,6 +186,9 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 			want := c.want
 			if want == "" {
 				want = "invalid_grant" // unchanged: the failure this case makes has no code
+				if status.LastFailedSignInAt == nil || !status.LastFailedSignInAt.Equal(*first.LastFailedSignInAt) {
+					t.Fatalf("after %s the failure time = %s, want the first failure's, unchanged", c.name, body)
+				}
 			}
 			if status.LastFailedSignInReason == nil || *status.LastFailedSignInReason != want {
 				t.Fatalf("after %s the reason = %s, want %q", c.name, body, want)

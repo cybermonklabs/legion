@@ -976,9 +976,12 @@ deployment whose sign-in broke. What an operator reads from each field:
 - `last_failed_sign_in_at` and `last_failed_sign_in_reason`: when a sign-in last failed at the code
   exchange or at the ID-token check, and why, as one of `invalid_client`, `unauthorized_client`,
   `redirect_uri_mismatch`, `invalid_grant`, `issuer_unreachable`, `bad_issuer`, `bad_audience`,
-  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The first three are the
-  client's registration, `not_in_domain` and `email_not_verified` are the person rather than the
-  deployment, and a failure none of the eleven names leaves the row alone and is logged instead.
+  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The first four are the
+  token endpoint's own error, written only from its `400` or `401` answer: a `429` or a `5xx`
+  naming one is a provider that could not answer, which none of them says. The first three are
+  the client's registration, `not_in_domain` and `email_not_verified` are the person rather than
+  the deployment, and a failure none of the eleven names leaves the row alone and is logged
+  instead.
 - `last_decision_at`: when a person last approved or denied a request on the page.
 
 ### Ending a person's sessions

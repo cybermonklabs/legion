@@ -59,10 +59,11 @@ func signInFailureCode(err error) string {
 	case errors.As(err, &retrieve):
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field.
-		switch retrieve.ErrorCode {
+		// field. It is read only from a 400 or 401 (oidc.Refusal): a 5xx or a 429 naming one of
+		// them is a provider that could not answer, which none of them says.
+		switch code := oidc.Refusal(err); code {
 		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
-			return retrieve.ErrorCode
+			return code
 		}
 	case errors.Is(err, oidc.ErrIssuer):
 		return codeBadIssuer
