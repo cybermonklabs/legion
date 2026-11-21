@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -20,17 +23,26 @@ const sessionProjectsFillBatch = 10_000
 // the one or the other. It is safe to run again, and at any time: a pair a row holds already is
 // not written again.
 //
-// --reset first empties session_projects and session_projects_filled, each in a statement of its
-// own, as migration 20261116081157_session_projects_proven does at boot, and then fills. A
-// deployment that rolls keeps an old build recording pairs under the old rule while the new one
-// starts, and a fill never takes a pair away, so its operator runs it once the last old pod is
-// gone. From the empty to the marker's row, an open viewer of a deployment that holds a private
-// project reads no session but its own (access.SessionClause). It exits 0 once it has read every
-// event, 1 when the database cannot be opened or written, and 2 for an argument it does not take.
-func backfillSessionProjects(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {
+// --reset first empties session_projects of every pair an event proved and session_projects_filled,
+// each in a statement of its own, as migration 20261116081157_session_projects_proven does at boot,
+// and then fills. A pair the listener's answer proved (proven_by `registration`,
+// events.Registrations) stays: no event can write it back. A deployment that rolls keeps an old
+// build recording pairs under the old rule while the new one starts, and a fill never takes a pair
+// away, so its operator runs it once the last old pod is gone. From the empty to the marker's row,
+// an open viewer of a deployment that holds a private project reads no session but its own
+// (access.SessionClause).
+//
+// After the event pass it asks the listener (listener, ENVOY_URL and ENVOY_TOKEN) for each session
+// a stored direct message names as its recipient, the stopped ones included, and records the
+// projects each answer lists, as every read of a session through the listener records them
+// (fillRegistrations). A session the listener no longer knows is printed by id with its count of
+// messages, so a person reads it before a project is switched private. It exits 0 once it has read
+// every event and asked about every recipient, 1 when the database cannot be opened or written or
+// the listener does not answer, and 2 for an argument it does not take.
+func backfillSessionProjects(ctx context.Context, args []string, databaseURL string, listener func(*store.Pool) *dispatchenvoy.Client, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("backfill-session-projects", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	reset := flags.Bool("reset", false, "empty session_projects and its marker first, then fill")
+	reset := flags.Bool("reset", false, "empty session_projects of the pairs events proved, and its marker, first, then fill")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -45,7 +57,7 @@ func backfillSessionProjects(ctx context.Context, args []string, databaseURL str
 	defer database.Pool.Close()
 	ctx = store.WithTransactionTracking(ctx)
 	if *reset {
-		for _, statement := range []string{`delete from session_projects`, `delete from session_projects_filled`} {
+		for _, statement := range []string{`delete from session_projects where proven_by = 'event'`, `delete from session_projects_filled`} {
 			if _, err := database.Pool.Exec(ctx, statement); err != nil {
 				fmt.Fprintf(stderr, "backfill-session-projects: --reset: %s: %v\n", statement, err)
 				return 1
@@ -57,8 +69,93 @@ func backfillSessionProjects(ctx context.Context, args []string, databaseURL str
 		fmt.Fprintf(stderr, "backfill-session-projects: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "backfill-session-projects: events=%d pairs=%d filled\n", report.events, report.pairs)
+	var client *dispatchenvoy.Client
+	if listener != nil {
+		client = listener(database.Pool)
+	}
+	registered, err := fillRegistrations(ctx, database.Pool, client, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "backfill-session-projects: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "backfill-session-projects: events=%d pairs=%d recipients=%d unknown=%d filled\n",
+		report.events, report.pairs, registered.asked, registered.unknown)
 	return 0
+}
+
+// registrationsFill is what the recipients' pass did: the sessions it asked the listener about,
+// and the ones the listener no longer knows.
+type registrationsFill struct {
+	asked, unknown int
+}
+
+// fillRegistrations asks listener, which records through the same recorder every read of a session
+// does (events.SessionRegistrations), about every session a stored direct message names as its
+// recipient (messages.target `session:<id>`), stopped ones included (SessionIncludingStopped), so
+// each answer's projects are recorded proven_by `registration`. A session the listener answers it
+// does not know is printed with its count of messages, for a person to read before a project is
+// switched private: nothing Dispatch holds says which projects such a session works for, and the
+// session rule passes it to no viewer of a private deployment but its own when it has no pair
+// (access.SessionClause). A nil listener asks nothing.
+func fillRegistrations(ctx context.Context, pool *store.Pool, listener *dispatchenvoy.Client, stdout io.Writer) (registrationsFill, error) {
+	var report registrationsFill
+	if listener == nil {
+		return report, nil
+	}
+	rows, err := pool.Query(ctx, `
+		select substr(target, 9), count(*)
+		from messages
+		where target like 'session:%' and length(target) > 8
+		group by 1
+		order by 1
+	`)
+	if err != nil {
+		return report, fmt.Errorf("read the sessions stored direct messages name: %w", err)
+	}
+	type recipient struct {
+		session  string
+		messages int64
+	}
+	var recipients []recipient
+	for rows.Next() {
+		var r recipient
+		if err := rows.Scan(&r.session, &r.messages); err != nil {
+			rows.Close()
+			return report, fmt.Errorf("read the sessions stored direct messages name: %w", err)
+		}
+		recipients = append(recipients, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return report, fmt.Errorf("read the sessions stored direct messages name: %w", err)
+	}
+	for _, r := range recipients {
+		report.asked++
+		_, err := listener.SessionIncludingStopped(ctx, r.session)
+		switch {
+		case errors.Is(err, dispatchenvoy.ErrNotFound):
+			report.unknown++
+			fmt.Fprintf(stdout, "backfill-session-projects: the listener does not know session %s, which %d stored messages name\n", r.session, r.messages)
+		case err != nil:
+			return report, fmt.Errorf("ask the listener for session %s's projects: %w", r.session, err)
+		}
+	}
+	return report, nil
+}
+
+// fillListener is the listener client the fill asks about the recipients' registrations through:
+// ENVOY_URL, its default when unset, with ENVOY_TOKEN, recording each answer through pool's
+// recorder (events.SessionRegistrations), as the server's own client does.
+func fillListener(env settingValues) func(*store.Pool) *dispatchenvoy.Client {
+	envoyURL := env.get("ENVOY_URL")
+	if envoyURL == "" {
+		envoyURL = defaultEnvoyURL
+	}
+	token := env.get("ENVOY_TOKEN")
+	return func(pool *store.Pool) *dispatchenvoy.Client {
+		return dispatchenvoy.New(envoyURL, dispatchenvoy.WithToken(token),
+			dispatchenvoy.WithRegistrations(events.SessionRegistrations(pool)))
+	}
 }
 
 // sessionProjectsFill is what a fill did: the events it read, and the pairs it wrote.

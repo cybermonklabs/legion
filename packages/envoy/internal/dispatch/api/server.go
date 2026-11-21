@@ -358,6 +358,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
+		// Every session the listener answers is recorded under the projects its registration
+		// lists (K6), which the session rule reads (events.Registrations, access.SessionClause).
+		if input.Store != nil {
+			options = append(options, envoy.WithRegistrations(events.SessionRegistrations(input.Store.Pool)))
+		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):

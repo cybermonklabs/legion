@@ -2904,6 +2904,9 @@ It records only a session the event's credential proved: an actor of kind `sessi
 A credential that proves no session, the shared token or a personal token, names one in the request body, and its write records nothing, so no holder of a project's token can make another session look like one of that project's agents.
 From migration `20261116015736_project_access` on, every event append of such a session records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.QueueAppend`);
 the table has no unique key, on purpose, as the migration's header says.
+A session also proves a project by registering at the listener with a token that lists it: each read of a session through the listener (one session, or the list) records the pair of the session and each project its registration lists, proven_by `registration`, before the read returns, in one statement per read (`envoy.WithRegistrations`, `events.Registrations`); a read whose record fails fails.
+So a session that registered under a private project is one of its agents before it writes there, even when its only events are another project's.
+Each row says which proof wrote it in `proven_by` (migration `20261121042211_session_projects_proven_by`): `event` for an event's, every row written before that migration included, and `registration` for a listener answer's.
 The events written before that are covered once, by:
 
 ```sh
@@ -2916,13 +2919,14 @@ for an event whose stored actor is a proven session (`actor->>'kind'` is `sessio
 A person's event, a session a request body named, and an event of no project record nothing.
 The project is the one the issue or document is in when the fill reads it.
 A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
-Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
-It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
+Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did.
+It then asks the listener (`ENVOY_URL`, `ENVOY_TOKEN`) about every session a stored direct message names as its recipient, stopped ones included, which records each one's registration projects as every read does, and prints each session the listener no longer knows as `backfill-session-projects: the listener does not know session <id>, which <n> stored messages name`, for a person to read before a project is switched private: nothing Dispatch holds says which projects such a session works for.
+It prints `backfill-session-projects: events=<read> pairs=<written> recipients=<asked> unknown=<not known> filled` and exits 0 then, 1 when the database cannot be opened or written or the listener does not answer, and 2 for an argument other than `--reset`.
 
 Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
 Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
 Under `Recreate` the build before has stopped when the migration runs.
-A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
+A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first deletes every pair an event proved (`proven_by = 'event'`) and the marker, each in a statement of its own, and then fills; a pair a registration proved stays, since no event can write it back.
 The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
 
 ### Scrubbing the access events

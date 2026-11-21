@@ -1,0 +1,21 @@
+-- 20261121042211_session_projects_proven_by.up.sql — what proved each session's project.
+--
+-- INFRA-3862 t-c-26: a session the listener knows under a private project's token, by the projects
+-- that token lists (K6, SessionEntry.Projects), is one of that project's agents before it writes
+-- any event there. Dispatch records each such pair when the listener answers it
+-- (events.SessionRegistrations), beside the pairs an event's proved session records
+-- (events.queueSessionProject), and reads every pair alike (access.SessionClause). proven_by says
+-- which proof wrote a row: `event`, every row written so far and every row the live insert and
+-- `envoy-dispatch backfill-session-projects` write, or `registration`, a listener answer's. The
+-- fill's --reset deletes only `event` rows, which it writes again, so a reset never drops a
+-- registration's pair, which no event can write back.
+--
+-- Adding a column with a constant default writes the catalog alone (Postgres 11 on), and its check
+-- is on the new column alone, which every existing row reads as its default, so no row is
+-- rewritten or refused. The release before this one writes rows without naming the column, which
+-- take the default, the proof that release's rows have; it never reads the column.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+alter table session_projects
+  add column proven_by text not null default 'event' check (proven_by in ('event', 'registration'));

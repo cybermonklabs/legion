@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Dispatch records the projects each session registered under at the listener (the projects its
+  token lists) in `session_projects`, proven_by `registration`, whenever it reads the session
+  through the listener, so a session that registered under a private project is one of that
+  project's agents before it writes there. `envoy-dispatch backfill-session-projects --reset`
+  keeps those pairs, and the fill now asks the listener about every session a stored direct
+  message names and prints each one the listener no longer knows.

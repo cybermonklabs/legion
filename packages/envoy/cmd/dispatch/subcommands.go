@@ -46,7 +46,7 @@ var subcommands = []subcommand{
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
 	{"backfill-session-projects", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return backfillSessionProjects(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+		return backfillSessionProjects(ctx, args, env.get("DATABASE_URL"), fillListener(env), stdout, stderr)
 	}},
 	{"scrub-access-events", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return scrubAccessEventsCommand(ctx, args, env.get("DATABASE_URL"), stdout, stderr)

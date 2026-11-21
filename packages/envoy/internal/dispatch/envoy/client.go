@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
@@ -292,6 +293,46 @@ type Client struct {
 	baseURL    string
 	apiToken   string
 	httpClient *http.Client
+	// registrations records the projects each session the listener answers lists
+	// (WithRegistrations); nil records nothing.
+	registrations RegistrationRecorder
+}
+
+// RegistrationRecorder records the projects the listener answers sessions with, the projects the
+// token that made each registration lists (model.SessionProjects): events.Registrations, which
+// writes them to session_projects.
+type RegistrationRecorder interface {
+	Record(ctx context.Context, answers []model.SessionProjects) error
+}
+
+// WithRegistrations records, through recorder, the projects of every session Session,
+// SessionIncludingStopped and Sessions answer whose list names a project, in one call per read,
+// before the read returns: a recorder's error is the read's, so nothing that resolves a session
+// through the listener goes on without the record of the projects it registered under - the
+// route of a direct message, a broadcast's recipients, a claim's holder and the agent list among
+// them (access.SessionClause reads it).
+func WithRegistrations(recorder RegistrationRecorder) Option {
+	return func(c *Client) { c.registrations = recorder }
+}
+
+// recordRegistrations hands the recorder the projects of each of sessions whose list names one,
+// in one call, and none when none does: a session whose list is empty, an all-projects token or a
+// record from before the listener kept each session's projects, and one the listener sent no
+// list for, record nothing.
+func (c *Client) recordRegistrations(ctx context.Context, sessions ...Session) error {
+	if c.registrations == nil {
+		return nil
+	}
+	var answers []model.SessionProjects
+	for _, session := range sessions {
+		if len(session.Projects) > 0 {
+			answers = append(answers, model.SessionProjects{SessionID: session.SessionID, Projects: session.Projects})
+		}
+	}
+	if len(answers) == 0 {
+		return nil
+	}
+	return c.registrations.Record(ctx, answers)
 }
 
 // defaultTimeout is the window every listener call gets. A send that misses it is
@@ -359,6 +400,11 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	sessions := make([]Session, len(rows))
 	for index, row := range rows {
 		sessions[index] = sessionOf(row, row.SessionID)
+	}
+	// The projects each session registered under, in one record for the whole answer
+	// (WithRegistrations).
+	if err := c.recordRegistrations(ctx, sessions...); err != nil {
+		return nil, err
 	}
 	return sessions, nil
 }
@@ -608,7 +654,12 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 	if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
-	return sessionOf(info, sessionID), nil
+	session := sessionOf(info, sessionID)
+	// The projects the session registered under (WithRegistrations), before the read returns.
+	if err := c.recordRegistrations(ctx, session); err != nil {
+		return Session{}, err
+	}
+	return session, nil
 }
 
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
