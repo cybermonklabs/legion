@@ -187,8 +187,11 @@ var xidMeasuring sync.Mutex
 // are: in 238 operations measured with these Ps - 100 forced runs, the route table and the xid
 // suites, sampled every 200 µs off runtime/metrics on the same day - at most 36 goroutines were
 // running, runnable or in a system call at once, and 64 Ps, whatever the process had, are more
-// than that. Ps are cheap: each holds a cache of small objects, and an idle one runs nothing. A
-// test that wants fewer Ps sets them inside its operation.
+// than that. That premise is checked, not assumed: the trace says when no P was idle, and a window
+// that keeps D6 only by taking out its goroutine's wait for a P then is UNKNOWN (xidHeldProblem),
+// as is one whose operation's own goroutines take every P. Ps are cheap: each holds a cache of
+// small objects, and an idle one runs nothing. A test that wants fewer Ps sets them inside its
+// operation.
 const xidIdlePs = 64
 
 // runWithIdlePs runs operation with xidIdlePs more Ps than the process had, and puts GOMAXPROCS

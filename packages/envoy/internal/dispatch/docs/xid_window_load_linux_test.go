@@ -254,15 +254,18 @@ func threadCPU(t *testing.T) time.Duration {
 	return time.Duration(cpu.Nano())
 }
 
-// The rig reads a wait for the Go runtime to run the window's goroutine again as the runtime's,
-// not as the code's gap (storetest.XidGap.GoRunnable). With one P, the goroutine yields behind a
-// goroutine that spins: it is runnable, not running, until the runtime preempts the spinner, which
-// it does after the spinner has run 10 ms, and its locked thread sleeps all that time. Read off the
-// thread's clocks alone, that sleep is time the code made, over the bound; read off the execution
-// trace, it is the runtime's, and the window keeps D6. A receive on a channel the code waits on
-// for as long is a wait the code asked for (GoWaiting), and still breaks D6. Each arm first holds
-// that the wait happened: its gap, read off the thread's clocks alone, is over the bound. The one P
-// is set inside the measured operation, since Measure runs its operation with idle Ps beside it.
+// The rig does not read a wait for the Go runtime to run the window's goroutine again as the
+// code's gap (storetest.XidGap.GoRunnable), and does not pass it either when it cannot say whose
+// it was. With one P, the goroutine yields behind a goroutine that spins: it is runnable, not
+// running, until the runtime preempts the spinner, which it does after the spinner has run 10 ms,
+// and its locked thread sleeps all that time. Read off the thread's clocks alone, that sleep is
+// time the code made, over the bound. Read off the execution trace it is the runtime's wait, but
+// one while no P was idle: the spinner is the operation's own goroutine, and the rig cannot tell
+// the operation's goroutines holding every P from the machine's load, so the window is UNKNOWN, a
+// rig problem, and neither passes nor breaks D6. A receive on a channel the code waits on for as
+// long is a wait the code asked for (GoWaiting), and breaks D6. Each arm first holds that the wait
+// happened: its gap, read off the thread's clocks alone, is over the bound. The one P is set
+// inside the measured operation, since Measure runs its operation with idle Ps beside it.
 func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
@@ -279,8 +282,8 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 				defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 				runRigTransactionDoing(t, database, probe.wait)
 			})
-			if len(report.Problems) > 0 || len(report.Windows) != 1 {
-				t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
+			if len(report.Windows) != 1 {
+				t.Fatalf("the rig judged %d windows with problems %v, want the one transaction", len(report.Windows), report.Problems)
 			}
 			window := report.Windows[0]
 			if gap := window.Gaps[0]; gap.Clock-gap.Runnable <= storetest.XidMaxGap {
@@ -289,9 +292,10 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 			}
 			err := report.Err()
 			switch {
-			case !probe.breaks && err != nil:
-				t.Fatalf("a wait for the runtime to run the goroutine again broke D6: %v", err)
-			case probe.breaks && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+			case !probe.breaks && (err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") ||
+				strings.Contains(err.Error(), "XID WINDOW VIOLATION")):
+				t.Fatalf("a wait for the runtime while the operation's own spinner held the one P: verdict %v, want the window UNKNOWN\n%s", err, window.Detail())
+			case probe.breaks && (len(report.Problems) > 0 || err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
 				!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
 				t.Fatalf("a %s wait on a channel: verdict %v, want a D6 violation after the insert\n%s", rigInjectedGap, err, window.Detail())
 			}

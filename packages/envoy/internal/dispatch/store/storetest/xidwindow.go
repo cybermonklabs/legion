@@ -499,6 +499,37 @@ func (w XidWindow) Violations() []string {
 	return broken
 }
 
+// xidHeldProblem names a window that keeps D6 only by taking out of its gaps the runtime's waits
+// while no P of the process was idle (XidGap.GoRunnableHeld, madeIfHeldWereTheCodes): the
+// operation's own goroutines may have held every P, so the rig cannot say whose time those waits
+// were, and the window is UNKNOWN, a rig problem that fails a run as one (XidReport.Err). It is ""
+// where no such wait decides the verdict: a window that breaks D6 anyway, or keeps it with them
+// counted as the code's.
+func xidHeldProblem(w XidWindow) string {
+	if len(w.Violations()) > 0 {
+		return ""
+	}
+	counted := w
+	counted.Gaps = slices.Clone(w.Gaps)
+	counted.GapTime = 0
+	var held []string
+	for i := range counted.Gaps {
+		gap := &counted.Gaps[i]
+		if gap.GoRunnableHeld > 0 {
+			held = append(held, fmt.Sprintf("%s in the gap after statement %d", XidMillis(gap.GoRunnableHeld), i))
+		}
+		gap.GoRunnable -= gap.GoRunnableHeld
+		gap.GoRunnableHeld = 0
+		counted.GapTime += gap.Made()
+	}
+	broken := counted.Violations()
+	if len(held) == 0 || len(broken) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("UNKNOWN: backend %d's window (%s) keeps D6 only if its goroutine's waits on the runtime while no P of the process was idle - %s - are the machine's; the operation's own goroutines may have held every P, and the rig cannot tell whose they were. Counted as the code's, %s",
+		w.Transaction.PID, xidSQL(w.Statements[0].SQL), strings.Join(held, ", "), strings.Join(broken, "; "))
+}
+
 // Summary is the window in one line: what a passing run logs and a red run quotes.
 func (w XidWindow) Summary() string {
 	var largest XidGap
@@ -538,9 +569,9 @@ func (w XidWindow) Detail() string {
 			}
 			read := "its thread's clocks unread"
 			if gap.Read {
-				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s; its goroutine waited %s on the runtime, %s on what it asked for and %s in system calls",
+				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s; its goroutine waited %s on the runtime (%s of it while no P was idle), %s on what it asked for and %s in system calls",
 					XidMillis(gap.Ran), XidMillis(gap.Asleep()), XidMillis(gap.Runnable),
-					XidMillis(gap.GoRunnable), XidMillis(gap.GoWaiting), XidMillis(gap.GoSyscall))
+					XidMillis(gap.GoRunnable), XidMillis(gap.GoRunnableHeld), XidMillis(gap.GoWaiting), XidMillis(gap.GoSyscall))
 			}
 			softirqs := "; its CPU's softirqs uncounted"
 			if gap.Counted {
@@ -712,6 +743,9 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 						"the gap after statement %d of backend %d's window (%s) was not read off the execution trace: the trace shows no goroutine running on the transaction's thread by the gap's start",
 						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
 				}
+			}
+			if problem := xidHeldProblem(window); problem != "" {
+				report.Problems = append(report.Problems, problem)
 			}
 		}
 		report.Windows = append(report.Windows, window)

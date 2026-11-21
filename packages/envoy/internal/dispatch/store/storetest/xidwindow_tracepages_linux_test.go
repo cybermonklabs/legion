@@ -297,3 +297,39 @@ func TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade(t *testing.T) {
 		t.Fatalf("a gap of %s of the code's CPU after a stalled calibration: verdict %v, want a D6 violation after the first statement", spin, err)
 	}
 }
+
+// A window that keeps D6 only by taking out a wait for a P while none was idle is UNKNOWN: the
+// gap is a reviewer's forcing of 145 of the operation's own goroutines at 72 Ps (2026-11-21),
+// whose 49.966 ms runnable on the runtime, taken out, left 0.159 ms made. The same wait while a P
+// was idle is the machine's, and the window keeps D6; and a window that breaks D6 anyway is a
+// violation, not UNKNOWN.
+func TestAWindowThatKeepsD6OnlyOnAWaitWhileNoPWasIdleIsUnknown(t *testing.T) {
+	RequireXidGapJudgment(t)
+	us := func(n int64) time.Duration { return time.Duration(n) * time.Microsecond }
+	window := func(gap XidGap) XidWindow {
+		return XidWindow{
+			Transaction:   XidTransaction{PID: 7},
+			Statements:    []XidStatement{{SQL: "insert into projects"}, {SQL: "commit"}},
+			Gaps:          []XidGap{gap},
+			GapTime:       gap.Made(),
+			StatementTime: 3 * time.Millisecond,
+		}
+	}
+	forced := XidGap{Clock: us(50125), Ran: us(1826), Runnable: us(12188), GoRunnable: us(49966), GoRunnableHeld: us(49966), Read: true, Traced: true}
+	if made := forced.Made(); made != us(159) {
+		t.Fatalf("the forced gap made %s, want 0.159 ms", made)
+	}
+	if problem := xidHeldProblem(window(forced)); !strings.Contains(problem, "UNKNOWN: backend 7's window") || !strings.Contains(problem, "49.966 ms in the gap after statement 0") {
+		t.Errorf("the forced gap's window: problem %q, want it UNKNOWN, naming the wait", problem)
+	}
+	idle := forced
+	idle.GoRunnableHeld = 0
+	if problem := xidHeldProblem(window(idle)); problem != "" {
+		t.Errorf("the same wait while a P was idle: problem %q, want none", problem)
+	}
+	slept := forced
+	slept.GoRunnable, slept.GoRunnableHeld = 0, 0
+	if problem := xidHeldProblem(window(slept)); problem != "" || len(window(slept).Violations()) == 0 {
+		t.Errorf("a gap that breaks D6 with the wait counted as the code's: problem %q, violations %v, want a violation and no problem", problem, window(slept).Violations())
+	}
+}

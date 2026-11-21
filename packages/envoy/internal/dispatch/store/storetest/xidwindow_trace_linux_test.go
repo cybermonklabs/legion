@@ -106,6 +106,62 @@ func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
 	}
 }
 
+// The trace's P transitions and its GOMAXPROCS say when no P of the process was idle, and the part
+// of a goroutine's runnable time that fell then is read apart (xidGoStates.RunnableHeld). Two Ps:
+// P 1 is idle from the trace's start and runs from 2 ms, so none is idle until P 0 goes idle at
+// 4 ms. Then P 1 goes idle at 6 ms and P 0 runs at 7 ms, and GOMAXPROCS drops to 1 at 8 ms: the P
+// left idle is no longer the process's, so none is idle until GOMAXPROCS is 2 again at 11 ms.
+// Goroutine 1 is runnable from 1 to 5 ms and from 9 to 10 ms, 3 ms of it while no P was idle. A
+// P's status at a generation's start is no change.
+func TestTheTraceReadsWhenNoPWasIdle(t *testing.T) {
+	base := time.Now()
+	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
+	reading := &xidTraceReading{
+		baseTime: base,
+		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		changes:  map[exptrace.GoID][]xidGoStateChange{},
+		runs:     map[int][]xidThreadRun{},
+	}
+	reading.setProcs(2, at(0))
+	for _, event := range []struct {
+		change exptrace.StateTransition
+		at     float64
+		thread exptrace.ThreadID
+		procs  int
+	}{
+		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcUndetermined, exptrace.ProcRunning), at: 0, thread: 7},
+		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcUndetermined, exptrace.ProcIdle), at: 0, thread: exptrace.NoThread},
+		{change: exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), at: 0, thread: 7},
+		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), at: 1, thread: 7},
+		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcIdle, exptrace.ProcRunning), at: 2, thread: 8},
+		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcRunning, exptrace.ProcRunning), at: 3, thread: 8},
+		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), at: 4, thread: 7},
+		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), at: 5, thread: 7},
+		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcRunning, exptrace.ProcIdle), at: 6, thread: 8},
+		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), at: 7, thread: 7},
+		{at: 8, procs: 1},
+		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), at: 9, thread: 7},
+		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), at: 10, thread: 7},
+		{at: 11, procs: 2},
+	} {
+		if event.procs > 0 {
+			reading.setProcs(event.procs, at(event.at))
+			continue
+		}
+		reading.transition(event.change, at(event.at), event.thread)
+	}
+	states, ok := reading.goStates(7, base.Add(500*time.Microsecond), base.Add(12*time.Millisecond))
+	if !ok {
+		t.Fatal("the trace shows no goroutine on thread 7 by the gap's start")
+	}
+	if want := 5 * time.Millisecond; states.Runnable != want {
+		t.Errorf("runnable %s, want %s", states.Runnable, want)
+	}
+	if want := 3 * time.Millisecond; states.RunnableHeld != want {
+		t.Errorf("runnable while no P was idle %s, want %s (held stretches %v)", states.RunnableHeld, want, reading.held)
+	}
+}
+
 // Made is the lesser of the gap less the runtime's wait and the thread's CPU and sleep with the
 // goroutine's own waits, so that no sleep or wait of the code's is ever taken out, wherever in the
 // goroutine's states the thread's clocks put it; and it never reads more than the gap's own time on
