@@ -250,8 +250,8 @@ jobs:
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
       # runs. natsgrant has one of its own: a Legion daemon's grant held to its projects
       # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
-      # receives no other project's message while today's grant, the control, does (measurement
-      # M5 of the private projects plan). Each package runs only the tests its tag adds:
+      # receives no other project's message while today's grant, the control, does. Each package
+      # runs only the tests its tag adds:
       # `-tags natslive ./pkg` would re-run the package's untagged tests, which already run
       # elsewhere - internal/testnats and natsgrant in the unit step above, and internal/bus and
       # internal/cipher/natscallout in envoy-go-race, which the unit step's grep -Ev leaves out -

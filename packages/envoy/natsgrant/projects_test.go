@@ -1,8 +1,6 @@
 package natsgrant_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"slices"
@@ -10,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
@@ -18,144 +17,8 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// pubScope is one daemon's scope: project PUB, two repositories (one whose name holds a dot, which
-// a subject spells as an underscore), and the account that names its reply prefix.
-var pubScope = natsgrant.Scope{
-	Projects:     []string{"PUB"},
-	Repositories: []string{"acme/widgets", "acme/gadgets.js"},
-	Identity:     "legion-daemon-PUB",
-}
-
-// The repositories that stretch a GitHub consumer's name furthest, by GitHub's own grammar
-// (packages/daemon/internal/ghrepo: an owner of at most 39 bytes of [A-Za-z0-9_-] beginning with a
-// letter or digit, a name of at most 100 bytes of [A-Za-z0-9._-]): the deep review's 100-byte name
-// of underscores, and the longest owner and name with every byte the name escapes.
-var (
-	reviewersRepository = "acme/repo" + strings.Repeat("_", 96)
-	longestRepository   = "a" + strings.Repeat("_", 38) + "/" + strings.Repeat("._", 50)
-)
-
-// A consumer's name is at most 255 bytes, nats-server's JSMaxNameLen
-// (server/jetstream_api.go:418-420), past which the server refuses the create with err_code
-// 10102 (server/consumer.go:1256-1261). Every repository GitHub serves gets a name within it,
-// under the longest project key there is, and the name stays one subject token, stays the
-// daemon's for the project, and is the same name for GitHub's and Dispatch's spellings.
-func TestGitHubConsumerNameFitsTheServersNameLimit(t *testing.T) {
-	for _, row := range []struct{ project, repository string }{
-		{"PUB", reviewersRepository},
-		{"ABCDEFGHIJ", reviewersRepository},
-		{"ABCDEFGHIJ", longestRepository},
-		{"ABCDEFGHIJ", strings.Repeat("A", 39) + "/" + strings.Repeat("Z", 100)},
-	} {
-		name := natsgrant.GitHubConsumerName(row.project, row.repository)
-		require.LessOrEqual(t, len(name), 255, "%s's consumer for %q is %d bytes", row.project, row.repository, len(name))
-		require.True(t, natsgrant.SessionToken(name), "%q is one subject token", name)
-		require.True(t, strings.HasPrefix(name, "legion-go-"+row.project+"-github-"), name)
-		require.Equal(t, name, natsgrant.GitHubConsumerName(row.project, strings.ToUpper(row.repository)), "one name for either spelling")
-	}
-	// A name that fits keeps the readable encoding whole.
-	require.Equal(t, "legion-go-ABCDEFGHIJ-github-"+strings.Repeat("a", 39)+"_2f"+strings.Repeat("z", 100),
-		natsgrant.GitHubConsumerName("ABCDEFGHIJ", strings.Repeat("A", 39)+"/"+strings.Repeat("Z", 100)))
-	// One that would not keeps the longest head of the readable encoding that leaves room, cut
-	// between escapes, then `_z` and the first 32 hex digits of the SHA-256 of the whole
-	// repository in lower case. Written out here rather than read back, so a change that would
-	// rename every long repository's consumer (and leave its old one behind on the stream) fails
-	// here first.
-	digest := sha256.Sum256([]byte(strings.ToLower(reviewersRepository)))
-	require.Equal(t,
-		"legion-go-PUB-github-acme_2frepo"+strings.Repeat("_5f", 63)+"_z"+hex.EncodeToString(digest[:16]),
-		natsgrant.GitHubConsumerName("PUB", reviewersRepository))
-}
-
-// Long names stay one-to-one: two repositories whose readable heads are the same get two names,
-// and no long name is the name of a short one, since `_z` never appears in the readable encoding
-// (it writes `_` only before two hex digits).
-func TestGitHubConsumerNameKeepsLongRepositoriesApart(t *testing.T) {
-	shared := "acme/" + strings.Repeat("_", 95)
-	a, b := natsgrant.GitHubConsumerName("PUB", shared+"a"), natsgrant.GitHubConsumerName("PUB", shared+"b")
-	require.NotEqual(t, a, b)
-	head, _, found := strings.Cut(a, "_z")
-	require.True(t, found, "%q is past the limit, so it carries a digest", a)
-	require.True(t, strings.HasPrefix(b, head+"_z"), "the two share their readable head %q", head)
-
-	// Every owner and name length GitHub serves, each filled with a byte the encoding escapes or
-	// keeps: no two share a name, each fits, and a name carries a digest exactly when its readable
-	// encoding would not fit.
-	const prefix = "legion-go-ABCDEFGHIJ-github-"
-	seen := map[string]string{}
-	for _, owner := range []string{"acme", "a" + strings.Repeat("_", 38), strings.Repeat("x", 39)} {
-		for length := 1; length <= 100; length++ {
-			for _, fill := range []string{"_", ".", "-", "z"} {
-				repository := owner + "/" + strings.Repeat(fill, length-1) + "q"
-				name := natsgrant.GitHubConsumerName("ABCDEFGHIJ", repository)
-				require.LessOrEqual(t, len(name), 255, repository)
-				if other, taken := seen[name]; taken && other != repository {
-					t.Fatalf("%q and %q share the consumer %q", other, repository, name)
-				}
-				seen[name] = repository
-				readable := prefix + strings.TrimPrefix(natsgrant.InboxPrefix(strings.ToLower(repository)), "_INBOX_")
-				if overflows := len(readable) > 255; strings.Contains(name, "_z") != overflows {
-					t.Fatalf("%q: its readable name is %d bytes, and its name %q carries a digest: %v", repository, len(readable), name, !overflows)
-				}
-				if len(readable) <= 255 {
-					require.Equal(t, readable, name, "a name that fits is the readable encoding whole")
-					continue
-				}
-				// A name that does not fit is the longest head of the readable name that leaves
-				// room for "_z" and 32 hex digits, short of the full budget only by the bytes of
-				// an escape it would have split.
-				head, digest, _ := strings.Cut(name, "_z")
-				require.True(t, strings.HasPrefix(readable, head), "%q's head %q is the start of its readable name", repository, head)
-				require.NotContains(t, head[len(head)-2:], "_", "%q's head %q ends between escapes", repository, head)
-				require.Len(t, digest, 32, repository)
-				require.GreaterOrEqual(t, len(head), 255-2-32-2, "%q's head %q is the longest that leaves room", repository, head)
-			}
-		}
-	}
-}
-
-// A repository's GitHub consumer name, prefix and filter. The name escapes as InboxPrefix does,
-// after lower-casing the repository: the daemon keeps GitHub's spelling (Acme/Widgets) and
-// Dispatch, whose list the grant is built from, its lower case, and both must name one consumer.
-// The prefix and filter keep the case they are given (lower-casing the subject is t-c-21's, at
-// its one source) and write a dot "_", so a.b and a_b get two names but share one lane, which
-// plan A's t-a-32 refuses at the mapping write.
-func TestGitHubConsumerNamePrefixAndFilter(t *testing.T) {
-	for _, row := range []struct{ repository, name, prefix string }{
-		{"acme/widgets", "legion-go-PUB-github-acme_2fwidgets", "notifications.github.acme.widgets"},
-		{"acme/a.b", "legion-go-PUB-github-acme_2fa_2eb", "notifications.github.acme.a_b"},
-		{"acme/a_b", "legion-go-PUB-github-acme_2fa_5fb", "notifications.github.acme.a_b"},
-		{"Acme/Widgets", "legion-go-PUB-github-acme_2fwidgets", "notifications.github.Acme.Widgets"},
-		{"my-org/Repo.Name_x", "legion-go-PUB-github-my-org_2frepo_2ename_5fx", "notifications.github.my-org.Repo_Name_x"},
-	} {
-		require.Equal(t, row.name, natsgrant.GitHubConsumerName("PUB", row.repository), row.repository)
-		require.True(t, natsgrant.SessionToken(row.name), "%q is one subject token", row.name)
-		require.Equal(t, row.prefix, natsgrant.GitHubPrefix(row.repository), row.repository)
-		require.Equal(t, row.prefix+".>", natsgrant.GitHubFilter(row.repository), row.repository)
-		owner, name, _ := strings.Cut(row.repository, "/")
-		require.True(t, strings.HasPrefix(contracts.GithubSubject(owner, name, "pr.1"), row.prefix+"."),
-			"the listener publishes %s's events under its prefix", row.repository)
-	}
-	require.Equal(t, natsgrant.GitHubConsumerName("PUB", "Acme/Widgets"), natsgrant.GitHubConsumerName("PUB", "acme/widgets"),
-		"GitHub's spelling and Dispatch's name one consumer")
-	require.NotEqual(t, natsgrant.GitHubConsumerName("PUB", "acme/a.b"), natsgrant.GitHubConsumerName("PUB", "acme/a_b"))
-}
-
-// Each repository's consumer is granted with its own filter only: one repository's consumer with
-// another's filter is no entry of the grant, nor is a consumer of another project.
-func TestWithinProjectsPairsEachRepositorysConsumerWithItsOwnFilter(t *testing.T) {
-	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
-		Projects: []string{"PUB"}, Repositories: []string{"acme/one", "acme/two"}, Identity: "id",
-	})
-	require.NoError(t, err)
-	const create = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."
-	one, two := natsgrant.GitHubConsumerName("PUB", "acme/one"), natsgrant.GitHubConsumerName("PUB", "acme/two")
-	require.Contains(t, got.Publish, create+one+"."+natsgrant.GitHubFilter("acme/one"))
-	require.Contains(t, got.Publish, create+two+"."+natsgrant.GitHubFilter("acme/two"))
-	require.NotContains(t, got.Publish, create+one+"."+natsgrant.GitHubFilter("acme/two"))
-	require.NotContains(t, got.Publish, create+two+"."+natsgrant.GitHubFilter("acme/one"))
-	require.NotContains(t, got.Publish, create+natsgrant.GitHubConsumerName("OTHER", "acme/one")+"."+natsgrant.GitHubFilter("acme/one"))
-}
+// pubScope is one daemon's scope: project PUB and the account that names its reply prefix.
+var pubScope = natsgrant.Scope{Projects: []string{"PUB"}, Identity: "legion-daemon-PUB"}
 
 // A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9-] escaped
 // as _hh, including underscores, so it is one subject token and distinct identities stay distinct.
@@ -208,34 +71,21 @@ func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
 }
 
 // The daemon's grant held to PUB: its reply prefix in place of _INBOX.>, the role-lane exceptions
-// of PUB alone, and for each consumer the daemon opens under PUB (t-c-10's names, each create
+// of PUB alone, and for each of the four consumers the daemon opens under PUB (each create
 // subject naming its one filter) the create, info, pull and acknowledgement of that consumer and
-// no other. The stream's info and stored-message get are gone. Written out in full, so the test
-// reads the subjects, not the code that builds them.
+// no other. The GitHub consumer's one filter is every repository's events, notifications.github.>.
+// The stream's info and stored-message get are gone. Written out in full, so the test reads the
+// subjects, not the code that builds them.
 func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
 	require.NoError(t, err)
 
 	const (
-		api  = "$JS.API.CONSUMER."
-		ack  = "$JS.ACK.ENVOY_NOTIFICATIONS."
-		pre  = "ENVOY_NOTIFICATIONS.legion-go-PUB-"
-		gads = "notifications.github.acme.gadgets_js.>"
-		wids = "notifications.github.acme.widgets.>"
+		api = "$JS.API.CONSUMER."
+		ack = "$JS.ACK.ENVOY_NOTIFICATIONS."
+		pre = "ENVOY_NOTIFICATIONS.legion-go-PUB-"
 	)
-	const (
-		gadgets = "legion-go-PUB-github-acme_2fgadgets_2ejs"
-		widgets = "legion-go-PUB-github-acme_2fwidgets"
-	)
-	require.Equal(t, gadgets, natsgrant.GitHubConsumerName("PUB", "acme/gadgets.js"))
-	require.Equal(t, widgets, natsgrant.GitHubConsumerName("PUB", "acme/widgets"))
-	// The filter each consumer's create names is the one Envoy's listener publishes a repository's
-	// events under (contracts.GithubSubject), a dot in the name written "_".
-	require.Equal(t, gads, natsgrant.GitHubFilter("acme/gadgets.js"))
-	require.Equal(t, wids, natsgrant.GitHubFilter("acme/widgets"))
-	require.True(t, strings.HasPrefix(contracts.GithubSubject("acme", "gadgets.js", "pr.1"), strings.TrimSuffix(gads, ">")),
-		"a published event of acme/gadgets.js falls under its filter")
-	consumers := []string{"dispatch", "mapping", "wake", "ready", "github-acme_2fgadgets_2ejs", "github-acme_2fwidgets"}
+	consumers := []string{"dispatch", "wake", "ready", "github"}
 	var info, next, acks []string
 	for _, consumer := range consumers {
 		info = append(info, api+"INFO."+pre+consumer)
@@ -244,11 +94,9 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 	}
 	creates := []string{
 		api + "CREATE." + pre + "dispatch.notifications.dispatch.issue.PUB.>",
-		api + "CREATE." + pre + "mapping.notifications.dispatch.project.PUB.settings.repo_project.updated",
 		api + "CREATE." + pre + "wake.notifications.legion.pub.wake",
 		api + "CREATE." + pre + "ready.notifications.legion.wake",
-		api + "CREATE." + pre + "github-acme_2fgadgets_2ejs." + gads,
-		api + "CREATE." + pre + "github-acme_2fwidgets." + wids,
+		api + "CREATE." + pre + "github.notifications.github.>",
 	}
 	require.Equal(t, natsgrant.Permissions{
 		Publish: slices.Concat(info, creates, next, acks),
@@ -259,13 +107,53 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 	}, got)
 }
 
-// Each kind of entry beside the reply inboxes: rewritten to the scope's subjects, dropped, or
-// refused naming the entry. A refusal is the whole answer, never a grant with the entry left out.
-// The reply inboxes keep each direction from coming out empty, which is refused on its own
+// The GitHub consumer's create subject ends in the family's wildcard, so the grant admits a create
+// of PUB's GitHub consumer on any repository's lane, a repository only another project's issues
+// resolve to among them: its filter is inside the family the grant holds. The grant names no
+// repository, since it could name a consumer per repository only from a list of the repositories,
+// which no scope holds. Another project's GitHub consumer, a filter outside the family, a create
+// that names no filter and a consumer named for one repository are not admitted. admits reads each
+// entry as nats-server reads a subject filter, and the live test holds the hub's image to five of
+// these rows (the whole family, one lane, another project's consumer, a lane outside the family
+// and a consumer named for one repository); today's grant, which reaches every consumer of the
+// stream, is the control that admits each subject the held grant refuses.
+func TestWithinProjectsAdmitsItsGitHubConsumerOnEveryRepositorysLane(t *testing.T) {
+	held, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
+	require.NoError(t, err)
+	const create = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."
+	for _, row := range []struct {
+		subject  string
+		admitted bool
+	}{
+		{create + "legion-go-PUB-github.notifications.github.>", true},
+		{create + "legion-go-PUB-github.notifications.github.acme.priv.>", true},
+		{create + "legion-go-PUB-github.notifications.github.acme.priv.pr.1", true},
+		{create + "legion-go-PRIV-github.notifications.github.>", false},
+		{create + "legion-go-PRIV-github.notifications.github.acme.priv.>", false},
+		{create + "legion-go-PUB-github.notifications.dispatch.issue.PRIV.>", false},
+		{create + "legion-go-PUB-github.notifications.>", false},
+		{create + "legion-go-PUB-github", false},
+		{create + "legion-go-PUB-github-acme_2fpriv.notifications.github.acme.priv.>", false},
+	} {
+		require.Equal(t, row.admitted, admits(held.Publish, row.subject), "the held grant admits %s", row.subject)
+		require.True(t, admits(natsgrant.Daemon().Publish, row.subject), "today's grant, the control, admits %s", row.subject)
+	}
+}
+
+// admits reports whether an entry of allow admits subject, each entry read as nats-server reads a
+// subject filter (server.SubjectMatchesFilter): a wildcard in subject is admitted only inside one
+// of the entry's.
+func admits(allow []string, subject string) bool {
+	return slices.ContainsFunc(allow, func(entry string) bool { return natsserver.SubjectMatchesFilter(subject, entry) })
+}
+
+// Each kind of entry beside the reply inboxes: rewritten to the scope's subjects, kept, dropped,
+// or refused naming the entry. A refusal is the whole answer, never a grant with the entry left
+// out. The reply inboxes keep each direction from coming out empty, which is refused on its own
 // (TestWithinProjectsRefusesAGrantHeldToNothingInADirection).
 func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
-	scope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets"}, Identity: "id"}
-	pubConsumers := []string{"dispatch", "mapping", "wake", "ready", "github-acme_2fwidgets"}
+	scope := natsgrant.Scope{Projects: []string{"PUB"}, Identity: "id"}
+	pubConsumers := []string{"dispatch", "wake", "ready", "github"}
 	each := func(format string) []string {
 		out := make([]string, len(pubConsumers))
 		for i, consumer := range pubConsumers {
@@ -275,10 +163,9 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 	}
 	creates := []string{
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch.notifications.dispatch.issue.PUB.>",
-		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-mapping.notifications.dispatch.project.PUB.settings.repo_project.updated",
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-wake.notifications.legion.pub.wake",
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-ready.notifications.legion.wake",
-		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-github-acme_2fwidgets.notifications.github.acme.widgets.>",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-github.notifications.github.>",
 	}
 	for _, row := range []struct {
 		entry   string
@@ -300,7 +187,9 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "notifications.dispatch.issue.> example-queue", want: []string{"notifications.dispatch.issue.PUB.> example-queue"}},
 		{entry: "notifications.envoy.exceptions.notifications.role.>", want: []string{"notifications.envoy.exceptions.notifications.role.PUB.>"}},
 		{entry: "notifications.legion.>", want: []string{"notifications.legion.pub.>"}},
-		{entry: "notifications.github.>", want: []string{"notifications.github.acme.widgets.>"}},
+		// Every repository's GitHub events, kept whole: a GitHub event is a message of no project.
+		{entry: "notifications.github.>", want: []string{"notifications.github.>"}},
+		{entry: "notifications.github.> example-queue", want: []string{"notifications.github.> example-queue"}},
 		// The stored-message reads of any other stream, and direct gets of this one.
 		{entry: "$JS.API.STREAM.MSG.GET.OTHER", refused: "stored message"},
 		{entry: "$JS.API.DIRECT.GET.ENVOY_NOTIFICATIONS.>", refused: "stored message"},
@@ -329,6 +218,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "notifications.agent.>", refused: "cannot be held"},
 		{entry: "notifications.role.>", refused: "cannot be held"},
 		{entry: "notifications.dispatch.issue.*.>", refused: "cannot be held"},
+		{entry: "notifications.github.acme.widgets.>", refused: "cannot be held"},
 		{entry: "_INBOX.abc.>", refused: "cannot be held"},
 		{entry: "$JS.API.INFO", refused: "cannot be held"},
 		{entry: "$JS.API.STREAM.INFO.OTHER", refused: "cannot be held"},
@@ -371,8 +261,8 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 }
 
 // A grant holding _INBOX.> needs the identity that names its reply prefix, and a scope names
-// project keys and owner/name repositories only: anything else would widen a subject the grant
-// names, so it is refused naming the value.
+// project keys only: anything else would widen a subject the grant names, so it is refused naming
+// the value.
 func TestWithinProjectsRefusesAScopeItCannotName(t *testing.T) {
 	_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}})
 	require.ErrorContains(t, err, strconv.Quote("_INBOX.>"))
@@ -382,13 +272,6 @@ func TestWithinProjectsRefusesAScopeItCannotName(t *testing.T) {
 		_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB", project}, Identity: "id"})
 		require.ErrorContains(t, err, "project "+strconv.Quote(project), "project %q", project)
 	}
-	for _, repo := range []string{"acme", "acme/", "/widgets", "acme/widgets/x", "*/widgets", "acme/>", "ac me/widgets", "acme/wid\tgets", ""} {
-		_, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{repo}, Identity: "id"})
-		require.ErrorContains(t, err, "repository "+strconv.Quote(repo), "repository %q", repo)
-	}
-	_, err = natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Repositories: []string{"acme/widgets"}, Identity: "id"})
-	require.ErrorContains(t, err, "no project", "repositories with no project")
-	require.ErrorContains(t, err, "acme/widgets", "repositories with no project")
 }
 
 // The longest and the digit-bearing project keys the contract allows (contracts.ProjectKeyPattern)
@@ -398,25 +281,23 @@ func TestWithinProjectsTakesEveryProjectKeyShape(t *testing.T) {
 		got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{project}, Identity: "id"})
 		require.NoError(t, err, project)
 		require.Contains(t, got.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-dispatch.notifications.dispatch.issue."+project+".>", project)
+		require.Contains(t, got.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-github.notifications.github.>", project)
 		require.Contains(t, got.Subscribe, "notifications.envoy.exceptions.notifications.role."+project+".>", project)
 	}
 }
 
-// Two projects: every project's consumers, each paired with its own project's filter and with each
-// repository of the scope, written out in full.
+// Two projects: every project's four consumers, each paired with its own project's filter, and
+// each project's GitHub consumer with every repository's events, written out in full.
 func TestWithinProjectsHoldsEachProjectToItsOwnFilters(t *testing.T) {
-	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
-		Projects: []string{"PUB", "OTHER"}, Repositories: []string{"acme/widgets"}, Identity: "id",
-	})
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB", "OTHER"}, Identity: "id"})
 	require.NoError(t, err)
 	var info, creates, next, acks []string
 	for _, project := range []string{"OTHER", "PUB"} {
 		for _, consumer := range []struct{ kind, filter string }{
 			{"dispatch", "notifications.dispatch.issue." + project + ".>"},
-			{"mapping", "notifications.dispatch.project." + project + ".settings.repo_project.updated"},
 			{"wake", "notifications.legion." + strings.ToLower(project) + ".wake"},
 			{"ready", "notifications.legion.wake"},
-			{"github-acme_2fwidgets", "notifications.github.acme.widgets.>"},
+			{"github", "notifications.github.>"},
 		} {
 			name := "legion-go-" + project + "-" + consumer.kind
 			info = append(info, "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS."+name)
@@ -508,15 +389,11 @@ func TestWithinProjectsRefusesAGrantHeldToNothingInADirection(t *testing.T) {
 	}
 }
 
-// The order of a scope's lists and a repeat in them change nothing.
+// The order of a scope's projects and a repeat among them change nothing.
 func TestWithinProjectsReadsAScopeAsASet(t *testing.T) {
-	want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
-		Projects: []string{"OTHER", "PUB"}, Repositories: []string{"acme/gadgets.js", "acme/widgets"}, Identity: "id",
-	})
+	want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"OTHER", "PUB"}, Identity: "id"})
 	require.NoError(t, err)
-	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
-		Projects: []string{"PUB", "OTHER", "PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/widgets"}, Identity: "id",
-	})
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB", "OTHER", "PUB"}, Identity: "id"})
 	require.NoError(t, err)
 	require.Equal(t, want, got)
 }
@@ -560,10 +437,12 @@ func TestWithinProjectsLeavesTheGrantItNarrows(t *testing.T) {
 
 // What the grant names is read back through the readers every other part of the bus uses: each
 // notification subject, and each filter a create subject names, belongs to a project of the scope
-// (contracts.SubjectProject) or to a repository of it; each consumer is one the daemon opens under
-// a project of the scope; and the reply prefix is the identity's. The one subject of no project is
-// the wake lane every daemon shares (bus.LegionWakeTopic): a subject grant cannot narrow it, so
-// what it carries is the listener's to limit (WithinProjects' doc comment says when it may be granted).
+// (contracts.SubjectProject); each consumer is one the daemon opens under a project of the scope;
+// and the reply prefix is the identity's. Two subjects of no project are granted: the wake lane
+// every daemon shares (bus.LegionWakeTopic), which a subject grant cannot narrow, so what it
+// carries is the listener's to limit (WithinProjects' doc comment says when it may be granted);
+// and every repository's GitHub events whole, since a GitHub event is a message of no project,
+// which every service is granted. No entry names one repository's events.
 func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 	every := natsgrant.Permissions{
 		Publish: []string{
@@ -585,7 +464,7 @@ func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 	}
 	for _, scope := range []natsgrant.Scope{
 		pubScope,
-		{Projects: []string{"PUB", "OTHER"}, Repositories: []string{"acme/widgets", "beta/a.b", "Gamma/Delta"}, Identity: "system:serviceaccount:legion-pub:legion-pub-daemon"},
+		{Projects: []string{"PUB", "OTHER"}, Identity: "system:serviceaccount:legion-pub:legion-pub-daemon"},
 		{Projects: []string{"ZZ"}, Identity: "daemon@example.com"},
 	} {
 		for name, grant := range map[string]natsgrant.Permissions{"Daemon()": natsgrant.Daemon(), "every kind": every} {
@@ -603,47 +482,33 @@ func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 }
 
 // daemonConsumerName matches the name of a consumer a Legion daemon opens, legion-go-<P>-<kind>,
-// capturing the project and, for a GitHub consumer, its repository's spelling.
-var daemonConsumerName = regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|mapping|wake|ready|github-([A-Za-z0-9_-]+))$`)
+// capturing the project and the kind.
+var daemonConsumerName = regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|wake|ready|github)$`)
+
+// githubFamily is every repository's GitHub events, the GitHub consumer's one filter.
+const githubFamily = contracts.GithubTopicPrefix + ">"
 
 // requireInScope fails unless entry reaches only what scope names.
 func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
 	t.Helper()
 	subject, _, _ := strings.Cut(entry, " ")
 	// ownConsumer fails unless name is a consumer the daemon opens under a project of the scope,
-	// and answers the repository a GitHub consumer is named for.
-	ownConsumer := func(name string) (repository string) {
+	// and answers its kind.
+	ownConsumer := func(name string) (kind string) {
 		t.Helper()
 		match := daemonConsumerName.FindStringSubmatch(name)
 		require.NotNil(t, match, "%q names consumer %q, which no daemon opens", entry, name)
 		require.Contains(t, scope.Projects, match[1], "%q names another project's consumer", entry)
-		if match[3] == "" {
-			return ""
-		}
-		for _, r := range scope.Repositories {
-			if natsgrant.GitHubConsumerName(match[1], r) == name {
-				return r
-			}
-		}
-		t.Fatalf("%q names GitHub consumer %q of no repository of the scope", entry, name)
-		return ""
+		return match[2]
 	}
 	inScope := func(subject string) {
 		t.Helper()
-		if subject == bus.LegionWakeTopic {
+		if subject == bus.LegionWakeTopic || subject == githubFamily {
 			return
 		}
 		project, repo, ok := contracts.SubjectProject(subject)
 		require.True(t, ok, "%q names %q, which is no notification subject", entry, subject)
-		if repo != "" {
-			var repos []string
-			for _, r := range scope.Repositories {
-				owner, name, _ := strings.Cut(r, "/")
-				repos = append(repos, contracts.SanitizeSubjectSegment(owner)+"/"+contracts.SanitizeSubjectSegment(name))
-			}
-			require.Contains(t, repos, repo, "%q names a repository outside the scope", entry)
-			return
-		}
+		require.Empty(t, repo, "%q names one repository's events", entry)
 		require.Contains(t, scope.Projects, project, "%q names subject %q of project %q", entry, subject, project)
 	}
 	const stream = bus.Stream + "."
@@ -652,9 +517,8 @@ func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
 	case strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream):
 		name, filter, found := strings.Cut(strings.TrimPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream), ".")
 		require.True(t, found, "%q creates a consumer with no filter", entry)
-		if repository := ownConsumer(name); repository != "" {
-			owner, repo, _ := strings.Cut(repository, "/")
-			require.Equal(t, contracts.GithubRepositoryPrefix(owner, repo)+".>", filter, "%q pairs a GitHub consumer with another repository's lane", entry)
+		if ownConsumer(name) == "github" {
+			require.Equal(t, githubFamily, filter, "%q gives the GitHub consumer a filter other than every repository's events", entry)
 		}
 		inScope(filter)
 	case strings.HasPrefix(subject, "$JS.API.CONSUMER.INFO."+stream):
