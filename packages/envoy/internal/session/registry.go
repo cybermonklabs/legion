@@ -104,9 +104,11 @@ type SessionEntry struct {
 	// RepositoryGap is the gap mark the session is owed: an edge listener withheld a GitHub
 	// event of the session while no fresh repository answer stood, and no frame carrying the mark
 	// has been sent since (cmd/listener's sessionRelays). It lives on the entry so the next
-	// listener to relay the session, after a move or a restart, sends the mark; the relay that
-	// sends it clears it (SetRepositoryGap), and a registration carries it over. It is the
-	// registry's own record: no answer of the listener's API carries it.
+	// listener to relay the session, after a move or a restart, sends the mark. Only
+	// SetRepositoryGap writes it: the relay that withholds such an event sets it before it
+	// acknowledges the event, and the relay that sends the mark clears it. Every other write of
+	// the entry carries over the mark of the entry it replaces (PutWithin). It is the registry's
+	// own record: no answer of the listener's API carries it.
 	RepositoryGap bool `json:"repository_gap,omitempty"`
 }
 
@@ -780,35 +782,86 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 	return r.PutWithin(context.Background(), sessionID, entry)
 }
 
-// PutWithin writes sessionID's entry, its bucket write waiting no longer than ctx (bus.Bounded): an
+// PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.Bounded): an
 // HTTP route passes its request's own context. A write ctx abandoned may still land after this
 // answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and
-// against another listener's write it is last-writer-wins, as every Put already is. The write
-// reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
-// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
+// connection ahead of any write this listener sends on it later, so it cannot undo one, and it is
+// conditional on the revision it replaces. The write reaches the cache through the handle's epoch
+// (kvwatch.Copy.Put), so a write made through a handle on a bucket since recreated is dropped
+// rather than fencing out the new bucket's rows.
+//
+// The entry written carries the gap mark of the entry it replaces (RepositoryGap), whatever
+// entry's own field says: the mark is SetRepositoryGap's alone to set and to clear, and a
+// registration or a renewal written over an entry never clears a mark no frame has carried, nor
+// raises one no withheld event owes. So the write is conditional on the revision of the entry it
+// replaces: the copy's own entry and revision first, with no bucket call, and when the copy holds
+// none, or another write landed since (another listener's mark among them), the bucket's entry
+// read again and entry written over it with that entry's mark. A conditional write loses only to
+// a write that landed, so each lost write is another writer's progress: several processes of one
+// session claiming and heartbeating at once each land in turn, and the loop ends when this write
+// lands or ctx ends, never on a count of writes it lost. Every other field is entry's, so against
+// another listener's write it is last-writer-wins, as it always was.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
 	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
-	buf, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
+	// The copy's entry is at the fence's revision whenever the copy holds one, since the copy
+	// stores an entry only at or past its fence and moves the fence with it
+	// (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a key the copy holds no
+	// entry of is no entry to carry a mark from, so either is read from the bucket first.
+	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
-	if !answered {
-		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+	replaced, cached := r.cache.Get(sessionID)
+	revision := r.cache.FenceFor(epoch, sessionID)
+	known := cached && revision > 0
+	if known {
+		entry.RepositoryGap = replaced.entry.RepositoryGap
 	}
-	if err != nil {
-		return err
+	r.mu.RUnlock()
+	for {
+		if !known {
+			got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+			if !answered {
+				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
+			}
+			switch {
+			case errors.Is(err, nats.ErrKeyNotFound):
+				revision, entry.RepositoryGap = 0, false
+			case err != nil:
+				return err
+			default:
+				// A value no read decodes owes no mark anyone could read, and is written over.
+				var stored SessionEntry
+				revision, entry.RepositoryGap = got.Revision(), json.Unmarshal(got.Value(), &stored) == nil && stored.RepositoryGap
+			}
+		}
+		buf, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+			if revision == 0 {
+				return kv.Create(sessionID, buf)
+			}
+			return kv.Update(sessionID, buf, revision)
+		})
+		if !answered {
+			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+		}
+		if err != nil && bus.IsCASConflict(err) {
+			known = false
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, written)
+		r.unlockAndNotify()
+		return nil
 	}
-	r.mu.Lock()
-	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
-	r.unlockAndNotify()
-	return nil
 }
 
 // setRepositoryGapAttempts bounds the conditional writes one SetRepositoryGap sends: the first,
@@ -818,10 +871,11 @@ const setRepositoryGapAttempts = 3
 // SetRepositoryGap writes owed as sessionID's RepositoryGap and nothing else: the entry is read
 // from the bucket and written back at the revision read (an update, never a create), so a
 // registration or another write that lands between the two is never overwritten, and the entry
-// is read again and the mark written over it, up to setRepositoryGapAttempts writes. UpdatedAt is
-// kept as read: the mark says nothing of whether the session answers. An entry the bucket does
-// not hold, or one that already carries owed, is left as it is and is no error. Each bucket call
-// waits no longer than ctx (bus.Bounded).
+// is read again and the mark written over it, up to setRepositoryGapAttempts writes. A lost
+// compare-and-swap is read as bus.IsCASConflict reads it, since a replicated bucket answers it
+// with a code nats.ErrKeyExists does not match. UpdatedAt is kept as read: the mark says nothing
+// of whether the session answers. An entry the bucket does not hold, or one that already carries
+// owed, is left as it is and is no error. Each bucket call waits no longer than ctx (bus.Bounded).
 func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID string, owed bool) error {
 	kv, epoch := r.watcher.Handle()
 	for range setRepositoryGapAttempts {
@@ -851,7 +905,7 @@ func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID string
 		if !answered {
 			return fmt.Errorf("mark session %s's repository gap: %w", sessionID, err)
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
+		if err != nil && bus.IsCASConflict(err) {
 			continue
 		}
 		if err != nil {
