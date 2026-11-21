@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -182,16 +181,8 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		fmt.Fprintf(stderr, "envoy-infra routes check: which cluster it reads is not known: %v\n", err)
 		return 2
 	}
-	if !sameCluster(rec.Cluster, cluster) {
-		if len(rec.Cluster.CA) > 0 && len(cluster.CA) > 0 {
-			fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record of a cluster whose CA certificates have the SHA-256 %s; the cluster read "+
-				"now through context %q at %q has %s, and they share none, so it is another cluster\n", recordPath,
-				strings.Join(rec.Cluster.CA, ", "), cluster.Context, cluster.Server, strings.Join(cluster.CA, ", "))
-			return 2
-		}
-		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record taken through context %q of the cluster at %q, not through context %q of "+
-			"the cluster at %q, and with no CA certificate on either side the cluster is told by its context and server\n", recordPath,
-			rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
+	if err := sameCluster(rec.Cluster, cluster); err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %s %v\n", recordPath, err)
 		return 2
 	}
 	report := Check(ctx, src, rec)

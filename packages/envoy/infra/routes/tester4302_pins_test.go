@@ -94,9 +94,11 @@ func TestKubectlRecordRefusesARollThatHasNotFinished(t *testing.T) {
 }
 
 // The record names the kubeconfig context it was read through, and routes check refuses, exit 2,
-// a record taken through another: a hub of the same namespace and StatefulSet on another cluster
-// has other pods, which the check otherwise reads as a new container on every pod, exit 1, and the
-// operator is told to rotate a password nothing read. Control: the same context, exit 0.
+// a record taken through another, when a side holds no CA certificate, as this fake hub holds none
+// (sameCluster); with a CA on both sides the certificates decide (TestCheckKnowsTheClusterByItsCA).
+// A hub of the same namespace and StatefulSet on another cluster has other pods, which the check
+// otherwise reads as a new container on every pod, exit 1, and the operator is told to rotate a
+// password nothing read. Control: the same context, exit 0.
 func TestCheckRefusesARecordOfAnotherContext(t *testing.T) {
 	h := cleanHub()
 	h.atEnv()

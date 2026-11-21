@@ -106,14 +106,23 @@ type Cluster struct {
 	CA      []string `json:"caCertificates"`
 }
 
-// sameCluster reports whether a and b are one cluster: when both hold a CA certificate, whether
-// they share one, since a bundle in rotation holds the old and the new and two clusters share none;
-// and when either holds none, whether they name one context and one server.
-func sameCluster(a, b Cluster) bool {
-	if len(a.CA) > 0 && len(b.CA) > 0 {
-		return slices.ContainsFunc(a.CA, func(c string) bool { return slices.Contains(b.CA, c) })
+// sameCluster returns nil when the record's cluster and the one read now are one cluster, and
+// otherwise why they are not: when both hold a CA certificate, whether they share one, since a
+// bundle in rotation holds the old and the new and two clusters share none; and when either holds
+// none, whether they name one context and one server.
+func sameCluster(recorded, read Cluster) error {
+	if len(recorded.CA) > 0 && len(read.CA) > 0 {
+		if slices.ContainsFunc(recorded.CA, func(c string) bool { return slices.Contains(read.CA, c) }) {
+			return nil
+		}
+		return fmt.Errorf("is the record of a cluster whose CA certificates have the SHA-256 %s; the cluster read now through context %q at %q "+
+			"has %s, and they share none, so it is another cluster", strings.Join(recorded.CA, ", "), read.Context, read.Server, strings.Join(read.CA, ", "))
 	}
-	return a.Context == b.Context && a.Server == b.Server
+	if recorded.Context == read.Context && recorded.Server == read.Server {
+		return nil
+	}
+	return fmt.Errorf("is the record taken through context %q of the cluster at %q, not through context %q of the cluster at %q, and with no CA "+
+		"certificate on one side or both the cluster is told by its context and server", recorded.Context, recorded.Server, read.Context, read.Server)
 }
 
 // Record is what `routes record` saves: the hub it read, through which context of which cluster,
