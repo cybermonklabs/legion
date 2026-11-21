@@ -103,8 +103,9 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 }
 
 // GetPages and GetListPages follow GitHub's next pages wherever GitHub names them on the API's own
-// origin, its /repositories/<id>/ form included, and an answer on such a page names that page's
-// path. A next page on another host is refused before the token is sent there.
+// origin, its /repositories/<id>/ form included, and an answer on such a page names that page by
+// its number under the caller's path. A next page on another host is refused before the token is
+// sent there, naming the origin the token is sent to and nothing of the page GitHub named.
 func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 	var elsewhere atomic.Int32
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -155,18 +156,18 @@ func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 	pageTwo.Store(http.StatusForbidden)
 	_, err := GetPages[string](context.Background(), client, "/rules/branches/main")
 	var answer *Answer
-	if !errors.As(err, &answer) || answer.Path != "/repositories/42/rules/branches/main" || answer.Status != http.StatusForbidden {
-		t.Fatalf("GetPages with page 2 refused = %v, want an *Answer naming /repositories/42/rules/branches/main with 403", err)
+	if !errors.As(err, &answer) || answer.Path != "/rules/branches/main (page 2)" || answer.Status != http.StatusForbidden {
+		t.Fatalf("GetPages with page 2 refused = %v, want an *Answer naming /rules/branches/main (page 2) with 403", err)
 	}
 
 	nextHost.Store(&other.URL)
 	got, err := GetPages[string](context.Background(), client, "/rules/branches/main")
-	if err == nil || !strings.Contains(err.Error(), other.URL) || got != nil {
-		t.Fatalf("GetPages with a next page on another host = %v, %v; want an error naming it and no items", got, err)
+	if err == nil || !strings.Contains(err.Error(), "is not on "+server.URL) || strings.Contains(err.Error(), other.URL) || got != nil {
+		t.Fatalf("GetPages with a next page on another host = %v, %v; want an error naming the API's origin alone and no items", got, err)
 	}
 	list, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "check_runs")
-	if err == nil || !strings.Contains(err.Error(), other.URL) || list != nil {
-		t.Fatalf("GetListPages with a next page on another host = %v, %v; want an error naming it and no items", list, err)
+	if err == nil || !strings.Contains(err.Error(), "is not on "+server.URL) || strings.Contains(err.Error(), other.URL) || list != nil {
+		t.Fatalf("GetListPages with a next page on another host = %v, %v; want an error naming the API's origin alone and no items", list, err)
 	}
 	if n := elsewhere.Load(); n != 0 {
 		t.Fatalf("the other host saw %d requests, want none", n)

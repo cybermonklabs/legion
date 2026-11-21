@@ -4285,6 +4285,41 @@
       "production": "githubrest getPages: a list GitHub answers as an object's field that does not decode is named, and no value of it printed"
     },
     {
+      "id": "githubrest-answer-words-next-page-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/elsewhere",
+      "production": "githubrest getPages: a next page GitHub's Link header names on another origin is refused naming the origin the token is sent to, and nothing of the URL GitHub wrote"
+    },
+    {
+      "id": "githubrest-answer-words-next-page-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/refused",
+      "production": "githubrest laterPage: GitHub's answer to a later page names the page by its number under the caller's path (Answer.Path), never the path GitHub's Link header wrote",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.laterPage",
+      "capture": "githubrest.answer-words/next-page-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "answer.Path = shown",
+        "replacement": "_ = shown"
+      }
+    },
+    {
+      "id": "githubrest-answer-words-next-page-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
+      "production": "githubrest laterPage: a later page's read that got no answer names the page by its number under the caller's path (url.Error.URL), never the URL GitHub's Link header wrote",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.laterPage",
+      "capture": "githubrest.answer-words/next-page-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "unanswered.URL = shown",
+        "replacement": "_ = shown"
+      }
+    },
+    {
       "id": "loadtest-listing-decode-echo",
       "requirement": "r3-each-site",
       "package": "./loadtest",
@@ -7728,6 +7763,21 @@
       "site": "daemon githubrest getPages: a list GitHub answered as an object's field that did not decode printed the decoder's error, which quoted the installation token an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
       "guard": "githubrest-list-decode-echo"
+    },
+    {
+      "site": "daemon githubrest getPages: a next page on another origin was refused naming the URL GitHub's Link header wrote",
+      "source": "the class search of round 5's deep review",
+      "guard": "githubrest-answer-words-next-page-elsewhere"
+    },
+    {
+      "site": "daemon githubrest getPages: GitHub's answer to a later page named the path GitHub's Link header wrote (Answer.Path)",
+      "source": "the class search of round 5's deep review",
+      "guard": "githubrest-answer-words-next-page-refused"
+    },
+    {
+      "site": "daemon githubrest getPages: a later page's read that got no answer printed net/http's error, which quotes the URL GitHub's Link header wrote",
+      "source": "the class search of round 5's deep review",
+      "guard": "githubrest-answer-words-next-page-unanswered"
     },
     {
       "site": "loadtest replay-fetch: an artifact listing that did not decode printed the decoder's error, which quoted the bearer an answer echoed into a time",

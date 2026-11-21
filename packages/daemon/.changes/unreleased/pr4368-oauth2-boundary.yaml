@@ -33,7 +33,9 @@ body: |-
   status checks GitHub answers as the rule reads them, while R0 decides on them as they came.
   `legion claims retry --failed` asks for no failed claim the daemon lists by a token without a
   claim token's shape, and says it was not retried, so no line about a retry's path names such a
-  token.
+  token. A read of GitHub's pages names nothing of the next page GitHub's Link header names: a
+  next page on another origin is refused naming the origin the token is sent to, and a later
+  page's failure names the page by its number under the read's path.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

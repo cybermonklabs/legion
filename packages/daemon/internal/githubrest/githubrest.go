@@ -113,6 +113,11 @@ func GetListPages[T any](ctx context.Context, c Client, path, field string) ([]T
 // getPages is GetPages, reading each page's items from the field of the object it answers when
 // field is not empty. A next page on another scheme or host than the REST base's is refused, so the
 // token goes nowhere but the API it was configured for.
+//
+// The next page's URL is what GitHub's Link header names (nextPage): GitHub's words, or those of
+// whatever answers in its place, which can echo the request's token back. So nothing this returns
+// names it: the refusal of a next page elsewhere names the origin the token is sent to alone, and
+// the failure of a later page's read names the page by its number (laterPage).
 func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
 	base, err := url.Parse(c.API)
 	if err != nil {
@@ -123,7 +128,8 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 		separator = "&"
 	}
 	var all []T
-	for target := c.API + path + separator + "per_page=100"; target != ""; {
+	n := 1
+	for target := c.API + path + separator + "per_page=100"; target != ""; n++ {
 		var page []T
 		var object map[string]json.RawMessage
 		var into any = &page
@@ -132,7 +138,7 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 		}
 		next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
 		if err != nil {
-			return nil, err
+			return nil, laterPage(err, path, n)
 		}
 		if field != "" {
 			list, ok := object[field]
@@ -147,12 +153,34 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 		if next != "" {
 			nextURL, err := url.Parse(next)
 			if err != nil || nextURL.Scheme != base.Scheme || !strings.EqualFold(nextURL.Host, base.Host) {
-				return nil, fmt.Errorf("GET %s: GitHub's next page %q is not on %s://%s, the only origin sent the token", path, next, base.Scheme, base.Host)
+				return nil, fmt.Errorf("GitHub named a next page that is not on %s://%s, the only origin sent the token", base.Scheme, base.Host)
 			}
 		}
 		target = next
 	}
 	return all, nil
+}
+
+// laterPage is err, the failure of the read of page n of GET path, as getPages returns it: the
+// first page's as it came, since its request is the caller's path under the client's API, and a
+// later page's naming that page as path and its number, in place of the URL GitHub's Link header
+// named for it: GitHub's answer names it (Answer.Path), and so does net/http's error for a
+// request that got no answer (url.Error.URL).
+func laterPage(err error, path string, n int) error {
+	if n == 1 {
+		return err
+	}
+	shown := fmt.Sprintf("%s (page %d)", path, n)
+	var answer *Answer
+	if errors.As(err, &answer) {
+		answer.Path = shown
+		return err
+	}
+	var unanswered *url.Error
+	if errors.As(err, &unanswered) {
+		unanswered.URL = shown
+	}
+	return err
 }
 
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
@@ -226,8 +254,9 @@ func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, tar
 
 // PathUnder is the path an Answer names for target, its query left out: the path under api, or
 // GitHub's whole path for a URL outside it, such as a later page GitHub names under
-// /repositories/<id>/. Client names its answers' paths so (answerPath), and appauth names those its
-// errors carry so under its own base URL (appauth.AnswerError).
+// /repositories/<id>/, which getPages then names by its number instead (laterPage). Client names
+// its answers' paths so (answerPath), and appauth names those its errors carry so under its own
+// base URL (appauth.AnswerError).
 func PathUnder(api string, target *url.URL) string {
 	if base, err := url.Parse(api); err == nil {
 		if rest, found := strings.CutPrefix(target.Path, base.Path); found && strings.HasPrefix(rest, "/") {
@@ -343,7 +372,8 @@ func nextPage(link string) string {
 }
 
 // Answer is a GitHub REST answer other than 2xx: the request's method and path (its query left
-// out), GitHub's HTTP status, the body GitHub sent with it as the rule prints it, the rate-limit
+// out; a later page GetPages read is named by its number under the caller's path, laterPage),
+// GitHub's HTTP status, the body GitHub sent with it as the rule prints it, the rate-limit
 // headers GitHub sent with it (Limit), and whether it is a rate limit, which every further call on
 // the same token meets until the limit resets, with how long GitHub asks the caller to wait before
 // its next call (retryAfter; zero when it is not one) and the budget the limit spent (empty when
