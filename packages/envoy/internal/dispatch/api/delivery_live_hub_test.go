@@ -2163,11 +2163,15 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // So the hook is installed only once the feed's apply has made its note, which it makes after its
 // mark: no arm can then ask the hook while the feed is still to come, and no arm can be missed by
 // a hook that saw the mark's wake spent before the note was made. The row then wakes the worker
-// itself, as any mark would, so that the hook is asked. Each arm at which the hook answers false
-// is followed by another: the view is dirty or computing, so a recompute is due, or a wake is
-// pending. Nothing else the intake can still owe here, a catch-up of the change log after a
-// notification or a connection, marks the view, since the row writes nothing after the generation
-// starts.
+// itself, as any mark would, so that the hook is asked. It installs the hook and sends that wake
+// in one hold of the hub's lock, which the hook takes (catchUpNow, then its read of the view)
+// before it can answer: a hook asked in between, by the arm that follows the feed's change
+// recompute, waits for the lock and then finds the row's wake pending, so it answers false, and
+// the row's wake is spent before the clock moves rather than standing in for the timer after it.
+// Each arm at which the hook answers false is followed by another: the view is dirty or
+// computing, so a recompute is due, or a wake is pending. Nothing else the intake can still owe
+// here, a catch-up of the change log after a notification or a connection, marks the view, since
+// the row writes nothing after the generation starts.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
 	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
@@ -2178,6 +2182,9 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 
 	// The feed stands behind the server's event horizon, so the wait for it is the horizon's.
 	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	// No hub code holds the fake clock's lock while it takes the hub's, and the hook runs outside
+	// the clock's lock (fakeHubClock.At), so the clock's onArm under the hub's lock cannot deadlock.
+	rig.hub.mu.Lock()
 	clock.onArm(func() bool {
 		// catchUpNow returns once the intake has finished whatever it had already taken off its
 		// channels, such as a catch-up under way, so a mark that work made is on the view by the
@@ -2198,10 +2205,9 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 		}
 		return ready
 	})
-	rig.hub.mu.Lock()
 	g := rig.hub.generation
-	rig.hub.mu.Unlock()
 	signal(g.wakeWork)
+	rig.hub.mu.Unlock()
 	// The expiry's recompute is what the row waits for, with the test binary's deadline as its only
 	// bound. It sends its delta, when it has one, before it makes its note (expire, finishRecompute),
 	// so the bound of the read below decides only how soon the row reports an expiry that sent
