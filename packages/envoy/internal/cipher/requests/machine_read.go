@@ -1731,7 +1731,7 @@ const listFallbackBound = 2 * time.Second
 // listOwnRowsBound is how long after a list's rows are read the reads of the reader's own rows,
 // all made at once, may still run: the pending list's rows that name no other person as
 // responsible, and every grant the grant list asks Dispatch about. Dispatch's Inbox waits 5 seconds
-// for the whole list (agentsecrets.Client's defaultTimeout), and one read of Dispatch may take up
+// for the whole list (cipher.Client's defaultTimeout), and one read of Dispatch may take up
 // to the project-access client's own 10, so without it one project Dispatch does not answer would
 // keep every row of the list from its caller on every poll. Three seconds leaves the other two for
 // the rows' own read of the database before it and the answer's way back to Dispatch, and holds
