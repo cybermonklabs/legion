@@ -21,11 +21,11 @@ const airlockCheckUsage = "broker: usage: broker " + airlockCheckCommand +
 	" <file> [--against <old file>], one rules file and nothing else"
 
 // airlockCheck reads the airlock rules file args names and says whether the broker would serve
-// it, with the broker's own airlock package and no second reader of the format: proxyrules.Parse,
-// which refuses a field the broker does not know, and then the boot's own validateRulesFile
-// (main.go), so that what this agrees to is exactly what the boot agrees to. A pull request
-// that changes the deployment's airlock.json runs it, so the file a reviewer is asked to read
-// is one the broker has already agreed to serve.
+// it, with the broker's own proxyrules package and no second reader of the format:
+// proxyrules.Parse, which refuses a field the broker does not know, and then the boot's own
+// validateRulesFile (main.go), so that what this agrees to is exactly what the boot agrees to. A
+// pull request that changes the deployment's airlock.json runs it, so the file a reviewer is
+// asked to read is one the broker has already agreed to serve.
 //
 // On a file it would serve it exits 0 and writes the report on stdout: what the file adds and
 // removes against the file --against names, or against an empty rules file when that flag is
@@ -199,7 +199,7 @@ func writeListChanges(out io.Writer, secret, what string, was, is []string) bool
 }
 
 // allowText reads one entry's allow list as a line of the report, with the two lists that mean
-// something other than what they list in words (airlock.allowOK: a missing list allows any
+// something other than what they list in words (proxyrules.allowOK: a missing list allows any
 // method and path, an empty one allows nothing).
 func allowText(allow []proxyrules.Allow) string {
 	switch {

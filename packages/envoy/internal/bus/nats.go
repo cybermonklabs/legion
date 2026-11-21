@@ -49,6 +49,7 @@ type connectOpts struct {
 	beforeRequestFlush          func()
 	beforeCoreSendFlush         func()
 	afterCoreSendFlush          func()
+	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
@@ -325,7 +326,14 @@ type Client struct {
 	// session of the connection than the one the send began in.
 	beforeCoreSendFlush func()
 	afterCoreSendFlush  func()
-	mu                  sync.Mutex
+	// requestExpiry, when not nil, gives each Request the channel its timeout fires on, in place of
+	// a timer at the request's deadline, or nil to keep that timer, and a func the request calls
+	// once it has settled a flush that returned before its timeout fired, or nil (window.request).
+	// It is nil outside tests: a test sets it (WithRequestExpiry, export_test.go) to choose which
+	// of the request's timeout and its flush it settles first, so the order of the two is the
+	// test's and not the scheduler's.
+	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
+	mu            sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -548,6 +556,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
+		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
