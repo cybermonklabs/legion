@@ -1,13 +1,20 @@
-// The NATS connection a channel server holds for its session, over the session's life: dialed with
-// the session's credential and redialed until it opens (`dialChannelNats`), admitted as one session
-// id at a time where it presents the session's broker token (`sessionAdmission`,
-// `admittingMoves`), replaced once it closes for good (`channelReopener`), and closed with a bound
-// where no session took it (`closeUnstartedConnection`). Both channel servers take theirs from
-// here: Claude Code's (`./envoy-channel-server`) and Codex's (`./codex/codex-server`).
+// The inbound connection a channel server holds for its session, over the session's life: NATS,
+// dialed with the session's credential and redialed until it opens (`dialChannelNats`), or the
+// listener's relay socket where the settings say `ENVOY_INBOUND=listener` (`dialChannelInbound`);
+// admitted as one session id at a time where it presents the session's broker token
+// (`sessionAdmission`, `admittingMoves`), replaced once it closes for good (`channelReopener`),
+// and closed with a bound where no session took it (`closeUnstartedConnection`). Both channel
+// servers take theirs from here: Claude Code's (`./envoy-channel-server`) and Codex's
+// (`./codex/codex-server`).
+import type { RequestCredential } from "@legion/envoy-client/bearer"
+import { inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
 import { LoggableError } from "@legion/envoy-client/errors"
+import { connectListenerRelay, type RelayOutage } from "@legion/envoy-client/listener-relay"
 import {
   connectNats,
   NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  type NatsDialHooks,
   type NatsDialPlan,
   natsConnectionOptions,
   natsDialFailure,
@@ -119,21 +126,34 @@ export interface ChannelNatsSettings {
   readonly natsCredential: NatsCredential
 }
 
+/** What `dialChannelInbound` opens the listener's relay socket with (`EnvoyInbound` where
+ *  `ENVOY_INBOUND=listener`): the setting that chose it, and the session's broker credential. */
+export interface ChannelRelaySettings {
+  readonly relaySetting: string
+  readonly relayCredential: RequestCredential
+}
+
+/** How a server takes its session's inbound messages (`EnvoyInbound` where they are on). */
+export type ChannelInboundSettings = ChannelNatsSettings | ChannelRelaySettings
+
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`,
  * with no dial error, which tells them from a redial's), until `stop` or the connection closing.
- * A dial that fails is dialed again as `plan` says, which by default is for the server's life;
+ * A dial that fails is dialed again as `plan` says, which by default is for the server's life, and
+ * a hub's refusal of the session's broker token on the broker-token backoff (`connectNats`);
  * each redial is warned of, naming the servers by their setting and the credential it presented
  * beside why it failed, as a log may print both
  * (`natsDialFailure`: no part of a server's text, and the reason nats.js's code or the server's
  * fixed refusal, never text derived from what the servers were set to or what the client sent),
- * and `warn` is handed the failed dial's error with its line. A dial that fails for good (an
- * authorization refusal, or the end of a finite `plan`) throws the same line, as a
- * `LoggableError`; the error keeps no cause: nats.js's own error still carries them. A token that
- * cannot be taken fails with the credential's own line (`BrokerNatsCredential.ready`). `dial` is
- * nats.js's `connect`, or a test's.
+ * and `warn` is handed the failed dial's error with its line; a dial whose refusal dropped the
+ * session's broker token is warned of at the drop (`NATS_DIAL_TOKEN_DROPPED`). A dial that fails
+ * for good (an authorization refusal of a seed or of no credential, or the end of a finite `plan`)
+ * throws the same line, as a `LoggableError`; the error keeps no cause: nats.js's own error still
+ * carries them. A token that cannot be taken fails with the credential's own line
+ * (`BrokerNatsCredential.ready`). `dial` is nats.js's `connect`, or a test's, and `waits` how the
+ * dials wait between them, a test's where it sets one.
  *
  * `signal` aborting (the process is stopping) ends the wait for the token and for the dial at once,
  * with `START_STOPPING`, and starts no further dial; the token trade itself goes on, since it is
@@ -147,6 +167,7 @@ export async function dialChannelNats(
   dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
   signal?: AbortSignal,
   plan: NatsDialPlan = CHANNEL_DIAL_PLAN,
+  waits: Pick<NatsDialHooks, "delay" | "random"> = {},
 ): Promise<ChannelNats> {
   const stopped = Promise.withResolvers<"stopping">()
   const onAbort = (): void => stopped.resolve("stopping")
@@ -186,13 +207,19 @@ export async function dialChannelNats(
     // A dial that fails is dialed again for the server's life, as the token wait above is:
     // Claude Code starts no channel server again once one ended, and a hub closes a dial whose
     // CONNECT came after its 2 s authentication timeout, then answers the next one. Each dial has
-    // its own bound (`connectNats`); a stop ends the redials.
+    // its own bound (`connectNats`); a stop ends the redials. A hub's refusal of the session's
+    // broker token waits on the broker-token backoff, 2-4 s doubling to 10-20 s, and a token it
+    // refuses twice is dropped and another trade started at once.
     const dialing = connectNats(
       dial,
       natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
       plan,
       {
+        ...waits,
         stopped: () => signal?.aborted === true,
+        credential: natsCredential,
+        onTokenDropped: (error, attempt) =>
+          warn(`${NATS_DIAL_TOKEN_DROPPED} (dial ${attempt})`, error),
         onRetry: (error, delayMs) =>
           warn(`${failed(error)}; dialing again in ${delayMs} ms`, error),
       },
@@ -219,6 +246,77 @@ export async function dialChannelNats(
   }
 }
 
+/** The channel server's inbound connection, over NATS or the listener's relay socket
+ *  (`dialChannelInbound`). */
+export interface ChannelInbound {
+  readonly connection: ChannelConnection
+  /** Stops the keeper of a NATS connection's broker token; nothing for the others. */
+  readonly stop: () => void
+  /** The move a `/clear` or a `/new` runs before the new id's relay subject opens, where the
+   *  connection is admitted as one session at a time: a NATS connection presenting the session's
+   *  broker token (`followNatsCredential`), and the relay socket, which is opened for one session
+   *  with that session's own token (`ListenerRelay.follow`). */
+  readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told `outage`, the session's, rather than the
+   *  report it was opened with: the relay socket's (`ListenerRelay.reportOutagesTo`); absent for
+   *  NATS, which trades no token of its own outside the keeper. */
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
+  /** Whether the session's live view takes its control subject on the connection: never over the
+   *  relay socket, which carries no agent stream (`ControlSubscriptionOptions.liveView`). */
+  readonly liveView: boolean
+}
+
+/**
+ * Opens the session's inbound as its settings say: NATS (`dialChannelNats`, `dial` its `connect`),
+ * or the relay socket of the listener at `listenerUrl` for the session `session` names now, with
+ * the session's broker credential (`connectListenerRelay`), answered once its first socket is
+ * open. The socket opens again on its own after a close for the server's life, warning on `warn`
+ * why an open failed; a token the broker refused is told on `warn` until the session holds the
+ * socket and tells its own outage (`ListenerRelay.reportOutagesTo`), which the session's first
+ * accepted registration ends. `signal` aborting (the process is stopping) ends either wait at once.
+ */
+export async function dialChannelInbound(
+  inbound: ChannelInboundSettings,
+  listenerUrl: string,
+  session: () => string,
+  name: string,
+  warn: (text: string, dialError?: unknown) => void,
+  dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
+  signal?: AbortSignal,
+): Promise<ChannelInbound> {
+  if ("natsUrls" in inbound) {
+    return { ...(await dialChannelNats(inbound, name, warn, dial, signal)), liveView: true }
+  }
+  const relay = await connectListenerRelay(
+    {
+      url: listenerUrl,
+      session,
+      credential: inbound.relayCredential,
+      // The socket's report until the session holds it (`reportOutagesTo`): before the session
+      // starts there is no session to tell, so a refused trade is said once on stderr, worded
+      // (`inboundUnavailable`), however many trades fail. The socket tries the trade again on its
+      // own, 1 s doubling to a minute; once one succeeds the socket opens and the session starts,
+      // and nothing tells the session of the refusals before.
+      outage: inboundUnavailable(
+        (why) =>
+          warn(
+            `this session's relay socket has no token: ${why}; the session starts once a trade succeeds`,
+          ),
+        () => undefined,
+      ),
+      log: (line) => warn(line),
+    },
+    signal,
+  )
+  return {
+    connection: relay,
+    stop: () => {},
+    followSession: () => relay.follow(),
+    reportOutagesTo: (outage) => relay.reportOutagesTo(outage),
+    liveView: false,
+  }
+}
+
 /** How long a start that failed waits for its connection to drain before closing it. */
 const START_DRAIN_BOUND_MS = 2_000
 
@@ -239,15 +337,22 @@ export interface ReopenedConnection {
   readonly connection: ChannelConnection
   /** `ChannelSessionOptions.followSession`, for this connection. */
   readonly followSession?: () => Promise<void>
+  /** `ChannelSessionOptions.reportOutagesTo`, for this connection. */
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
 }
 
-/** Opens a new NATS connection in place of one closed for good (`ChannelSessionOptions.reopen`). */
+/** Opens a new inbound connection in place of one closed for good
+ *  (`ChannelSessionOptions.reopen`). */
 export type ReopenConnection = (failed: (dialError: unknown) => void) => Promise<ReopenedConnection>
 
 /** What a server hands `channelReopener`. */
 export interface ChannelReopenerOptions {
-  /** What the server's first connection was dialed with. */
-  readonly inbound: ChannelNatsSettings
+  /** What the server's first connection was opened with. */
+  readonly inbound: ChannelInboundSettings
+  /** The listener a relay socket is opened at (`EnabledEnvoySettings.url`). */
+  readonly listenerUrl: string
+  /** The session id the server holds now, which a relay socket is opened for. */
+  readonly session: () => string
   /** The connection name every connection of the server presents. */
   readonly name: string
   /** Aborts when the server stops: it ends a dial's waits and its redials, and closes a connection
@@ -264,8 +369,10 @@ export interface ChannelReopenerOptions {
 
 /**
  * A server's `ChannelSessionOptions.reopen`: a new connection once the session's closed for good,
- * dialed as the server's first one was, warning of each redial on stderr, until one opens or the
- * server stops. The closed connection's token keeper stops before the dial, and the new one's is
+ * opened as the server's first one was (`dialChannelInbound`), warning of each redial on stderr,
+ * until one opens or the server stops. A relay socket opens again on its own after every close, so
+ * it closes for good only as the server closes it; a NATS connection is what this replaces in a
+ * running session. The closed connection's token keeper stops before the dial, and the new one's is
  * the one the teardown stops; the live view moves to the new connection. Under a broker token the
  * new connection presents the token the session's credential holds as it dials, the one traded
  * last (a lapsed one is traded again for the id the session has now): through a `/clear`, the old
@@ -280,8 +387,10 @@ export interface ChannelReopenerOptions {
 export function channelReopener(options: ChannelReopenerOptions): ReopenConnection {
   return async (failed) => {
     options.swapKeeper(() => undefined)
-    const next = await dialChannelNats(
+    const next = await dialChannelInbound(
       options.inbound,
+      options.listenerUrl,
+      options.session,
       options.name,
       (text, dialError) => {
         process.stderr.write(`envoy-channel: ${text}\n`)
@@ -301,6 +410,7 @@ export function channelReopener(options: ChannelReopenerOptions): ReopenConnecti
     return {
       connection: next.connection,
       ...(followSession === undefined ? {} : { followSession }),
+      ...(next.reportOutagesTo === undefined ? {} : { reportOutagesTo: next.reportOutagesTo }),
     }
   }
 }

@@ -235,8 +235,8 @@ type Config struct {
 	// Projects is the projects the minted token names, sorted and each once (TradeProjects reads
 	// them from AGENT_SECRETS_PROJECTS), sent as oauthwire.FormProjects. Only a trade that acts as
 	// its person sets it, and the broker names only projects that person may see; a machine
-	// trading for itself sets none, since its entry decides its project. No Go trade of this
-	// release sets it yet. Nil sends no parameter at all.
+	// trading for itself sets none, since its entry decides its project. natsprobe's trade sets
+	// it. Nil sends no parameter at all.
 	Projects []string
 	// NoLauncherCredential declines the launcher credential this identity holds
 	// (oauthwire.FormLauncherCredential), for a caller that wants a Dispatch access token and

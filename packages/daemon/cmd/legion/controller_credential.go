@@ -30,8 +30,9 @@ var controllerGitHubRefreshInterval = time.Minute
 
 // controllerCredentialFailure is a non-2xx answer to POST
 // /legion/v1/controller/github-credential whose body parsed as an api.Failure: its code lets the
-// caller tell a daemon with no GitHub App to act as (GITHUB_TOKEN_SOURCE_UNAVAILABLE,
-// GITHUB_OWNER_UNCONFIGURED) apart from a capability a later start replaced
+// caller tell a daemon that has nothing for the controller's gh to act as — no GitHub App
+// (GITHUB_TOKEN_SOURCE_UNAVAILABLE), or a review App installed on no account
+// (GITHUB_OWNER_UNCONFIGURED) — apart from a capability a later start replaced
 // (INVALID_CONTROLLER_CAPABILITY) or a daemon that launches its own controller
 // (CONTROLLER_LAUNCHED), without parsing the sentence itself.
 type controllerCredentialFailure struct {
@@ -149,27 +150,39 @@ func controllerReach(installed []string, bundle ghconfig.Bundle) []string {
 // (ghconfig.WriteBundle), names its App and directories on stderr, starts the refresh loop,
 // logging to stateDir/github-credential.log, and answers the bundle's default owner, whose
 // directory the controller's GH_CONFIG_DIR names, and reach, the owners the controller's
-// addressing names (controllerReach); a daemon with no GitHub App for this project
-// (GITHUB_TOKEN_SOURCE_UNAVAILABLE or GITHUB_OWNER_UNCONFIGURED) is not a refusal, since nothing
-// is wrong — it just has nothing to act as — so this removes everything an earlier run left in the
-// gh directory, leaving it empty 0700, no loop running, no default and no owner, so a token an
-// earlier run minted against a daemon that had an App never outlives a start that says gh acts as
-// nobody; any other failure is this function's error, which controllerStart treats as every other
-// post-mint failure (exit 1, Oh My Pi never started, the secret file left as it is). It answers a
-// function that stops the loop — a no-op when none started — for controllerStart to defer.
+// addressing names (controllerReach); a daemon that has nothing for the controller's gh to act as
+// is not a refusal, since nothing is wrong — it just has nothing to act as — so this removes
+// everything an earlier run left in the gh directory, leaving it empty 0700, no loop running, no
+// default and no owner, so a token an earlier run minted against a daemon that had an App never
+// outlives a start that says gh acts as nobody, and prints the line of the daemon's code, each of
+// which says why: a daemon with no GitHub App (GITHUB_TOKEN_SOURCE_UNAVAILABLE), or one whose
+// review App is installed on no account (GITHUB_OWNER_UNCONFIGURED), where the App exists and a
+// line saying the daemon has none would be false; any other failure is this function's error,
+// which controllerStart treats as every other post-mint failure (exit 1, Oh My Pi never started,
+// the secret file left as it is). It answers a function that stops the loop — a no-op when none
+// started — for controllerStart to defer.
 func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, stateDir string, stderr io.Writer) (stop func(), defaultOwner string, reach []string, err error) {
 	ghDir := controllerGHDir(stateDir)
 	noop := func() {}
 	bundle, installed, err := fetchControllerCredential(ctx, daemonURL, secret, "")
 	if err != nil {
 		var failure *controllerCredentialFailure
-		if !errors.As(err, &failure) || (failure.code != "GITHUB_TOKEN_SOURCE_UNAVAILABLE" && failure.code != "GITHUB_OWNER_UNCONFIGURED") {
+		if !errors.As(err, &failure) {
+			return noop, "", nil, err
+		}
+		var line string
+		switch failure.code {
+		case "GITHUB_TOKEN_SOURCE_UNAVAILABLE":
+			line = "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody"
+		case "GITHUB_OWNER_UNCONFIGURED":
+			line = "[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody"
+		default:
 			return noop, "", nil, err
 		}
 		if err := ghconfig.EmptyBundle(ghDir); err != nil {
 			return noop, "", nil, fmt.Errorf("empty %s: %w", ghDir, err)
 		}
-		fmt.Fprintln(stderr, "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody")
+		fmt.Fprintln(stderr, line)
 		return noop, "", nil, nil
 	}
 	if _, err := ghconfig.WriteBundle(ghDir, bundle); err != nil {

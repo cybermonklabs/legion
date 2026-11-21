@@ -1,0 +1,77 @@
+{
+  "id": 185988,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 25,
+  "type": "issue.closed",
+  "actor": {
+    "kind": "session",
+    "id": "01a17abe-cb74-726b-ac1f-5a5711aec7b5",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ips",
+      "tmux": "lorem i",
+      "pane": "lore",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dol"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-04T15:36:12.054849Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dol",
+    "repo": "lorem ipsum dolor sit amet lorem",
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo",
+    "labels": [],
+    "number": 1327,
+    "parent": "ACME-2",
+    "status": "done",
+    "changed": [
+      "status",
+      "closed_at"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 25,
+    "priority": 2,
+    "ancestors": [
+      "ACME-2",
+      "ACME-3"
+    ],
+    "closed_at": "2026-11-04T15:36:12.054849Z",
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "none",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ip",
+      "unknown": [],
+      "inherited_from": "ACME-3"
+    },
+    "created_at": "2026-11-04T15:06:58.846633Z",
+    "created_by": {
+      "id": "01a17abe-cb74-726b-ac1f-5a5711aec7b5",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ips",
+        "host": "lor",
+        "pane": "lore",
+        "tmux": "lorem i",
+        "machine": "lorem ipsum",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dol"
+      }
+    },
+    "updated_at": "2026-11-04T15:36:12.073149Z",
+    "resolved_repo": "lorem ipsum dolor sit amet lorem",
+    "thread_logins": [],
+    "external_links": [],
+    "plan_artifact_id": "",
+    "primary_artifact_id": "af167331-453e-4718-bf76-b78d7a53226c",
+    "verification_artifact_id": ""
+  }
+}

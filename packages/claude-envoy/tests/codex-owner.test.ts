@@ -31,6 +31,7 @@ import {
   watchRecord,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
+import { waitFor } from "./channel-session-harness"
 
 const ownerModule = resolve(import.meta.dir, "../src/codex/codex-owner.ts")
 
@@ -76,13 +77,26 @@ function heldListing() {
   }
 }
 
-/** Waits until `holds` does, looking every few milliseconds: for a loop this row cannot see into. */
-async function waitUntil(holds: () => boolean): Promise<void> {
-  while (!holds()) await Bun.sleep(5)
-}
-
 // Root reads and writes a directory whatever its mode, so only another user can be refused.
 const asRoot = process.getuid?.() === 0
+
+/** The timeout of each row that waits for an event, given to its `test`: the package's own
+ *  `--timeout=60000` (`bun run test`), stated here so the row keeps it under any runner. */
+const WAITING_ROW_TIMEOUT_MS = 60_000
+
+/** How long before its timeout a waiting row's waits give up. It covers the time from Bun starting
+ *  the row's timer to the row's first line, and the last turn of `waitFor` (a 5 ms sleep and one
+ *  look at the condition), so a wait that never ends fails by its own name before Bun's timeout
+ *  fails the row by none. */
+const WAITING_ROW_MARGIN_MS = 1_000
+
+/** Read at a waiting row's start: the time its waits have left from now, its timeout less the
+ *  margin. A wait takes it as its deadline, so the waits share the row's budget, not a bound of
+ *  their own. */
+function rowBudget(): () => number {
+  const end = performance.now() + WAITING_ROW_TIMEOUT_MS - WAITING_ROW_MARGIN_MS
+  return () => end - performance.now()
+}
 
 describe("the owner of a codex process's Envoy session", () => {
   const root = temporaryDirectory("codex-owner")
@@ -243,34 +257,44 @@ describe("the owner of a codex process's Envoy session", () => {
   test.skipIf(asRoot)(
     "a standby that cannot list the directory keeps its entry and says so, and goes on once it can",
     async () => {
+      const left = rowBudget()
       const directory = join(root, "standby-unlisted")
       await registerServer(directory, 101, "s101") // 1, the owner
       const running = new Set([101, 303])
       const abort = new AbortController()
       const published: number[] = []
-      const publishedOnce = Promise.withResolvers<void>()
       const warnings: string[] = []
+      const state = () =>
+        `published ${published.join(", ") || "nothing"}, ${warnings.length} warnings`
       const waited = waitForOwnership(
         directory,
         303,
         "s303",
         abort.signal,
-        (entry) => {
-          published.push(entry.seq)
-          publishedOnce.resolve()
-        },
+        (entry) => published.push(entry.seq),
         10,
         probeOver(running),
         (text) => warnings.push(text),
       )
+      let owned: number | undefined
+      let ended = false
+      void waited.then((entry) => {
+        owned = entry?.seq
+        ended = true
+      })
       try {
-        await publishedOnce.promise
+        await waitFor(async () => published.length > 0, "the first entry", state, left())
         const entry = join(directory, `${published[0]}.json`)
         // Write and search, no read: the server cannot list the directory.
         chmodSync(directory, 0o300)
         try {
           // A look that read the failed listing as an empty directory would remove the entry.
-          await waitUntil(() => warnings.length > 0 || !existsSync(entry))
+          await waitFor(
+            async () => warnings.length > 0 || !existsSync(entry),
+            "a warning, or the entry gone",
+            state,
+            left(),
+          )
           expect(existsSync(entry)).toBe(true)
         } finally {
           chmodSync(directory, 0o700)
@@ -279,62 +303,83 @@ describe("the owner of a codex process's Envoy session", () => {
         expect(warnings[0]).toContain("EACCES")
         // The owner goes: the standby owns with the entry it published first.
         running.delete(101)
-        expect((await waited)?.seq).toBe(published[0])
+        await waitFor(async () => ended, "the standby to own", state, left())
+        expect(owned).toBe(published[0])
         expect(published).toHaveLength(1)
       } finally {
         abort.abort()
       }
     },
+    WAITING_ROW_TIMEOUT_MS,
   )
 
-  test("a standby whose number another server took publishes again behind it and leaves that server's entry", async () => {
-    const directory = join(root, "taken")
-    await registerServer(directory, 101, "s101") // 1, the owner
-    const running = new Set([101, 303, 404])
-    const published: number[] = []
-    let looks = 0
-    let taken = false
-    // Each look asks once whether 101 runs. Inside the first, after 303 published, 303's entry goes
-    // (a failed write, or someone tidying) and 404 places its entry at that number.
-    const probe = probeOver(running, (pid) => {
-      if (pid !== 101) return
-      looks++
-      if (taken) return
-      taken = true
-      const entry = join(directory, `${published[0]}.json`)
-      rmSync(entry)
-      writeFileSync(entry, JSON.stringify({ pid: 404, started: "s404" }))
-    })
-    const abort = new AbortController()
-    const waited = waitForOwnership(
-      directory,
-      303,
-      "s303",
-      abort.signal,
-      (entry) => published.push(entry.seq),
-      10,
-      probe,
-    )
-    try {
-      await waitUntil(() => published.length > 1 || looks > 3)
-      expect(published).toEqual([2, 3])
-      expect(JSON.parse(readFileSync(join(directory, "2.json"), "utf8"))).toEqual({
-        pid: 404,
-        started: "s404",
+  test(
+    "a standby whose number another server took publishes again behind it and leaves that server's entry",
+    async () => {
+      const left = rowBudget()
+      const directory = join(root, "taken")
+      await registerServer(directory, 101, "s101") // 1, the owner
+      const running = new Set([101, 303, 404])
+      const published: number[] = []
+      let looks = 0
+      let taken = false
+      // Each look asks once whether 101 runs. Inside the first, after 303 published, 303's entry
+      // goes (a failed write, or someone tidying) and 404 places its entry at that number.
+      const probe = probeOver(running, (pid) => {
+        if (pid !== 101) return
+        looks++
+        if (taken) return
+        taken = true
+        const entry = join(directory, `${published[0]}.json`)
+        rmSync(entry)
+        writeFileSync(entry, JSON.stringify({ pid: 404, started: "s404" }))
       })
-      // 101 goes: 404, ahead of 303, owns. Once 404 goes too, 303 owns with its new entry.
-      running.delete(101)
-      expect((await currentOwner(directory, probe))?.pid).toBe(404)
-      running.delete(404)
-      expect((await waited)?.seq).toBe(3)
-    } finally {
-      abort.abort()
-    }
-  })
+      const state = () => `${looks} looks, published ${published.join(", ") || "nothing"}`
+      const abort = new AbortController()
+      const waited = waitForOwnership(
+        directory,
+        303,
+        "s303",
+        abort.signal,
+        (entry) => published.push(entry.seq),
+        10,
+        probe,
+      )
+      let owned: number | undefined
+      let ended = false
+      void waited.then((entry) => {
+        owned = entry?.seq
+        ended = true
+      })
+      try {
+        await waitFor(
+          async () => published.length > 1 || looks > 3,
+          "a second entry, or four looks",
+          state,
+          left(),
+        )
+        expect(published).toEqual([2, 3])
+        expect(JSON.parse(readFileSync(join(directory, "2.json"), "utf8"))).toEqual({
+          pid: 404,
+          started: "s404",
+        })
+        // 101 goes: 404, ahead of 303, owns. Once 404 goes too, 303 owns with its new entry.
+        running.delete(101)
+        expect((await currentOwner(directory, probe))?.pid).toBe(404)
+        running.delete(404)
+        await waitFor(async () => ended, "303 to own", state, left())
+        expect(owned).toBe(3)
+      } finally {
+        abort.abort()
+      }
+    },
+    WAITING_ROW_TIMEOUT_MS,
+  )
 
   test.skipIf(asRoot)(
     "a standby that cannot publish again says so once however many looks fail, and again after one has succeeded",
     async () => {
+      const left = rowBudget()
       const directory = join(root, "unwritable")
       await registerServer(directory, 101, "s101") // 1, the owner
       // A dead server's whole temporary file: every look reads it and asks about 999 once for each
@@ -356,6 +401,8 @@ describe("the owner of a codex process's Envoy session", () => {
         chmodSync(directory, 0o500)
         streakFrom = listings
       })
+      const state = () =>
+        `${listings} listings, published ${published.join(", ") || "nothing"}, ${warnings.length} warnings`
       const abort = new AbortController()
       const waited = waitForOwnership(
         directory,
@@ -367,14 +414,20 @@ describe("the owner of a codex process's Envoy session", () => {
         probe,
         (text) => warnings.push(text),
       )
-      const threeFailedLooks = () => waitUntil(() => listings >= (streakFrom ?? Infinity) + 3)
+      const threeFailedLooks = () =>
+        waitFor(
+          async () => listings >= (streakFrom ?? Infinity) + 3,
+          "three failed looks",
+          state,
+          left(),
+        )
       try {
         await threeFailedLooks()
         expect(warnings).toHaveLength(1)
         expect(warnings[0]).toContain("EACCES")
         expect(published).toEqual([2])
         chmodSync(directory, 0o700)
-        await waitUntil(() => published.length > 1)
+        await waitFor(async () => published.length > 1, "an entry published again", state, left())
         expect(published).toEqual([2, 2])
         streakFrom = undefined
         breakNext = true
@@ -386,35 +439,71 @@ describe("the owner of a codex process's Envoy session", () => {
       }
       expect(await waited).toBeUndefined()
     },
+    WAITING_ROW_TIMEOUT_MS,
   )
 
-  test("a server whose entry vanished publishes it again, at the back", async () => {
-    const directory = join(root, "c")
-    await registerServer(directory, 101, "s101")
-    const abort = new AbortController()
-    const probe = probeOf({ 101: "s101", [process.pid]: "me" })
-    const published: number[] = []
-    const waited = waitForOwnership(
-      directory,
-      process.pid,
-      "me",
-      abort.signal,
-      (entry) => published.push(entry.seq),
-      10,
-      probe,
-    )
-    await Bun.sleep(30)
-    expect(published).toHaveLength(1)
-    rmSync(join(directory, `${published[0]}.json`))
-    await Bun.sleep(50)
-    // Published again, behind the live server that published first, and reported, so the server
-    // can remove it when it stops.
-    expect(published).toHaveLength(2)
-    expect(published[1]).toBeGreaterThan(1)
-    expect(readdirSync(directory)).toContain(`${published[1]}.json`)
-    abort.abort()
-    expect(await waited).toBeUndefined()
-  })
+  test(
+    "a server whose entry vanished publishes it again, at the back",
+    async () => {
+      const left = rowBudget()
+      const directory = join(root, "c")
+      await registerServer(directory, 101, "s101")
+      const abort = new AbortController()
+      const table = probeOf({ 101: "s101", [process.pid]: "me" })
+      // A look decides whether to publish, then asks the probe whether server 101 still runs. 101's
+      // entry stays first throughout, so the asks about it count the looks, and the row waits for
+      // looks, never for a time.
+      let looks = 0
+      const probe: ProcessProbe = {
+        ...table,
+        signal: (pid) => {
+          if (pid === 101) looks += 1
+          table.signal(pid)
+        },
+      }
+      const published: number[] = []
+      const state = () => `${looks} looks, published ${published.join(", ") || "nothing"}`
+      const waited = waitForOwnership(
+        directory,
+        process.pid,
+        "me",
+        abort.signal,
+        (entry) => published.push(entry.seq),
+        10,
+        probe,
+      )
+      // The wait ends before the abort below only if the server owns, and its looks end with it; a
+      // wait for looks then stops too, so the assertions say what went wrong.
+      let ended = false
+      void waited.then(() => {
+        ended = true
+      })
+      try {
+        // The first look publishes; the second finds the entry there and publishes nothing more.
+        await waitFor(async () => looks >= 2 || ended, "two looks", state, left())
+        expect(published).toHaveLength(1)
+        rmSync(join(directory, `${published[0]}.json`))
+        // A look under way may have read the directory before the removal. The next finds the entry
+        // gone and publishes it again, and the one after finds it there.
+        const removed = looks
+        await waitFor(
+          async () => looks >= removed + 3 || ended,
+          "three looks after the removal",
+          state,
+          left(),
+        )
+        // Published again, behind the live server that published first, and reported, so the server
+        // can remove it when it stops.
+        expect(published).toHaveLength(2)
+        expect(published[1]).toBeGreaterThan(1)
+        expect(readdirSync(directory)).toContain(`${published[1]}.json`)
+      } finally {
+        abort.abort()
+      }
+      expect(await waited).toBeUndefined()
+    },
+    WAITING_ROW_TIMEOUT_MS,
+  )
 
   test("two server processes racing for a dead owner's place: exactly one owns", async () => {
     for (let run = 0; run < 10; run++) {
@@ -470,28 +559,37 @@ describe("a session's end", () => {
 describe("watching the record", () => {
   const root = temporaryDirectory("codex-watch-record")
 
-  test("reads an end marked before the watch began, though nothing moves the record again", async () => {
-    const record = codexSessionRecordFile(root, 9)
-    await writeCodexSessionRecord(record, {
-      codex_executable: null,
-      codex_home: "/h",
-      codex_started: processStarted(process.pid) ?? "1",
-      cwd: "/w",
-      session_id: "s-1",
-      source: null,
-      transcript_path: "/t",
-    })
-    await markSessionEnded(root, 9, "s-1")
-    const seen: [string, boolean][] = []
-    const stop = watchRecord(
-      record,
-      process.pid,
-      (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
-      (next, ended) => seen.push([next.session_id, ended]),
-      50,
-    )
-    await Bun.sleep(100)
-    stop()
-    expect(seen[0]).toEqual(["s-1", true])
-  })
+  test(
+    "reads an end marked before the watch began, though nothing moves the record again",
+    async () => {
+      const left = rowBudget()
+      const record = codexSessionRecordFile(root, 9)
+      await writeCodexSessionRecord(record, {
+        codex_executable: null,
+        codex_home: "/h",
+        codex_started: processStarted(process.pid) ?? "1",
+        cwd: "/w",
+        session_id: "s-1",
+        source: null,
+        transcript_path: "/t",
+      })
+      await markSessionEnded(root, 9, "s-1")
+      const seen: [string, boolean][] = []
+      const stop = watchRecord(
+        record,
+        process.pid,
+        (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
+        (next, ended) => seen.push([next.session_id, ended]),
+        50,
+      )
+      try {
+        // The watch reads the record once at once; nothing moves the record after that.
+        await waitFor(async () => seen.length > 0, "the watch's first look", undefined, left())
+      } finally {
+        stop()
+      }
+      expect(seen[0]).toEqual(["s-1", true])
+    },
+    WAITING_ROW_TIMEOUT_MS,
+  )
 })
