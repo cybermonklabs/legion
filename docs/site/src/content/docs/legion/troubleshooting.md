@@ -430,14 +430,23 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
 on, when a person asks the controller to start it, when a person approves its spec and it keeps its
 `legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
-carries from an earlier one does not count), or, when the controller parked it for a hold of its
-own, once the controller judges that a person's decision gives its work a next step or its walk
-finds the hold's cause gone or its event happened. The controller marks such a park with a comment
-on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
-the decision. Its JSON log names the issue and the root on each of these lines:
+carries from an earlier one does not count, and neither does an approval the daemon applies after
+the root's status changed again, because it reached the daemon late or the operator replayed it),
+or, when the controller parked it for a hold of its own, once the controller judges that a
+person's decision gives its work a next step or its walk finds the hold's cause gone or its event
+happened. The controller marks such a park with a comment on the root that begins
+`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
+JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
+- `workflow: a person's approval of a parked root is older than a change of the root's status; the
+  root is not queued as their handover` (a warning with `approval_seq`, `status_change_seq` and
+  `controller_told`): the root's status changed after a person approved its spec, so the approval
+  queues nothing. `approval_seq` is the Dispatch event of the approval, and `status_change_seq` is
+  the later event that changed the status. `controller_told=true` says that the controller also
+  got a parked decision whose reason says this. For a root the daemon does not record,
+  `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
