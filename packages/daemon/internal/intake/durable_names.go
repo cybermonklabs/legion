@@ -141,8 +141,11 @@ func newDurableNames(pool Pool, spec ConsumerSpec) *durableNames {
 		StreamID:          d.streamID,
 		MissingRecord:     d.missingRecord,
 		NativeFirstCreate: true,
-		Owner:             fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
-		Now:               spec.Now,
+		// The daemon's grant has no consumer delete (durableServer.Delete), so at a full cap it
+		// reads no retired name for a delete it cannot make: the operator's cleanup frees them.
+		NoDelete: true,
+		Owner:    fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
+		Now:      spec.Now,
 		Reserved: func(ctx context.Context, _ string, op consumernames.Op) error {
 			_, err := d.on(ctx, op.Candidate)
 			return err

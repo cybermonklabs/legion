@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
@@ -402,6 +403,47 @@ func TestAFreshDaemonCreatesEachDurableAtAFreshNameAndKeepsItAcrossBoots(t *test
 		t.Fatalf("two boots created %v, want one consumer for each of %v", created, logicals)
 	}
 	calls.noNameCreatedTwice(t, spec.Project)
+}
+
+// At the stream's consumer cap a fresh daemon's create is refused, and the daemon dials no
+// connection for its retired names: it cannot delete them (its grant has no consumer delete), so
+// reading each one first would open a connection per retired name for nothing (consumernames'
+// NoDelete). The boot stops with the cap's refusal, and the operator's cleanup frees the slots.
+func TestAFreshDaemonAtTheConsumerCapDialsNoRetiredName(t *testing.T) {
+	pool := migratedPool(t)
+	cutover(t, pool, consumernames.CutoverDone)
+	js := testnats.JetStream(t)
+	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxConsumers: 2})
+	spec := freshSpec(t, &lockedBuffer{}, js)
+	dispatch := dispatchConsumerName(spec.Project)
+	retired := consumernames.FreshName(dispatch)
+	for _, name := range []string{retired, "a-consumer-of-someone-else"} {
+		if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+			t.Fatalf("create %s to fill the cap: %v", name, err)
+		}
+	}
+	putRecord(t, pool, dispatch, consumernames.Record{Retired: []string{retired}})
+	var dialled []string
+	var dialMu sync.Mutex
+	connect := spec.Connect
+	spec.Connect = func(ctx context.Context, name string) (*nats.Conn, error) {
+		dialMu.Lock()
+		dialled = append(dialled, name)
+		dialMu.Unlock()
+		return connect(ctx, name)
+	}
+
+	if _, err := OpenConsumers(context.Background(), js, pool, spec); !errors.Is(err, consumernames.ErrConsumerLimit) {
+		t.Fatalf("OpenConsumers at the cap = %v, want the cap's refusal", err)
+	}
+	dialMu.Lock()
+	defer dialMu.Unlock()
+	if slices.Contains(dialled, GenerationConnection(retired)) {
+		t.Fatalf("the daemon dialled %v, %s among them, the connection of a name it retired", dialled, GenerationConnection(retired))
+	}
+	if heldInfo(t, stream, retired) == nil {
+		t.Fatalf("%s is gone: the daemon deleted a retired name", retired)
+	}
 }
 
 // The fixed-name spy (`TestNoConsumerNameIsCreatedTwice`): across a project's first boot, a second
