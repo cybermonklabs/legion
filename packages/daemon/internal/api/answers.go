@@ -46,10 +46,11 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// The last is the constant rather than its number, because this change's own entry is the last
-// one: a renumber of this change moves cachesSourceContract and this list with it, and moving one
-// of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, 193, cachesSourceContract}
+// 193 and the last are constants rather than their numbers, because the entries that added them
+// name them (shapedAnswersContract, the shaped answers' entry, and cachesSourceContract, this
+// change's own): a renumber of either entry moves its constant and this list with it, and moving
+// one of the two alone would describe a shape at a contract no entry declares.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, cachesSourceContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -610,7 +611,7 @@ var capabilityStatuses = valuesFrom(ServingFloor,
 // capabilitySources is every source a deployment row's decision can come from. The field is
 // older than the floor (version.go's 25), and `configuration` and `boot` came with it. Its list
 // grew once: `caches`, what the repository caches' last health reads said of their room, the
-// source of the row `repository-cache-room`, arrived at cachesSourceContract (version.go's 201,
+// source of the row `repository-cache-room`, arrived at cachesSourceContract (version.go's 203,
 // capabilities.SourceCaches). So it is written out value by value, sorted by value, as
 // waitAnswers is, and a row of that source is served without its `source` to a caller below that
 // contract (shaping.go's withoutUnadmittedCapabilitySources).

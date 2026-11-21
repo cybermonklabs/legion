@@ -783,10 +783,11 @@ only find by reading the issue (its events, a search) was sent to another sessio
 issue, and any other notice is not an instruction: neither is yours to act on. One task waits for
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
 tester once the merge closed its issue), since the proof sends none to it. Act on that task as
-it is written: this proof has no production and no deploy role, so the look leaves
+it is written. The issues of this proof have no requirement that only the deploy can show, and no
+spec of this proof names one. This proof has no production and no deploy role, so the look leaves
 `Production: pending deploy of <merge commit>` on the pull request's body (on the
-last look, writes on the pull request that the check did not run because production did not carry
-the merge within the bound) and reports verdict pending with the legion tool's handoff_complete,
+last look, writes on the pull request why the check did not run within the bound) and reports
+verdict pending with the legion tool's handoff_complete,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
 RFC 3339 time: when you want your next look. Nothing else wakes a check — no deploy, no Dispatch
 notice, nothing the daemon does of its own — so the look you ask for is the only one that follows,

@@ -635,13 +635,18 @@ RULES = {
     f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:88 walks every .go file under packages/daemon (../.., :84) "
                               "and :101 parses each one")),
-    # main's #4092 read these pages in internal/prompts's production-check test; that half
-    # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
+    # The pages and the proof scripts that state the production check's rule outside a prompt.
+    # main's #4092 read the first two in internal/prompts's production-check test. That half moved
+    # here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
-        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
-        ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
+        *[(text, "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../..")
+          for text in ("scripts/e2e/README.md",
+                       "docs/site/src/content/docs/legion/concepts.md",
+                       "docs/site/src/content/docs/legion/walkthrough.md",
+                       "docs/site/src/content/docs/legion/using-legion.md",
+                       "scripts/e2e/stage3-devbox-workflow.sh",
+                       "scripts/e2e/stage4b-sandbox-tree.sh")]),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:51,281 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
@@ -2938,7 +2943,7 @@ GATES = [
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
-        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
+        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),

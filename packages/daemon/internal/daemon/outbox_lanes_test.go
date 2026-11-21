@@ -667,6 +667,57 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	}
 }
 
+func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	base := record.NewStore()
+	now := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
+	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "wake once"}, now.Add(time.Hour))
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		id, err := base.EnqueueID(ctx, tx, row)
+		if err != nil {
+			return err
+		}
+		row.ID = id
+		return nil
+	}); err != nil {
+		t.Fatalf("enqueue the row: %v", err)
+	}
+	var wakes []string
+	records := projectRecords{Store: base, project: "LEGION", wake: func(issue string, kind record.OutboxKind) {
+		wakes = append(wakes, issue+":"+string(kind))
+	}, log: quietLogger()}
+	expedite := func(want bool) {
+		t.Helper()
+		scoped, committed := intake.WithCommitHooks(ctx)
+		if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
+			moved, err := records.ExpediteOutbox(scoped, tx, row, now)
+			if err != nil {
+				return err
+			}
+			if moved != want {
+				t.Fatalf("expedite moved %t, want %t", moved, want)
+			}
+			if len(wakes) != 0 {
+				t.Fatalf("expedite woke %v before its transaction committed", wakes)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("expedite the row: %v", err)
+		}
+		committed()
+	}
+	expedite(true)
+	if fmt.Sprint(wakes) != "[LEGION-208:dispatch_message]" {
+		t.Fatalf("wakes after the moved expedite = %v, want its one lane", wakes)
+	}
+	wakes = nil
+	expedite(false)
+	if len(wakes) != 0 {
+		t.Fatalf("wakes after a no-op expedite = %v, want none", wakes)
+	}
+}
+
 // A start blocked on the runtime holds only its own issue's lifecycle rows. Another issue's status
 // write made while it blocks lands at once; the issue's own second lifecycle row, written while
 // its start blocks, waits — the lanes run on around it — and runs once the start has returned.

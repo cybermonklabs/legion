@@ -84,13 +84,16 @@ type Config struct {
 	// SessionDatabase is the Cloud SQL database every generation keeps its Oh My Pi session in,
 	// which the launcher proxies to (internal/sessionproxy) as the pod itself, or as the service
 	// account the database names (ImpersonateServiceAccount), which the pod impersonates with its
-	// own credentials. The zero value is every other session store: no proxy, and the child's
-	// session storage is whatever its environment names.
+	// own credentials, or, with a writer audience (WriterAudience), with the writer token under
+	// the roles directory (SessionWriterDirName). With a writer audience the proxy also admits
+	// only the launcher and the generation's agent (sessionPeer). The zero value is every other
+	// session store: no proxy, and the child's session storage is whatever its environment names.
 	SessionDatabase ompsessions.Database
-	// SessionDialer builds that proxy's upstream dialer for account, the service account
-	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
-	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
-	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	// SessionDialer builds that proxy's upstream dialer for signer, which names the service
+	// account that SessionDatabase names, or no account for the pod itself
+	// (sessionproxy.Config.NewDialer). Nil is the Cloud SQL connector's, which is the only one a
+	// pod uses; a test passes a fake.
+	SessionDialer func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
@@ -126,11 +129,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// PID 1 adopts every orphan of its PID namespace and must reap it. The controller's pod runs
-	// one role, whose processes are this namespace's; an issue pod's roles each have a namespace
-	// of their own, whose init reaps theirs, but anything else started in the container (a
-	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
-	// generation's own process, whose exit its manager reads.
+	// PID 1 adopts every orphan of its PID namespace and must reap it. The single-role form, the
+	// controller's pod without a writer audience, runs its one role's processes in this
+	// namespace. In the roles-dir form each role has a namespace of its own, whose init reaps its
+	// processes, but anything else started in the container (a `kubectl exec` and what it leaves
+	// behind) is this process's. The reaper never waits on a generation's own process, whose exit
+	// its manager reads.
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -140,20 +144,22 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
 	}
-	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
-	// issue pod's roles container: the single-role form returned above is the project
-	// controller's pod, whose working directory is no jj workspace and whose generations carry
-	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
-	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
-	// Only a launcher that is the container's first process sweeps, as only that one runs the
-	// memory guard below, since only it sees every process that may hold a lock; any other logs
-	// a line instead (serveGitLockSweep).
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is a
+	// roles-dir container: an issue pod's, or the project controller's where the session
+	// database names a writer audience. The controller's working directory is no jj workspace
+	// and its generations carry no workspace at all, so there the sweep finds no clone, writes
+	// one line and sweeps nothing (newGitLockSweep, learn). The first pass is this call's, before
+	// serveTestPG, which starts a PostgreSQL: the first pass's rule is that no process of the
+	// container holds a lock yet. Only a launcher that is the container's first process sweeps,
+	// as only that one runs the memory guard below, since only it sees every process that may
+	// hold a lock; any other logs a line instead (serveGitLockSweep).
 	locks := serveGitLockSweep(ctx, managers)
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead
 	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
-	// ticker is.
+	// ticker is. The controller's pod is handed no settings for it, so there it runs at its
+	// defaults only until the controller's first acknowledgement turns it off (serve).
 	memory := serveMemoryGuard(ctx, cfg, managers, pids)
 	// The pod-local metadata endpoint, before any role starts: a role's first Google client finds
 	// it listening, and a role is told its address only once it listens (metadataEnv). Its server
@@ -209,9 +215,13 @@ func Run(ctx context.Context, cfg Config) error {
 
 // serveVolumeTrim runs the pod's cache trimmer until ctx ends or the trimmer switches itself off
 // (trimmer.run), and answers a channel closed once its loop has returned, so Run can wait for it
-// as it waits for the test database's ticker (serveTestPG). The controller's pod gets none:
-// Run's single-role branch returns before this is reached, since that launcher runs one role, its
-// volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
+// as it waits for the test database's ticker (serveTestPG). The controller's pod trims nothing:
+// that launcher runs one role, its volume belongs to its Sandbox rather than to an issue, and no
+// architect would read its report. In its single-role form Run returns before this is reached.
+// Where the session database names a writer audience, its roles-dir form reaches here and builds
+// a trimmer, but the controller's acknowledgement carries no VolumeTrim (launcherHelloAck in
+// internal/runtime/sandbox), so that trimmer waits for settings that never come and reads,
+// deletes and reports nothing (trimmer.awaitSettings).
 //
 // The trimmer runs only where the launcher is PID 1 of its PID namespace (containerInit), which in
 // an issue pod is the container's first process, as the memory guard and the git lock sweep do
@@ -244,9 +254,10 @@ func Run(ctx context.Context, cfg Config) error {
 // starts from, the pod's shared config home and the mount points a role's own directories are
 // bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
 // the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
-// volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
-// names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
-// through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
+// volumedelete.go). Only a launcher that names a roles directory reaches here: an issue pod's
+// container, or the controller's where the session database names a writer audience. guard is
+// the launcher's pidGuard, which each sweep's deleter starts through so PID 1's reaper leaves its
+// exit to the deleter's own wait (startRemover).
 func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -510,16 +521,39 @@ func (c Config) validate() error {
 // in it and the login together are what opens it, so a generation started without one of them would
 // proxy to nothing. A service account to impersonate names a database too, so with it each of the
 // three is required: startSession, which skips only the zero value, would otherwise hand the proxy
-// an account and no instance, and every generation would fail. Naming none of the four is the
-// other stores, which need no proxy.
+// an account and no instance, and every generation would fail. A writer audience names a database
+// too, and needs the account as well, because the writer token signs in only by impersonating it.
+// Naming none of the five is the other stores, which need no proxy.
+//
+// A writer audience is refused, too, in a form other than ompsessions.ValidWriterAudience's, and in
+// the single-role form. That form runs its agent in the container's own namespaces, where the
+// writer token under the container's filesystem would be in the agent's view. Only the roles-dir
+// form hides it, behind the cover role-init puts over the roles directory (SessionWriterDirName).
 func (c Config) validateSessionDatabase() error {
 	if c.SessionDatabase == (ompsessions.Database{}) {
 		return nil
 	}
-	return namedInPart("the session database",
+	if err := namedInPart("the session database",
 		namedFlag{"--session-instance", c.SessionDatabase.Instance},
 		namedFlag{"--session-database", c.SessionDatabase.Name},
-		namedFlag{"--session-user", c.SessionDatabase.User})
+		namedFlag{"--session-user", c.SessionDatabase.User}); err != nil {
+		return err
+	}
+	audience := c.SessionDatabase.WriterAudience
+	switch {
+	case audience == "":
+		return nil
+	case c.SessionDatabase.ImpersonateServiceAccount == "":
+		return errors.New("launcher: --session-writer-audience needs --session-impersonate-service-account:" +
+			" the writer token signs in to Cloud SQL only by impersonating that service account")
+	case !ompsessions.ValidWriterAudience(audience):
+		return fmt.Errorf("launcher: --session-writer-audience %q is not a workload identity provider's full resource name, %s",
+			audience, ompsessions.WriterAudienceForm)
+	case c.RolesDir == "":
+		return errors.New("launcher: --session-writer-audience needs the roles-dir form (--roles-dir):" +
+			" the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view")
+	}
+	return nil
 }
 
 // validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
@@ -647,9 +681,10 @@ type manager struct {
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
 	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
-	// nil where the launcher runs no sweep: the controller's pod, and a roles launcher that is
+	// nil where the launcher runs no sweep: the single-role form, and a roles launcher that is
 	// not the container's first process (serveGitLockSweep); learn, its one use, takes a nil
-	// sweep for one with nothing to learn.
+	// sweep for one with nothing to learn. The controller's roles-dir form, under a writer
+	// audience, holds a sweep that never finds a clone (newGitLockSweep).
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
@@ -661,11 +696,12 @@ type manager struct {
 	// metadataAddress is the address this launcher serves the pod-local metadata endpoint at, which
 	// every generation it starts is told (metadataEnv); "" when it serves none.
 	metadataAddress string
-	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
+	// memoryGuard is the pod's one memory guard, which every role manager of a roles-dir
 	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod, in a launcher that is not its container's
+	// (serve). It is nil in the single-role form, in a launcher that is not its container's
 	// first process, which run none, and in a microVM pod's launcher, which runs the guest watch
-	// instead (serveMemoryGuard).
+	// instead (serveMemoryGuard). The controller's roles-dir form, under a writer audience, holds
+	// one that the controller's first acknowledgement turns off, since it carries no settings.
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
@@ -874,7 +910,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err != nil {
 		return refuse(err)
 	}
-	proxy, clientURL, err := m.startSession(ctx, command.Generation, dir)
+	proxy, clientURL, err := m.startSession(ctx, command, env, dir)
 	var keeper *claudeKeeper
 	// abandon refuses a start that made the generation's directory, undoing what it made first.
 	abandon := func(cause error) shimwire.LauncherStartResult {
@@ -1325,16 +1361,42 @@ func writeCredential(path, content string) error {
 // back there), so the URL the agent reads names the socket where the agent finds it. The role's
 // processes run as the launcher's own user, so the socket is theirs to connect to.
 //
+// With a writer audience, the proxy impersonates the database's service account with the writer
+// token at <roles-dir>/session-writer/token (SessionWriterDirName), and admits only the launcher and
+// the generation's agent (sessionPeer). The token's path goes to the proxy alone, never into the
+// generation's environment or a file. The generation is refused before anything is written where
+// Yama lets a role's process trace the agent (requireTraceScope), or where no process could be
+// known as the agent (newSessionPeer): command names the agent's executable, and env, the
+// generation's environment, says whether the start is a Claude Code one.
+//
 // ctx bounds the proxy's start, so a start still in progress when the container is told to stop is
 // abandoned, and its proof dial is bounded besides by proofTimeout, so an instance that never
 // answers is refused while the daemon still waits for the answer. A started proxy ignores ctx: it
 // serves until the generation's own end closes it (wait), which lets it serve the child through its
 // stop grace after ctx has ended.
-func (m *manager) startSession(ctx context.Context, generation uint64, dir string) (*sessionproxy.Proxy, string, error) {
-	if m.cfg.SessionDatabase == (ompsessions.Database{}) {
+func (m *manager) startSession(ctx context.Context, command shimwire.LauncherStart, env []string, dir string) (*sessionproxy.Proxy, string, error) {
+	database := m.cfg.SessionDatabase
+	if database == (ompsessions.Database{}) {
 		return nil, "", nil
 	}
-	local := ompsessions.Endpoint{SocketDir: dir, Database: m.cfg.SessionDatabase.Name, User: m.cfg.SessionDatabase.User}
+	generation := command.Generation
+	config := sessionproxy.Config{
+		Instance: database.Instance, ImpersonateServiceAccount: database.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
+		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
+	}
+	if database.WriterAudience != "" {
+		if err := requireTraceScope(); err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		peer, err := newSessionPeer(m, command, env)
+		if err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		config.WriterAudience = database.WriterAudience
+		config.WriterTokenFile = filepath.Join(m.cfg.RolesDir, SessionWriterDirName, SessionWriterTokenFile)
+		config.Admit = peer.admit
+	}
+	local := ompsessions.Endpoint{SocketDir: dir, Database: database.Name, User: database.User}
 	agent := local
 	if m.namespaced {
 		agent.SocketDir = generationDir(filepath.Join(roleFixedRoot, RolePrivateDir), generation)
@@ -1342,11 +1404,8 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 	if err := writeCredential(filepath.Join(dir, ompsessions.DSNFileName), agent.AgentURL()); err != nil {
 		return nil, "", fmt.Errorf("write the session database URL for generation %d: %v", generation, err)
 	}
-	proxy, err := sessionproxy.Start(ctx, sessionproxy.Config{
-		Socket: local.Socket(), Instance: m.cfg.SessionDatabase.Instance,
-		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
-		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
-	})
+	config.Socket = local.Socket()
+	proxy, err := sessionproxy.Start(ctx, config)
 	if err != nil {
 		return nil, "", fmt.Errorf("the session database proxy for generation %d: %v", generation, err)
 	}

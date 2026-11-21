@@ -940,7 +940,7 @@ const repositoryAppsContract = 152
 // that constant, and the contract the keys arrived at stays where it is.
 const pauseContract = 178
 
-// cachesSourceContract is the daemon contract this change lands under (version.go's 201,
+// cachesSourceContract is the daemon contract this change lands under (version.go's 203,
 // dispatch://INFRA-4036), and the contract that added `caches` to a capability row's `source`:
 // the repository-cache-room row's, what the repository caches' last health reads said of their
 // room (capabilities.SourceCaches). A plugin from 25, the contract that added `source`, up to it
@@ -958,7 +958,7 @@ const pauseContract = 178
 // rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
 // list to version.go's entry headers, so a renumber that moves this change's entry and leaves
 // this constant behind names a contract no entry declares and fails there.
-const cachesSourceContract = 201
+const cachesSourceContract = 203
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
