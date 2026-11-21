@@ -15,16 +15,13 @@ import (
 
 // A window whose own goroutines take every P is not judged as passing: Measure's idle Ps are idle
 // only while the operation leaves them so, and a wait on the runtime may be the code's own work as
-// well as the machine's. Here, after the window's first statement, twice as many
-// goroutines as the operation has Ps, and one more, spin for xidOwnPsSpin, and the transaction's
-// goroutine gives up its turn to them meanwhile: it waits runnable on the runtime while they hold
-// every P. The rig cannot tell whose wait that is, so the window is UNKNOWN, a rig problem, never a
-// pass. Taking that wait out as the runtime's, the rig before this row read such a gap - a
-// reviewer's forcing of 145 workers at 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's
-// CPU - as 0.159 ms made, and the window kept D6 (2026-11-21). The yields cost the thread CPU of
-// its own, 0.9 to 5.8 ms in 10 runs on a loaded machine: where that alone breaks D6, with the
-// runtime's wait taken out, the window is a violation, which the rig names before the wait, and
-// that is not a pass either.
+// well as the machine's. Here, after the window's first statement, xidOwnPsPerP goroutines for
+// each P the operation has, and one more, spin, and the transaction's goroutine gives up its turn
+// to them until xidOwnPsSpin has passed: it waits runnable on the runtime while they hold every P.
+// The rig cannot tell whose wait that is, so the window is UNKNOWN, a rig problem, never a pass.
+// Taking that wait out as the runtime's, the rig before this row read such a gap - a reviewer's
+// forcing of 145 workers at 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as
+// 0.159 ms made, and the window kept D6 (2026-11-21).
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
@@ -32,7 +29,7 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 	var workers, ps int
 	report := tracer.Measure(t, database.Pool, func() {
 		ps = runtime.GOMAXPROCS(0)
-		workers = 2*ps + 1
+		workers = xidOwnPsPerP*ps + 1
 		release := make(chan struct{})
 		var spinning sync.WaitGroup
 		var stop atomic.Bool
@@ -69,17 +66,22 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 			storetest.XidMillis(gap.GoRunnable), xidOwnPsSpin, window.Detail())
 	}
 	err := report.Err()
-	if broken := window.Violations(); len(broken) > 0 {
-		if err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") {
-			t.Fatalf("a window that breaks D6 with the runtime's wait taken out (%s): verdict %v, want that violation", strings.Join(broken, "; "), err)
-		}
-		t.Logf("the yields' own CPU broke D6 with the runtime's wait taken out: %s", strings.Join(broken, "; "))
-		return
-	}
 	if err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") || !strings.Contains(err.Error(), "keeps D6 only if its goroutine's waits on the runtime") {
 		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P: verdict %v, want the window UNKNOWN", err)
 	}
 }
 
-// xidOwnPsSpin is how long the operation's own goroutines spin in the gap.
-const xidOwnPsSpin = 50 * time.Millisecond
+// xidOwnPsSpin is how long the transaction's goroutine gives up its turn in the gap, and
+// xidOwnPsPerP how many of the operation's own goroutines spin for each P meanwhile. Each yield
+// puts the goroutine at the back of the runtime's global queue, behind those that wait for a P,
+// and costs its thread CPU of its own - a P handed off and taken back - which the rig reads as the
+// code's. At 2 per P, the goroutine came back after a fraction of a millisecond and yielded 79 to
+// 2,434 times in 50 ms, and the thread ran 0.7 to 6.7 ms of CPU (10 runs); in another 10 runs, one
+// broke D6 on that alone, the gap 4.151 ms made against statements of 3.179 ms. At 8 per P, it
+// waited 73 to 254 ms behind the queue, so it yielded once, and the thread ran 0.22 to 0.45 ms
+// (10 runs, 72 Ps, 2026-11-21), under the window's first statement alone, 1.75 ms or more in those
+// runs.
+const (
+	xidOwnPsSpin = 50 * time.Millisecond
+	xidOwnPsPerP = 8
+)

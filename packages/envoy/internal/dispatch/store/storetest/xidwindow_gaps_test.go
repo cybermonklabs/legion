@@ -117,3 +117,45 @@ func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
 		})
 	}
 }
+
+// A rig problem does not hide a violation: a report whose one window broke D6 while another was
+// UNKNOWN names both, and does not call the run free of a finding about the code. Before this row,
+// Err answered the problem alone, "not a finding about the code", and the violation was not named.
+// A report whose problem stands beside windows that keep D6 still says the run is no finding.
+func TestARigProblemHidesNoViolation(t *testing.T) {
+	RequireXidGapJudgment(t)
+	begin := time.Now()
+	statements := []XidStatement{
+		{PID: 7, SQL: "insert into projects", Start: begin, End: begin.Add(time.Millisecond)},
+		{PID: 7, SQL: "commit", Start: begin.Add(time.Millisecond + 2*XidMaxGap), End: begin.Add(2*time.Millisecond + 2*XidMaxGap)},
+	}
+	broken := XidWindow{
+		Transaction:   XidTransaction{PID: 7, Statements: statements},
+		Statements:    statements,
+		Gaps:          []XidGap{{Clock: 2 * XidMaxGap, Ran: 2 * XidMaxGap, Read: true, Traced: true}},
+		MaxGap:        2 * XidMaxGap,
+		GapTime:       2 * XidMaxGap,
+		StatementTime: time.Nanosecond,
+	}
+	if len(broken.Violations()) == 0 {
+		t.Fatal("a window whose gap is twice the bound broke no rule, so this row proves nothing")
+	}
+	const problem = "UNKNOWN: backend 8's window (select 1) ends 1.000 ms past the execution trace's last event"
+	report := &XidReport{Windows: []XidWindow{broken}, Problems: []string{problem}}
+	err := report.Err()
+	if err == nil || !strings.Contains(err.Error(), problem) || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+		strings.Contains(err.Error(), "not a finding about the code") {
+		t.Errorf("a rig problem beside a window that broke D6: verdict %v, want both named and the run not called free of a finding", err)
+	}
+	kept := broken
+	kept.Gaps = []XidGap{{Clock: 10 * time.Microsecond, Ran: 10 * time.Microsecond, Read: true, Traced: true}}
+	kept.MaxGap, kept.GapTime, kept.StatementTime = 10*time.Microsecond, 10*time.Microsecond, 2*time.Millisecond
+	if len(kept.Violations()) != 0 {
+		t.Fatalf("a window whose gap is 10 µs broke %v, so this row's second half proves nothing", kept.Violations())
+	}
+	report = &XidReport{Windows: []XidWindow{kept}, Problems: []string{problem}}
+	if err := report.Err(); err == nil || !strings.Contains(err.Error(), "XID RIG PROBLEM (not a finding about the code): "+problem) ||
+		strings.Contains(err.Error(), "XID WINDOW VIOLATION") {
+		t.Errorf("a rig problem beside a window that keeps D6: verdict %v, want the problem alone, as no finding", err)
+	}
+}

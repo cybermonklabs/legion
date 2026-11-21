@@ -134,6 +134,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 		}
 	}()
 	var started, finished time.Time
+	var statements []XidStatement
 	runWithIdlePs(func() {
 		runWithoutCollector(func() {
 			if XidJudgesGaps() {
@@ -145,26 +146,25 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 			started = time.Now()
 			operation()
 			finished = time.Now()
+			// The capture ends here, inside both wrappers, so neither GOMAXPROCS's nor the
+			// collector's restore - each stops the world - lands in a window the rig judges: a
+			// route's own goroutines, a broadcast's deliveries, may still run a transaction after
+			// operation returns. The statements done by now are copied while the tracer still runs,
+			// and an event marks the trace after the copy, so the trace reaches every window the rig
+			// judges (xidPastTraceProblem); a statement still in flight is left out, and its
+			// transaction unjudged, as one that begins after the capture is.
+			endCapture()
+			if xidCaptureEnded != nil {
+				xidCaptureEnded()
+			}
+			statements = x.doneStatements()
+			if traced != nil {
+				trace.Log(context.Background(), "xid", "the rig copied the capture's statements")
+			}
 		})
 	})
-	// The tracer stops only once the capture has ended: a route's own goroutines - a broadcast's
-	// deliveries - may still run a transaction after operation returns, and the rig records its
-	// statements until the capture ends, so the trace must reach every window it records
-	// (xidPastTraceProblem).
-	endCapture()
 	if traced != nil {
 		traced.stop()
-	}
-
-	x.mu.Lock()
-	spans := x.spans
-	x.spans = nil
-	x.mu.Unlock()
-	statements := make([]XidStatement, 0, len(spans))
-	for _, span := range spans {
-		if span.done.Load() {
-			statements = append(statements, span.statement)
-		}
 	}
 	if pollErr != nil {
 		t.Fatalf("xid rig: poll pg_stat_activity: %v", pollErr)
@@ -178,6 +178,26 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	}
 	return analyzeXidWindows(statements, polls, finished.Sub(started), reading)
 }
+
+// doneStatements takes the capture's spans and answers the statements of those done by now: end
+// writes a statement whole before it marks the span done, and a span still in flight is left out.
+func (x *XidTracer) doneStatements() []XidStatement {
+	x.mu.Lock()
+	spans := x.spans
+	x.spans = nil
+	x.mu.Unlock()
+	statements := make([]XidStatement, 0, len(spans))
+	for _, span := range spans {
+		if span.done.Load() {
+			statements = append(statements, span.statement)
+		}
+	}
+	return statements
+}
+
+// xidCaptureEnded, where set, runs right after the capture ends and before its statements are
+// copied: the test of a COMMIT that ends there sets it (TestACommitThatEndsAfterTheCaptureIsInsideTheTrace).
+var xidCaptureEnded func()
 
 // xidMeasuring makes Measures run one at a time. A Measure changes the whole process's GOMAXPROCS
 // and collector for its operation, so two at once would put each other's settings back early. No

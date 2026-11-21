@@ -383,3 +383,86 @@ func TestAWaitOnAPHandedToALockedThreadDecidesNothing(t *testing.T) {
 		t.Errorf("a wait on a P handed to the goroutine's own thread: problem %q, want the window UNKNOWN", problem)
 	}
 }
+
+// A COMMIT that begins before the capture ends and ends after it is inside the trace the rig judges
+// its window by: Measure copies the statements done by the capture's end before it stops the
+// tracer, and marks the trace after the copy. Here a goroutine of the operation sends a marked
+// transaction whose COMMIT runs a deferred trigger that sleeps 200 ms in the server, and the
+// operation returns once the rig has begun that COMMIT's span; the hook xidCaptureEnded, between
+// the capture's end and the copy, waits for the COMMIT to end. The window is judged whole and
+// keeps D6. With the tracer stopped before the copy, as a broadcast's late COMMIT found it at
+// fb9f413303, the window ends past the trace and reads UNKNOWN.
+func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
+	RequireXidGapJudgment(t)
+	database := Open(t)
+	ctx := context.Background()
+	for _, ddl := range []string{
+		`create table xid_late_commit (id int)`,
+		`create function xid_late_commit_wait() returns trigger language plpgsql as $$ begin perform pg_sleep(0.2); return null; end $$`,
+		`create constraint trigger xid_late_commit_wait after insert on xid_late_commit deferrable initially deferred for each row execute function xid_late_commit_wait()`,
+	} {
+		if _, err := database.Pool.Exec(ctx, ddl); err != nil {
+			t.Fatalf("%s: %v", ddl, err)
+		}
+	}
+	tracer := NewXidTracer()
+	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
+	committed := make(chan error, 1)
+	var captureEnded time.Time
+	xidCaptureEnded = func() {
+		captureEnded = time.Now()
+		if err := <-committed; err != nil {
+			t.Errorf("the late COMMIT: %v", err)
+		}
+	}
+	t.Cleanup(func() { xidCaptureEnded = nil })
+	commitBegun := func() bool {
+		tracer.mu.Lock()
+		defer tracer.mu.Unlock()
+		for _, span := range tracer.spans {
+			if span.ends {
+				return true
+			}
+		}
+		return false
+	}
+	report := tracer.Measure(t, traced.Pool, func() {
+		opened := make(chan error, 1)
+		go func() {
+			ctx := MarkXid(context.Background())
+			tx, err := traced.Pool.Begin(ctx)
+			if err == nil {
+				if _, err = tx.Exec(ctx, "insert into xid_late_commit values (1)"); err != nil {
+					_ = tx.Rollback(ctx)
+				}
+			}
+			opened <- err
+			if err != nil {
+				committed <- err
+				return
+			}
+			committed <- tx.Commit(ctx)
+		}()
+		if err := <-opened; err != nil {
+			t.Fatalf("open the transaction: %v", err)
+		}
+		for deadline := time.Now().Add(10 * time.Second); !commitBegun(); time.Sleep(100 * time.Microsecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the rig recorded no COMMIT within 10 s")
+			}
+		}
+	})
+	if err := report.Err(); err != nil {
+		t.Fatalf("a COMMIT that ended after the capture: verdict %v, want its window judged whole within the trace", err)
+	}
+	if len(report.Windows) != 1 {
+		t.Fatalf("the rig judged %d windows, want the one transaction", len(report.Windows))
+	}
+	window := report.Windows[0]
+	commit := window.Statements[len(window.Statements)-1]
+	if xidVerb(commit.SQL) != "commit" || !commit.End.After(captureEnded) {
+		t.Fatalf("the window ends with %q at %s, %s after the capture ended: want the COMMIT, ending after it, or this run proves nothing\n%s",
+			commit.SQL, commit.End.Format(time.RFC3339Nano), commit.End.Sub(captureEnded), window.Detail())
+	}
+	t.Logf("the COMMIT ended %s after the capture did\n%s", commit.End.Sub(captureEnded), window.Detail())
+}

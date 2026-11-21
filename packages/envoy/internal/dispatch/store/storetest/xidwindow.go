@@ -882,16 +882,20 @@ func (r *XidReport) problems() []string {
 
 // Err is the report's verdict: nil when every window keeps D6 and the rig judged one (or the
 // operation MayHoldNoXid). A rig problem comes first, worded so a red run cannot be mistaken for a
-// finding.
+// finding - unless a window broke D6 too: then the violations follow the problems, and the run is
+// not called free of a finding about the code.
 func (r *XidReport) Err() error {
-	if problems := r.problems(); len(problems) > 0 {
-		return fmt.Errorf("XID RIG PROBLEM (not a finding about the code): %s", strings.Join(problems, "; "))
-	}
 	var b strings.Builder
 	for _, window := range r.Windows {
 		if broken := window.Violations(); len(broken) > 0 {
 			fmt.Fprintf(&b, "XID WINDOW VIOLATION (INFRA-636 D6) %s\n  %s\n%s", window.Summary(), strings.Join(broken, "\n  "), window.Detail())
 		}
+	}
+	if problems := r.problems(); len(problems) > 0 {
+		if b.Len() > 0 {
+			return fmt.Errorf("XID RIG PROBLEM: %s\nand a window broke D6:\n%s", strings.Join(problems, "; "), b.String())
+		}
+		return fmt.Errorf("XID RIG PROBLEM (not a finding about the code): %s", strings.Join(problems, "; "))
 	}
 	if b.Len() > 0 {
 		return fmt.Errorf("%s", b.String())
