@@ -707,8 +707,8 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			var check string
 			var err error
 			go func() { check, err = Installed(pinned, dir); close(done) }()
-			// A read that waits on the fifo fails by name at the test binary's deadline.
-			testwait.Answer(t, "Installed of "+dir, done)
+			// A read that waits on the fifo fails by name before the test binary's deadline.
+			testwait.Receive(t, "Installed of "+dir, done)
 			failed := setupFailure(t, err)
 			for _, want := range tc.want {
 				if !strings.Contains(failed.Error(), want) {
@@ -729,7 +729,7 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 // as no install, the shim's read (Installed) refuses naming why, and a new install replaces it. A
 // read that followed the link to /dev/zero would read it to the end, one that followed the link
 // to the pin would take it for an install, and one that opened the fifo plainly would wait for
-// ever, and fails the row by name at the test binary's deadline (testwait.Answer).
+// ever, and fails the row by name before the test binary's deadline (testwait.Receive).
 func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testing.T) {
 	// A role of a deployment that runs a shared leak check, which is told a manifest digest; the
 	// tag file's refusal comes before any digest is compared, so any digest serves.
@@ -782,7 +782,7 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 				got, there, refused := installedTag(dir)
 				done <- read{got, there, refused}
 			}()
-			got := testwait.Answer(t, "installedTag of "+tag, done)
+			got := testwait.Receive(t, "installedTag of "+tag, done)
 			if got.there || got.tag != "" || got.refused == nil || got.refused.Error() != tag+" "+tc.refusal {
 				t.Fatalf("installedTag = %q, %v, %v; want no install, refused as %q", got.tag, got.there, got.refused, tag+" "+tc.refusal)
 			}
@@ -840,9 +840,9 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			tc.plant(t, path)
 			done := make(chan error, 1)
 			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
-			// A write that opened the fifo waits for a reader, and fails by name at the test
+			// A write that opened the fifo waits for a reader, and fails by name before the test
 			// binary's deadline.
-			if err := testwait.Answer(t, "writeMember over "+tc.name, done); !errors.Is(err, fs.ErrExist) {
+			if err := testwait.Receive(t, "writeMember over "+tc.name, done); !errors.Is(err, fs.ErrExist) {
 				t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
 			}
 			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {

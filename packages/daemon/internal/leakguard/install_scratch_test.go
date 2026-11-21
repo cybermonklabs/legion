@@ -126,15 +126,14 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 }
 
 // returnsWithoutAWriter runs run, what it is, and answers what it returned, waited for with no
-// span of its own (testwait.Answer): a run that opened the fifo at path plainly would wait there
-// for a writer, and fails the test by name at the test binary's deadline, while a run that a
-// loaded host makes slow, unpacking and running the check, passes. A bound of 10 s from the moment
-// path became a fifo once stood in for that guard.
+// span of its own (testwait.Receive): a run that opened the fifo at path plainly would wait there
+// for a writer, and fails the test by name before the test binary's deadline, while a run that a
+// loaded host makes slow, unpacking and running the check, passes.
 func returnsWithoutAWriter(t *testing.T, path, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- run() }()
-	return testwait.Answer(t, what+" with "+path+" swapped for a fifo", done)
+	return testwait.Receive(t, what+" with "+path+" swapped for a fifo", done)
 }
 
 // stillFifo fails t unless path is the fifo it was made.

@@ -86,8 +86,8 @@ func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T)
 // the workspace can write that file, and under the tmux runtime the daemon makes this read while
 // it holds the repository's store lock, so a pointer that is a fifo nobody writes must be answered,
 // not waited on: a blocking open there stalls every later provision of the repository's issues.
-// The answer is waited for with no span of its own (testwait.Answer), so a read that waits on the
-// fifo fails the row by name at the test binary's deadline, and a slow provision passes.
+// The answer is waited for with no span of its own (testwait.Receive), so a read that waits on the
+// fifo fails the row by name before the test binary's deadline, and a slow provision passes.
 func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
@@ -106,7 +106,7 @@ func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	go func() {
 		done <- restoreGitWorktree(context.Background(), NewRunner(testTimeout, testTools(t)), located, func(string) {})
 	}()
-	err = testwait.Answer(t, "restoreGitWorktree over the fifo "+pointer, done)
+	err = testwait.Receive(t, "restoreGitWorktree over the fifo "+pointer, done)
 	if err == nil {
 		t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
 	}
@@ -141,8 +141,8 @@ func (r worktreesToFifo) Run(_ context.Context, command Command) (Result, error)
 // .git/worktrees, with the store lock still held under the tmux runtime. The window is a whole
 // `git read-tree`, and a role that swaps .git/worktrees for a fifo inside it must have the restore
 // answer its failure, not wait on the fifo while every later provision of the repository waits on
-// the lock. A removal that waits on the fifo fails the row by name at the test binary's deadline
-// (testwait.Answer).
+// the lock. A removal that waits on the fifo fails the row by name before the test binary's
+// deadline (testwait.Receive).
 func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
@@ -165,7 +165,7 @@ func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
 	go func() {
 		done <- restoreGitWorktree(context.Background(), worktreesToFifo{worktrees: resolved}, located, func(string) {})
 	}()
-	err = testwait.Answer(t, "restoreGitWorktree with "+resolved+" swapped for a fifo", done)
+	err = testwait.Receive(t, "restoreGitWorktree with "+resolved+" swapped for a fifo", done)
 	if err == nil || !strings.Contains(err.Error(), "read-tree") {
 		t.Fatalf("restoreGitWorktree answered %v, want the failure of its git read-tree", err)
 	}
@@ -278,14 +278,14 @@ func excludeClone(t *testing.T) (clone, exclude string) {
 }
 
 // excludeWithin runs excludeCodegraphDirectory on clone and answers its error, waited for with no
-// span of its own (testwait.Answer): the call holds the repository's store lock under the tmux
+// span of its own (testwait.Receive): the call holds the repository's store lock under the tmux
 // runtime, so a call that waits on a fifo holds every later provision of the repository, and
-// fails the row by name at the test binary's deadline, while a call that is merely slow passes.
+// fails the row by name before the test binary's deadline, while a call that is merely slow passes.
 func excludeWithin(t *testing.T, clone string) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- excludeCodegraphDirectory(clone) }()
-	return testwait.Answer(t, "excludeCodegraphDirectory("+clone+")", done)
+	return testwait.Receive(t, "excludeCodegraphDirectory("+clone+")", done)
 }
 
 // A clone's .git/info/exclude that is a fifo is refused, naming it, rather than waited on: in the

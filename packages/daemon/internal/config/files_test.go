@@ -48,7 +48,8 @@ func TestReadSecretPointer(t *testing.T) {
 // holding it is held to what the open file is: a regular file only its owner can read, with a
 // token in it. A group- or other-readable copy is refused naming the path and the mode, and a FIFO
 // is refused rather than waited on: each refusal is waited for with no span of its own
-// (testwait.Answer), so a read that waits on the FIFO fails by name at the test binary's deadline.
+// (testwait.Receive), so a read that waits on the FIFO fails by name before the test binary's
+// deadline.
 func TestReadPrivateSecretPointer(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, contents string, mode os.FileMode) string {
@@ -89,7 +90,7 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 				_, err := ReadPrivateSecretPointer("operator_token_file", tc.path)
 				done <- err
 			}()
-			err := testwait.Answer(t, "ReadPrivateSecretPointer("+tc.path+")", done)
+			err := testwait.Receive(t, "ReadPrivateSecretPointer("+tc.path+")", done)
 			want := "operator_token_file " + strings.Replace(tc.want, "%s", tc.path, 1)
 			if err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("err = %v, want it to start %q", err, want)
@@ -131,7 +132,7 @@ func TestReadGroupSecretPointer(t *testing.T) {
 			_, err := ReadGroupSecretPointer("nats_nkey_seed_file", path)
 			done <- err
 		}()
-		err := testwait.Answer(t, "ReadGroupSecretPointer("+path+")", done)
+		err := testwait.Receive(t, "ReadGroupSecretPointer("+path+")", done)
 		if want := strings.Replace(want, "%s", path, 1); err == nil || err.Error() != want {
 			t.Fatalf("err = %v, want %q", err, want)
 		}

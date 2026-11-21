@@ -5,6 +5,7 @@ package testfifo
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,20 +24,24 @@ type Fifo struct {
 // reader, so code that opens it for writing, as os.WriteFile does, answers rather than hangs, and
 // the held reader is shown that open (OpenedForWriting).
 //
-// Plant first runs its own control on a second held reader: shown nothing while no writer has
-// opened the fifo, and shown a writer's open and close. A kernel whose held reader shows something
-// with no writer, or nothing after one, fails the test there by name, rather than let
-// OpenedForWriting give a verdict it cannot see.
+// Plant first runs its own control on a scratch fifo of its own: a reader held there must be shown
+// nothing while no writer has opened it, and must be shown a writer's open and close. A kernel
+// where either does not hold fails the test there by name, rather than let OpenedForWriting give
+// a verdict it cannot see. The control's fifo is not the one at path because some gVisor releases
+// (before 2026-11-07's "Report FIFO hangups per open reader") show a hang-up to every reader of a
+// fifo that ever had a writer, which a reader held at path after the control's writer would read
+// as an open the code under test never made.
 func Plant(t *testing.T, path string, perm uint32) *Fifo {
 	t.Helper()
-	if err := syscall.Mkfifo(path, perm); err != nil {
+	scratch := filepath.Join(t.TempDir(), "control.fifo")
+	if err := syscall.Mkfifo(scratch, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	control := &Fifo{path: path, reader: holdReader(t, path)}
+	control := &Fifo{path: scratch, reader: holdReader(t, scratch)}
 	if shown := control.OpenedForWriting(t); shown != "" {
-		t.Fatalf("a reader held on the fifo %s was shown %s before any writer opened it, so a reader held there cannot tell a write's open", path, shown)
+		t.Fatalf("a reader held on the fifo %s was shown %s before any writer opened it, so a reader held on a fifo cannot tell a write's open", scratch, shown)
 	}
-	writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	writer, err := os.OpenFile(scratch, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +49,10 @@ func Plant(t *testing.T, path string, perm uint32) *Fifo {
 		t.Fatal(err)
 	}
 	if shown := control.OpenedForWriting(t); shown == "" {
-		t.Fatalf("a reader held on the fifo %s was shown nothing of a writer's open and close, so a reader held there could see no write's open either", path)
+		t.Fatalf("a reader held on the fifo %s was shown nothing of a writer's open and close, so a reader held on a fifo could see no write's open either", scratch)
+	}
+	if err := syscall.Mkfifo(path, perm); err != nil {
+		t.Fatal(err)
 	}
 	held := &Fifo{path: path, reader: holdReader(t, path)}
 	if shown := held.OpenedForWriting(t); shown != "" {
@@ -53,12 +61,15 @@ func Plant(t *testing.T, path string, perm uint32) *Fifo {
 	return held
 }
 
-// OpenedForWriting answers what poll(2) has shown the held reader since Plant opened it: "" for
-// nothing, POLLIN while bytes a writer wrote are unread, POLLHUP once a writer that opened the
-// fifo closed it, and any other event by its number. Linux shows a reader opened while the fifo
-// had no writer no hang-up until a writer opens it (fs/pipe.c, fifo_open and pipe_poll), so a
-// hang-up is such an open, even one that wrote nothing. An open of the fifo for reading, as a
-// read that refuses what is no regular file makes, shows the held reader nothing.
+// OpenedForWriting answers what the held reader has been shown since Plant opened it: "" for
+// nothing, POLLIN while bytes a writer wrote are unread, POLLHUP once a writer that opened the fifo
+// closed it, "a writer that holds it open" for one still open that wrote nothing, and any other
+// poll(2) event by its number. Linux shows a reader opened while the fifo had no writer no hang-up
+// until a writer opens it (fs/pipe.c, fifo_open and pipe_poll), so a hang-up is such an open, even
+// one that wrote nothing. A writer still open shows poll nothing, so when poll shows nothing the
+// reader reads one byte without waiting: with no writer that read answers end of file, and with
+// one it answers EAGAIN. An open of the fifo for reading, as a read that refuses what is no
+// regular file makes, shows the held reader nothing.
 func (f *Fifo) OpenedForWriting(t *testing.T) string {
 	t.Helper()
 	fds := []unix.PollFd{{Fd: int32(f.reader), Events: unix.POLLIN}}
@@ -71,6 +82,24 @@ func (f *Fifo) OpenedForWriting(t *testing.T) string {
 		}
 		if err != unix.EINTR {
 			t.Fatalf("poll the reader held on the fifo %s: %v", f.path, err)
+		}
+	}
+	if fds[0].Revents == 0 {
+		var one [1]byte
+		for {
+			n, err := unix.Read(f.reader, one[:])
+			switch {
+			case err == unix.EINTR:
+				continue
+			case err == unix.EAGAIN:
+				return "a writer that holds it open"
+			case err != nil:
+				t.Fatalf("read the reader held on the fifo %s: %v", f.path, err)
+			case n > 0:
+				// A writer wrote between the poll and the read.
+				return "POLLIN"
+			}
+			return ""
 		}
 	}
 	var shown []string

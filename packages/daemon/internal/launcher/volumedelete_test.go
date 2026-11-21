@@ -495,7 +495,7 @@ func TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped(t *testing.
 // root is skipped with a line while the rest of the volume is swept.
 //
 // The sweep runs in a goroutine and its answer is waited for with no span of its own
-// (testwait.Answer), so a trimmer which blocks again fails here by name at the test binary's
+// (testwait.Receive), so a trimmer which blocks again fails here by name before the test binary's
 // deadline, and a sweep that a loaded host makes slow passes.
 func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.T) {
 	f := newTrimFixture(t, 4)
@@ -522,7 +522,7 @@ func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.
 	swept := make(chan sweepOutcome, 1)
 	go func() { swept <- tr.sweep(context.Background(), *trimSettings(), steady(90)(0)) }()
 
-	out := testwait.Answer(t, "the sweep over the named pipe at "+piped.Path, swept)
+	out := testwait.Receive(t, "the sweep over the named pipe at "+piped.Path, swept)
 
 	if out.deletions != len(kept) {
 		t.Errorf("the sweep deleted %d entries, want the %d of the roots that are directories: %s", out.deletions, len(kept), out.reason)

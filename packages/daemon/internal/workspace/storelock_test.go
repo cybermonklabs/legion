@@ -375,7 +375,7 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // which answers ENOTDIR without waiting: Remove returns, refusing, and the fifo is left as it was.
 // The parent is swapped as the store lock is let go, which is after the git worktree entry's
 // removal and before the aside's deletion. Remove's answer is waited for with no span of its own
-// (testwait.Answer), so a removal that waits on the fifo fails the row by name at the test
+// (testwait.Receive), so a removal that waits on the fifo fails the row by name before the test
 // binary's deadline, and the jj and git runs before it are as slow as the host makes them.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 	run := newLocalRunner(t)
@@ -397,7 +397,7 @@ func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
-	err = testwait.Answer(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
+	err = testwait.Receive(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
 	if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
 		t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 	}

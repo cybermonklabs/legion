@@ -68,22 +68,11 @@ func (r *sessionsImportRig) run(extra ...string) (int, string, string) {
 
 // refuses imports LEGION-1's claims and reads the whole line printed for the one it could not
 // copy. The whole line, because "read the session file" prefixes every refusal the walk prints,
-// so a shorter assertion never says which refusal this is.
+// so a shorter assertion never says which refusal this is. The import runs in a goroutine, and
+// its answer is waited for with no span of its own (testwait.Receive): an open that waits, as the
+// walk's would on a named pipe if its flag set lost O_NONBLOCK, fails the row by name before the
+// test binary's deadline, and an import that a slow database or a loaded host makes slow passes.
 func (r *sessionsImportRig) refuses(want string, extra ...string) {
-	r.t.Helper()
-	code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
-	if code != 1 || !strings.Contains(out, want) {
-		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
-	}
-}
-
-// refusesWithoutWaiting is refuses for the two cases whose open would never answer if the walk's
-// flag set lost O_NONBLOCK. The import runs in a goroutine, and its answer is waited for with no
-// span of its own (testwait.Answer): such an open fails the row by name at the test binary's
-// deadline less a second, before `go test`'s own timeout would kill the package with a stack dump
-// and no word of why, and an import that a slow database or a loaded host makes slow passes. A
-// clock on this wait, as on any other refusal, would turn such a slow import into a failure.
-func (r *sessionsImportRig) refusesWithoutWaiting(want string, extra ...string) {
 	r.t.Helper()
 	type outcome struct {
 		code int
@@ -94,7 +83,7 @@ func (r *sessionsImportRig) refusesWithoutWaiting(want string, extra ...string) 
 		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
 		done <- outcome{code: code, out: out}
 	}()
-	got := testwait.Answer(r.t, "the import (an open of the named pipe that waits for a writer: the walk's flags have lost O_NONBLOCK)", done)
+	got := testwait.Receive(r.t, "the import of LEGION-1's claims", done)
 	if got.code != 1 || !strings.Contains(got.out, want) {
 		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
 	}
@@ -478,8 +467,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 
 // O_NONBLOCK in the walk's flag set has one job: to stop the open of a named pipe from waiting
 // for a writer. Nothing else in the package pins it, so these two cases are what fails when it
-// goes, and each waits for the import's answer with no span of its own (refusesWithoutWaiting),
-// because the regression is a hang rather than a wrong answer.
+// goes, and each waits for the import's answer with no span of its own (refuses), because the
+// regression is a hang rather than a wrong answer.
 func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 	const (
 		token     = "legion-legion-legion-1-architect"
@@ -507,14 +496,14 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 		mkfifo(t, r.onVolume(recorded))
 		// The leaf opens at once and is refused by the kind read off the handle, a refusal that
 		// names no path because the line already carries the one the claim recorded.
-		r.refusesWithoutWaiting(token + " failed " + recorded + ": read the session file: is not a regular file\n")
+		r.refuses(token + " failed " + recorded + ": read the session file: is not a regular file\n")
 	})
 
 	t.Run("a named pipe where an intermediate directory belongs", func(t *testing.T) {
 		recorded := agentSessions + "/a-pipe/" + name
 		r := newSessionsImportRig(t, claim(recorded))
 		mkfifo(t, filepath.Join(r.volume, "sessions", "a-pipe"))
-		r.refusesWithoutWaiting(token + " failed " + recorded + ": read the session file: " +
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
 			filepath.Join(r.volume, "sessions", "a-pipe") + " is not a directory\n")
 	})
 }

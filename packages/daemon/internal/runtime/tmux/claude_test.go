@@ -113,8 +113,7 @@ func TestWriteClaudeMCPConfig(t *testing.T) {
 //
 // No clock decides the row. The fifo carries a held reader (testfifo.Plant), so an open of it for
 // writing returns at once and is shown to that reader, and the write's answer is waited for with
-// no span of its own (testwait.Answer). The row once read an answer later than a second as a wait
-// in the fifo's open, and so failed a slow runner whose write had opened nothing.
+// no span of its own (testwait.Receive).
 func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -160,7 +159,7 @@ func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 				path, err := writeClaudeMCPConfig(dir, testClaude)
 				answered <- answer{path, err}
 			}()
-			got := testwait.Answer(t, "writeClaudeMCPConfig over "+path, answered)
+			got := testwait.Receive(t, "writeClaudeMCPConfig over "+path, answered)
 			if got.err != nil || got.path != path {
 				t.Fatalf("writeClaudeMCPConfig over %s = %s, %v, want it replaced", path, got.path, got.err)
 			}

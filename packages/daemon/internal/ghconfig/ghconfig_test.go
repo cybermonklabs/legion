@@ -20,9 +20,9 @@ import (
 // Write never opens what is no regular file: a named pipe at config.yml or hosts.yml, which a read
 // would wait on until something wrote to it, stalling every pane's refresh behind it, and a
 // directory or a symbolic link there, are each removed and the rendered file written in its place.
-// Each write's answer is waited for with no span of its own (testwait.Answer), so a Write that
-// waits on the pipe fails the row by name at the test binary's deadline rather than hanging it,
-// and a Write that is merely slow passes.
+// Each write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// waits on the pipe fails the row by name before the test binary's deadline rather than hanging
+// it, and a Write that is merely slow passes.
 func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 	rendered := Render("ghs_fifo_token", "implement", time.Now().Add(time.Hour))
 	for _, tc := range []struct {
@@ -55,7 +55,7 @@ func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 				_, err := Write(dir, rendered)
 				done <- err
 			}()
-			if err := testwait.Answer(t, "Write with "+tc.name, done); err != nil {
+			if err := testwait.Receive(t, "Write with "+tc.name, done); err != nil {
 				t.Fatalf("Write: %v", err)
 			}
 			for name, want := range map[string]string{ConfigFile: rendered.Config, HostsFile: rendered.Hosts} {
@@ -76,8 +76,8 @@ func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
 // through ReadRegular, which never waits on a pipe whatever was at the path a moment before, and
 // writes only by renaming a file of its own over it. A check of the path followed by an open of
 // it blocked on the pipe within a few dozen Writes (the 53rd, measured by #4424's second review).
-// Each Write's answer is waited for with no span of its own (testwait.Answer), so a Write that
-// blocked fails the row by name at the test binary's deadline. Each pipe keeps a hard link in a
+// Each Write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// blocked fails the row by name before the test binary's deadline. Each pipe keeps a hard link in a
 // side directory, and the row's end opens every pipe there, which releases such a Write.
 func TestWriteStallsOnNoPipeSwappedInWhileItRuns(t *testing.T) {
 	rendered := Render("ghs_race_token", "implement", time.Now().Add(time.Hour))
@@ -127,7 +127,7 @@ func TestWriteStallsOnNoPipeSwappedInWhileItRuns(t *testing.T) {
 					_, err := Write(dir, rendered)
 					done <- err
 				}()
-				if err := testwait.Answer(t, "Write "+strconv.Itoa(round)+" while a pipe was swapped onto "+file, done); err != nil {
+				if err := testwait.Receive(t, "Write "+strconv.Itoa(round)+" while a pipe was swapped onto "+file, done); err != nil {
 					t.Fatalf("Write %d: %v", round, err)
 				}
 			}

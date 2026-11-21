@@ -410,7 +410,7 @@ func entryNames(t *testing.T, dir string) []string {
 // renames.txt: … is a symlink"); without the cleaning's, that row's cleaning is refused ("… is a
 // symlink"), and the stray file outlives the write. The fifo carries a held reader
 // (testfifo.Plant), which must see no open of it for writing, and the second write's answer is
-// waited for with no span of its own (testwait.Answer).
+// waited for with no span of its own (testwait.Receive).
 func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -454,7 +454,7 @@ func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 				_, err := WriteBundle(root, bundle)
 				answered <- err
 			}()
-			if err := testwait.Answer(t, "the second WriteBundle over the fifo "+pairs, answered); err != nil {
+			if err := testwait.Receive(t, "the second WriteBundle over the fifo "+pairs, answered); err != nil {
 				t.Fatalf("second WriteBundle: %v", err)
 			}
 			if shown := fifo.OpenedForWriting(t); shown != "" {
@@ -608,9 +608,8 @@ func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 //
 // No clock decides the row. The fifo carries a held reader (testfifo.Plant), so a write's open of
 // it returns at once and is shown to that reader, and WriteBundle's answer is waited for with no
-// span of its own (testwait.Answer), so a wait in an open fails by name at the test binary's
-// deadline. The row once read an answer later than a second as such a wait, and so failed a slow
-// runner whose write had waited on nothing.
+// span of its own (testwait.Receive), so a wait in an open fails by name before the test binary's
+// deadline.
 func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 	bundle := twoOwnerBundle("ghs_acme_write")
 	bundle.Pairs = []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")}
@@ -705,7 +704,7 @@ func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 					_, err := WriteBundle(root, bundle)
 					answered <- err
 				}()
-				if err := testwait.Answer(t, "WriteBundle over "+path, answered); err != nil {
+				if err := testwait.Receive(t, "WriteBundle over "+path, answered); err != nil {
 					t.Fatalf("WriteBundle over %s = %v, want it replaced", path, err)
 				}
 				if kept != nil {

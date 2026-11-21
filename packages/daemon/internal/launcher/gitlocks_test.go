@@ -1414,18 +1414,18 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 // whose derivation reads every entry before the launcher serves anything. A clock pass follows,
 // which is what a running pod reads every minute.
 //
-// The row bounds itself, so a read that runs away or waits fails the row and not the run: the
-// derivation and the pass run in a goroutine the row waits for under a deadline, a read of
-// /dev/zero, or of the gitdir past a mebibyte, is ended by endRunawayReads, which the row fails
-// on, and a reader the fifo holds is let go once the row has failed, so nothing of the row is
-// left running.
+// A read that runs away or waits fails the row and not the run: the derivation and the pass run
+// in a goroutine whose answer the row waits for with testwait.Receive, which fails it by name
+// before the test binary's deadline, and a read of /dev/zero, or of the gitdir past a mebibyte,
+// is ended by endRunawayReads, which the row fails on. The row's unstick runs once as the row
+// ends and lets go one read the fifo holds; a second read can then wait on until the binary ends.
 func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 	// writer is the descriptor the held fifo's row keeps open on it, which its unstick closes.
 	var writer *os.File
 	for _, row := range []struct {
 		name string
-		// plant makes gitdir what the row is about; unstick lets go a read of it that is
-		// waiting, called as the row ends, so a read the row's guard left waiting returns.
+		// plant makes gitdir what the row is about; unstick lets go one read of it that is
+		// waiting, and runs once as the row ends.
 		plant   func(t *testing.T, c *lockClone, gitdir string)
 		unstick func(gitdir string)
 	}{
@@ -1544,10 +1544,10 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 				s.proc, s.recheck = proc, time.Millisecond
 				s.pass(context.Background(), false)
 			}()
-			// A read that waits on gitdir fails the row by name at the test binary's deadline
-			// (testwait.Answer); a slow derivation and pass are waited for.
+			// A read that waits on gitdir fails the row by name before the test binary's deadline
+			// (testwait.Receive); a slow derivation and pass are waited for.
 			t.Cleanup(func() { row.unstick(gitdir) })
-			testwait.Answer(t, "the derivation and a clock pass over "+gitdir, done)
+			testwait.Receive(t, "the derivation and a clock pass over "+gitdir, done)
 			close(stop)
 			if ended := <-ranAway; ended > 0 {
 				t.Fatalf("the sweep read %s past where any gitdir ends, and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
@@ -1969,11 +1969,11 @@ func (c *lockClone) breakPointer(t *testing.T, plant func(*testing.T, *lockClone
 	return plant(t, c, pointer)
 }
 
-// withinBound runs fn in a goroutine of its own and fails the row unless it returns by the test
-// binary's deadline less a second (testwait.Answer), the only bound on the wait, or if a read of
-// /dev/zero, or of watched past a mebibyte, had to be ended (endRunawayReads). A read unstick can
-// let go is let go as the row ends, so a goroutine the guard left waiting returns. fn calls nothing
-// that fails the row.
+// withinBound runs fn in a goroutine of its own and fails the row unless it returns before the
+// test binary's deadline (testwait.Receive), the only bound on the wait, or if a read of
+// /dev/zero, or of watched past a mebibyte, had to be ended (endRunawayReads). unstick runs once
+// as the row ends and lets go one read it can; a second read can then wait on until the binary
+// ends. fn calls nothing that fails the row.
 func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func(), fn func()) {
 	t.Helper()
 	stop := make(chan struct{})
@@ -1984,7 +1984,7 @@ func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func()
 		fn()
 	}()
 	t.Cleanup(unstick)
-	testwait.Answer(t, "the sweep over "+watched, done)
+	testwait.Receive(t, "the sweep over "+watched, done)
 	close(stop)
 	if ended := <-ranAway; ended > 0 {
 		t.Fatalf("the sweep read past where any pointer ends, and %d such read(s) had to be ended at end of file; its log:\n%s", ended, log.String())

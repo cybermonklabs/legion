@@ -813,11 +813,10 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 
 // refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
 // path (what names it in the failures), refuses it in words naming it and leaves it a fifo. The
-// verdict is that refusal, and its wait has no span of its own (testwait.Answer): a call that
+// verdict is that refusal, and its wait has no span of its own (testwait.Receive): a call that
 // waits on the fifo, as a plain open of one waits for a writer (a write-only one for a reader),
-// fails the test by name at the test binary's deadline, left blocked in that open, where it
-// touches nothing a later row uses. A clock of ten seconds once stood in for that guard, and
-// failed a call that was merely slow.
+// fails the test by name before the test binary's deadline, left blocked in that open, where it
+// touches nothing a later row uses.
 func refusesFifo(t *testing.T, path, what string, call func() error) {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
@@ -825,7 +824,7 @@ func refusesFifo(t *testing.T, path, what string, call func() error) {
 	}
 	answer := make(chan error, 1)
 	go func() { answer <- call() }()
-	err := testwait.Answer(t, what+" over the fifo "+path, answer)
+	err := testwait.Receive(t, what+" over the fifo "+path, answer)
 	if want := path + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("%s answered %v, want a refusal saying %q", what, err, want)
 	}
