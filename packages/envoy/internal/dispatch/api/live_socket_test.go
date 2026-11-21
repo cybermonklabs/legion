@@ -394,22 +394,14 @@ func (c *socketClient) closeCode(t *testing.T, within time.Duration) (code, mess
 
 // throughputWait bounds a wait whose answer comes only once megabytes have crossed the socket and
 // been parsed, which takes as long as the loaded machine takes. It is the smaller of
-// throughputWaitCap and what the test binary's deadline leaves after throughputWaitMargin, so a
-// server that never answers fails the test by name, and leaves the binary's timeout to the
-// package's later tests. A deadline that leaves no more than throughputWaitMargin to begin with
-// fails once, by name: that reads like a misconfigured run, not a server that stopped answering.
-// A wait that needs no bulk read keeps a fixed 10 s bound.
+// throughputWaitCap and what the test binary's deadline leaves after throughputWaitMargin
+// (testwait.Remaining), so a server that never answers fails the test by name, and leaves the
+// binary's timeout to the package's later tests. A deadline that leaves no more than
+// throughputWaitMargin to begin with fails once, by name, saying whether the -timeout was too short
+// or the tests before used it up. A wait that needs no bulk read keeps a fixed 10 s bound.
 func throughputWait(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return throughputWaitCap
-	}
-	left := time.Until(deadline)
-	if left <= throughputWaitMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than throughputWaitMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), throughputWaitMargin)
-	}
-	return min(left-throughputWaitMargin, throughputWaitCap)
+	return min(testwait.Remaining(t, throughputWaitMargin), throughputWaitCap)
 }
 
 const (
