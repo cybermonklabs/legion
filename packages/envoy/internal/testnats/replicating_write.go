@@ -143,6 +143,21 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 	}
 }
 
+// AwaitReplicated waits until every copy of stream, a stream of more than one copy on the cluster,
+// has applied every write its leader has committed (awaitApplied), and fails the test after
+// connectTimeout. A test calls it between a write and a read of what the write left: the leader
+// answers a write once a quorum holds it, and the direct get every bucket read sends may be
+// answered by the copy outside that quorum, which then answers the record the write replaced.
+func (c *Cluster) AwaitReplicated(t testing.TB, stream string) {
+	t.Helper()
+	info := AwaitSettledStream(t, c.JetStream(t), stream)
+	leader := c.Member(info.Cluster.Leader)
+	if leader < 0 {
+		t.Fatalf("stream %s is led by %q, which is no member of the cluster", stream, info.Cluster.Leader)
+	}
+	c.awaitApplied(t, stream, info.Cluster.RaftGroup, leader)
+}
+
 // awaitApplied waits until every running member has applied, in stream's Raft group named group,
 // every entry the group's leader, member leader, has committed, and fails the test after
 // connectTimeout. Any copy may answer a direct get, and the leader answers a write once a quorum
@@ -209,15 +224,22 @@ type RacedKeyValue struct {
 // replicated bucket answers the loser of such a race. A raced write answered anything else fails
 // the test, so a race that did not happen is never read as one that was answered as wanted, and
 // Lost counts the writes that lost. Every later write, and every other call, reaches the bucket as
-// it is.
+// it is, and so does every write once t has ended: a race a failed test left armed does not reach
+// into the next test that writes through the same handle.
 //
 // What HoldReplicatingWrite requires holds for each raced write: kv's connection reaches the
 // bucket's leader without a route (MoveStreamLeader), the key holds a record (a Create of a key
-// that has none cannot lose this way), the write names a revision (an unconditional one would
-// wait for the frozen routes), and it is called on the test's goroutine, since a hold that fails
-// ends the test.
+// that has none cannot lose this way), and the write names a revision (an unconditional one would
+// wait for the frozen routes). A hold that fails calls t.Fatalf, which ends the test from the
+// test's goroutine and panics the test binary from any other (a caller's bus.Bounded).
 func (c *Cluster) RaceKeyValue(t testing.TB, kv natsgo.KeyValue, losses int) *RacedKeyValue {
-	return &RacedKeyValue{KeyValue: kv, cluster: c, t: t, losses: losses}
+	raced := &RacedKeyValue{KeyValue: kv, cluster: c, t: t, losses: losses}
+	t.Cleanup(func() {
+		raced.mu.Lock()
+		raced.losses = 0
+		raced.mu.Unlock()
+	})
+	return raced
 }
 
 // Lost is how many writes have lost a race so far.

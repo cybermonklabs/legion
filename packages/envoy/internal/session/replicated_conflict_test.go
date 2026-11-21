@@ -42,10 +42,14 @@ func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *SessionRegistry) 
 func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 	cluster, reg := openReplicatedRegistry(t)
 	const instanceID = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+	// Any copy may answer a read, and the leader answers a write once a quorum holds it, so each
+	// read of what a write left waits until every copy holds it.
+	replicated := func(t *testing.T) { cluster.AwaitReplicated(t, "KV_"+bus.SessionBucket) }
 
 	t.Run("a conditional delete", func(t *testing.T) {
 		const sessionID = "ses_replicated_delete_if"
 		putForInstanceDelete(t, reg, sessionID, instanceID)
+		replicated(t)
 		race := cluster.RaceKeyValue(t, reg.watcher.KV().Legacy(), 1)
 		useKV(t, reg, race)
 
@@ -59,6 +63,7 @@ func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if race.Lost() != 1 {
 			t.Fatalf("%d deletes lost the race, want 1", race.Lost())
 		}
+		replicated(t)
 		if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 			t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 		}
@@ -67,6 +72,7 @@ func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 	t.Run("the reaper's delete of a gone session", func(t *testing.T) {
 		const sessionID = "ses_replicated_gone"
 		putForInstanceDelete(t, reg, sessionID, instanceID)
+		replicated(t)
 		entry, err := reg.watcher.KV().Get(sessionID)
 		if err != nil {
 			t.Fatalf("read the registration: %v", err)

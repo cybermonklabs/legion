@@ -60,11 +60,14 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 		return value, revision
 	}
+	// claim claims role for sessionID and returns once every copy of the role claims holds the
+	// claim, so the reads after it, which any copy may answer, read it.
 	claim := func(t *testing.T, sessionID, instance, role string) {
 		t.Helper()
 		if _, err := reg.SetRoleWithPrevious(ctx, RoleClaimRequest{SessionID: sessionID, MachineID: "m1", Role: role, ClientInstanceID: instance}); err != nil {
 			t.Fatalf("claim %s for %s: %v", role, sessionID, err)
 		}
+		cluster.AwaitReplicated(t, "KV_"+bus.RoleClaimBucket)
 	}
 	const holder, claimant = "ses_replicated_holder", "ses_replicated_claimant"
 
@@ -146,6 +149,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if race.Lost() != 1 {
 			t.Fatalf("%d deletes lost the race, want 1", race.Lost())
 		}
+		cluster.AwaitReplicated(t, "KV_"+bus.RoleClaimBucket)
 		if stored := storedRoleClaim(t, reg, role); stored.Revision != 0 {
 			t.Fatalf("the role is claimed at revision %d by %s, want it free", stored.Revision, stored.HolderSessionID)
 		}
