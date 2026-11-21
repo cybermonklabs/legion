@@ -16008,7 +16008,14 @@ console.log(JSON.stringify(args));
       // shutdown ends the running command, which the person's reply says in its own words. That
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
+      //
+      // The row's one clock is its own timeout. The wait for the command's pid gives up a margin
+      // before that timeout, measured from the row's start, so it fails by its own name rather
+      // than by bun's timeout line, and never polls on after bun has failed the row.
+      const SHUTDOWN_ROW_TIMEOUT_MS = 20_000;
+      const SHUTDOWN_ROW_MARGIN_MS = 1_000;
       test("ends a running command when the session shuts down", async () => {
+        const rowStarted = performance.now();
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -16032,7 +16039,7 @@ console.log(JSON.stringify(args));
             return /^\d+\n$/u.test(written);
           },
           "the command to write its pid",
-          10_000
+          SHUTDOWN_ROW_TIMEOUT_MS - SHUTDOWN_ROW_MARGIN_MS - (performance.now() - rowStarted)
         );
         const pid = Number(written);
         expect(pid).toBeGreaterThan(0);
@@ -16047,7 +16054,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-      }, 20_000);
+      }, SHUTDOWN_ROW_TIMEOUT_MS);
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
