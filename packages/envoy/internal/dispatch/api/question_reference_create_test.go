@@ -217,5 +217,6 @@ func TestANewAskBlocksEventNamesTheAskOfTheSameEdit(t *testing.T) {
 	citing := blockAskID(t, handler, issue.Key, "q3")
 	requireReferencesChanged(t, handler, issue.Key, "ask.opened", citing, []model.ChangedReference{
 		{Kind: "ask", ID: question, IssueKey: &issue.Key},
+		{Kind: "issue", ID: issue.Key},
 	})
 }

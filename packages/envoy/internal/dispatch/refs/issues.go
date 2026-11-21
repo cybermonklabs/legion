@@ -13,9 +13,9 @@ import (
 // would put an issue deeper is refused (the api package's refuseParentTooDeep), so it bounds
 // every recursive issue walk — the ancestor walk below, the children subtree walk, the
 // components and repository walks that climb a whole read's chains together, the architecture
-// tree's containment walks, and the legion-label walk — like Closure's depth cap: the queries
-// terminate even if a raced reparent ever commits a cycle. api's parentDepthCap is this number,
-// and the walks it builds as SQL text splice it in.
+// tree's containment walks, and the legion-label walk — so the queries terminate even if a raced
+// reparent ever commits a cycle. api's parentDepthCap is this number, and the walks it builds as
+// SQL text splice it in.
 const IssueDepthCap = 32
 
 // issueDepthCapSQL is IssueDepthCap spliced into the walks built as SQL text.

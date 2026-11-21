@@ -2416,6 +2416,17 @@ two checks hold `cause` to that length and null exactly when `succeeded` is true
 The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
+`heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
+The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
+The build is a plain `create index` in the runner's transaction, not `concurrently`: production runs one app pod under `Recreate`, which migrates before it listens, so no writer runs while the build holds `SHARE` on `block_refs` for one scan of the table.
+The census admits it only while `block_refs` is under `CensusTableLimit` and refuses it above, and then the build must be rewritten in the concurrent form (`-- pgmigrate:non-transactional`, `create index concurrently if not exists`, alone in its file) before the deployment can move.
+The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read the stopped pod left running, which can outlast the runner's three attempts of 5 s.
+That bound holds on each try, and `store.Migrate` tries a migration up to 3 times after a lock timeout (`pgmigrate.RetryLockTimeouts`), so the drop waits up to 120 s on each of those 3 tries.
+Where two builds serve at once, the build holds off the earlier build's writes to `block_refs` for its scan, and the drop its reads and writes for as long as it waits, up to 120 s on each of `store.Migrate`'s 3 tries.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+The release before them reads `block_refs` by `to_kind` and `to_id` alone, which the new index serves, so it runs unchanged beside them.
+
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
 `embedder_identity`, the identity of the process's embedder; and `file_store`, whether it stores files in a bucket.
@@ -4515,8 +4526,16 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
-  Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
-  An `If-None-Match` value equal to the response ETag returns `304`.
+  Read the issue's references, one hop in each direction: `{links, linked_from, members, truncated}` (`model.IssueReferences`).
+  The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while the graph read lists it.
+  `links` is every node the issue's own content links to, and `linked_from` every node that links to the issue or to its own content.
+  Each holds one row for each node, `{node, name, kinds, via}`: the node as `GET /api/v1/references` names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end of those links.
+  A block of a document counts as that document while a current version holds the block, and a part of an ask or a block of a comment or a message counts as its item.
+  The issue and its own content are in neither list, nor is a node that only a structural edge joins to the issue, such as its parent or a child.
+  Each list is in the order of the node's kind, then its id, and is `[]` when it has no row.
+  `members` is the documents of `links`, each with its versions and its row's via, and `truncated` is false: a member's `depth` is always 1, since the read reads one hop, and both fields stay for the clients that read them.
+  Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers `503 REFERENCES_TIMEOUT`, to be asked again later.
+  An `If-None-Match` value equal to the response ETag returns `304`; the ETag moves when a row of either list changes, as a new link into the issue's content or an edit of a linked node changes one.
   `versions=latest` leaves each member's `artifact.versions` holding only its latest version and carries its own ETag;
   absent, empty or `all` is the full answer; any other value, or `versions` given more than once, is `400 INVALID_QUERY`.
 
@@ -5278,6 +5297,8 @@ It also names a target whose edge the write kept but whose excerpt it moved:
 an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it is blocked by, whose panels show its title.
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
 An issue write that adds or removes a `blocked_by` entry names each blocker it added or removed, whose `referenced_by_count` counts the edge, and an `issue.created` names every blocker the new issue holds.
+A changed target that is an issue's own content (a document of the issue or a block of it, an ask of it or a part of it, a comment, a message, or a block of one) also names that issue, as a target of kind `issue`, once and after the other targets, unless the write names that issue already; a comment, a message and their blocks still name no target of their own.
+Those issues count toward the cap of `issue` (`refs.CountedChangeLimit`), so a page holding that issue's references read (`GET /api/v1/issues/{key}/references`, whose `linked_from` lists what links into the issue's content) refreshes it on that target.
 Each field is absent from an event written before it existed.
 
 ## Dispatch topics

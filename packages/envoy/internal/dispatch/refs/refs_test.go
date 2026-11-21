@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -469,6 +471,10 @@ func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
 	}
 }
 
+// A chain of ten documents, the first of which the issue's comment cites and each of which cites
+// the next, answers its first document alone, at depth 1 via the comment: the references read
+// reads one hop, so no document past the first is a member, where the eight-hop walk this test
+// was named for answered eight of them and marked the ninth hop truncated.
 func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -478,52 +484,32 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	}
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "CORE")
-	createReferenceProject(t, tx, "OPS")
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
-	_, ownRefKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
 	artifactIDs := make(map[string]string)
 	artifactRefs := make(map[string]string)
-	for index := 1; index <= 9; index++ {
+	for index := 1; index <= 10; index++ {
 		slug := "d" + strconv.Itoa(index)
 		artifactIDs[slug], artifactRefs[slug] = createReferenceArtifact(t, tx, "", "CORE", slug)
 	}
-	_, diagramRefKey := createReferenceArtifact(t, tx, "", "OPS", "diagram-png")
 	commentID := createReferenceComment(t, tx, "CORE-1")
 	insertReference(t, tx, "comment", commentID, "artifact", artifactRefs["d1"])
-	insertReference(t, tx, "comment", commentID, "artifact", diagramRefKey)
-	for index := 1; index < 9; index++ {
+	for index := 1; index < 10; index++ {
 		from := "d" + strconv.Itoa(index)
 		to := "d" + strconv.Itoa(index+1)
 		insertReference(t, tx, "artifact", artifactIDs[from], "artifact", artifactRefs[to])
 	}
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", ownRefKey)
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", "CORE/ghost")
-	insertReference(t, tx, "artifact", artifactIDs["d3"], "artifact", artifactRefs["d1"])
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, truncated, err := Closure(ctx, database.Pool, "CORE-1")
+	references, err := Closure(ctx, database.Pool, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{
-		{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: diagramRefKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: artifactRefs["d2"], Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d1"]}},
-		{RefKey: artifactRefs["d3"], Depth: 3, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d2"]}},
-		{RefKey: artifactRefs["d4"], Depth: 4, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d3"]}},
-		{RefKey: artifactRefs["d5"], Depth: 5, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d4"]}},
-		{RefKey: artifactRefs["d6"], Depth: 6, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d5"]}},
-		{RefKey: artifactRefs["d7"], Depth: 7, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d6"]}},
-		{RefKey: artifactRefs["d8"], Depth: 8, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d7"]}},
-	}
-	if !reflect.DeepEqual(got, want) {
+	want := []Member{{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}}}
+	if got := references.Members; !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)
-	}
-	if !truncated {
-		t.Fatal("closure did not report the ninth hop as truncated")
 	}
 }
 
@@ -736,6 +722,128 @@ func TestCountedChangesNamesCitedDocumentsWithinTheCap(t *testing.T) {
 	if payload := model.NewReferenceChangesPayload(pastCap); !payload.ReferencesChangedTruncated {
 		t.Fatalf("payload past the cap = %#v, want the truncated flag set", payload)
 	}
+}
+
+// A write that adds or removes a link into an issue's own content names that issue too, so a page
+// that holds the issue's references read refreshes it (R6). Each content target of an issue X,
+// given alone, names X as a target of kind issue, once, after what it names today: a document of X
+// and a block of it name themselves, an ask of X and a part of it name the ask, and a comment, a
+// message and a block of either, which nothing counts, name X alone. A document of a project,
+// which no issue holds, names no issue. A write that moves the content of more issues than
+// CountedChangeLimit names none of them and lists issue in TruncatedKinds.
+func TestCountedChangesNameTheIssueOfAChangedContentTarget(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+	specID, specKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	runbookID, runbookKey := createReferenceArtifact(t, tx, "", "CORE", "runbook")
+	askID, commentID, messageID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	insertItemWithID(t, tx, ItemAsk, askID, "CORE-1")
+	insertItemWithID(t, tx, ItemComment, commentID, "CORE-1")
+	insertItemWithID(t, tx, ItemMessage, messageID, "CORE-1")
+
+	issueKey := "CORE-1"
+	issue := model.ChangedReference{Kind: "issue", ID: issueKey}
+	ask := model.ChangedReference{Kind: "ask", ID: askID, IssueKey: &issueKey}
+	blockOf := func(kind ItemKind, id string) Target {
+		return Target{Kind: kind.BlockKind(), ID: itemBlockNodeID(kind, id, "b1")}
+	}
+	for _, test := range []struct {
+		name   string
+		target Target
+		want   []model.ChangedReference
+	}{
+		{"a document of the issue", Target{Kind: "artifact", ID: specKey}, []model.ChangedReference{
+			{Kind: "artifact", ID: specID, Ref: "dispatch://CORE-1/spec"}, issue,
+		}},
+		{"a block of that document", Target{Kind: "block", ID: specKey + "#b1"}, []model.ChangedReference{
+			{Kind: "block", ID: specKey + "#b1", ArtifactID: &specID, Ref: BlockRef("dispatch://CORE-1/spec", "b1")}, issue,
+		}},
+		{"an ask of the issue", Target{Kind: "ask", ID: askID}, []model.ChangedReference{ask, issue}},
+		{"a part of that ask", blockOf(ItemAsk, askID), []model.ChangedReference{ask, issue}},
+		{"a comment of the issue", Target{Kind: "comment", ID: commentID}, []model.ChangedReference{issue}},
+		{"a block of that comment", blockOf(ItemComment, commentID), []model.ChangedReference{issue}},
+		{"a message of the issue", Target{Kind: "message", ID: messageID}, []model.ChangedReference{issue}},
+		{"a block of that message", blockOf(ItemMessage, messageID), []model.ChangedReference{issue}},
+		{"a document of a project, which no issue holds", Target{Kind: "artifact", ID: runbookKey}, []model.ChangedReference{
+			{Kind: "artifact", ID: runbookID, Ref: "dispatch://CORE/artifact/runbook"},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changes, err := CountedChanges(ctx, tx, []Target{test.target})
+			if err != nil {
+				t.Fatalf("name what a change of %s %s moved: %v", test.target.Kind, test.target.ID, err)
+			}
+			if !reflect.DeepEqual(changes.Targets, test.want) || len(changes.TruncatedKinds) > 0 {
+				t.Errorf("a change of %s %s names %q (truncated kinds %v); want %q",
+					test.target.Kind, test.target.ID, changedLines(changes.Targets), changes.TruncatedKinds, changedLines(test.want))
+			}
+		})
+	}
+
+	t.Run("the content of more issues than CountedChangeLimit", func(t *testing.T) {
+		if _, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			select 'CORE-' || n, 'CORE', n, 'Issue ' || n, '{"kind":"user","id":"alice"}', 'U' || n
+			from generate_series(2, $1::int + 2) n
+		`, CountedChangeLimit); err != nil {
+			t.Fatalf("create %d issues: %v", CountedChangeLimit+1, err)
+		}
+		rows, err := tx.Query(ctx, `
+			insert into comments (issue_key, author, body)
+			select 'CORE-' || n, '{"kind":"user","id":"alice"}', 'reference'
+			from generate_series(2, $1::int + 2) n
+			returning id::text
+		`, CountedChangeLimit)
+		if err != nil {
+			t.Fatalf("comment on %d issues: %v", CountedChangeLimit+1, err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the comments' ids: %v", err)
+		}
+		targets := make([]Target, len(ids))
+		for index, id := range ids {
+			targets[index] = Target{Kind: "comment", ID: id}
+		}
+		if len(targets) != CountedChangeLimit+1 {
+			t.Fatalf("wrote %d comments; want one on each of %d issues", len(targets), CountedChangeLimit+1)
+		}
+		changes, err := CountedChanges(ctx, tx, targets)
+		if err != nil {
+			t.Fatalf("name what a change of %d comments moved: %v", len(targets), err)
+		}
+		if len(changes.Targets) > 0 || !slices.Equal(changes.TruncatedKinds, []string{"issue"}) {
+			t.Errorf("a change of a comment of each of %d issues names %q (truncated kinds %v); want no target, and the kind issue truncated",
+				len(targets), changedLines(changes.Targets), changes.TruncatedKinds)
+		}
+	})
+}
+
+// changedLines is each changed target as "<kind> <id>", with its issue, its document and its
+// reference where it carries them, so a failure prints what each pointer holds.
+func changedLines(references []model.ChangedReference) []string {
+	lines := make([]string, len(references))
+	for index, reference := range references {
+		line := reference.Kind + " " + reference.ID
+		if reference.IssueKey != nil {
+			line += " issue " + *reference.IssueKey
+		}
+		if reference.ArtifactID != nil {
+			line += " document " + *reference.ArtifactID
+		}
+		if reference.Ref != "" {
+			line += " ref " + reference.Ref
+		}
+		lines[index] = line
+	}
+	return lines
 }
 
 // Two counted parts of one write merge into what one CountedChanges over both would name: each

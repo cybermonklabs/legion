@@ -174,7 +174,12 @@ function stubTreeReads(
       await answered("results");
       return { checks: [], issue: KEY, verification_artifact_id: "" };
     }),
-    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({
+      linked_from: [],
+      links: [],
+      members: [],
+      truncated: false,
+    }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
       return [];

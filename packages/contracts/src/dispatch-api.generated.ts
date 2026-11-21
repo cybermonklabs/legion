@@ -1745,7 +1745,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
+    /** @description An issue's references, one hop in each direction: {links, linked_from, members, truncated}, under an ETag (If-None-Match answers 304). The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v1/references lists it. links is every node the issue's own content links to, and linked_from every node that links to the issue or to its own content, one row for each node, a block or a part counted as its document or item; the issue and its own content are in neither, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via}: the node as GET /api/v1/references names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end; each list is in the order of the node's kind, then its id, and is [] when it has no row. members is the documents of links, each {artifact, depth, via} with the document's versions and its row's via, and truncated says whether the read was cut: depth is always 1 and truncated always false, since the read reads one hop, and both stay for the clients that read them. ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
     get: operations["getApiV1IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -5462,6 +5462,8 @@ export interface components {
       slug: string;
     };
     IssueReferences: {
+      linked_from: components["schemas"]["ReferenceLink"][] | null;
+      links: components["schemas"]["ReferenceLink"][] | null;
       members: components["schemas"]["ReferenceMember"][] | null;
       truncated: boolean;
     };
@@ -6181,6 +6183,12 @@ export interface components {
       service: null | string;
       session: components["schemas"]["CredentialSession"];
       state: string;
+    };
+    ReferenceLink: {
+      kinds: string[] | null;
+      name: string;
+      node: components["schemas"]["GraphNode"];
+      via: components["schemas"]["ReferenceVia"];
     };
     ReferenceMember: {
       artifact: components["schemas"]["Artifact"];
@@ -15146,6 +15154,7 @@ export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInp
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
+export type ReferenceLink = components["schemas"]["ReferenceLink"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
 export type ReferenceQuestion = components["schemas"]["ReferenceQuestion"];
 export type ReferenceQuestions = components["schemas"]["ReferenceQuestions"];
