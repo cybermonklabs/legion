@@ -68,11 +68,17 @@ prints `UNKNOWN: the marker of <name> is not visible, so no refusal can be read`
 refusal line, since a 404 with no marker says nothing where no marker can be seen.
 
 Then each refusal line of five fields first has its unrouted control sent: the line's own method,
-SNI and path, with the Host `unrouted.outside-edge-refusals.invalid`, which no route can name. Its
-answer is the edge's own 404 for that path, which must come whole, with no marker; the line is
-refused only on a 404 with no marker and that same body. A route that forwards a line without a
-marker to a backend that answers 404 gives another body; so may an edge whose own 404 differs by
-Host, and the run cannot tell the two apart, so such a line reads `UNKNOWN`, never refused.
+SNI and path, with the Host `unrouted.outside-edge-refusals.invalid`, which no route names. Its
+answer must come whole, with no marker; the line is refused only on a 404 with no marker and that
+same body. A route that forwards a line without a marker to a backend that answers 404 gives
+another body; so may an edge whose own 404 differs by Host, and the run cannot tell the two apart,
+so such a line reads `UNKNOWN`, never refused. An `UNKNOWN` line that says "another body than its
+unrouted control's 404" is a possible forward: look into it before running the check again.
+
+The comparison rests on a rule this check cannot hold: every route of the edge sets the marker. A
+route with no hostname that forwards without a marker to a backend that answers 404 would give the
+control and the line the same body, and no request sent from outside can tell that from the edge's
+own 404. The deployment's own tests hold that rule, not this check.
 
 | The answer | Line |
 |---|---|

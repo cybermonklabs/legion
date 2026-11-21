@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { rowLimit } from "./bounded-subprocess";
@@ -206,6 +206,48 @@ describe(`${scriptName}: a signal`, () => {
       }
     },
     // The script, a bounded child under the bound of a run that probes.
+    rowLimit("edgeRun")
+  );
+
+  // The same holds in the moment between a REACHED line being recorded and being printed: bash runs
+  // a pending trap between two commands, and no input can time a signal into that gap. So this row
+  // runs a copy of the script, under the file's scratch, with `kill -TERM $$` put after the first
+  // statement of its REACHED branch, and plants a route for the first refusal line. The script
+  // records the line before it prints it, so the copy must end at FAIL naming that line. A script
+  // that printed the line first read UNKNOWN here.
+  test.skipIf(withoutTools)(
+    "fails naming the line reached when a signal comes between recording a REACHED line and printing it",
+    async () => {
+      const [first] = refusals as [Line];
+      const text = readFileSync(script, "utf8");
+      const branch = "    REACHED)\n";
+      const at = text.indexOf(branch);
+      expect(at, "the script's REACHED branch").toBeGreaterThan(-1);
+      expect(text.indexOf(branch, at + 1), "a second REACHED branch").toBe(-1);
+      // After the branch's first statement: its comment lines, then one line of code.
+      let end = at + branch.length;
+      while (text.slice(end).trimStart().startsWith("#")) end = text.indexOf("\n", end) + 1;
+      end = text.indexOf("\n", end) + 1;
+      const copy = join(directoryOf("copy"), scriptName);
+      writeFileSync(copy, `${text.slice(0, end)}      kill -TERM $$\n${text.slice(end)}`, {
+        mode: 0o755,
+      });
+      const edge = await standIn([planted(first), ...production]);
+      try {
+        const run = await check(
+          "signal between record and print",
+          { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+          { argv: [bash, copy] }
+        );
+        expect(verdict(run), said(run)).toBe(
+          `FAIL: reached ${first.name}, before a signal stopped the run`
+        );
+        expect(run.code, said(run)).toBe(1);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The copy of the script, a bounded child under the bound of a run that probes.
     rowLimit("edgeRun")
   );
 

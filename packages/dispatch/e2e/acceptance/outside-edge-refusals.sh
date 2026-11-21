@@ -70,9 +70,13 @@
 # one that does not shows this run cannot see a route of this edge, and the run stops at UNKNOWN
 # before it reads any refusal line. Then each refusal line of five fields first has its unrouted
 # control sent: the line's own method, SNI and path, with the Host
-# unrouted.outside-edge-refusals.invalid, which no route can name (RFC 6761 keeps `.invalid` out of
-# the DNS). Its answer is the edge's own 404 for that path, and it must come whole, 404 with no
-# marker. Then the line itself is
+# unrouted.outside-edge-refusals.invalid, which no route names (RFC 6761 keeps `.invalid` out of
+# the DNS). Its answer must come whole, 404 with no marker, and the line's own 404 must have its
+# body. That comparison rests on a rule this check cannot hold: every route of the edge sets the
+# marker. A route with no hostname that forwards without a marker to a backend that answers 404
+# would give the control and the line the same body, and no request sent from outside can tell
+# that from the edge's own 404; the deployment's own tests hold that rule, not this check. Then
+# the line itself is
 #   refused  when its answer came whole and is the one the line names: for a line of five fields,
 #            404, no marker in any block and the same body as its unrouted control's; for a line
 #            of six, exactly 405, naming exactly the sixth field's marker;
@@ -577,8 +581,9 @@ while [ "$row" -le "$total" ]; do
   case $kind in
     refused) report refused "$row" ;;
     REACHED)
-      report REACHED "$row"
+      # Recorded before it is printed, so a signal that comes between the two reads FAIL.
       reached="$reached ${names[row]}"
+      report REACHED "$row"
       ;;
     unread)
       report UNKNOWN "$row"
