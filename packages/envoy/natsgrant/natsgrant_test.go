@@ -95,13 +95,23 @@ func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
 }
 
-// subscribes reports whether some subscribe entry of grant admits subject, matched as nats-server
-// matches a subscription against an allow entry, a queue group after the subject left out.
-func subscribes(grant natsgrant.Permissions, subject string) bool {
-	return slices.ContainsFunc(grant.Subscribe, func(entry string) bool {
-		fields := strings.Fields(entry)
-		return len(fields) > 0 && natsserver.SubjectMatchesFilter(subject, fields[0])
-	})
+// subscribes reports whether grant lets a client hold a plain subscription, one with no queue
+// group, to subject, as nats-server 2.15.1 decides it (server/client.go, canSubscribeInternal and
+// loadMsgDenyFilterIfNeeded): an allow entry covers it, and no deny entry overlaps it. A deny entry
+// that matches the subscription refuses it, and one that only overlaps it drops the deliveries it
+// covers; this helper reads any overlap as a refusal, the stricter answer. An entry with a queue
+// group admits or denies that group alone, which this helper does not model, so it fails the test
+// on one rather than answer for it.
+func subscribes(t *testing.T, grant natsgrant.Permissions, subject string) bool {
+	t.Helper()
+	for _, entry := range slices.Concat(grant.Subscribe, grant.SubscribeDeny) {
+		require.Len(t, strings.Fields(entry), 1,
+			"subscribe entry %q carries a queue group, which subscribes does not model", entry)
+	}
+	if slices.ContainsFunc(grant.SubscribeDeny, func(deny string) bool { return natsserver.SubjectsCollide(subject, deny) }) {
+		return false
+	}
+	return slices.ContainsFunc(grant.Subscribe, func(allow string) bool { return natsserver.SubjectMatchesFilter(subject, allow) })
 }
 
 // While the measurement job's inbox moves under the reply root, its grant admits it under both:
@@ -110,7 +120,8 @@ func subscribes(grant natsgrant.Permissions, subject string) bool {
 // nuid and *, whose answers come on the prefix, the nuid and a token (protocol.js, the mux's
 // SubscriptionImpl; muxsubscription.js, init). The grant admits no other client's replies:
 // nats.go's _INBOX., another prefix under the root, or another token directly under it. The
-// control is the grant before this change, which refuses the moved inbox.
+// control is the grant before this change, which refuses the moved inbox, and a deny entry over the
+// moved inbox, which the helper must read as a refusal.
 func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
 	rows := []struct {
 		name, subscription string
@@ -124,14 +135,20 @@ func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			require.Equal(t, row.admitted, subscribes(natsgrant.Measure(), row.subscription),
+			require.Equal(t, row.admitted, subscribes(t, natsgrant.Measure(), row.subscription),
 				"Measure() admits a subscription to %q", row.subscription)
 		})
 	}
 	t.Run("control: the grant before this change refuses the moved inbox", func(t *testing.T) {
 		before := natsgrant.Permissions{Subscribe: []string{"_INBOX_envoy_measure.>"}}
-		require.True(t, subscribes(before, "_INBOX_envoy_measure.Fq3kZ.*"))
-		require.False(t, subscribes(before, "_INBOX_envoy._measure.Fq3kZ.*"))
+		require.True(t, subscribes(t, before, "_INBOX_envoy_measure.Fq3kZ.*"))
+		require.False(t, subscribes(t, before, "_INBOX_envoy._measure.Fq3kZ.*"))
+	})
+	t.Run("control: a deny entry over the moved inbox refuses it", func(t *testing.T) {
+		denied := natsgrant.Measure()
+		denied.SubscribeDeny = []string{"_INBOX_envoy._measure.*.*"}
+		require.False(t, subscribes(t, denied, "_INBOX_envoy._measure.Fq3kZ.*"))
+		require.True(t, subscribes(t, denied, "_INBOX_envoy_measure.Fq3kZ.*"))
 	})
 }
 
@@ -161,7 +178,7 @@ func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 				"%s's prefix %q is not under the reply root %q", row.name, row.prefix, natsgrant.ReplyRoot)
 			require.True(t, natsserver.SubjectMatchesFilter(reply, export),
 				"the reply root's export %s does not reach %s's reply %q", export, row.name, reply)
-			require.True(t, subscribes(row.grant, subscription),
+			require.True(t, subscribes(t, row.grant, subscription),
 				"%s's grant does not admit its own inbox's subscription %q", row.name, subscription)
 			for _, entry := range row.grant.Subscribe {
 				if slices.Contains(row.transitional, entry) {

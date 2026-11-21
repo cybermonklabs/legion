@@ -353,7 +353,10 @@ func Host(machineID string) Permissions {
 // reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
 // test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes,
 // never _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
-// arrive, so it reads no message of another client. Those prefixes are two while the job moves
+// arrive, so no subscription of its own receives another client's replies or deliveries. That alone
+// does not keep every other client's message from it: it still holds ENVOY_MEASURE's stream create
+// and update, whose configuration can source another stream and republish what it holds onto the
+// job's own inbox, until #4679 removes those calls. Its inbox prefixes are two while the job moves
 // under ReplyRoot: legacyMeasureInbox, which the deployed job sets today, and MeasureInbox, which
 // it sets once it moves. The legacy one goes when no measurement job sets it.
 func Measure() Permissions {
