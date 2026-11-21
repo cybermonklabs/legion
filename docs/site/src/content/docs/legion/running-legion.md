@@ -17,7 +17,7 @@ your cluster, from one published worker image.
 | A Kubernetes cluster | Agent Sandbox installed, a gVisor runtime class, a node pool for Legion, a namespace and a storage class ([below](#the-cluster)). |
 | A host for the daemon | Reachable from the pods on two ports: the API (`port`, 13370 by default) and the worker stream (`worker_stream_port`, the API port plus one). |
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
-| [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and the project's repository mapping in Dispatch's Settings → Repositories → Projects: the project's default repository, and the repositories Legion prepares before an issue names one ([below](#the-projects-repositories)). |
+| [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
 | The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
 | Three GitHub Apps | An **implement** App (the implementer's and merger's identity), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
@@ -25,38 +25,60 @@ your cluster, from one published worker image.
 
 ## The project's repositories
 
-Dispatch's mapping, set on Dispatch's Settings → Repositories → Projects page, names the project's
-default repository and the repositories Legion prepares before an issue names one; `legion.yaml`
-names none. Each issue targets the repository Dispatch resolves for it: its own (the issue
-header's Repository picker, or `dispatch issue-update --repo owner/name`), else its nearest
-ancestor's, else the project's default. An issue may name any `owner/name`, whether or not
-Dispatch maps it to the project. The daemon records an issue on that repository, and its default
-branch as GitHub names it, when it first records the issue, and keeps both: a later change of the
-issue's repository in Dispatch is not applied, and the daemon says so on the issue. An issue whose
-repository resolves to none, or to one a role App is not installed on, is not admitted, and the
-daemon says why on the issue. A claim an operator starts on an issue the workflow does not record
-works the project's default repository as it is at each launch, whatever repository Dispatch
-resolves for that issue: change the default while an operator's tree runs and its next launch, or
-its pane's next GitHub token after a restart, is for the new default, whose workspace it does not
-have. While the project serves no default, its launches are refused and an adopted pane's gh
-keeps its last tokens until they expire.
+`legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
+resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
+owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
+Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
+its default branch as GitHub names it, when it first records the issue, and keeps both: a later
+change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
+An issue whose repository resolves to none, or to one a role App is not installed on, is not
+admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
+workflow does not record works the repository Dispatch resolves for that issue, read at the
+claim's first launch and kept for as long as the issue holds its workspace. When that issue
+resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
+of <KEY>, or the default repository of project <PROJECT>, in Dispatch`. When Dispatch does not
+answer, when a role App is not installed on the repository, or when GitHub does not answer its
+read, that launch is refused too, naming the cause. The daemon stays up in each case.
 
-The daemon reads the mapping at boot and again whenever it changes in Dispatch, and checks each
-repository it reads for the implement and the review App's installation. A repository either App
-is missing from is left out: the boot logs it, `legion state --json` lists it under
-`repositories.refused` with the App it lacks, and an issue on it is not admitted until the App is
-installed, when moving the issue to `todo` again admits it. A repository whose installation GitHub
-does not answer for (any failure but a 404, a read longer than 15 seconds included) is left out
-for now the same way, its refusal naming the App, the repository and GitHub's failure, and the
-daemon reads the mapping again, 30 seconds doubling to 10 minutes between reads, until GitHub
-answers, then serves it with no restart. While it is left out, an event of an issue on it is
-applied and acknowledged with nothing said on it and nothing kept, so it holds up no other
-issue's admission. Once GitHub answers for the repository, the daemon recovers it: it reads
+The daemon boots for any project: one with no repository, one with no default repository, and
+one with no record. The boot proves each role App's key with GitHub's read of that App's
+installations: a refusal of that read stops the boot and names the App, and an App installed on no
+account boots, with one log line that says so. The key proof under the App's JWT mints no token
+for an owner; every other step of the boot that reads GitHub or writes a cache's credential mints
+the token that step needs.
+One such step fills a record that lacks its repository columns: one read per such record, bounded
+at 15 seconds, and a read that fails leaves the record for the daemon to fill later. The one-time
+rename pass of `repository_renames` (below) reads GitHub for a pair only while a stored row still
+names the pair's `from`: then it reads both role Apps' installations on each of the pair's names
+that the daemon holds no answer for (at boot, both) and, where the daemon holds no spelling of the
+`to`, GitHub's spelling of it; once no row names a pair's `from`, the pass reads nothing of GitHub
+for that pair. A boot of a project whose live
+records name no repository, a fresh install's, logs one line at info: `workflow: no live record
+of the project names a repository, so the daemon serves no repository until an issue names one`.
+Once the API serves, the daemon prepares each repository its records name, beside the boot. It
+also prepares a repository when the first issue on it is admitted, and when a launch works a
+repository that no live record names. To prepare a
+repository is to read both role Apps' installations on it, its name and default branch as GitHub
+has them, and Dispatch's webhook App on it, and then to hear its GitHub events and, under
+`runtime: kubernetes`, to keep its cache.
+
+A repository that either App is missing from, or that GitHub does not have, changes no record:
+`legion state` prints a `repository <owner/name>: <why>` line for it, `legion state --json` shows
+it under `repositories.live` with its `apps` and `readError`, the log says it once, and an issue
+on it is not admitted until the App is installed, when moving the issue to `todo` again admits
+it. A repository whose installation GitHub does not answer for (any failure but a 404, a read
+longer than 15 seconds included) is shown the same way, its `readError` naming the App, the
+repository and GitHub's failure, and a repository GitHub answered for before keeps that answer.
+The daemon reads each repository whose answer is bad again, 30 seconds doubling to 10 minutes
+between reads, until GitHub answers, with no restart. While GitHub does not answer for the
+repository of an issue the daemon does not record yet, an event of that issue is applied and
+acknowledged with nothing said on it and nothing kept, so it holds up no other issue's
+admission. Once GitHub answers for the repository, the daemon recovers it: it reads
 Dispatch's project listing once and applies it as its boot does, to the issues it does not record
 that are on that repository, under a parent on it, or whose event it applied silently for that
 repository during the outage (one that took its repository from a parent or the project's
-default, which changed meanwhile). Each ends where its events would have ended had the repository
-been served: a labelled root is admitted, a child of a live tree is recorded under it, parents
+default, which changed meanwhile). Each ends where its events would have ended had GitHub
+answered: a labelled root is admitted, a child of a live tree is recorded under it, parents
 before children, and a person's issue is left as it is, with no one moving anything. A recovery
 whose listing fails is tried again, 30 seconds doubling to 10 minutes; a restart's boot listing is
 that recovery. While the repository is unread, `release_children` never stops a wave on a child it
@@ -72,42 +94,26 @@ that is still not recorded is named in one more `child-release-stalled` notice, 
 release: a notice to the architect that owns the child's parent, or to the tree's architect when
 that parent is not recorded in the tree. That notice waits while the recovery's listing is held
 for the Dispatch consumer, but for five minutes at most from the first held read (the daemon times
-its next read of the mapping for it), however often the hold is released and made again
+its next recovery for it), however often the hold is released and made again
 meanwhile: a hold that lasts or keeps coming back (an event that fails at every delivery, say) gets
 the notice then, once, and the recovery still runs in full when the hold releases. If that read
 fails, the daemon tries again on its usual backoff.
-A served repository whose read fails stays served on its last answer and is read again the same
-way. A project with no repository mapped does not boot; one whose every repository lacks an App
-boots serving none and admits nothing until an App is installed, and one whose every repository's
-installation read fails boots serving none, logs one ERROR line with the first failure, and heals
-once GitHub answers. The boot's own reads of the Apps (their logins and tokens) still refuse the
-boot when they fail. A
-Dispatch that does not answer the boot's read of the mapping delays the boot rather than ending it:
-the daemon reads it again, one second doubling to one minute between reads, for as long as Dispatch
-stays unreachable, logs each wait, and serves nothing until the read passes.
 
-Beside the two role Apps, every read of the mapping, the boot's included, asks Dispatch whether its
-GitHub App, the Envoy App whose webhook carries GitHub's events
-([The GitHub Apps](#the-github-apps)), is installed on each served repository. A repository it is
-not installed on is served all the same, but GitHub sends Legion none of its events and Dispatch
-has no delivery of it to redeliver, so nothing brings its pull requests' changes in and its issues
-stand still. `legion state` names each such repository on a `webhook App missing on
-<repo>: <reason>` line, and `--json` lists it under `repositories.withoutWebhookApp` with its
-`repo` and `reason`, which says whether the App is not installed, `the webhook App check failed:
+Beside the two role Apps, each preparation asks Dispatch whether its GitHub App, the Envoy App
+whose webhook carries GitHub's events ([The GitHub Apps](#the-github-apps)), is installed on the
+repository, and a read of the live records asks it of each repository the read adds that no
+preparation checked. A repository it is not installed on is worked all the same, but GitHub sends
+Legion none of its events and Dispatch has no delivery of it to redeliver, so nothing brings its
+pull requests' changes in and its issues stand still. `legion state` names each such repository
+on a `webhook App missing on <repo>: <reason>` line, and `--json` lists it with its `reason` under
+`repositories.withoutWebhookApp`: the App is not installed, `the webhook App check failed:
 <error>` (Dispatch holds no App key, `GITHUB_APP_UNCONFIGURED`, or its read of GitHub failed,
 `GITHUB_UNREADABLE`), or `this Dispatch does not answer the webhook App check` (a Dispatch older
-than the check). The check never leaves a repository out and never fails the boot; the boot's
-`repositories` stage line and each `legion workflow repositories changed` line log the same list
-as `withoutWebhookApp`. A repository only a live issue record names, which the mapping does not, is
-served as well, and Dispatch is asked about it apart from the mapping's read: when an issue is
-first recorded on it, once the boot is done, and after each read of the mapping. `legion state`
-names it the same way and with the same reasons, but the boot's `repositories` line does not,
-since the boot asks about none of them; each one found without the App is logged on a line of its
-own, `legion workflow checked Dispatch's GitHub App on the repositories only a live record names`.
-The check reads only the App's installation, so a repository whose events come through a
-repository webhook is listed too. Install the Envoy App on the repository: the daemon names it no
-more from its next read of the mapping, at a restart or the next change of the mapping in
-Dispatch.
+than the check). The check never leaves a repository out and never fails the boot. It reads only
+the App's installation, so a repository whose events come through a repository webhook is listed
+too. Install the Envoy App on the repository: the daemon asks Dispatch again with the other bad
+answers, 30 seconds doubling to 10 minutes, and names the repository no more once Dispatch answers
+that the App is installed.
 
 ## The GitHub Apps
 
@@ -414,7 +420,7 @@ the kubeconfig it names exist and `LEGION_POSTGRES_DSN` (or `postgres_dsn`) name
 What each part is for:
 
 - **`project`** is the Dispatch project key, and it must also be a key of `projects`, which names
-  each Dispatch project the daemon runs (its repositories are [Dispatch's mapping](#the-projects-repositories)). A project's
+  each Dispatch project the daemon runs ([its repositories](#the-projects-repositories) come from Dispatch). A project's
   optional `slack_channels` lists Slack channel ids (`C…` or `G…`) whose
   mentions of the Legion Slack app reach the project's controller, which answers in the thread. It
   needs `controller: daemon` and `runtime.kubernetes.agent_secrets`, and the loader refuses it
@@ -566,10 +572,9 @@ What each part is for:
   lines every pane's commits carry, so a squash landing that branch carries the issue key in its
   message — which is what a base branch that requires the key in the commit it lands reads.
   A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
-  A pane stamps the commit when its launch's repository is one of the names, whatever [Dispatch
-  maps to the project](#the-projects-repositories).
-  The boot checks each name against that mapping alone and says once, naming the repository and
-  the project, that the mapping does not hold it, which catches a typo.
+  A pane stamps the commit when its launch's repository is one of the names.
+  The daemon compares the list with nothing at boot, so a misspelled name stamps no commit and no
+  line says so: compare the list with the repositories `legion state` lists.
   A pane of a repository the key does not name is told no key, and its commits carry the session
   and role lines alone, as does a commit that pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so `runtime.kubernetes.pod.env` and
@@ -588,17 +593,30 @@ What each part is for:
   ```
 
   Both names are compared without case, wherever the daemon compares a repository name. The
-  equivalence is read-side only: no record is rewritten, and a tree keeps the repository name it
-  was recorded under for its whole life, so a pair must stay in the file for as long as any record
-  names the old repository.
+  daemon also writes each pair's `to` over its `from` in its stored records, once: at boot, for
+  every issue that has no live pod then (under tmux, no workspace under the old name), and when an
+  issue's pod ends, for that issue. Under `runtime.kubernetes.sandbox.microvm.keep_volume: true`,
+  an idle release keeps the issue's Sandbox and its volume for the issue's next pod. That pod
+  mounts the volume, and the workspace on it is under the old name. So such an issue keeps its old
+  name until no kept volume is left. The pass at the issue's close, or a later boot, writes it then.
+  Until it does, the pass's `left` count can stay above 0.
+  The daemon writes a pair only once GitHub shows the transfer, both role Apps installed on the
+  `to` and neither on the `from`, and writes the `to` as GitHub spells it;
+  until then it leaves the pair's records as they are and logs one `rename pass: left …` line, so a
+  pair may still be configured before the transfer. Each run logs one `rename pass: …` line per
+  table, with the rows it wrote, the rows whose write failed and the rows still `left` on each
+  `from`. A record keeps the name it was recorded under until the pass writes it, so keep a pair
+  in the file until no row is left on its `from`.
 
   The daemon calls GitHub under the name GitHub holds the repository under now: a recorded name
-  resolves to the other name of its pair exactly when the recorded name is the pair's `from`,
-  Dispatch maps the pair's `to` to the project, and Dispatch does not map the pair's `from`. Every
-  other recorded name, the pair's `to` included, is used as it stands. The rule asks whether
-  Dispatch maps each of the pair's two repositories to the project, one repository at a time, and
-  never which owners the project's repositories have, so mapping another repository of either
-  owner to the project leaves the pair resolving exactly as it did. A role's gh bundle still holds
+  resolves to the other name of its pair exactly when the recorded name is the pair's `from`, both
+  role Apps are installed on the pair's `to`, and they are not both installed on the pair's
+  `from`. The daemon reads both names of each pair from GitHub once its API serves, and until
+  GitHub answers for a name, it counts the pair's `to` as served and its `from` as not. Every
+  other recorded name, the pair's `to` included, is used as it stands. The rule asks GitHub about
+  each of the pair's two repositories, one repository at a time, and never which owners the
+  project's repositories have, so work in another repository of either owner leaves the pair
+  resolving exactly as it did. A role's gh bundle still holds
   one directory per owner, named for the owner the record keeps, which a transfer does not move;
   the token in the directory a role writes through is minted for the owner whose installation
   holds that repository now.
@@ -1209,13 +1227,14 @@ Closing the terminal leaves the project without one, and the daemon logs
 2. **Update `legion.yaml`**: set `runtime.kubernetes.image` to the new digest and run
    `legion config check --config legion.yaml`.
 
-   **After the first upgrade to a release that takes the project's repositories from Dispatch,** a
+   **After the first upgrade to a release that takes each issue's repository from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with
-   `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping`. Upgrade
-   Dispatch first, map the project's repositories there with the old `repo` as the project's
-   default, then delete the key and upgrade the daemon: its first boot records each issue it
-   already runs on the repository Dispatch resolves for it, and refuses to boot, naming every
-   issue, while one resolves to none.
+   `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch, …`.
+   Upgrade Dispatch first, set the old `repo` as the project's default repository in Dispatch,
+   then delete the key and upgrade the daemon: its first boot records each issue it already runs
+   on the repository Dispatch resolves for it. An issue that resolves to none is logged and left
+   without its repository, the daemon tries it again on its own, and each launch of it is refused
+   until Dispatch resolves a repository for it.
 
    **After the first upgrade to a release without `review_workflows`,** a `legion.yaml` that still
    sets `projects.<KEY>.review_workflows` is refused at load with
@@ -1517,8 +1536,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   after a boot onto a new plugin contract.
 
   The `consumer` lines are the lag of the daemon's durable consumers on the
-  `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events and the
-  project's repository mapping), `legion-go-<project>-github` (the GitHub events of the project's
+  `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events),
+  `legion-go-<project>-github` (the GitHub events of the project's
   repositories) and `legion-go-<project>-wake` (the Envoy listener's wake reports). Each says how
   many messages wait for the consumer, delivered and not yet handled or not yet delivered, the
   events the daemon will acknowledge without acting on included, and how long ago the oldest of
@@ -1585,14 +1604,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   `strandedClaims` ([A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)),
   `wakesWaiting` (each wake the pacing holds until its turn, in claim order: `claim`, `issue`,
   `role`, `kind` and `dueAt`; an array, never null, and empty at every moment outside a wave),
-  `repositories` (every repository the daemon serves, the ones Dispatch's mapping names and the
-  ones the project's own records name: `owners`, `mapped`, each entry with its `repo`, `default`,
-  `cache` and `apps` — `{"implement": bool, "review": bool}`, each role App's installation on that
-  repository — `refused`, each with its `repo`, the `reason` a role App is not installed on it or
-  its installation could not be read, and `apps`, the same shape, wherever GitHub answered both
-  Apps' installation reads of `repo` (absent where a read failed or `repo` is no `<owner>/<name>`),
-  and `withoutWebhookApp` with each served repository
-  Dispatch's GitHub App is not known to be installed on, its `repo` and `reason`),
+  `repositories` (`live`, one entry for each repository the project's live records name, sorted:
+  its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
+  where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,
+  each role App's installation on it, once GitHub answered both reads; `readError`, why GitHub's
+  last read did not name it; and `cache`, its repository cache under the Kubernetes runtime, each
+  left out while it holds nothing — `withoutWebhookApp`, `{repo, reason}` for each of those
+  repositories Dispatch's GitHub App is not known to be installed on, in `live`'s order and in
+  contract 152's shape, the block's one report of the webhook App, which `legion state` reads its
+  `webhook App missing` lines from, this release's and one of contract 152's alike — and `caches`,
+  the caches of repositories no live record names, each kept until its `retainedUntil`; a plugin
+  of an earlier contract is served the block in the shape it reads),
   `consumers` (each durable consumer's `name`; `waiting`; `oldestAt` and `oldestAgeSeconds`, the
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and

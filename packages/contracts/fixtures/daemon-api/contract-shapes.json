@@ -369,6 +369,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -815,6 +816,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -1271,6 +1273,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -1730,6 +1733,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -2189,6 +2193,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -2655,6 +2660,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -3129,6 +3135,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -3620,6 +3627,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -4111,6 +4119,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -4620,6 +4629,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -5132,6 +5142,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -5661,6 +5672,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -6192,6 +6204,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -6723,6 +6736,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -7255,6 +7269,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -7788,6 +7803,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -8432,6 +8448,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -9102,6 +9119,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -9789,6 +9807,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -10487,6 +10506,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -11187,6 +11207,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -11905,6 +11926,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -12623,6 +12645,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -13343,6 +13366,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -14063,6 +14087,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -14784,6 +14809,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -15531,6 +15557,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -16278,6 +16305,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -17031,6 +17059,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -17784,6 +17813,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -18545,6 +18575,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -19306,6 +19337,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -20073,6 +20105,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -20840,6 +20873,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -21607,6 +21641,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -22467,6 +22502,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -23327,6 +23363,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -24187,6 +24224,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -25511,6 +25549,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -26835,6 +26874,7 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -26947,6 +26987,1329 @@
   },
   {
     "contract": 202,
+    "answer": "issue-record",
+    "noBody": false,
+    "keyPaths": [
+      "ancestry",
+      "ancestry.*",
+      "architect",
+      "architect.failure",
+      "architect.failure.at",
+      "architect.failure.attempts",
+      "architect.failure.attempts.deaths",
+      "architect.failure.attempts.launchFailures",
+      "architect.failure.attempts.promptFailures",
+      "architect.failure.attempts.promptRetires",
+      "architect.failure.cause",
+      "architect.failure.detail",
+      "architect.lastDeathCause",
+      "architect.lastReady",
+      "architect.lastStartFailure",
+      "architect.lastTurnEnd",
+      "architect.lastTurnStart",
+      "architect.locator",
+      "architect.locator.claim",
+      "architect.locator.incarnation",
+      "architect.locator.runtime",
+      "architect.locator.tmux",
+      "architect.locator.tmux.pane",
+      "architect.locator.tmux.window",
+      "architect.pendingCause",
+      "architect.pendingTask",
+      "architect.pendingTask.lastSendError",
+      "architect.pendingTask.phase",
+      "architect.pendingTask.queuedAt",
+      "architect.pendingTask.sendFailures",
+      "architect.pluginContract",
+      "architect.session",
+      "architect.state",
+      "architect.step",
+      "architect.step.argsBytes",
+      "architect.step.argsHash",
+      "architect.step.at",
+      "architect.step.callId",
+      "architect.step.endedAt",
+      "architect.step.startedAt",
+      "architect.step.tool",
+      "architect.step.turnStartedAt",
+      "architect.updateState",
+      "architect.wake",
+      "architect.wake.dueAt",
+      "architect.wake.kind",
+      "architectStalls",
+      "architectStalls.*",
+      "assignments",
+      "assignments.*",
+      "assignments.*.drawnAt",
+      "assignments.*.experiment",
+      "assignments.*.mode",
+      "assignments.*.variant",
+      "check",
+      "check.last",
+      "check.lastWake",
+      "check.lastWake.at",
+      "check.lastWake.detail",
+      "check.lastWake.kind",
+      "check.lookOpen",
+      "check.looks",
+      "check.mergeCommit",
+      "check.nextWakeAt",
+      "check.openedAt",
+      "check.pullRequest",
+      "check.repo",
+      "check.role",
+      "defaultBranch",
+      "designGate",
+      "designGate.approvedVersion",
+      "designGate.artifactId",
+      "designGate.currentVersion",
+      "entryConfirmedAt",
+      "entryQueuedAt",
+      "gatedSteps",
+      "gatedSteps.*",
+      "gatedSteps.*.approvedVersion",
+      "gatedSteps.*.artifactId",
+      "gatedSteps.*.changesReason",
+      "gatedSteps.*.currentVersion",
+      "gatedSteps.*.status",
+      "gatedSteps.*.step",
+      "generation",
+      "givenEntry",
+      "heldFrom",
+      "holdReason",
+      "key",
+      "lingerUntil",
+      "memoryDrawMode",
+      "memoryDrawnAt",
+      "memoryGroup",
+      "mergeWait",
+      "mergeWait.checkRuns",
+      "mergeWait.headUpdatedAt",
+      "mergeWait.mergeState",
+      "mergeWait.stateReadAt",
+      "mergeWait.toldHead",
+      "mergeWait.toldState",
+      "mergeWait.waitsOn",
+      "phase",
+      "phaseEntry",
+      "pullRequest",
+      "pullRequest.head",
+      "pullRequest.mergeState",
+      "pullRequest.number",
+      "pullRequest.repo",
+      "pullRequest.reviewDecision",
+      "pullRequest.state",
+      "quietHours",
+      "repo",
+      "slot",
+      "slot.admittedAt",
+      "slot.index",
+      "status",
+      "tree",
+      "treeMovedAt",
+      "waitingLine",
+      "waitingLine.holdsSlot",
+      "waitingLine.kind",
+      "waitingLine.length",
+      "waitingLine.ownRank",
+      "waitingLine.part",
+      "waitingLine.partLength",
+      "waitingLine.partPlace",
+      "waitingLine.place",
+      "waitingLine.reason",
+      "waitingLine.rootKey",
+      "waitingLine.rootRank",
+      "waitingLine.since",
+      "waitingOn",
+      "waitingOn.answeredAt",
+      "waitingOn.answeredBy",
+      "waitingOn.artifactId",
+      "waitingOn.ask",
+      "waitingOn.gateVersion",
+      "waitingOn.kind",
+      "waitingOn.since",
+      "why",
+      "why.reason",
+      "why.state",
+      "workers",
+      "workers.*",
+      "workers.*.backwardMoves",
+      "workers.*.backwardMoves.*",
+      "workers.*.claim",
+      "workers.*.claim.capabilities",
+      "workers.*.claim.capabilities.incarnation",
+      "workers.*.claim.capabilities.measuredAt",
+      "workers.*.claim.capabilities.ok",
+      "workers.*.claim.capabilities.ok.*",
+      "workers.*.claim.capabilities.open",
+      "workers.*.claim.capabilities.open.*",
+      "workers.*.claim.capabilities.open.*.detail",
+      "workers.*.claim.capabilities.open.*.name",
+      "workers.*.claim.failure",
+      "workers.*.claim.failure.at",
+      "workers.*.claim.failure.attempts",
+      "workers.*.claim.failure.attempts.deaths",
+      "workers.*.claim.failure.attempts.launchFailures",
+      "workers.*.claim.failure.attempts.promptFailures",
+      "workers.*.claim.failure.attempts.promptRetires",
+      "workers.*.claim.failure.cause",
+      "workers.*.claim.failure.detail",
+      "workers.*.claim.leakCheckCause",
+      "workers.*.claim.locator",
+      "workers.*.claim.locator.claim",
+      "workers.*.claim.locator.incarnation",
+      "workers.*.claim.locator.runtime",
+      "workers.*.claim.locator.sandbox",
+      "workers.*.claim.locator.sandbox.container",
+      "workers.*.claim.locator.sandbox.generation",
+      "workers.*.claim.locator.sandbox.name",
+      "workers.*.claim.locator.sandbox.namespace",
+      "workers.*.claim.locator.sandbox.podUid",
+      "workers.*.claim.pendingCause",
+      "workers.*.claim.pendingTask",
+      "workers.*.claim.pendingTask.lastSendError",
+      "workers.*.claim.pendingTask.phase",
+      "workers.*.claim.pendingTask.queuedAt",
+      "workers.*.claim.pendingTask.sendFailures",
+      "workers.*.claim.pluginContract",
+      "workers.*.claim.providerErrorRun",
+      "workers.*.claim.servingGeneration",
+      "workers.*.claim.session",
+      "workers.*.claim.state",
+      "workers.*.claim.step",
+      "workers.*.claim.step.argsBytes",
+      "workers.*.claim.step.argsHash",
+      "workers.*.claim.step.at",
+      "workers.*.claim.step.callId",
+      "workers.*.claim.step.startedAt",
+      "workers.*.claim.step.tool",
+      "workers.*.claim.step.turnStartedAt",
+      "workers.*.claim.updateHead",
+      "workers.*.claim.updateReasons",
+      "workers.*.claim.updateRound",
+      "workers.*.claim.updateState",
+      "workers.*.claim.wake",
+      "workers.*.claim.wake.dueAt",
+      "workers.*.claim.wake.kind",
+      "workers.*.handoffCommit",
+      "workers.*.handoffRecord",
+      "workers.*.handoffRecord.id",
+      "workers.*.handoffRecord.version",
+      "workers.*.pass",
+      "workers.*.rounds"
+    ],
+    "domains": {
+      "architect.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "architect.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "architect.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "architect.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ],
+      "architectStalls.*": [
+        "claim-unreachable",
+        "slow-before-gate",
+        "took-nothing"
+      ],
+      "gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "heldFrom": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "mergeWait.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "mergeWait.toldState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "pullRequest.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
+      "waitingLine.kind": [
+        "answered",
+        "first_phase",
+        "queued_root",
+        "returning",
+        "waiting_on_issue"
+      ],
+      "waitingLine.part": [
+        "returned",
+        "starting"
+      ],
+      "waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ],
+      "why.state": [
+        "blocked",
+        "claim_stopped",
+        "unlisted",
+        "waiting"
+      ],
+      "workers.*.claim.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "workers.*.claim.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "workers.*.claim.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "workers.*.claim.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ]
+    }
+  },
+  {
+    "contract": 202,
+    "answer": "no-content",
+    "noBody": true,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "project-pause",
+    "noBody": false,
+    "keyPaths": [
+      "pause",
+      "pause.by",
+      "pause.by.kind",
+      "pause.by.session",
+      "pause.id",
+      "pause.reason",
+      "pause.since"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "project-resume",
+    "noBody": false,
+    "keyPaths": [
+      "pause",
+      "pause.by",
+      "pause.by.kind",
+      "pause.by.session",
+      "pause.endedAt",
+      "pause.endedBy",
+      "pause.endedBy.kind",
+      "pause.endedBy.session",
+      "pause.id",
+      "pause.reason",
+      "pause.since",
+      "released"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "refusal",
+    "noBody": false,
+    "keyPaths": [
+      "code",
+      "error",
+      "lastPause",
+      "lastPause.by",
+      "lastPause.by.kind",
+      "lastPause.by.session",
+      "lastPause.endedAt",
+      "lastPause.endedBy",
+      "lastPause.endedBy.kind",
+      "lastPause.endedBy.session",
+      "lastPause.id",
+      "lastPause.reason",
+      "lastPause.since",
+      "pause",
+      "pause.by",
+      "pause.by.kind",
+      "pause.by.session",
+      "pause.id",
+      "pause.reason",
+      "pause.since",
+      "setting"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "register",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "issue",
+      "promptAgents",
+      "promptAgents.*",
+      "role",
+      "secret",
+      "tree"
+    ],
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  },
+  {
+    "contract": 202,
+    "answer": "register-controller",
+    "noBody": false,
+    "keyPaths": [
+      "claimToken",
+      "generation",
+      "role",
+      "secret"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "release-records",
+    "noBody": false,
+    "keyPaths": [
+      "holds",
+      "holds.*",
+      "holds.*.at",
+      "holds.*.detail",
+      "holds.*.firstAt",
+      "holds.*.id",
+      "holds.*.issue",
+      "holds.*.passes",
+      "holds.*.reason",
+      "releases",
+      "releases.*",
+      "releases.*.at",
+      "releases.*.bundleBytes",
+      "releases.*.generation",
+      "releases.*.id",
+      "releases.*.issue",
+      "releases.*.roles",
+      "releases.*.roles.*",
+      "resumes",
+      "resumes.*",
+      "resumes.*.at",
+      "resumes.*.firstTurnAt",
+      "resumes.*.id",
+      "resumes.*.issue",
+      "resumes.*.kind",
+      "resumes.*.pause",
+      "resumes.*.podReadyAt",
+      "resumes.*.release",
+      "resumes.*.role",
+      "resumes.*.stuck"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "state",
+    "noBody": false,
+    "keyPaths": [
+      "admission",
+      "admission.active",
+      "admission.active.*",
+      "admission.blocked",
+      "admission.blocked.*",
+      "admission.blocked.*.blockedBy",
+      "admission.blocked.*.blockedBy.*",
+      "admission.blocked.*.issue",
+      "admission.cap",
+      "admission.held",
+      "admission.held.*",
+      "admission.held.*.heldBy",
+      "admission.held.*.heldBy.*",
+      "admission.held.*.issue",
+      "admission.held.*.reason",
+      "admission.trees",
+      "admission.trees.*",
+      "admission.waiting",
+      "admission.waiting.*",
+      "agentSecretsLogin",
+      "agentSecretsLogin.state",
+      "capabilities",
+      "capabilities.*",
+      "capabilities.*.configLine",
+      "capabilities.*.decision",
+      "capabilities.*.detail",
+      "capabilities.*.name",
+      "capabilities.*.source",
+      "capabilities.*.status",
+      "claimsToRefresh",
+      "consumers",
+      "consumers.*",
+      "consumers.*.lastHandledAt",
+      "consumers.*.name",
+      "consumers.*.oldestAgeSeconds",
+      "consumers.*.oldestAt",
+      "consumers.*.stalled",
+      "consumers.*.unavailable",
+      "consumers.*.waiting",
+      "contract",
+      "contract.caller",
+      "contract.daemon",
+      "controllerLocator",
+      "controllerLocator.external",
+      "controllerLocator.pluginContract",
+      "controllerLocator.registeredAt",
+      "controllerLocator.runtime",
+      "controllerLocator.sessionId",
+      "daemon",
+      "daemon.boots",
+      "daemon.firstBootAt",
+      "daemon.project",
+      "daemon.schemaVersion",
+      "daemon.startedAt",
+      "heldOutboxRows",
+      "heldOutboxRows.*",
+      "heldOutboxRows.*.id",
+      "heldOutboxRows.*.issue",
+      "heldOutboxRows.*.kind",
+      "heldOutboxRows.*.waitedSeconds",
+      "heldOutboxRows.*.waitsOn",
+      "issues",
+      "issues.*",
+      "issues.*.ancestry",
+      "issues.*.ancestry.*",
+      "issues.*.architect",
+      "issues.*.architect.failure",
+      "issues.*.architect.failure.at",
+      "issues.*.architect.failure.attempts",
+      "issues.*.architect.failure.attempts.deaths",
+      "issues.*.architect.failure.attempts.launchFailures",
+      "issues.*.architect.failure.attempts.promptFailures",
+      "issues.*.architect.failure.attempts.promptRetires",
+      "issues.*.architect.failure.cause",
+      "issues.*.architect.failure.detail",
+      "issues.*.architect.lastDeathCause",
+      "issues.*.architect.lastReady",
+      "issues.*.architect.lastStartFailure",
+      "issues.*.architect.lastTurnEnd",
+      "issues.*.architect.lastTurnStart",
+      "issues.*.architect.locator",
+      "issues.*.architect.locator.claim",
+      "issues.*.architect.locator.incarnation",
+      "issues.*.architect.locator.runtime",
+      "issues.*.architect.locator.tmux",
+      "issues.*.architect.locator.tmux.pane",
+      "issues.*.architect.locator.tmux.window",
+      "issues.*.architect.pendingCause",
+      "issues.*.architect.pendingTask",
+      "issues.*.architect.pendingTask.lastSendError",
+      "issues.*.architect.pendingTask.phase",
+      "issues.*.architect.pendingTask.queuedAt",
+      "issues.*.architect.pendingTask.sendFailures",
+      "issues.*.architect.pluginContract",
+      "issues.*.architect.session",
+      "issues.*.architect.state",
+      "issues.*.architect.step",
+      "issues.*.architect.step.argsBytes",
+      "issues.*.architect.step.argsHash",
+      "issues.*.architect.step.at",
+      "issues.*.architect.step.callId",
+      "issues.*.architect.step.endedAt",
+      "issues.*.architect.step.startedAt",
+      "issues.*.architect.step.tool",
+      "issues.*.architect.step.turnStartedAt",
+      "issues.*.architect.updateState",
+      "issues.*.architect.wake",
+      "issues.*.architect.wake.dueAt",
+      "issues.*.architect.wake.kind",
+      "issues.*.architectStalls",
+      "issues.*.architectStalls.*",
+      "issues.*.assignments",
+      "issues.*.assignments.*",
+      "issues.*.assignments.*.drawnAt",
+      "issues.*.assignments.*.experiment",
+      "issues.*.assignments.*.mode",
+      "issues.*.assignments.*.variant",
+      "issues.*.check",
+      "issues.*.check.last",
+      "issues.*.check.lastWake",
+      "issues.*.check.lastWake.at",
+      "issues.*.check.lastWake.detail",
+      "issues.*.check.lastWake.kind",
+      "issues.*.check.lookOpen",
+      "issues.*.check.looks",
+      "issues.*.check.mergeCommit",
+      "issues.*.check.nextWakeAt",
+      "issues.*.check.openedAt",
+      "issues.*.check.pullRequest",
+      "issues.*.check.repo",
+      "issues.*.check.role",
+      "issues.*.defaultBranch",
+      "issues.*.designGate",
+      "issues.*.designGate.approvedVersion",
+      "issues.*.designGate.artifactId",
+      "issues.*.designGate.currentVersion",
+      "issues.*.entryConfirmedAt",
+      "issues.*.entryQueuedAt",
+      "issues.*.gatedSteps",
+      "issues.*.gatedSteps.*",
+      "issues.*.gatedSteps.*.approvedVersion",
+      "issues.*.gatedSteps.*.artifactId",
+      "issues.*.gatedSteps.*.changesReason",
+      "issues.*.gatedSteps.*.currentVersion",
+      "issues.*.gatedSteps.*.status",
+      "issues.*.gatedSteps.*.step",
+      "issues.*.generation",
+      "issues.*.givenEntry",
+      "issues.*.heldFrom",
+      "issues.*.holdReason",
+      "issues.*.key",
+      "issues.*.lingerUntil",
+      "issues.*.memoryDrawMode",
+      "issues.*.memoryDrawnAt",
+      "issues.*.memoryGroup",
+      "issues.*.mergeWait",
+      "issues.*.mergeWait.checkRuns",
+      "issues.*.mergeWait.headUpdatedAt",
+      "issues.*.mergeWait.mergeState",
+      "issues.*.mergeWait.stateReadAt",
+      "issues.*.mergeWait.toldHead",
+      "issues.*.mergeWait.toldState",
+      "issues.*.mergeWait.waitsOn",
+      "issues.*.phase",
+      "issues.*.phaseEntry",
+      "issues.*.pullRequest",
+      "issues.*.pullRequest.head",
+      "issues.*.pullRequest.mergeState",
+      "issues.*.pullRequest.number",
+      "issues.*.pullRequest.repo",
+      "issues.*.pullRequest.reviewDecision",
+      "issues.*.pullRequest.state",
+      "issues.*.quietHours",
+      "issues.*.repo",
+      "issues.*.slot",
+      "issues.*.slot.admittedAt",
+      "issues.*.slot.index",
+      "issues.*.status",
+      "issues.*.tree",
+      "issues.*.treeMovedAt",
+      "issues.*.waitingLine",
+      "issues.*.waitingLine.holdsSlot",
+      "issues.*.waitingLine.kind",
+      "issues.*.waitingLine.length",
+      "issues.*.waitingLine.ownRank",
+      "issues.*.waitingLine.part",
+      "issues.*.waitingLine.partLength",
+      "issues.*.waitingLine.partPlace",
+      "issues.*.waitingLine.place",
+      "issues.*.waitingLine.reason",
+      "issues.*.waitingLine.rootKey",
+      "issues.*.waitingLine.rootRank",
+      "issues.*.waitingLine.since",
+      "issues.*.waitingOn",
+      "issues.*.waitingOn.answeredAt",
+      "issues.*.waitingOn.answeredBy",
+      "issues.*.waitingOn.artifactId",
+      "issues.*.waitingOn.ask",
+      "issues.*.waitingOn.gateVersion",
+      "issues.*.waitingOn.kind",
+      "issues.*.waitingOn.since",
+      "issues.*.why",
+      "issues.*.why.reason",
+      "issues.*.why.state",
+      "issues.*.workers",
+      "issues.*.workers.*",
+      "issues.*.workers.*.backwardMoves",
+      "issues.*.workers.*.backwardMoves.*",
+      "issues.*.workers.*.claim",
+      "issues.*.workers.*.claim.capabilities",
+      "issues.*.workers.*.claim.capabilities.incarnation",
+      "issues.*.workers.*.claim.capabilities.measuredAt",
+      "issues.*.workers.*.claim.capabilities.ok",
+      "issues.*.workers.*.claim.capabilities.ok.*",
+      "issues.*.workers.*.claim.capabilities.open",
+      "issues.*.workers.*.claim.capabilities.open.*",
+      "issues.*.workers.*.claim.capabilities.open.*.detail",
+      "issues.*.workers.*.claim.capabilities.open.*.name",
+      "issues.*.workers.*.claim.failure",
+      "issues.*.workers.*.claim.failure.at",
+      "issues.*.workers.*.claim.failure.attempts",
+      "issues.*.workers.*.claim.failure.attempts.deaths",
+      "issues.*.workers.*.claim.failure.attempts.launchFailures",
+      "issues.*.workers.*.claim.failure.attempts.promptFailures",
+      "issues.*.workers.*.claim.failure.attempts.promptRetires",
+      "issues.*.workers.*.claim.failure.cause",
+      "issues.*.workers.*.claim.failure.detail",
+      "issues.*.workers.*.claim.leakCheckCause",
+      "issues.*.workers.*.claim.locator",
+      "issues.*.workers.*.claim.locator.claim",
+      "issues.*.workers.*.claim.locator.incarnation",
+      "issues.*.workers.*.claim.locator.runtime",
+      "issues.*.workers.*.claim.locator.sandbox",
+      "issues.*.workers.*.claim.locator.sandbox.container",
+      "issues.*.workers.*.claim.locator.sandbox.generation",
+      "issues.*.workers.*.claim.locator.sandbox.name",
+      "issues.*.workers.*.claim.locator.sandbox.namespace",
+      "issues.*.workers.*.claim.locator.sandbox.podUid",
+      "issues.*.workers.*.claim.pendingCause",
+      "issues.*.workers.*.claim.pendingTask",
+      "issues.*.workers.*.claim.pendingTask.lastSendError",
+      "issues.*.workers.*.claim.pendingTask.phase",
+      "issues.*.workers.*.claim.pendingTask.queuedAt",
+      "issues.*.workers.*.claim.pendingTask.sendFailures",
+      "issues.*.workers.*.claim.pluginContract",
+      "issues.*.workers.*.claim.providerErrorRun",
+      "issues.*.workers.*.claim.servingGeneration",
+      "issues.*.workers.*.claim.session",
+      "issues.*.workers.*.claim.state",
+      "issues.*.workers.*.claim.step",
+      "issues.*.workers.*.claim.step.argsBytes",
+      "issues.*.workers.*.claim.step.argsHash",
+      "issues.*.workers.*.claim.step.at",
+      "issues.*.workers.*.claim.step.callId",
+      "issues.*.workers.*.claim.step.startedAt",
+      "issues.*.workers.*.claim.step.tool",
+      "issues.*.workers.*.claim.step.turnStartedAt",
+      "issues.*.workers.*.claim.updateHead",
+      "issues.*.workers.*.claim.updateReasons",
+      "issues.*.workers.*.claim.updateRound",
+      "issues.*.workers.*.claim.updateState",
+      "issues.*.workers.*.claim.wake",
+      "issues.*.workers.*.claim.wake.dueAt",
+      "issues.*.workers.*.claim.wake.kind",
+      "issues.*.workers.*.handoffCommit",
+      "issues.*.workers.*.handoffRecord",
+      "issues.*.workers.*.handoffRecord.id",
+      "issues.*.workers.*.handoffRecord.version",
+      "issues.*.workers.*.pass",
+      "issues.*.workers.*.rounds",
+      "lastPause",
+      "lastPause.by",
+      "lastPause.by.kind",
+      "lastPause.by.session",
+      "lastPause.endedAt",
+      "lastPause.endedBy",
+      "lastPause.endedBy.kind",
+      "lastPause.endedBy.session",
+      "lastPause.id",
+      "lastPause.reason",
+      "lastPause.since",
+      "lowestPluginContract",
+      "paused",
+      "paused.by",
+      "paused.by.kind",
+      "paused.by.session",
+      "paused.held",
+      "paused.held.*",
+      "paused.held.*.claim",
+      "paused.held.*.id",
+      "paused.held.*.issue",
+      "paused.held.*.kind",
+      "paused.held.*.waitedSeconds",
+      "paused.id",
+      "paused.reason",
+      "paused.since",
+      "paused.waitsOn",
+      "paused.waitsOn.*",
+      "paused.waitsOn.*.askedAt",
+      "paused.waitsOn.*.claim",
+      "paused.waitsOn.*.issue",
+      "paused.waitsOn.*.role",
+      "pendingStatusWrites",
+      "pendingStatusWrites.*",
+      "pendingStatusWrites.*.attempts",
+      "pendingStatusWrites.*.issue",
+      "pendingStatusWrites.*.lastError",
+      "pendingStatusWrites.*.nextAt",
+      "pendingStatusWrites.*.payload",
+      "repositories",
+      "repositories.caches",
+      "repositories.caches.*",
+      "repositories.caches.*.ready",
+      "repositories.caches.*.repo",
+      "repositories.caches.*.retainedUntil",
+      "repositories.caches.*.sandbox",
+      "repositories.caches.*.state",
+      "repositories.live",
+      "repositories.live.*",
+      "repositories.live.*.apps",
+      "repositories.live.*.apps.implement",
+      "repositories.live.*.apps.review",
+      "repositories.live.*.cache",
+      "repositories.live.*.cache.address",
+      "repositories.live.*.cache.bytes",
+      "repositories.live.*.cache.head",
+      "repositories.live.*.cache.healthError",
+      "repositories.live.*.cache.lastFetchAt",
+      "repositories.live.*.cache.ready",
+      "repositories.live.*.cache.reason",
+      "repositories.live.*.cache.repo",
+      "repositories.live.*.cache.sandbox",
+      "repositories.live.*.cache.state",
+      "repositories.live.*.readError",
+      "repositories.live.*.repo",
+      "repositories.live.*.servedAs",
+      "repositories.withoutWebhookApp",
+      "repositories.withoutWebhookApp.*",
+      "repositories.withoutWebhookApp.*.reason",
+      "repositories.withoutWebhookApp.*.repo",
+      "settings",
+      "settings.review_round_cap",
+      "settings.worker_boot_timeout_seconds",
+      "strandedClaims",
+      "strandedClaims.*",
+      "strandedClaims.*.issue",
+      "strandedClaims.*.role",
+      "strandedClaims.*.state",
+      "wakesWaiting",
+      "wakesWaiting.*",
+      "wakesWaiting.*.claim",
+      "wakesWaiting.*.dueAt",
+      "wakesWaiting.*.issue",
+      "wakesWaiting.*.kind",
+      "wakesWaiting.*.role"
+    ],
+    "domains": {
+      "admission.held.*.reason": [
+        "accepted_ancestor",
+        "ancestry",
+        "at_work",
+        "children_first",
+        "design_gate",
+        "dispatch_blocker",
+        "label_off",
+        "root_awaiting_person",
+        "tree_closed",
+        "tree_parked",
+        "unclassified"
+      ],
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "intakeGiveUps.newest.*.reason": [],
+      "issues.*.architect.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.architect.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.architect.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ],
+      "issues.*.architectStalls.*": [
+        "claim-unreachable",
+        "slow-before-gate",
+        "took-nothing"
+      ],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.heldFrom": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.mergeWait.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "issues.*.mergeWait.toldState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.mergeState": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
+      "issues.*.waitingLine.kind": [
+        "answered",
+        "first_phase",
+        "queued_root",
+        "returning",
+        "waiting_on_issue"
+      ],
+      "issues.*.waitingLine.part": [
+        "returned",
+        "starting"
+      ],
+      "issues.*.waitingOn.answeredBy": [
+        "approved",
+        "ask",
+        "changes_requested",
+        "closed",
+        "declined",
+        "reply",
+        "retracted",
+        "turn",
+        "version"
+      ],
+      "issues.*.why.state": [
+        "blocked",
+        "claim_stopped",
+        "unlisted",
+        "waiting"
+      ],
+      "issues.*.workers.*.claim.failure.cause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.workers.*.claim.pendingCause": [
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ],
+      "issues.*.workers.*.claim.pendingTask.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ],
+      "paused.waitsOn.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.live.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  },
+  {
+    "contract": 202,
+    "answer": "turn-outcome",
+    "noBody": false,
+    "keyPaths": [
+      "failed",
+      "refusedRun"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 202,
+    "answer": "wave-release",
+    "noBody": false,
+    "keyPaths": [
+      "held",
+      "held.*",
+      "held.*.blockedBy",
+      "held.*.blockedBy.*",
+      "held.*.issue",
+      "released",
+      "released.*",
+      "started",
+      "started.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "compact",
+    "noBody": false,
+    "keyPaths": [
+      "compacted",
+      "reason"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "empty-object",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "fresh-session",
+    "noBody": false,
+    "keyPaths": [
+      "phaseNotRestarted"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "grant",
+    "noBody": false,
+    "keyPaths": [
+      "expiresAt",
+      "grantId"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "handoff-complete",
+    "noBody": false,
+    "keyPaths": [],
+    "domains": {}
+  },
+  {
+    "contract": 207,
+    "answer": "health",
+    "noBody": false,
+    "keyPaths": [
+      "project",
+      "status"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 207,
     "answer": "intake-discard",
     "noBody": false,
     "keyPaths": [
@@ -26956,7 +28319,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "intake-replay",
     "noBody": false,
     "keyPaths": [
@@ -26979,7 +28342,7 @@
     }
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -27414,14 +28777,14 @@
     }
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -27436,7 +28799,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -27456,7 +28819,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -27485,7 +28848,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -27510,7 +28873,7 @@
     }
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -27522,7 +28885,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -27560,7 +28923,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -27899,33 +29262,25 @@
       "repositories.caches.*.retainedUntil",
       "repositories.caches.*.sandbox",
       "repositories.caches.*.state",
-      "repositories.mapped",
-      "repositories.mapped.*",
-      "repositories.mapped.*.apps",
-      "repositories.mapped.*.apps.implement",
-      "repositories.mapped.*.apps.review",
-      "repositories.mapped.*.cache",
-      "repositories.mapped.*.cache.address",
-      "repositories.mapped.*.cache.bytes",
-      "repositories.mapped.*.cache.head",
-      "repositories.mapped.*.cache.healthError",
-      "repositories.mapped.*.cache.lastFetchAt",
-      "repositories.mapped.*.cache.ready",
-      "repositories.mapped.*.cache.reason",
-      "repositories.mapped.*.cache.repo",
-      "repositories.mapped.*.cache.sandbox",
-      "repositories.mapped.*.cache.state",
-      "repositories.mapped.*.default",
-      "repositories.mapped.*.repo",
-      "repositories.owners",
-      "repositories.owners.*",
-      "repositories.refused",
-      "repositories.refused.*",
-      "repositories.refused.*.apps",
-      "repositories.refused.*.apps.implement",
-      "repositories.refused.*.apps.review",
-      "repositories.refused.*.reason",
-      "repositories.refused.*.repo",
+      "repositories.live",
+      "repositories.live.*",
+      "repositories.live.*.apps",
+      "repositories.live.*.apps.implement",
+      "repositories.live.*.apps.review",
+      "repositories.live.*.cache",
+      "repositories.live.*.cache.address",
+      "repositories.live.*.cache.bytes",
+      "repositories.live.*.cache.head",
+      "repositories.live.*.cache.healthError",
+      "repositories.live.*.cache.lastFetchAt",
+      "repositories.live.*.cache.ready",
+      "repositories.live.*.cache.reason",
+      "repositories.live.*.cache.repo",
+      "repositories.live.*.cache.sandbox",
+      "repositories.live.*.cache.state",
+      "repositories.live.*.readError",
+      "repositories.live.*.repo",
+      "repositories.live.*.servedAs",
       "repositories.withoutWebhookApp",
       "repositories.withoutWebhookApp.*",
       "repositories.withoutWebhookApp.*.reason",
@@ -28216,6 +29571,13 @@
         "refused",
         "starting"
       ],
+      "repositories.live.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
       "repositories.mapped.*.cache.state": [
         "cloning",
         "failing",
@@ -28247,7 +29609,7 @@
     }
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -28257,7 +29619,7 @@
     "domains": {}
   },
   {
-    "contract": 202,
+    "contract": 207,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [

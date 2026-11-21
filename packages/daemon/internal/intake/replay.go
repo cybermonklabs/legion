@@ -148,10 +148,10 @@ func (g *GiveUps) Replay(ctx context.Context, selector record.IntakeSelector, ca
 
 // replayOne replays given, which this replay claimed, within HandlerLimit, and answers how it
 // ended. The message is decoded against the repositories GitHub intake hears now, then handled as
-// a live delivery is (handleMessage), with no message and no stream position: the repository
-// mapping read, the read of whether a review's or a settlement's pull request is recorded, the
-// preparations, each with the view of Dispatch it reads now, and the review's reads all run as
-// they do live, so a late fact is judged against the present. An applied fact and a duplicate
+// a live delivery is (handleMessage), with no message and no stream position: the read of whether
+// a review's or a settlement's pull request is recorded, the preparations, each with the view of
+// Dispatch it reads now, and the review's reads all run as they do live, so a late fact is judged
+// against the present. An applied fact and a duplicate
 // close the record inside ApplyFact's own transaction (withReplayClose); a message the handling
 // acknowledges with no transaction, or one that decodes to no fact, closes it in a statement of
 // its own (noFact). A failure keeps its error (failed).

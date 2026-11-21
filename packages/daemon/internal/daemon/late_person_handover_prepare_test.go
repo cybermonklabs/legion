@@ -72,7 +72,7 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			repos := newRepositories("LEGION", ghrepo.Renames{})
-			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 			shown := shownUnder(key, "icebox", "", true)

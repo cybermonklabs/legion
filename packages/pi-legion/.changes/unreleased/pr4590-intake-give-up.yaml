@@ -6,4 +6,4 @@ body: |-
   the stored message inside the daemon; a discard closes the records with the reason. The
   `read_state` summary prints `intake give-ups <consumer> open <n> newest seq <seq>`. The
   controller's skill routes the new `intake-gave-up` notice. The plugin's daemon API contract is
-  202.
+  207.

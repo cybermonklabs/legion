@@ -95,15 +95,15 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// NoteUnread is told, inside the fact's transaction, of each issue the workflow did not record
 	// because its repository resolved Unread (left out for now, GitHub not answering its
-	// installation read, or its default-branch read past GitHub's rate limit): the daemon takes it
-	// into that repository's recovery whatever it resolves
-	// to by then. It keeps no state of the issue's own. Nil notes none.
+	// installation read, or its read of the repository's name and default branch): the daemon
+	// takes it into that repository's recovery whatever it resolves to by then. It keeps no state
+	// of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
 	// HearRepository is told, inside the transaction that writes a new issue record, of the
 	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
 	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
-	// work in a repository no project maps gets the same event and cache service as work in a
-	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
+	// the first issue on a repository gets the same event and cache service as every later
+	// one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
@@ -2381,11 +2381,12 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 // pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.
 // The read is made under the name the fact carries and then, when it finds nothing, under the
 // other name of the pair that names it (pullRequestUnder): a record keeps the repository it was
-// written under for its whole life, so a pull request already open when its repository was
-// transferred is recorded under the name it moved from while every event after names the one it
-// moved to. A deployment that configures no rename makes exactly the one query it always made; a
-// configured one makes the second only when the first finds nothing, which is the common case —
-// an event of a pull request this daemon does not record at all.
+// written under until the daemon's one-time rename pass writes the pair's `to` over it, so a pull
+// request already open when its repository was transferred is recorded under the name it moved
+// from while every event after names the one it moved to. A deployment that configures no rename
+// makes exactly the one query it always made; a configured one makes the second only when the
+// first finds nothing, which is the common case — an event of a pull request this daemon does not
+// record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)

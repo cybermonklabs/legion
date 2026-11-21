@@ -285,20 +285,15 @@ func TestASecondReplayAnswersAlreadyAppliedAndWritesTheDuplicateLine(t *testing.
 }
 
 // A message the live handling acknowledges with no transaction closes, replayed, as no fact: a
-// repository mapping change, which reads the mapping again and applies nothing; a review of a pull
-// request the daemon does not record; and a message that decodes to no fact at all. No handler
-// runs, nothing is marked processed, and the record closes by its caller.
+// review of a pull request the daemon does not record, and a message that decodes to no fact at
+// all. No handler runs, nothing is marked processed, and the record closes by its caller.
 func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 	for _, row := range []struct {
-		name            string
-		consumer        string
-		subject         string
-		data            func(t *testing.T) []byte
-		mappingReads    int32
-		recordedRequest bool
+		name     string
+		consumer string
+		subject  string
+		data     func(t *testing.T) []byte
 	}{
-		{name: "a repository mapping change", consumer: dispatchConsumerName("CAPTURE"), subject: repoMappingSubject("CAPTURE"),
-			data: func(t *testing.T) []byte { return repoMappingEnvelope(t, "CAPTURE", "sjawhar/legion") }, mappingReads: 1},
 		{name: "a review of a pull request the daemon does not record", consumer: githubConsumerName("CAPTURE"),
 			subject: "notifications.github.sjawhar.legion.pr.42.review", data: func(t *testing.T) []byte { return capturedGitHubEnvelope(t, "review.json") }},
 		{name: "another project's issue event, which decodes to no fact", consumer: dispatchConsumerName("CAPTURE"),
@@ -307,11 +302,6 @@ func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			spec := replaySpec(&lockedBuffer{})
-			var reads atomic.Int32
-			spec.RepositoryMapping = func(context.Context) error {
-				reads.Add(1)
-				return nil
-			}
 			handler := &keysHandler{}
 			given := storedGiveUp(t, pool, row.consumer, row.subject, row.data(t), 7, 21)
 			answer, err := giveUpsOf(t, pool, spec, handler).Replay(context.Background(), record.IntakeSelector{ID: given.ID}, "operator")
@@ -326,9 +316,6 @@ func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 			}
 			if all, _ := processedFacts(t, pool, "", ""); all != 0 {
 				t.Errorf("processed_events holds %d facts, want none", all)
-			}
-			if got := reads.Load(); got != row.mappingReads {
-				t.Errorf("the replay read the repository mapping %d times, want %d", got, row.mappingReads)
 			}
 			if closed := replayedRecord(t, pool, given.ID); closed.ClosedHow != record.IntakeNoFact || closed.ClosedBy != "operator" || closed.ClosedAt != replayNow {
 				t.Errorf("the record = %+v, want it closed as no fact by the operator at %s", closed, replayNow)

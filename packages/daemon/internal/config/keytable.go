@@ -237,8 +237,8 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -252,7 +252,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
-			Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
+			Description: "The repositories that moved, each pair naming the repository as the records hold it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, and this release also writes each pair's new name over its old one on the stored records once, at boot and at the end of an issue's pod, logging the rows each table still holds on the old name, so a pair stays here until that count is zero (dispatch://INFRA-3532's own change removes the pass).",
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
 		},
 		{
@@ -522,7 +522,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
-			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the boot checks each name against Dispatch's mapping for this project and warns about one it does not find, which catches a typo, and a pane working that repository stamps its commits all the same."},
+			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the load checks each name's shape and refuses two names of one repository, and a pane working any other repository stamps nothing."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",
@@ -608,7 +608,7 @@ var nestedKeys = []memberGroup{
 		{Name: "plugins", Default: "a relaunch installs the pair the release workflow linked into this binary", RequiredBy: "no",
 			Description: "The exact pi-legion and pi-envoy pair a stale-plugin relaunch installs into a kept pod, in place of the image's own copies."},
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
-			Description: "Each mapped repository's cache pod, which an issue pod's feed is filled from before GitHub is asked for the rest."},
+			Description: "The cache pod of each repository a live record names, which an issue pod's feed is filled from before GitHub is asked for the rest."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
 			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
 		{Name: "skills_repository", Default: "", RequiredBy: "no",
@@ -666,7 +666,7 @@ var nestedKeys = []memberGroup{
 		{Name: "refresh_minutes", Default: "`10`", RequiredBy: "no",
 			Description: "How long the cache waits between its fetches from GitHub, in whole minutes."},
 		{Name: "retain_hours", Default: "`168`", RequiredBy: "no",
-			Description: "How long a cache outlives its repository leaving Dispatch's mapping before the orphan sweep deletes it with its volume and its Secret, in whole hours; the repository mapped again before that keeps its cache."},
+			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
 	}},

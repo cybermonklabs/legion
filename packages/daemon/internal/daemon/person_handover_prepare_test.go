@@ -110,9 +110,9 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 				putOutboxIssue(t, pool, records, recordedOn(key, key, "triage"))
 			}
 			// acme/widgets is served at main, so the labelled todo root is prepared for admission
-			// as today, with no wait for a read of the mapping.
+			// as today, from the read the repository state holds.
 			repos := newRepositories("LEGION", ghrepo.Renames{})
-			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 			client := &eventLogDispatch{logs: tc.logs, logErr: tc.logErr}

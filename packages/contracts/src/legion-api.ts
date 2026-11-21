@@ -1090,7 +1090,8 @@ const legionSettings = z.looseObject({
  * Sandbox, its `state` (`failing` with the kubelet's `reason`, `refused` with its Service's),
  * whether its pod is Ready behind its own Service and its address then, from its last health read
  * the default branch's `head`, `lastFetchAt` and the `bytes` it serves or the read's
- * `healthError`, and, for a repository the mapping no longer names, `retainedUntil` (contract 32). */
+ * `healthError`, and, for a repository no live record names any more, `retainedUntil` (contract
+ * 32). */
 const legionCacheView = z.object({
   repo: nonEmptyString.optional(),
   sandbox: nonEmptyString.optional(),
@@ -1113,57 +1114,54 @@ const legionAppInstallations = z.object({
   review: z.boolean().optional(),
 });
 
-/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
- * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
- * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
- * its repository cache under the Kubernetes runtime), each repository it leaves out with
- * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
- * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
- * known to be installed on (`withoutWebhookApp`, with
- * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
- * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+/** `api.LiveRepositoryView` — one repository a live record names (contract 202): `repo`, the name
+ * the records keep it under; `servedAs`, the other name of its configured pair
+ * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub last
+ * answered for the name it is served under, `apps`, each role App's installation on it once GitHub
+ * answered both reads; `readError`, why GitHub's last read did not name it (a refusal such as a
+ * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
+ * runtime. The daemon writes `repo` on every entry and each other key only once it holds
+ * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
+ * alone. No plugin code reads an entry (`LEGION_ANSWER_READS`), so every key is optional. */
+const legionLiveRepository = z.object({
+  repo: nonEmptyString.optional(),
+  servedAs: nonEmptyString.optional(),
+  apps: legionAppInstallations.optional(),
+  readError: nonEmptyString.optional(),
+  cache: legionCacheView.optional(),
+});
+
+/** `api.WebhookAppGapView` — an entry of `withoutWebhookApp` (contract 43, kept in contract 152's
+ * shape by 202): a live repository Dispatch's GitHub App is not known to be installed on, under
+ * the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+ * not answer the check). The daemon works it all the same. No plugin code reads it
+ * (`LEGION_ANSWER_READS`), so both keys are optional. */
+const legionWebhookAppGap = z.object({
+  repo: nonEmptyString.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** `api.RepositoriesView` — the repositories the daemon works in (contract 202): `live`, one entry
+ * for each repository the project's live records name, read in the state's own snapshot and sorted
+ * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
+ * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
+ * repositories no live record names, each kept until its `retainedUntil` (contract 32). The daemon
+ * writes all three on every body, never null, and no plugin code reads any of them
+ * (`LEGION_ANSWER_READS`), so each is optional here. A repository is served once GitHub answered
+ * that both role Apps are installed on it, whatever names it.
  *
- * The mapping decides the project's default repository and the repositories the daemon prepares
- * before an issue names one, and no longer decides where the project may work: the App
- * installation does, so `mapped` holds the repositories the project's own records name beside
- * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
- * null (contracts 31, 32).
- *
- * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
- * App is missing from, so the entries where the two differ are the refused ones. A refused
- * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
- * left out for its default-branch read alone), and none where a read of it failed or `repo` is
- * no `<owner>/<name>`, which its `reason` then names.
- *
- * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
- * holds the answer. It is read as absent rather than refused so that a plugin of this contract
- * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
- * since the two ship apart — loses that one answer and keeps the rest of the state, where a
- * required key would refuse the whole body. */
+ * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
+ * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
+ * state` states no contract and asks from no pod, so the daemon serves it this block, and a
+ * `legion state` of 152 reads its webhook App lines from that list. A plugin of an earlier
+ * contract reads the block with that contract's own schema, which also requires `owners`, `mapped`
+ * and `refused`, so the route serves a caller below 202 that older block, written from the same
+ * entries: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
+ * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
+ * schema reads only this block. */
 const legionRepositories = z.object({
-  owners: z.array(nonEmptyString).optional(),
-  mapped: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        default: z.boolean().optional(),
-        apps: legionAppInstallations.optional(),
-        cache: legionCacheView.optional(),
-      })
-    )
-    .optional(),
-  refused: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        reason: nonEmptyString.optional(),
-        apps: legionAppInstallations.optional(),
-      })
-    )
-    .optional(),
-  withoutWebhookApp: z
-    .array(z.object({ repo: nonEmptyString.optional(), reason: nonEmptyString.optional() }))
-    .optional(),
+  live: z.array(legionLiveRepository).optional(),
+  withoutWebhookApp: z.array(legionWebhookAppGap).optional(),
   caches: z.array(legionCacheView).optional(),
 });
 
@@ -1199,7 +1197,7 @@ const LEGION_INTAKE_GIVE_UP_REASONS = [
   "consumer moved past",
 ] as const;
 
-/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 202): its `name`,
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 207): its `name`,
  * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
  * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. The
  * controller's `read_state` summary prints all three, so each is required (LEGION_ANSWER_READS). */
@@ -1229,7 +1227,7 @@ const legionIntakeGiveUp = z.object({
   lastError: z.string().optional(),
 });
 
-/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 202), the messages it gave up on
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 207), the messages it gave up on
  * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
  * `newest`, the newest of them, latest given up first, at most 50. The daemon writes both lists
  * on every body, never null and empty while nothing is open. The controller's summary reads
@@ -1326,10 +1324,12 @@ const legionPaused = z.object({
  * `capabilities` is the deployment's report, never null (contract 16); `strandedClaims` is every
  * claim nothing will wake, by issue and then role, never null (contract 23); `heldOutboxRows` is
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
- * id, never null (contract 28); `repositories` is the project's repository mapping as the daemon
- * serves it (contract 31); `settings` is the daemon's resolved legion.yaml with no credential,
- * credential source or credential file path, required, and loose like `payload` above, so a
- * legion.yaml key added later is no contract change (contract 35); being `z.looseObject` it keeps
+ * id, never null (contract 28); `repositories` is the repositories the project's live records
+ * name, the ones of them Dispatch's webhook App is not known to be installed on, and the caches of
+ * the rest (contracts 31, 43, 202); `settings` is the daemon's resolved
+ * legion.yaml with no credential, credential source or credential file path, required, and loose
+ * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
+ * being `z.looseObject` it keeps
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
@@ -1363,10 +1363,10 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither. `intakeGiveUps` is the intake's open give-ups, the messages
  * it gave up on that no replay or discard has closed, counted by consumer and the newest of them
- * listed (contract 202). The daemon writes it on every body, its two lists empty while nothing is
+ * listed (contract 207). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
- * below 202, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 202 refuses the key whether its lists are empty or not. */
+ * below 207, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
+ * 207 refuses the key whether its lists are empty or not. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1948,7 +1948,7 @@ const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", 
 
 /** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
  * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
- * (contract 202): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * (contract 207): `replayed`, each record the replay took, in stream order, with its id, consumer,
  * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
  * error; and `remaining`, the open records of the selection left after it, which another call
  * takes. The controller's `replay_give_up` hands the daemon's answer to its agent whole
@@ -1973,7 +1973,7 @@ export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
 
 /** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
  * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
- * (contract 202): `discarded`, the id of each record it closed, in stream order. The controller's
+ * (contract 207): `discarded`, the id of each record it closed, in stream order. The controller's
  * `discard_give_up` hands it to its agent whole, so the field is optional, as the replay's are. */
 export const LegionIntakeDiscardResponse = z.object({
   discarded: z.array(z.number().int().positive()).optional(),
@@ -2375,9 +2375,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's lines on the intake's open give-ups (contract 202) print each consumer's
+    // The summary's lines on the intake's open give-ups (contract 207) print each consumer's
     // name, open count and newest sequence. `intakeGiveUps` stays optional: the daemon strips it
-    // for a caller below 202. The lag view of the state's `consumers` has a `name` too, and the
+    // for a caller below 207. The lag view of the state's `consumers` has a `name` too, and the
     // census matches a read by the field's name under its parent's, so the summary's read of a
     // give-up count's `name` is read as one of the lag view's as well, which is why this set
     // names `consumers[].name`; the lag view keeps the field optional all the same.

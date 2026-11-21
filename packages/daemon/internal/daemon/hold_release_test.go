@@ -373,9 +373,6 @@ func (d *pilotDispatch) Approval(context.Context, string) (dispatch.Approval, er
 func (d *pilotDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *pilotDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *pilotDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
@@ -442,9 +439,6 @@ func (d *filteringDispatch) Approval(context.Context, string) (dispatch.Approval
 }
 func (d *filteringDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
-}
-func (d *filteringDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
 }
 func (d *filteringDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
