@@ -88,12 +88,6 @@ const (
 	multiprocessNewOwner = "grace@example.com"
 )
 
-// migrateTimeout bounds how long a process of a pair gets to log "broker listening". It is far
-// past listenTimeout because the two processes start together against an unmigrated database and
-// one of them waits on the other's migration advisory lock (store.go's pg_advisory_xact_lock),
-// a wait that is unbounded by design.
-const migrateTimeout = 2 * time.Minute
-
 // fakeSecretsJSON is the secret store every broker here is started over: BROKER_FAKE_SECRETS_FILE's
 // shape (cmd/cipherd/main.go's own note on it) holding the one agent-tier secret, owned by owner.
 // A row that retags the secret writes this same function's output with another owner, so what it
@@ -259,7 +253,7 @@ func startBrokerFleet(t *testing.T, binary string, drains []time.Duration, env .
 		fleet.Processes = append(fleet.Processes, fleet.launch(t, drain))
 	}
 	for _, process := range fleet.Processes {
-		process.AwaitListening(t, migrateTimeout)
+		process.AwaitListening(t)
 		fleet.Clients = append(fleet.Clients, newBrokerClient(t, multiprocessPublicURL, process.Addr, fleet.caller.Token))
 	}
 	return fleet
@@ -292,7 +286,7 @@ func (f *brokerFleet) launch(t *testing.T, drain time.Duration) *brokerProcess {
 func (f *brokerFleet) Start(t *testing.T) int {
 	t.Helper()
 	process := f.launch(t, 0)
-	process.AwaitListening(t, migrateTimeout)
+	process.AwaitListening(t)
 	f.Processes = append(f.Processes, process)
 	f.Clients = append(f.Clients, newBrokerClient(t, multiprocessPublicURL, process.Addr, f.caller.Token))
 	return len(f.Processes) - 1
@@ -518,12 +512,10 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	writeFakeSecrets(t, fakeSecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
-	// It does not wait for its own listening line here: its database is fresh and unmigrated, so
-	// the wait is AwaitListening's own migrateTimeout rather than startBroker's listenTimeout,
-	// which is sized for a broker that has only to bind.
+	// Its database is fresh and unmigrated, so its start's wait for its listening line includes
+	// the whole migration (AwaitListening).
 	solo.Process = startBroker(t, brokerOptions{
-		Binary:             binary,
-		NoWaitForListening: true,
+		Binary: binary,
 		Env: append([]string{
 			// As the pair's: this row logs a machine in through the device grant.
 			"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
@@ -534,7 +526,6 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, caller.Env...),
 	})
-	solo.Process.AwaitListening(t, migrateTimeout)
 	solo.Client = newBrokerClient(t, "http://"+solo.Process.Addr, solo.Process.Addr, caller.Token)
 	return solo
 }

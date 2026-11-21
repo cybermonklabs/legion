@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -41,7 +42,12 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests through the Dispatch harness's Run, which waits for their
+// databases to drop and drops their templates, inside the broker harness's Run, which then drops
+// the database brokerstoretest.URL made the contract rows' broker schemas in.
+func TestMain(m *testing.M) {
+	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+}
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {

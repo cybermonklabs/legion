@@ -57,8 +57,8 @@ func (m *fakeMinter) minted() []mintCall {
 // The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
 // it creates (Postgres 16 and later), so it grants the role to itself with SET, which `create
 // schema ... authorization` of the role needs, and INHERIT, which the cleanup's `drop owned by`
-// needs. A role spans the server, and these tests share the database BROKER_TEST_DATABASE_URL
-// names, so no database of the test's own goes and takes what the role owns with it. The cleanup
+// needs. A role spans the server, and these tests share one database, their binary's own
+// (testDatabaseURL), so no database of a test's own goes and takes what the role owns with it. The cleanup
 // is registered as soon as the role exists, and drops the schema with everything in it first,
 // then what else the role owns and the grants it holds, then the role, each a statement of its
 // own, each run whatever the ones before it did.
