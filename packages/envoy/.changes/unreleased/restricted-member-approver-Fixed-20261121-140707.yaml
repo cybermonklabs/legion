@@ -1,0 +1,24 @@
+kind: Fixed
+body: |-
+  A restricted member is no longer an approver of any secret on Dispatch's pages. A restricted
+  member is a person an access list admitted from outside the deployment's sign-in domain. The
+  broker's approval page already signed in only that domain, so such a person decided nothing; but
+  the routes Dispatch relays for its signed-in people listed them the secret requests and grants
+  of a Google group that listed them, of a secret they owned, and of a shared secret whose approver
+  is `anyone`, and let them revoke those grants and dismiss those expired requests, ending other
+  people's grants. Where `BROKER_PROJECT_ACCESS_URL` is set, the broker now asks Dispatch what kind
+  of member the person is before it acts on one of those approver arms: a restricted member's
+  Inbox lists no secret request, their Live grants list no grant as its approver, and their revoke
+  or dismissal of one is refused `403 NOT_APPROVER`. Their own machine logins, and the grants of
+  their own sessions, which they end as the session's operator, stay theirs, asking Dispatch
+  nothing. A check that cannot decide refuses: while Dispatch cannot say what kind of member a
+  person is, their lists leave those rows out, logged once per person per 30 seconds (`an
+  approver's list leaves out every secret request and grant it holds the person as an approver
+  of`), and their revoke or dismissal as an approver is refused `503 MEMBER_KIND_UNCHECKABLE`, with
+  nothing written. So with the setting on, a Dispatch outage also stops every person's approver
+  revokes and dismissals of secret requests until Dispatch answers; a revoke of a grant of one's own
+  session is unchanged. With `BROKER_PROJECT_ACCESS_URL` unset the broker asks nothing and behaves
+  as before.
+time: 2026-11-21T14:07:07Z
+custom:
+    Issue: restricted-member-approver

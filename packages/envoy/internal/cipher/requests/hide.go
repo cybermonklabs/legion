@@ -113,11 +113,21 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 // broker shows. Neither an empty login nor the sentinel record.AnyoneApprover names a person, and
 // either is shown what a reader naming no person is shown: no private project.
 func (m *Machine) HideUnseen(ctx context.Context, recordID, login string) error {
+	_, err := m.hideUnseenRecord(ctx, recordID, login)
+	return err
+}
+
+// hideUnseenRecord is HideUnseen, answering beside a nil error the record's facts the rule read,
+// for a caller that reads them on to decide what it does next (Dismiss).
+func (m *Machine) hideUnseenRecord(ctx context.Context, recordID, login string) (rowFacts, error) {
 	facts, err := m.readRowFacts(ctx, recordKey, recordID)
-	if err != nil || facts.kind != record.KindAgentSecret {
-		return err
+	if err != nil {
+		return rowFacts{}, err
 	}
-	return m.hideUnseenRow(ctx, "record "+recordID, login, facts)
+	if facts.kind != record.KindAgentSecret {
+		return facts, nil
+	}
+	return facts, m.hideUnseenRow(ctx, "record "+recordID, login, facts)
 }
 
 // ReadRecordFor is ReadRecord for login, a person: the record once the person rule shows it to
@@ -161,7 +171,9 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // (namedOnGrant) — is answered nil and asks Dispatch nothing, as the session that holds a row is
 // answered nil by the session rule: the grant row names them, so they already know it exists, and
 // a revoke only takes access away, so neither a Dispatch outage nor their leaving the grant's
-// project keeps them from ending it. A person's pod that BROKER_POD_OPERATORS no longer maps acts
+// project keeps them from ending it by this rule. The operator's revoke asks Dispatch nothing at
+// all; an approver's then asks whether Dispatch calls them a restricted member, who is no approver
+// of a secret (revokeApproves). A person's pod that BROKER_POD_OPERATORS no longer maps acts
 // for no person (unmappedPersonPod), and names its exchange entry's project, not its operator's,
 // so its operator column names whom it once acted for, not a person the grant names: operatorOf
 // gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no
@@ -177,8 +189,9 @@ func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) (g
 	if err != nil {
 		return grantJudged{}, err
 	}
-	judged := grantJudged{holder: facts.holder.ID, approver: record.CanonicalLogin(deref(facts.approver))}
-	if named, _ := namedOnGrant(login, facts.approver, m.operatorOf(facts.holder)); named {
+	operator := m.operatorOf(facts.holder)
+	judged := grantJudged{holder: facts.holder.ID, approver: record.CanonicalLogin(deref(facts.approver)), operator: operator}
+	if named, _ := namedOnGrant(login, facts.approver, operator); named {
 		return judged, nil
 	}
 	return judged, m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
@@ -187,9 +200,11 @@ func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) (g
 // grantJudged is what hideUnseenGrant judged a grant by: the enrollment that held it and its
 // approver. RevokeByApprover's transaction reads both again, and a grant whose read differs moved
 // between the two (an adoption's commit), so the rule judged another row, and the revoke starts
-// again from the rule.
+// again from the rule. operator is the person that enrollment acts for (operatorOf), which
+// revokeApproves reads before the transaction: the same enrollment acts for the same person.
 type grantJudged struct {
 	holder, approver string
+	operator         *string
 }
 
 // operatorOf is the person enrollment enr acts for now: enr's operator, and nil for a person's

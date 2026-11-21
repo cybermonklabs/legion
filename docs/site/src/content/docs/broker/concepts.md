@@ -351,7 +351,15 @@ whose person Dispatch calls a restricted member, someone an access list admitted
 deployment's sign-in domain, enrolls nothing (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), so that
 person's agents are released no secret; the login still trades for a token that names their
 projects. A session such a person already had is denied every secret `restricted-member`, and its
-grants end at their next use ([Operating the broker](/legion/broker/operate/)). The broker's rate
+grants end at their next use ([Operating the broker](/legion/broker/operate/)). Nor is such a
+person any secret's approver, even of a secret they own, of a secret a Google group they are in
+owns, or of a shared one whose approver is `anyone`: the broker's approval page signs in only the
+deployment's domain, their **Inbox** lists them no secret request and their **Live grants** no
+grant as its approver, and their revoke or dismissal of one is refused `403 NOT_APPROVER`. Their
+own machine logins and the grants of their own sessions stay theirs. While Dispatch cannot say
+what kind of member a person is, those lists leave such rows out and such a revoke or dismissal
+is refused `503 MEMBER_KIND_UNCHECKABLE`; a revoke of a grant of their own session asks nothing.
+The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its
@@ -818,7 +826,9 @@ person's secret stands: a member's own session gets the group's agent-tier secre
 other request for it, and every request for its human-tier secret, waits for the group's
 approval, which any member gives on the broker's page, and any member dismisses once it expires;
 and a member the group's last good read listed, however old that read is, lists and revokes the
-grants a member or the model judge approved ([Approvals](#approvals)).
+grants a member or the model judge approved ([Approvals](#approvals)). A member Dispatch calls a
+restricted member is none of that, and decides, lists, revokes and dismisses nothing of the
+group's ([Machine login](#machine-login)).
 A member may approve a request their own session made, as a sole owner may approve their own: a
 group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
 group admits a session whose person is a member. A list, revoke or dismissal that names the

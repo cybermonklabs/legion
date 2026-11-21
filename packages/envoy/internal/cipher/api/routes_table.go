@@ -368,7 +368,9 @@ func routes() []apiRoute {
 		// for that state: the records a decision may still settle, and the records whose deadline
 		// passed before anybody decided them that nobody has dismissed, before the sweep and after
 		// it, the pending ones first and each state newest first. Any other state is 400
-		// STATE_INPUT.
+		// STATE_INPUT. A person Dispatch calls a restricted member is no approver of a secret, so
+		// their list holds no secret request, and while Dispatch cannot say what kind of member the
+		// person is it holds none either; their own machine logins stay on it.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
@@ -398,8 +400,11 @@ func routes() []apiRoute {
 		// PROJECT_ACCESS_UNAVAILABLE, dismissing nothing. A record that can still be decided is 409
 		// RECORD_PENDING, and one that was decided, or cancelled before its deadline, is 409
 		// RECORD_TERMINAL. A second dismissal answers the first one's values and writes nothing.
-		// The person is the login the body names, which the broker takes on the caller's word: a
-		// dismissal decides nothing and releases nothing.
+		// A person Dispatch calls a restricted member dismisses no secret request, 403
+		// NOT_APPROVER, and while Dispatch cannot say what kind of member the person whose list
+		// holds a secret request is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE, dismissing
+		// nothing. The person is the login the body names, which the broker takes on the caller's
+		// word: a dismissal decides nothing and releases nothing.
 		{http.MethodPost, "/v1/credential-requests/{record}/dismiss", accountAuth(relaysDecisions, (*server).dismissRecord)},
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
@@ -428,11 +433,14 @@ func routes() []apiRoute {
 		// person approved, or whose session acts for them, is listed whatever project it touches;
 		// an unmapped person's pod acts for no one, so its other grants are listed to its former
 		// person naming no operator. Any other grant of a private project the person may not see is
-		// left out, and one Dispatch cannot answer for is left out while it cannot. The person is
-		// the one the caller names.
+		// left out, and one Dispatch cannot answer for is left out while it cannot. A person
+		// Dispatch calls a restricted member is no approver of a secret, so their list holds only
+		// the grants of their own sessions and of a pod that acts for no person, and while
+		// Dispatch cannot say what kind of member the person is it holds no grant as theirs to
+		// approve either. The person is the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
 		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
-		// pod acts for no one), whatever project it touches and whether or not Dispatch answers,
+		// pod acts for no one), whatever project it touches and whether or not Dispatch answers for it,
 		// or, for a grant the model judge approved in anyone's stead, as anyone the grant's private
 		// project, if it has one, lets see it. The operator's
 		// revoke also withholds the secrets the grant's request got automatically from that session,
@@ -442,7 +450,10 @@ func routes() []apiRoute {
 		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
 		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
 		// moved to another box each time the revoke read it, three times in a row, is 409
-		// GRANT_MOVING. Each of these revokes nothing. The revoking person is the login the request
+		// GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
+		// its enrollment acts for, and one the grant admits only as an approver is 403
+		// NOT_APPROVER, or 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of member
+		// they are. Each of these revokes nothing. The revoking person is the login the request
 		// names, which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,

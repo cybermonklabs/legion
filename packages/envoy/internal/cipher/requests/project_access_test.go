@@ -395,16 +395,19 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 }
 
 // TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor: nothing is tagged, the broker holds a
-// client of Dispatch, and Dispatch is down. A pending request and a grant whose reasons name an
-// issue key are rows Dispatch cannot answer for: each is left out of its list (fail closed for
-// that row alone) and logged once with its id and the error, however often the list is read, and
-// the rest of each list is answered. An approval of the pending one answers
-// ErrProjectAccessUnavailable and leaves it pending, while the request whose reason names no key
-// is approved. Once Dispatch answers, the request is listed again. The two pending requests come
-// from pods that name no person, so the insider's list reads them (everyonesPod), and the two
-// grants are of SERVICE_KEY on pods of the fixture's service, which name no approver and no
-// operator, so the insider's list reads them too: a grant's own approver and operator list it
-// whatever Dispatch answers (namedOnGrant).
+// client of Dispatch, and Dispatch cannot answer any question about a project. A pending request
+// and a grant whose reasons name an issue key are rows Dispatch cannot answer for: each is left
+// out of its list (fail closed for that row alone) and logged once with its id and the error,
+// however often the list is read, and the rest of each list is answered. An approval of the
+// pending one answers ErrProjectAccessUnavailable and leaves it pending, while the request whose
+// reason names no key is approved. Once Dispatch answers, the request is listed again. The two
+// pending requests come from pods that name no person, so the insider's list reads them
+// (everyonesPod), and the two grants are of SERVICE_KEY on pods of the fixture's service, which
+// name no approver and no operator, so the insider's list reads them too: a grant's own approver
+// and operator list it whatever Dispatch answers (namedOnGrant). Dispatch still answers what kind
+// of member insider is, which a list of secret requests the reader approves asks
+// (listApprovesSecrets); while it cannot say that either, the list holds none of those requests
+// (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
@@ -422,7 +425,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 		t.Fatalf("Create(SHARED_KEY, no issue) = %+v, %v; want pending", plain, err)
 	}
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	dispatch.SetDown(true)
+	dispatch.SetProjectsDown(true)
 	logged := policytest.CaptureLog(t)
 
 	pendingIDs := func() []string {
@@ -475,7 +478,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 		t.Fatal("Dispatch was never asked, so the outage was never met: the test is blind")
 	}
 
-	dispatch.SetDown(false)
+	dispatch.SetProjectsDown(false)
 	if ids := pendingIDs(); !slices.Contains(ids, *keyed.RecordID) {
 		t.Fatalf("%s's pending list once Dispatch answers = %v; want %s again", insider, ids, *keyed.RecordID)
 	}

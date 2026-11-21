@@ -388,9 +388,9 @@ type Machine struct {
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
 	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project, and
-	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row and
-	// fallbackCutMessage to one per reader, per projectaccess.CacheTTL: each machine's own, so one
-	// machine's lines never silence another's.
+	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row,
+	// fallbackCutMessage to one per reader and approverKindUnreadMessage to one per person, per
+	// projectaccess.CacheTTL: each machine's own, so one machine's lines never silence another's.
 	channelsMissingLogged logThrottle
 	rowsUnansweredLogged  logThrottle
 	reasonsUnreadLogged   logThrottle
@@ -598,11 +598,7 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 // grant is written for it; and so does the model judge's read of the policy (JudgePolicy), which
 // then answers deny before any model is asked.
 func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool, error) {
-	person := deref(e.Operator)
-	if m.Projects == nil || person == "" {
-		return false, nil
-	}
-	return projectaccess.Restricted(ctx, m.Projects, person)
+	return m.restrictedPerson(ctx, deref(e.Operator))
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -1532,17 +1528,22 @@ type Dismissal struct {
 // records from a dismissal that names one; ErrProjectAccessUnavailable where Dispatch could not
 // say whether login may see it; record.ErrNotApprover when the record's approver is neither
 // record.CanonicalLogin(login), record.AnyoneApprover, nor a group the group reader admits login
-// to now (record.GroupAdmits), which is the list's own rule for whose list holds a record, and for
-// an empty login, one that is record.AnyoneApprover itself, or one spelled as a group, which name
-// nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
-// ErrTerminal for every other record, one approved, denied or revoked, and a secret request
-// cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
-// dismissed like any other.
+// to now (record.GroupAdmits), which is the list's own rule for whose list holds a record
+// (dismissAdmits), for an empty login, one that is record.AnyoneApprover itself, or one spelled as
+// a group, which name nobody, and for a secret request when Dispatch calls login a restricted
+// member, whose list holds none (restricted_approver.go); the *projectaccess.MemberKindUncheckable
+// that member-kind read returns when Dispatch could not be asked; ErrNotExpired for a record nobody
+// has decided whose deadline has not passed; and ErrTerminal for every other record, one approved,
+// denied or revoked, and a secret request cancelled before its deadline. A secret request
+// cancelled after its deadline is expired, and is dismissed like any other. A machine login, a
+// person's own or a service's, is dismissed as before, asking Dispatch nothing of login.
 //
-// The person rule is read on the pool before the transaction (HideUnseen), since it may ask
-// Dispatch, and no call to Dispatch runs in a transaction that holds locks. It reads the record's
-// rows rather than its signed request, so a record signed for another broker address is refused
-// an outsider as an unknown id too, not with the error of a request this broker cannot verify.
+// The person rule is read on the pool before the transaction (hideUnseenRecord), since it may ask
+// Dispatch, and no call to Dispatch runs in a transaction that holds locks; so is login's member
+// kind, after the rule and only for a secret request whose list holds login (dismissApproves).
+// The rule reads the record's rows rather than its signed request, so a record signed for another
+// broker address is refused an outsider as an unknown id too, not with the error of a request
+// this broker cannot verify.
 //
 // It is one transaction, and it reads the record's state under a share lock taken before the read:
 // on the requests row for a secret request, which waits for ApplyDecision's `for update` of that
@@ -1560,7 +1561,13 @@ type Dismissal struct {
 // the first's insert returns the row it wrote, and the second inserts nothing and reads the first
 // one's row back.
 func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {
-	if err := m.HideUnseen(ctx, recordID, login); err != nil {
+	facts, err := m.hideUnseenRecord(ctx, recordID, login)
+	if err != nil {
+		return Dismissal{}, err
+	}
+	login = record.CanonicalLogin(login)
+	approves, err := m.dismissApproves(ctx, login, facts)
+	if err != nil {
 		return Dismissal{}, err
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
@@ -1572,10 +1579,7 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	if err := tx.QueryRow(ctx, `select kind, approver from credential_requests where id=$1`, recordID).Scan(&kind, &approver); err != nil {
 		return Dismissal{}, err
 	}
-	login = record.CanonicalLogin(login)
-	_, loginIsGroup := record.GroupOf(login)
-	if login == "" || login == record.AnyoneApprover || loginIsGroup ||
-		approver != login && approver != record.AnyoneApprover && !record.GroupAdmits(m.Groups, approver, login) {
+	if !dismissAdmits(m.Groups, approver, login) || kind == record.KindAgentSecret && !approves {
 		return Dismissal{}, record.ErrNotApprover
 	}
 	lock := `select 1 from credential_requests where id=$1 for share`
@@ -1613,6 +1617,35 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	}
 	slog.Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
 	return d, nil
+}
+
+// dismissAdmits is whose list holds a record whose approver is approver, which is who may dismiss
+// it (Dismiss): login, canonical, when the record's approver is login itself,
+// record.AnyoneApprover, or a group the group reader admits login to now (record.GroupAdmits). An
+// empty login, record.AnyoneApprover itself and a login spelled as a group name nobody, and are
+// admitted by no record.
+func dismissAdmits(groups record.Groups, approver, login string) bool {
+	_, loginIsGroup := record.GroupOf(login)
+	return login != "" && login != record.AnyoneApprover && !loginIsGroup &&
+		(approver == login || approver == record.AnyoneApprover || record.GroupAdmits(groups, approver, login))
+}
+
+// dismissApproves answers whether login, canonical, may dismiss the record facts describe as one
+// of its approvers, read before Dismiss's transaction: true for a machine login, which is a
+// person's own or a service's and asks nothing; for a secret request whose list holds login
+// (dismissAdmits), whether Dispatch calls login no restricted member (approvesSecrets), who is no
+// approver of a secret (restricted_approver.go); and false, asking nothing, for a secret request
+// no arm admits login to, which the transaction refuses whatever it is, so a group read that
+// comes to admit login between the two reads admits nothing unasked. A machine with no client of
+// Dispatch asks nothing, and every approver stands as before.
+func (m *Machine) dismissApproves(ctx context.Context, login string, facts rowFacts) (bool, error) {
+	switch {
+	case m.Projects == nil || facts.kind != record.KindAgentSecret:
+		return true, nil
+	case !dismissAdmits(m.Groups, deref(facts.approver), login):
+		return false, nil
+	}
+	return m.approvesSecrets(ctx, login)
 }
 
 // ExpirePending expires every pending request past its deadline, writing the state transition,
