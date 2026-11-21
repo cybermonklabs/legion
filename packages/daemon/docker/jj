@@ -200,7 +200,9 @@ fi
 # and neither from the repository `-R` names nor from a `--config` or `--config-file` argument
 # (measured in both versions: "Command aliases cannot be loaded from -R/--repository path or
 # --config/--config-file arguments"). So these reads run in the working directory with none of the
-# caller's options.
+# caller's options, and with `--include-defaults`: jj's defaults hold aliases of their own (`st`,
+# `b`, `ci`, `desc` in all three versions), which `jj config list` leaves out without it ("No
+# matching config key"), and which an alias of the same name in a file replaces.
 #
 # One read a key, through a template that prints the key's own entry and nothing else: `D`, the
 # number of words and one word a line for a list, or for a table's `definition`; `E` and the value
@@ -269,7 +271,7 @@ while :; do
   fi
 
   template='if(name == "'"$key"'" || name == "'"$key"'.definition", "D\n" ++ value.as_string_list().len() ++ "\n" ++ value.as_string_list().join("\n") ++ "\n", if(name == "'"$key"'.enabled", "E\n" ++ value ++ "\n", ""))'
-  got=$("$real" --ignore-working-copy config list "$key" -T "$template" 2>/dev/null && echo .) ||
+  got=$("$real" --ignore-working-copy config list "$key" --include-defaults -T "$template" 2>/dev/null && echo .) ||
     refuse "jj could not read $key (\`jj config list $key\` says why), so this wrapper cannot tell whether this command is a push"
   got=${got%.}
   state='' defs=0 count=0 n=0 words='' disabled=''
@@ -337,41 +339,35 @@ EOF
   fi
   via="$via, $key"
   # The command line as jj expands it: the words in place of the command word at position at, or
-  # in front of the whole line where at is 0. Each word goes in as one argument, as read.
+  # in front of the whole line where at is 0. Each word goes in as one argument, as read: the
+  # words are appended after the line, and the line is rebuilt once, as text of positional
+  # references that `eval "set -- …"` reads back, so no word is read as code and the rebuild costs
+  # one pass, not one a word.
   total=$#
-  if [ "$at" -eq 0 ]; then
-    k=0
-    while [ "$k" -lt "$count" ] && IFS= read -r w; do
-      set -- "$@" "$w"
-      k=$((k + 1))
-    done <<EOF
+  k=0
+  while [ "$k" -lt "$count" ] && IFS= read -r w; do
+    set -- "$@" "$w"
+    k=$((k + 1))
+  done <<EOF
 $words
 EOF
-    k=0
-    while [ "$k" -lt "$total" ]; do
-      set -- "$@" "$1"
-      shift
-      k=$((k + 1))
-    done
-  else
-    k=0
-    while [ "$k" -lt "$total" ]; do
-      k=$((k + 1))
-      arg=$1
-      shift
-      if [ "$k" -ne "$at" ]; then
-        set -- "$@" "$arg"
-        continue
-      fi
-      m=0
-      while [ "$m" -lt "$count" ] && IFS= read -r w; do
-        set -- "$@" "$w"
-        m=$((m + 1))
-      done <<EOF
-$words
-EOF
-    done
-  fi
+  expanded='' k=0
+  while [ "$k" -lt "$count" ]; do
+    k=$((k + 1))
+    expanded="$expanded \"\${$((total + k))}\""
+  done
+  argv=''
+  [ "$at" -gt 0 ] || argv=$expanded
+  k=0
+  while [ "$k" -lt "$total" ]; do
+    k=$((k + 1))
+    if [ "$k" -eq "$at" ]; then
+      argv="$argv$expanded"
+    else
+      argv="$argv \"\${$k}\""
+    fi
+  done
+  eval "set -- $argv"
 done
 
 if [ "$final" = builtin ]; then

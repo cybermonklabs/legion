@@ -386,6 +386,11 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 // help` does not list, so the wrapper ran an alias of that name, which jj ignores. And a
 // `--config` that sets a whole table (`git={…}`) shared a layer with the wrapper's own `--config`
 // in front of the line, and jj refused the line ("Would overwrite entire table").
+//
+// And a review of that wrapper found that it read aliases without jj's defaults, which hold `st`,
+// `b`, `ci` and `desc`: it left those to jj with its last layer after the alias word, which jj
+// then put after `status`, a deeper level than the caller's own `--config`, so jj dropped the
+// caller's: `jj --config <a template> st` ran without it.
 func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -472,6 +477,8 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 		env []string
 		// names is what a refusal must name; none where the wrapper must run the command.
 		names []string
+		// prints is what the command's output must hold, where it runs.
+		prints string
 	}{
 		{name: "a -R after git push naming a repository that names another git", args: []string{"git", "push", "-R", another}, names: []string{"/usr/bin/git"}},
 		{name: "a --repository= after git push naming that repository", args: []string{"git", "push", "--repository=" + another}, names: []string{"/usr/bin/git"}},
@@ -502,6 +509,7 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 		{name: "an option jj does not know, in front of a built-in command's name, where the default command is a push", in: defaulted, args: []string{"-b", "log"}, names: []string{"/usr/bin/git", "through ui.default-command"}},
 		{name: "debug, a built-in command jj's help does not list, which jj ignores as an alias", in: aliased, args: []string{"debug", "--help"}},
 		{name: "a --config that sets a whole table, git's", in: plain, args: []string{"--config", `git={private-commits="none()"}`, "log", "-r", "@", "--no-graph"}},
+		{name: "st, an alias in jj's defaults, keeps the caller's --config", in: plain, args: []string{"--config", `templates.commit_summary="\"MARKER\""`, "st"}, prints: "MARKER"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := tc.in
@@ -516,6 +524,9 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 			if len(tc.names) == 0 {
 				if err != nil {
 					t.Fatalf("the wrapper did not run the command: %v\n%s", err, out)
+				}
+				if !strings.Contains(out, tc.prints) {
+					t.Fatalf("the command's output does not hold %q:\n%s", tc.prints, out)
 				}
 				return
 			}
@@ -559,7 +570,11 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 //
 // Each row pushes a commit from a repository of its own to a bare remote. The git wrapper's real
 // git is a logging stand-in that pushes nothing, so the remote holds the bookmark only when another
-// git ran the push.
+// git ran the push. A row that makes no push says why, in jj's own words where jj refuses it, and
+// a row whose options the wrapper writes once more (the caller's `--config` or `--config-file` at
+// a shallower level than its other option) shows such a line still pushes. The control runs jj
+// itself, with the scoped git: the remote then holds the bookmark, so the test can see another git
+// push.
 func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -610,7 +625,12 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 		wrapped bool
 		// refused is whether the wrapper must refuse the command.
 		refused bool
+		// says is what the output must hold.
+		says string
+		// control runs jj itself, not the wrapper, and the remote must then hold the bookmark.
+		control bool
 	}{
+		{name: "control: jj itself, the git scoped to the git command, pushes through that git", config: scoped, args: []string{"-R", "<repo>", "git", "push", "--bookmark", "b"}, control: true},
 		{name: "the worker prompt's push, the git scoped to the git command", config: scoped, args: []string{"-R", "<repo>", "git", "push", "--bookmark", "b"}, wrapped: true},
 		{name: "a push whose own --config scopes the git to the git command", args: []string{"git", "push", "-b", "b", "--config", `"--scope"=[{"--when" = {commands = ["git"]}, git = {executable-path = "/usr/bin/git"}}]`}, wrapped: true},
 		{name: "an alias that a scope for config shows as version, pushing through another git", config: hidden, args: []string{"p"}},
@@ -618,10 +638,12 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 		{name: "a push ended by --", args: []string{"git", "push", "-b", "b", "--"}, wrapped: true},
 		{name: "an alias that puts an option jj does not know in front of log, where the default command is a push", config: unknown, args: []string{"p"}, bookmark: "log", refused: true},
 		{name: "a push whose own --config, in front of it, sets git's whole table", args: []string{"--config", `git={private-commits="none()"}`, "git", "push", "-b", "b"}, wrapped: true},
-		{name: "a push whose own --config, in front of it, makes its commit private, which jj then refuses to push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b"}},
-		{name: "a push whose own --config, in front of it, makes its commit private, with a --config-file after the push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b", "--config-file=/dev/null"}},
-		{name: "a push whose own --config, between git and push, makes its commit private", args: []string{"git", "--config", `git.private-commits="b"`, "push", "-b", "b"}},
-		{name: "a --config-file in front of the push that makes its commit private, with a --config after the push", args: []string{"--config-file", private, "git", "push", "-b", "b", "--config", "ui.color=never"}},
+		{name: "a push whose own --config, in front of it, makes its commit private, which jj then refuses to push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b"}, says: "since it is private"},
+		{name: "a push whose own --config, in front of it, makes its commit private, with a --config-file after the push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b", "--config-file=/dev/null"}, says: "since it is private"},
+		{name: "a push whose own --config, between git and push, makes its commit private", args: []string{"git", "--config", `git.private-commits="b"`, "push", "-b", "b"}, says: "since it is private"},
+		{name: "a --config-file in front of the push that makes its commit private, with a --config after the push", args: []string{"--config-file", private, "git", "push", "-b", "b", "--config", "ui.color=never"}, says: "since it is private"},
+		{name: "a push with a --config in front of it and a --config-file after it", args: []string{"--config", "ui.color=never", "git", "push", "-b", "b", "--config-file=/dev/null"}, wrapped: true},
+		{name: "a push with a --config-file in front of it and a --config after it", args: []string{"--config-file=/dev/null", "git", "push", "-b", "b", "--config", "ui.color=never"}, wrapped: true},
 		{name: "a --config naming another git in front of git, which a --config between git and push drops", args: []string{"--config", `git.executable-path="/usr/bin/git"`, "git", "--config", "ui.color=never", "push", "-b", "b"}, wrapped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -662,12 +684,26 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 					args[i] = repo
 				}
 			}
-			out, _ := run.Try(repo, append([]string{script}, args...)...)
-			if _, err := run.Try(dir, "git", "--git-dir", remote, "rev-parse", "-q", "--verify", "refs/heads/"+bookmark); err == nil {
+			command := script
+			if tc.control {
+				command = jj
+			}
+			out, _ := run.Try(repo, append([]string{command}, args...)...)
+			_, err := run.Try(dir, "git", "--git-dir", remote, "rev-parse", "-q", "--verify", "refs/heads/"+bookmark)
+			if landed := err == nil; landed != tc.control {
+				if tc.control {
+					t.Fatalf("jj itself left the remote without the bookmark, so this test could not see another git push it:\n%s", out)
+				}
 				t.Fatalf("another git pushed the bookmark to the remote:\n%s", out)
+			}
+			if tc.control {
+				return
 			}
 			if refused := strings.Contains(out, "LEAK CHECK SETUP ERROR"); refused != tc.refused {
 				t.Fatalf("the wrapper refused=%v, want %v:\n%s", refused, tc.refused, out)
+			}
+			if !strings.Contains(out, tc.says) {
+				t.Fatalf("the output does not hold %q:\n%s", tc.says, out)
 			}
 			read, err := os.ReadFile(log)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
