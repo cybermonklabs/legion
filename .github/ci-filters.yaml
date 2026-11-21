@@ -480,6 +480,7 @@ plugin_pack:
   - '!packages/daemon/internal/dispatch/**/*_test.go'
   - '!packages/daemon/internal/envlisting/**/*_test.go'
   - '!packages/daemon/internal/experiment/**/*_test.go'
+  - '!packages/daemon/internal/fifotest/**/*_test.go'
   - '!packages/daemon/internal/fixtureenv/**/*_test.go'
   - '!packages/daemon/internal/ghbranch/**/*_test.go'
   - '!packages/daemon/internal/ghconfig/**/*_test.go'
