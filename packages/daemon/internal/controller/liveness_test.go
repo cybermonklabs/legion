@@ -105,6 +105,48 @@ func TestProbeSendsNoBearerWithoutAToken(t *testing.T) {
 	}
 }
 
+// presenting stands in for the daemon's broker credential (cipherclient.NewTokenTransport): it
+// sets the Authorization every request it carries must have.
+type presenting string
+
+func (p presenting) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	presented.Header.Set("Authorization", string(p))
+	return http.DefaultTransport.RoundTrip(presented)
+}
+
+// A Prober given a Transport, the daemon's broker credential where it holds no Envoy bearer, sends
+// the lookup through it, so the listener sees what the transport sets and no bearer of the
+// Prober's own, and follows no redirect with it. The control is TestProbeIsLiveWhileTheSessionHoldsTheRole:
+// the bearer as it always was.
+func TestProbePresentsWhatItsTransportSets(t *testing.T) {
+	var log bytes.Buffer
+	l := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
+	url := l.serve(t)
+	prober := NewProber(ProberOptions{
+		EnvoyURL: url, Transport: presenting("DPoP daemon-broker-token"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
+	})
+	if got := prober.Probe(context.Background(), "ses_ctl"); got != Live {
+		t.Fatalf("Probe = %s, want live; log %s", got, log.String())
+	}
+	if l.path != "/v1/roles/legion-demo-controller" || l.bearer != "DPoP daemon-broker-token" {
+		t.Fatalf("lookup = %s with %q, want the controller token with what the transport sets", l.path, l.bearer)
+	}
+
+	elsewhere := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
+	target := elsewhere.serve(t)
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirecting.Close)
+	redirected := NewProber(ProberOptions{
+		EnvoyURL: redirecting.URL, Transport: presenting("DPoP daemon-broker-token"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
+	})
+	if got := redirected.Probe(context.Background(), "ses_ctl"); got != Unknown || elsewhere.path != "" {
+		t.Fatalf("Probe of a listener answering 307 = %s, and the redirect's target saw %q; want unknown and no request there", got, elsewhere.path)
+	}
+}
+
 // Gone: nobody claimed the role, its holder reached the gone horizon, another session holds it, or
 // a listener of an earlier release named no state with its 404 — that listener's lapsed holder is
 // no holder at all.

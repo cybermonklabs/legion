@@ -292,6 +292,15 @@ func (s *supervision) endLaunchedRegistration(ctx context.Context, c supervise.C
 // so one log query on it counts either mode.
 const controllerNotRegistered = "controller not registered; run legion controller start"
 
+// controllerProber is the sweep's read of the controller role at the Envoy listener, presenting
+// the credential every call of the daemon's to the listener presents (plan.listener): the bearer,
+// or the daemon's own broker token through its transport.
+func controllerProber(cfg config.Config, p plan, log *slog.Logger) *controller.Prober {
+	return controller.NewProber(controller.ProberOptions{
+		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.listener.bearer, Transport: p.listener.transport, Project: p.project, Log: log,
+	})
+}
+
 // watchController is the daemon's liveness sweep over the project's controller, under either
 // runtime and either `controller` mode: every sweep interval it reads the project's controller
 // record, and when no session holds it, or the Envoy role registry says the session is gone, it says
@@ -306,9 +315,7 @@ const controllerNotRegistered = "controller not registered; run legion controlle
 func watchController(ctx context.Context, st *store.Store, cfg config.Config, p plan, log *slog.Logger) {
 	launched := cfg.ControllerLaunch == config.ControllerLaunchDaemon
 	log = log.With("mode", string(cfg.ControllerLaunch))
-	prober := controller.NewProber(controller.ProberOptions{
-		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.secrets["ENVOY_TOKEN"], Project: p.project, Log: log,
-	})
+	prober := controllerProber(cfg, p, log)
 	ticker := time.NewTicker(p.orphanSweep)
 	defer ticker.Stop()
 	var logged time.Time

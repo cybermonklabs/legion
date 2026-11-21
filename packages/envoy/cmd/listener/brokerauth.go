@@ -26,6 +26,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -303,6 +304,31 @@ func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 	return caller, ok
 }
 
+// daemonCaller is the project of the Legion daemon whose own broker token r presented, and
+// whether r presented one at all: a token whose session is legion-daemon:<P>
+// (oauthwire.DaemonSessionPrefix), whose scope is the named one only an exchange entry mints, and
+// whose one project is P. The broker issues such a session only as the fixed session of an entry,
+// which the configuration reserves for that entry's principal (exchange's daemonNamed), so only the
+// daemon's own exchange row mints it; a session that named itself legion-daemon:<P>, or a person's
+// token whose trade listed P, is no daemon's. A read-only token names no project, so it is none
+// either.
+//
+// What it lets a daemon do beyond its own session is what the shared bearer it replaces did, and
+// no more: make the clean stop of another session's registration (deleteSessionHandler), and send
+// its notices uncounted by the sender limit (senderLimit.take), since they have no sender. Each
+// route that reads it says which of the two it is.
+func daemonCaller(r *http.Request) (project string, ok bool) {
+	caller, proved := brokerCaller(r)
+	if !proved || caller.ProjectScope != ciphertoken.ProjectScopeNamed || len(caller.Projects) != 1 {
+		return "", false
+	}
+	project = caller.Projects[0]
+	if project == "" || caller.Session != oauthwire.DaemonSessionPrefix+project {
+		return "", false
+	}
+	return project, true
+}
+
 // sessionNotBound is the refusal a write that acts as session gets from the credential the
 // request presented: empty when the request presented no broker token, or when the token names
 // this very session, and otherwise the message the route answers 403 with. It logs that refusal
@@ -325,7 +351,9 @@ func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 // (packages/envoy-client/src/broker-credential.ts). So the handoff's DELETE names the session its
 // own token names, and no rule beyond this one is needed to keep it working. The
 // client_instance_id that DELETE carries decides something else and keeps deciding it: which
-// client instance's registration under that one session id may be removed.
+// client instance's registration under that one session id may be removed. The one request a
+// route makes for another session without asking here is a Legion daemon's clean stop
+// (daemonCaller, deleteSessionHandler).
 //
 // An empty session is no refusal: the body names no session, so the request acts as none, and
 // nothing is recorded under another session's name. The two message routes alone allow that, and

@@ -88,10 +88,12 @@ type Runtime struct {
 	streamURL, daemonURL, envoyURL string
 	dispatchURL                    string
 	dispatch                       DispatchCredential
-	natsURLs                       []string
-	tools                          Tools
-	pod                            Pod
-	roleConfigFiles                map[claim.Role][]string
+	// listenerBroker is Options.ListenerBroker.
+	listenerBroker  bool
+	natsURLs        []string
+	tools           Tools
+	pod             Pod
+	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -357,6 +359,10 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
 	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
 		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
+	case opts.ListenerBroker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
+		return refuse("ListenerBroker is set but AgentSecrets names no exchange audience: with no Envoy bearer a role reaches the listener only by trading its pod's exchange identity, which no pod carries without one")
+	case opts.ListenerBroker && slices.Contains(opts.LaunchSecrets, envoyTokenKey):
+		return refuse("ListenerBroker is set but LaunchSecrets names %s: a daemon that holds no Envoy bearer hands no launch one", envoyTokenKey)
 	case poolSet:
 		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
 			poolKey, pool, poolKey, poolValue)
@@ -436,7 +442,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
-		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
+		dispatch: opts.Dispatch, listenerBroker: opts.ListenerBroker, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,

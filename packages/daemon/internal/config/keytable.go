@@ -227,8 +227,8 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.EnvoyURL = v }),
 		},
 		{
-			Name: "envoy_token_file", Default: "none: the pods receive no Envoy bearer", RequiredBy: "when runtime is kubernetes: every pod receives the Envoy bearer",
-			Description: "The file holding the Envoy listener's API token; the daemon hands each pod its own copy.",
+			Name: "envoy_token_file", Default: "none: the pods receive no Envoy bearer, and the daemon presents the listener its own broker token under `runtime.kubernetes.agent_secrets.exchange_audience` and no credential elsewhere", RequiredBy: "when runtime is kubernetes and `runtime.kubernetes.agent_secrets.exchange_audience` is unset: every pod receives the Envoy bearer",
+			Description: "The file holding the Envoy listener's API token; the daemon presents it to the listener and hands each pod its own copy. Under `runtime: kubernetes` with `runtime.kubernetes.agent_secrets.exchange_audience` set it may be left out: each pod's sessions then trade their own broker tokens, and the daemon trades its own pod identity at the secrets broker (`AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`, `AGENT_SECRETS_URL`) for a token of its session `legion-daemon:<project>`, which it presents as `Authorization: DPoP` beside a proof of each request's URL, so `envoy_url` must be the listener's own `ENVOY_PUBLIC_URL`.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.EnvoyTokenFile = v }),
 		},
 		{

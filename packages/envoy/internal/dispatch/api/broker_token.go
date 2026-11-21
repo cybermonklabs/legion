@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -128,7 +129,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, ciphertoken.ErrNotActive):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, oauthwire.TokenNotActiveCode,
 			"the secrets broker does not hold this access token as live")
 	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",

@@ -190,6 +190,12 @@ type Options struct {
 	// Dispatch is the Dispatch credential a launch's role holds, configured exactly when
 	// DispatchURL is (DispatchCredential).
 	Dispatch DispatchCredential
+	// ListenerBroker is whether the daemon holds no Envoy bearer, so no launch carries ENVOY_TOKEN
+	// and each role reaches the listener with a broker token it trades for its pod's exchange
+	// identity (config.Config.ListenerPresentsBrokerToken). A launch that keeps a pod built before
+	// that identity has neither, and waits for the pod's update round (relaunch's
+	// listenerCredential).
+	ListenerBroker bool
 	// NATSURLs are ENVOY_NATS_URL, comma-joined; none leaves it unset.
 	NATSURLs []string
 	Tools    Tools

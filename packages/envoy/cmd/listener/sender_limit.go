@@ -99,17 +99,23 @@ func describeSenderLimit(l *senderLimit) string {
 //
 // The sender is the session a secrets-broker token proved, else the request's trimmed
 // source_session: sessionNotBound has already refused a body that names a session the token does
-// not, so a token's session is the sender whether the body names it or not. Two messages are not
-// counted, and both answer nil and nil, as no limit does. One is a message with no sender, which is
-// how the Legion daemon sends its notices (packages/daemon/internal/notify). The other is a message
-// whose source is not agent (contracts.MessageEnvelope writes agent for an absent one), whatever
-// credential the request presented: a secrets-broker token names the sender and does not make the
-// message count. Such a message is another system's delivery, Dispatch's or Envoy's own among
-// them, or a request its caller wrote itself. The Envoy tools send the source agent and give an
-// agent no argument for it, so the limit counts each of their messages that has a sender and is
+// not, so a token's session is the sender whether the body names it or not. Three messages are not
+// counted, and each answers nil and nil, as no limit does. One is a message with no sender, which is
+// how the Legion daemon sends its notices (packages/daemon/internal/notify) under its bearer. One is
+// a message under a Legion daemon's own broker token (daemonCaller): the same notices, whose sender
+// the token would otherwise name, and which the operator's limit on each agent session would
+// otherwise hold back, the daemon's whole outbox counted as one session's sends. The other is a
+// message whose source is not agent (contracts.MessageEnvelope writes agent for an absent one),
+// whatever credential the request presented: a secrets-broker token names the sender and does not
+// make the message count. Such a message is another system's delivery, Dispatch's or Envoy's own
+// among them, or a request its caller wrote itself. The Envoy tools send the source agent and give
+// an agent no argument for it, so the limit counts each of their messages that has a sender and is
 // not a security boundary.
 func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCharge, *senderRefusal) {
 	if l == nil || item.Source != "agent" {
+		return nil, nil
+	}
+	if _, daemon := daemonCaller(r); daemon {
 		return nil, nil
 	}
 	sender := strings.TrimSpace(item.SourceSession)

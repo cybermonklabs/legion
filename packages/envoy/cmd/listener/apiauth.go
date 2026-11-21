@@ -16,12 +16,14 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -406,8 +408,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // fault of a few seconds would otherwise fail every send a live token makes. A source address
 // with no introspection left in its bucket is the 429 that bucket exists to write, carrying the
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
-// same 401 and the same body every other refused credential gets here, so the answer tells an
-// unauthenticated caller nothing about which credentials this listener takes.
+// same 401 and the same body every other refused credential gets here, but one: a token the
+// broker says is not live carries the code oauthwire.TokenNotActiveCode, as Dispatch's answer to one
+// does, so a client drops it and trades again at once rather than present it until its renewal
+// comes due (packages/envoy/internal/cipherclient's tokenTransport). A Legion daemon's token the
+// broker ended early would otherwise fail every listener call for up to ten minutes. That this
+// listener takes broker tokens is no secret its other answers keep: its configuration and code
+// both say so.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",
@@ -426,6 +433,8 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	case reason == brokerTokenCheckFailed:
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again in a minute")
+	case errors.Is(err, ciphertoken.ErrNotActive):
+		writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: oauthwire.TokenNotActiveCode, Error: "unauthorized"})
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}

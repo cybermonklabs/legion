@@ -2259,8 +2259,13 @@ func readReservation(fields map[string]*yaml.Node, field string) (Reservation, e
 
 // checkKubernetesKeys refuses a file whose keys outside the block leave a pod unable to run, or
 // set something no pod uses. Every URL a pod dials must be one it can reach, so none of them may
-// fall back to a loopback default; the host's Oh My Pi has no counterpart in a pod.
+// fall back to a loopback default; the host's Oh My Pi has no counterpart in a pod. The Envoy
+// bearer's file is required unless the block's agent_secrets sets exchange_audience: then every
+// enrolled pod carries an identity its sessions trade for broker tokens of their own, and the
+// daemon presents its own broker token to the listener (ListenerPresentsBrokerToken).
 func checkKubernetesKeys(file fileConfig) error {
+	secrets := file.Kubernetes.AgentSecrets
+	exchange := secrets != nil && secrets.ExchangeAudience != ""
 	for _, rule := range []struct {
 		key    string
 		absent bool
@@ -2269,7 +2274,8 @@ func checkKubernetesKeys(file fileConfig) error {
 		{"daemon_url", file.DaemonURL == nil, "a pod cannot reach the daemon's loopback address"},
 		{"envoy_url", file.EnvoyURL == nil, "a pod cannot reach the loopback listener it defaults to"},
 		{"nats_urls", len(file.NatsURLs) == 0, "every pod's Envoy client connects to NATS"},
-		{"envoy_token_file", file.EnvoyTokenFile == nil, "every pod receives the Envoy bearer"},
+		{"envoy_token_file", file.EnvoyTokenFile == nil && !exchange, "every pod receives the Envoy bearer unless " +
+			agentSecretsKey + ".exchange_audience is set, under which each pod's sessions trade their own broker token and the daemon presents its own"},
 		{"operator_token_file", file.OperatorTokenFile == nil, "legion claims presents this token, as legion controller start does under controller: operator"},
 		{"dispatch_url", file.DispatchURL == nil, "the workflow is what launches every pod"},
 		{"github_apps", file.GitHubApps == nil, "every pod's workspace is cloned with the implement App's token"},
@@ -2292,6 +2298,18 @@ func checkKubernetesKeys(file fileConfig) error {
 		}
 	}
 	return nil
+}
+
+// ListenerPresentsBrokerToken reports whether the daemon's own calls to the Envoy listener present
+// its broker token, `Authorization: DPoP` beside a proof of each request's URL, rather than the
+// bearer envoy_token_file holds: under runtime: kubernetes with no envoy_token_file, which the
+// loader takes only where agent_secrets sets exchange_audience (checkKubernetesKeys). The token is
+// the daemon's own pod identity traded at the secrets broker, as its Dispatch credential is under
+// dispatch_token_broker. Everywhere else the daemon sends the bearer, or no credential where it
+// has none, as it always has.
+func (c Config) ListenerPresentsBrokerToken() bool {
+	k := c.Runtime.Kubernetes
+	return c.EnvoyTokenFile == "" && k != nil && k.AgentSecrets != nil && k.AgentSecrets.ExchangeAudience != ""
 }
 
 // checkPodReachable refuses an address pods are handed that no pod can reach. Every pod's shim

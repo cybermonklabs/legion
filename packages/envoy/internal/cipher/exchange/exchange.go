@@ -876,6 +876,9 @@ func (s *Set) Registration(account, podUID, session string) error {
 	if !ValidSession(session) {
 		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
 	}
+	if daemonNamed(session) {
+		return fmt.Errorf("%w: the registration of %s names a session %s", ErrSessionInvalid, account, daemonSessionRule)
+	}
 	return nil
 }
 
@@ -1211,7 +1214,7 @@ var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespac
 // that named named, where identity names who is asking. An entry that fixes a session answers it
 // and refuses a request that names another, rather than quietly putting the fixed one in its
 // place; an entry that fixes none has nothing to fall back on, so the request must name a usable
-// session.
+// session, and one that is not a Legion daemon's (daemonNamed).
 //
 // A refused name is described and never repeated: it comes from the request, so its length and
 // its bytes are whatever the caller sent.
@@ -1228,7 +1231,25 @@ func resolveSession(fixed, named, identity string) (string, error) {
 	if !ValidSession(named) {
 		return "", fmt.Errorf("%w: %s named a session of %d bytes; %s", ErrSessionInvalid, identity, len(named), sessionRule)
 	}
+	if daemonNamed(named) {
+		return "", fmt.Errorf("%w: %s named a session %s", ErrSessionInvalid, identity, daemonSessionRule)
+	}
 	return named, nil
+}
+
+// daemonSessionRule is the sentence a request naming a Legion daemon's session is refused in, at
+// the exchange and at a pod-session registration alike.
+const daemonSessionRule = "that opens " + oauthwire.DaemonSessionPrefix + ", which only a Legion daemon's own entry fixes, so no request names one for itself"
+
+// daemonNamed reports whether name is a Legion daemon's session (oauthwire.DaemonSessionPrefix).
+// A resource server takes a named-scope token of legion-daemon:<P> with the one project P for the
+// daemon of P, which may then stop other sessions' registrations at the listener and send uncounted
+// there, so the exchange gives such a name only as an entry's fixed session, which the
+// configuration reserves for that entry's principal from the broker's start. A pod, a workflow, a
+// Google machine and a person each name their own session, and each could otherwise carry project
+// P in the named scope, or take the name before the daemon traded.
+func daemonNamed(name string) bool {
+	return strings.HasPrefix(name, oauthwire.DaemonSessionPrefix)
 }
 
 // ValidSession reports whether name is usable as a session claim: UTF-8, printable, with no

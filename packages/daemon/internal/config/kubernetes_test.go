@@ -1363,7 +1363,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "envoy_token_file absent",
 			body: kubernetesWith("envoy_token_file: /var/run/legion/ENVOY_TOKEN\n", ""),
-			want: "envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer",
+			want: "envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer unless runtime.kubernetes.agent_secrets.exchange_audience is set, under which each pod's sessions trade their own broker token and the daemon presents its own",
 		},
 		{
 			name: "operator_token_file absent",
@@ -2004,6 +2004,57 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 				t.Fatalf("agent_secrets.exchange_audience settled as %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEnvoyTokenFileIsOptionalWithAgentSecrets: under runtime: kubernetes envoy_token_file may be
+// left out only where runtime.kubernetes.agent_secrets sets exchange_audience, which gives every
+// enrolled pod an identity its sessions trade for broker tokens of their own; the daemon then
+// presents its own broker token to the listener, and no pod is handed the Envoy bearer. Without the
+// block, or with a block that sets no exchange_audience, the file is required as before, since a pod
+// would have no credential for the listener at all. A file that sets both keeps the bearer.
+func TestEnvoyTokenFileIsOptionalWithAgentSecrets(t *testing.T) {
+	const (
+		bearer   = "envoy_token_file: /var/run/legion/ENVOY_TOKEN\n"
+		exchange = "      exchange_audience: legion-broker-exchange\n"
+		required = "envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer unless runtime.kubernetes.agent_secrets.exchange_audience is set"
+	)
+	block := "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile
+	for name, body := range map[string]string{
+		"no agent_secrets block":              kubernetesWith(bearer, ""),
+		"agent_secrets, no exchange_audience": kubernetesWith(bearer, "") + block,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
+			if err == nil || !strings.Contains(err.Error(), required) {
+				t.Fatalf("err %v, want %q", err, required)
+			}
+		})
+	}
+	for name, tc := range map[string]struct {
+		body, want string
+		broker     bool
+	}{
+		"exchange_audience and no envoy_token_file": {kubernetesWith(bearer, "") + block + exchange, "", true},
+		"exchange_audience and envoy_token_file":    {kubernetesFile + block + exchange, "/var/run/legion/ENVOY_TOKEN", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.EnvoyTokenFile != tc.want {
+				t.Fatalf("envoy_token_file settled as %q, want %q", cfg.EnvoyTokenFile, tc.want)
+			}
+			if got := cfg.ListenerPresentsBrokerToken(); got != tc.broker {
+				t.Fatalf("ListenerPresentsBrokerToken() = %v, want %v: the daemon presents its broker token to the listener exactly where it holds no Envoy bearer", got, tc.broker)
+			}
+		})
+	}
+	// A tmux daemon with no envoy_token_file has no pod identity to trade, and sends the listener
+	// no credential, as it always has.
+	if (Config{Runtime: Runtime{Name: "tmux"}}).ListenerPresentsBrokerToken() {
+		t.Fatal("a tmux daemon with no envoy_token_file presents a broker token to the listener; want none: it has no pod identity to trade")
 	}
 }
 

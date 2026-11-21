@@ -396,7 +396,10 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
 		Dispatch: credential,
-		NATSURLs: cfg.NatsURLs,
+		// With no envoy_token_file, a role's listener credential is its pod's exchange identity,
+		// and a launch into a kept pod built before it waits for the pod's round.
+		ListenerBroker: cfg.ListenerPresentsBrokerToken(),
+		NATSURLs:       cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,

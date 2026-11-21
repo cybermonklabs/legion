@@ -875,6 +875,40 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	}
 }
 
+// daemonCleanStopSkew is how far past this listener's clock a Legion daemon's clean stop may date
+// its moment. The daemon dates it by its own clock when the process ended (packages/daemon's
+// notify.DeleteConditions), so the bound catches only a daemon whose clock runs well ahead. It does
+// not narrow what the token can do: a stop dated at this listener's now already removes every
+// registration written before the request arrives, so a daemon's token can remove the current
+// registration of any session, of any project, as the shared bearer it replaces can. Only the
+// narrowing to sessions of the daemon's own project, which needs the session record to carry its
+// projects, will bound that.
+const daemonCleanStopSkew = 5 * time.Minute
+
+// notRegisteredAfter is a delete's if_not_registered_after: the moment it names in unix
+// milliseconds, whether the request names one, and whether the value is a positive whole count
+// of milliseconds.
+func notRegisteredAfter(r *http.Request) (millis int64, named, valid bool) {
+	asked := strings.TrimSpace(r.URL.Query().Get("if_not_registered_after"))
+	if asked == "" {
+		return 0, false, false
+	}
+	millis, err := strconv.ParseInt(asked, 10, 64)
+	return millis, true, err == nil && millis > 0
+}
+
+// daemonCleanStop reports whether r is a Legion daemon's clean stop of a session's registration,
+// which a daemon's own token may make for another session (daemonCaller): a request whose
+// if_not_registered_after is valid (notRegisteredAfter) and no more than daemonCleanStopSkew past
+// now. A malformed value is no stop: the route then answers it as any other token's request, 403
+// for another session and otherwise the 400 it gives such a value.
+func daemonCleanStop(r *http.Request, millis int64, valid bool, now time.Time) bool {
+	if _, daemon := daemonCaller(r); !daemon {
+		return false
+	}
+	return valid && millis <= now.Add(daemonCleanStopSkew).UnixMilli()
+}
+
 // deleteSessionHandler removes a live session registration at shutdown, and answers 200 whether or
 // not there was one to remove. A caller that cannot afford to remove a registration another
 // process wrote names the condition its delete holds under, and then the registration is removed
@@ -942,7 +976,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
 // session it names. The Claude Code /clear handoff still deregisters its predecessor, since it
-// does so while it is still that session.
+// does so while it is still that session. A Legion daemon's own token (daemonCaller) is the one
+// exception, and only for the clean stop (daemonCleanStop): the session it stops is a role's whose
+// process ended, never the daemon's own, and the shared bearer it replaces makes that stop for any
+// session. Its unconditional delete, a delete naming a client instance alone, and a stop whose
+// moment is far past this listener's clock are held to its own session like every other token's.
+// That keeps the route's form, not a narrower power: a stop dated now removes any registration
+// standing when it arrives (daemonCleanStopSkew).
 //
 // A delete that removed an entry this listener's cache held moves the session's known-session
 // record on, keeping its topics (session.KnownSessions.TouchWithin, which writes whatever the
@@ -962,19 +1002,24 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
 			return
 		}
-		if refusal := sessionNotBound(r, logger, sessionID); refusal != "" {
-			writeJSONError(w, http.StatusForbidden, refusal, "session_id")
-			return
+		// The daemon's clean stop is decided before sessionNotBound, which logs every refusal it
+		// makes, so the stop it admits writes no line calling it another session's act. The moment
+		// is read once, so the check and the delete act on the same one.
+		moment, named, valid := notRegisteredAfter(r)
+		if !daemonCleanStop(r, moment, valid, time.Now()) {
+			if refusal := sessionNotBound(r, logger, sessionID); refusal != "" {
+				writeJSONError(w, http.StatusForbidden, refusal, "session_id")
+				return
+			}
 		}
 		conditions := session.DeleteConditions{ClientInstanceID: strings.TrimSpace(r.URL.Query().Get("client_instance_id"))}
-		if asked := strings.TrimSpace(r.URL.Query().Get("if_not_registered_after")); asked != "" {
-			millis, err := strconv.ParseInt(asked, 10, 64)
-			if err != nil || millis <= 0 {
+		if named {
+			if !valid {
 				writeJSONError(w, http.StatusBadRequest,
 					"if_not_registered_after must be a unix timestamp in milliseconds", "if_not_registered_after")
 				return
 			}
-			conditions.NotRegisteredAfter = millis
+			conditions.NotRegisteredAfter = moment
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()

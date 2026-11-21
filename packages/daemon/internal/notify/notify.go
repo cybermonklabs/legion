@@ -186,6 +186,20 @@ func New(baseURL, token string) *HTTPPublisher {
 	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: requestTimeout}}
 }
 
+// NewWithTransport creates a publisher for one Envoy listener whose every request goes through
+// transport, which presents the daemon's credential: its own broker token, `Authorization: DPoP`
+// beside a proof of the request's URL (cipherclient.NewTokenTransport), where the daemon holds no
+// Envoy bearer (config.Config.ListenerPresentsBrokerToken). The publisher sets no Authorization of
+// its own. It follows no redirect: a 3xx is the listener's answer, read as every other answer that
+// is not the route's is, so the token and a proof of it are sent to the listener's URL and to no
+// URL a redirect names.
+func NewWithTransport(baseURL string, transport http.RoundTripper) *HTTPPublisher {
+	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), client: &http.Client{
+		Timeout: requestTimeout, Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
+}
+
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
 //
 // It sends keep: false, so the listener keeps nothing for a role no live session holds, and its

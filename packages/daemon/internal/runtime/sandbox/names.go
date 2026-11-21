@@ -296,6 +296,11 @@ const (
 	cacheTokenKey     = "LEGION_REPOSITORY_CACHE_TOKEN"
 )
 
+// envoyTokenKey is the launch secret that carries the daemon's Envoy bearer to every launch
+// (internal/daemon's launchSecrets), which a daemon that holds none (Options.ListenerBroker) names
+// in no launch.
+const envoyTokenKey = "ENVOY_TOKEN"
+
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each
 // bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), the bundle's
 // configured renames and its default owner, written for every launcher role: every workflow role

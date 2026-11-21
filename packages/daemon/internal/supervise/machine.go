@@ -3042,8 +3042,10 @@ const podRoundRetry = time.Minute
 const podRoundWaitLine = "supervise: this start waits for its pod's update round; trying it again every minute, charging nothing"
 
 // startWaitsForPodRound is a start the runtime refused because the live pod it would keep carries
-// no exchange identity, under dispatch_token_broker, and the deployment names no transition token
-// for such a pod (runtime.ErrAwaitingPodRound). That is the pod's state, not the claim's failing:
+// no exchange identity, and its role would then have no credential it needs: under
+// dispatch_token_broker with no transition token for such a pod, none for Dispatch, and where the
+// daemon holds no Envoy bearer, none for the listener (runtime.ErrAwaitingPodRound). That is the
+// pod's state, not the claim's failing:
 // charging it would fail a claim whose agent is fine for a pod that only its round replaces, so
 // the same launch is started again every minute (relaunchLater) until the pod it finds carries the
 // identity. A round can take hours, so the wait logs one line, with the runtime's refusal, which

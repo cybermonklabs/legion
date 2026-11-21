@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The origin this file's listener is reached at: a loopback name, so the Host fence an open
@@ -227,6 +228,10 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		token      string
 		wantStatus int
 		wantReason string
+		// wantCode is the refusal body's code: BROKER_TOKEN_NOT_ACTIVE for a token the broker says
+		// is not live, which tells a client to drop it and trade again, and none for every other
+		// refusal.
+		wantCode string
 		// wantSession is the session the admitted caller is carried to the handler as.
 		wantSession string
 		wantService string
@@ -255,6 +260,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			token:      revokedToken,
 			wantStatus: http.StatusUnauthorized,
 			wantReason: "not_active",
+			wantCode:   "BROKER_TOKEN_NOT_ACTIVE",
 		},
 		{
 			name:       "refuses a token the broker never issued",
@@ -263,6 +269,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			token:      unknownToken,
 			wantStatus: http.StatusUnauthorized,
 			wantReason: "not_active",
+			wantCode:   "BROKER_TOKEN_NOT_ACTIVE",
 		},
 		{
 			name:       "refuses a proof signed by a key the token is not bound to",
@@ -371,6 +378,14 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 				// two answers that refuse nobody — the starting 503 and the broker's own — say
 				// what they are, since each asks the caller to come back.
 				t.Fatalf("the refusal body names the failure class: %q", body)
+			} else if tc.wantStatus == http.StatusUnauthorized {
+				// The one 401 that carries a code is a token the broker says is not live, which
+				// a client drops and trades again for (Dispatch answers it the same), rather than
+				// present it until its renewal comes due.
+				var refusal listenerwire.APIError
+				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil || refusal.Code != tc.wantCode || refusal.Error != "unauthorized" {
+					t.Fatalf("the refusal body is %s, want error unauthorized and code %q", body, tc.wantCode)
+				}
 			}
 			assertBrokerRejectionLog(t, logged.String(), tc.wantReason, tc.token, request.Header.Get("DPoP"))
 		})

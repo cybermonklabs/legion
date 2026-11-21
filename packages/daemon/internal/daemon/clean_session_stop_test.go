@@ -176,7 +176,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
 	defer inFlight.wait()
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
 
 	stop("ses_dead")
 
@@ -434,7 +434,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -464,7 +464,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", listenerCredential{}, quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
 }
@@ -483,7 +483,7 @@ func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
 	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
 	inFlight.wait()
 

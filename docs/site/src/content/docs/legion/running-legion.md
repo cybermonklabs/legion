@@ -1052,6 +1052,11 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
   identity for one of its own session, and a launch into a pod that carries that identity carries
   no Dispatch token
   ([The daemon's own Dispatch credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-dispatch-credential-dispatch_token_broker)).
+  Under `runtime: kubernetes` with `runtime.kubernetes.agent_secrets.exchange_audience` set, you
+  may leave out `envoy_token_file` the same way: the daemon presents the listener a broker token of
+  its own, each role trades its pod's identity for one of its own session, and no launch carries an
+  Envoy token
+  ([The daemon's own Envoy credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-envoy-credential-no-envoy_token_file)).
 - **The providers Secret**, `legion-<project>-providers` in the namespace (`<project>` lowercased
   with everything but letters and digits removed, `legion-widgets-providers` here), holds, under
   `session_store: postgres`, the key `session_dsn_secret` names, with the session database's

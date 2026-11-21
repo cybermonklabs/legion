@@ -7,14 +7,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-)
 
-// tokenNotActive is the code a resource server refuses a token the broker no longer holds as live
-// with: Dispatch's 401 BROKER_TOKEN_NOT_ACTIVE (internal/dispatch/api/broker_token.go), for a
-// token the broker does not know, revoked, or let expire. The TypeScript client reads the same
-// code (packages/envoy-client/src/dispatch-http.ts, tokenNotLive). No mechanism shares a value
-// between the server and the clients, so the spellings change together.
-const tokenNotActive = "BROKER_TOKEN_NOT_ACTIVE"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+)
 
 // refusalReadLimit bounds what tokenTransport reads of a 401's body to find its code: a refusal is
 // one small JSON object, and whatever a longer body holds past this is handed on unread.
@@ -73,12 +68,14 @@ func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err == nil && resp.StatusCode == http.StatusUnauthorized && refusedAsNotActive(resp) {
 		t.client.Drop(token)
 		t.client.logf(r.Context(), "a server answered that the broker's token presented to it is not live; the next request trades again",
-			"url", presented.URL.Redacted(), "code", tokenNotActive)
+			"url", presented.URL.Redacted(), "code", oauthwire.TokenNotActiveCode)
 	}
 	return resp, err
 }
 
-// refusedAsNotActive reports whether resp's body is a refusal whose code is tokenNotActive. It
+// refusedAsNotActive reports whether resp's body is a refusal whose code is
+// oauthwire.TokenNotActiveCode, the code Dispatch and the Envoy listener answer a token the broker
+// does not know, revoked, or let expire. It
 // reads at most refusalReadLimit of the body and puts what it read back in front of the rest, so
 // whoever reads the answer reads all of it.
 func refusedAsNotActive(resp *http.Response) bool {
@@ -91,5 +88,5 @@ func refusedAsNotActive(resp *http.Response) bool {
 	var answer struct {
 		Code string `json:"code"`
 	}
-	return err == nil && json.Unmarshal(read, &answer) == nil && answer.Code == tokenNotActive
+	return err == nil && json.Unmarshal(read, &answer) == nil && answer.Code == oauthwire.TokenNotActiveCode
 }

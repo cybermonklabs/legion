@@ -640,7 +640,7 @@ func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, http.RoundTripper) {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
-	transport, err := dispatchCredential(context.Background(), cfg, "", getenvOf(map[string]string{
+	transport, err := settledDispatch(context.Background(), cfg, "", getenvOf(map[string]string{
 		cipherclient.BrokerURLVar: r.broker.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
 		cipherclient.MachineTokenFileVar: subject,
 	}), quietLogger())
@@ -655,7 +655,7 @@ func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, 
 func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch.HTTPClient {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenFile: sharedTokenFile}
-	transport, err := dispatchCredential(context.Background(), cfg, r.dispatch.token, getenvOf(nil), quietLogger())
+	transport, err := settledDispatch(context.Background(), cfg, r.dispatch.token, getenvOf(nil), quietLogger())
 	if err != nil {
 		r.t.Fatalf("the daemon's boot without dispatch_token_broker: %v", err)
 	}

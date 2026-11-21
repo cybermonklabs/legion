@@ -144,6 +144,22 @@ const (
 	ProjectScopeNone = "none"
 )
 
+// DaemonSessionPrefix opens the session a Legion daemon's own token names, legion-daemon:<PROJECT>:
+// the session the daemon writes Dispatch and calls the listener as (packages/daemon's
+// dispatch.DaemonSession, a module of its own, which spells it again). The exchange gives a session
+// so named only as the fixed session of an entry (exchange's resolveSession and Registration), so a
+// resource server takes a ProjectScopeNamed token of legion-daemon:<P> with the one project P for
+// the Legion daemon of P (the listener's daemonCaller).
+const DaemonSessionPrefix = "legion-daemon:"
+
+// TokenNotActiveCode is the code of the 401 a resource server answers a token the broker no
+// longer holds as live with (unknown, revoked or expired): Dispatch's (internal/dispatch/api) and
+// the Envoy listener's (cmd/listener's refuseBrokerToken). The Go token transport drops the token
+// it presented on it and trades again (internal/cipherclient's tokenTransport). The TypeScript
+// clients spell it again (packages/envoy-client/src/dispatch-http.ts, tokenNotLive), so the two
+// spellings change together.
+const TokenNotActiveCode = "BROKER_TOKEN_NOT_ACTIVE"
+
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
 
