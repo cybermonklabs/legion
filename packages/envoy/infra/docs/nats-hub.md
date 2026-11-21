@@ -1187,8 +1187,10 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 time, and the kubeconfig context it read through with its cluster's API server, or, in a pod with
 no kubeconfig and no `--context` given, the context `in-cluster` and the server
 `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`. `routes check` requires the record's
-context and cluster of its own, exit 2 otherwise, since a hub of the same names on
-another cluster has other pods, which the check would read as a new container on every pod. It
+context, by its name, and cluster of its own, exit 2 otherwise, since a hub of the same names on
+another cluster has other pods, which the check would read as a new container on every pod. A
+context renamed since the record fails the same way, the safe way: check through a context of the
+name the record holds, for the same cluster, or record again at `env`. It
 refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
 `controller-revision-hash`, and the StatefulSet's `observedGeneration`, `updatedReplicas`, `currentRevision`

@@ -84,6 +84,31 @@ func TestRecordThenCheck(t *testing.T) {
 	require.Contains(t, stderr, "is the record of envoy/envoy-nats, not of envoy/other")
 }
 
+// The record's context is compared by its name as well as its cluster's server: a context renamed
+// in the kubeconfig, its cluster the same, is refused, exit 2, and recording again through it is
+// the remedy. Control: the same name and server, exit 0.
+func TestCheckRefusesARecordOfARenamedContext(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "routes.json")
+	h := cleanHub()
+	h.server = "https://one.example.invalid"
+	h.atEnv()
+	code, _, stderr, _ := runRoutes(h, "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out, "--context", "staging")
+	require.Equal(t, 0, code, stderr)
+
+	check := func(context string) (int, string) {
+		t.Helper()
+		h := cleanHub()
+		h.server = "https://one.example.invalid"
+		code, stdout, stderr, _ := runRoutes(h, "check", "--namespace", "envoy", "--statefulset", "envoy-nats", "--record", out, "--context", context)
+		return code, stdout + stderr
+	}
+	code, output := check("staging")
+	require.Equal(t, 0, code, "control: the context and server the record names: %s", output)
+	code, output = check("staging-renamed")
+	require.Equal(t, 2, code, "the same cluster through a renamed context: %s", output)
+	require.Contains(t, output, `is the record taken through context "staging" of the cluster at "https://one.example.invalid", not through context "staging-renamed" of the cluster at "https://one.example.invalid"`)
+}
+
 // A record of a roll that has not finished is not written, and record exits 2; nor is one taken
 // once a pod's route port requires authorization.
 func TestRecordRefusesAnUnfinishedRoll(t *testing.T) {

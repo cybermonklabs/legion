@@ -38,9 +38,9 @@ type fakeHub struct {
 	unstamped map[string]bool
 	closed    bool
 	// context is the kubeconfig context the hub was opened through, "" for the current one,
-	// example-context; its cluster's server is named after it, so another context is another
-	// cluster.
-	context string
+	// example-context; its cluster's server is server, or, when that is "", named after the
+	// context, so another context is another cluster.
+	context, server string
 	// mu guards infos, answers and refused, which a fake route port's goroutine reads through
 	// RouteExchange while the test may set them (atEnv, setInfo, setAnswer): the race detector sees
 	// no order between the test's write and the goroutine's read, which a TCP connection orders.
@@ -52,7 +52,11 @@ func (h *fakeHub) Cluster(context.Context) (routes.Cluster, error) {
 	if name == "" {
 		name = "example-context"
 	}
-	return routes.Cluster{Context: name, Server: "https://" + name + ".example.invalid"}, nil
+	server := h.server
+	if server == "" {
+		server = "https://" + name + ".example.invalid"
+	}
+	return routes.Cluster{Context: name, Server: server}, nil
 }
 
 func (h *fakeHub) Pods(context.Context) ([]routes.Pod, error) {
