@@ -388,17 +388,18 @@ incarnation's, changes nothing and cannot put the old key back. A registrar that
 session watch does, writes 0 as before and is answered no generation, exactly as before. A write
 that takes a registration whole (below) is applied whatever its generation.
 
-A session name belongs, for good, to the registrar that first registered it. Each registration
-records the login account of the caller that wrote it, and the name's first registration binds the
-name to that account in the table `pod_session_registrars` (migration 0039). A registration of a
+A session name belongs to the registrar that first registered it, until the deployment's operator
+moves it to another registrar (below). Each registration records the login account of the caller
+that wrote it, and the name's first registration binds the name to that account in the table
+`pod_session_registrars` (migration 0039). A registration of a
 bound name by another registrar, for any pod, is refused
 `409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR`, naming the session and the registrar that holds it,
 and the broker writes nothing, whether the holder's registrations of the name are live, lapsed,
 released or swept. The registrar that holds a name registers any number of pods for it, as a
-relaunch does. No sweep and no route moves or removes a binding, so a daemon that stops using a
-name keeps it. The broker logs the refusal at WARN, `broker: a pod's session registration was
-refused: another registrar holds the session name`, naming the registrar, the holder, the pod and
-the session.
+relaunch does. No sweep and no route removes a binding, and only the operator's move changes one,
+so a daemon that stops using a name keeps it. The broker logs the refusal at WARN, `broker: a
+pod's session registration was refused: another registrar holds the session name`, naming the
+registrar, the holder, the pod and the session.
 
 So two daemons listed for one pod account register no pod, their own or each other's, under a name
 the other holds, and the exchange admits a pod under a name only when the registrar that holds the
@@ -425,10 +426,39 @@ that wrote the registration.
 The registrar is the daemon's login account, never its service, which every Legion daemon shares,
 nor its pod, which a restart changes. So a daemon whose login ServiceAccount changes is a new
 registrar, and it cannot register the names its old account bound: the broker refuses it
-`409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` for each of them, for good, after the old account's
-registrations lapse or are released too. No route moves a binding to another account yet. Today's
-Legion daemon reads that `409` as permanent: it logs it and does not write that registration again
-for that role's process.
+`409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` for each of them, after the old account's
+registrations lapse or are released too, until the operator moves each name to the new account
+(below). Today's Legion daemon reads that `409` as permanent: it logs it and does not write that
+registration again for that role's process, so move the names before the new account's daemon
+starts its roles.
+
+The deployment's operator moves a session name's binding to another registrar with
+`PUT /v1/pod-session-registrars/<session name>`, whose body is exactly
+`{"registrar": "<registrar account>"}`, as a project that moves its sessions from one daemon to
+another does before the second daemon registers them. `GET /v1/pod-session-registrars` lists
+every binding, `{"bindings": [{"session_name": …, "registrar": …, "registered_at": …}]}`, ordered by
+session name. Both routes admit only the `operator` entry of `BROKER_NATS_SERVICES`, presenting its
+own platform token for the NATS audience (`Authorization: Bearer`), the credential of the NATS
+writer hold's routes. Every other caller, each other entry's token and each daemon's own login
+included, is refused `403` with `{"error": "not_operator"}`. A registrar that no
+`BROKER_POD_REGISTRARS` entry names as a registrar is refused `400` with
+`{"error": "registrar_not_listed"}`, naming it, since a name bound to it would admit no
+registration; a name no registration could name is refused `400` with
+`{"error": "session_invalid"}`. Neither refusal moves anything. Both routes are mounted only when
+the broker runs its OAuth provider.
+
+The move binds a name no registrar holds too. It is one transaction that reads the binding and
+changes it in one statement, and it never removes the binding: a removal would leave the name to
+whichever daemon registered it first in between, while here every other daemon's registration of
+the name is refused, before the move and after it. From the move's commit, the new registrar's
+registrations under the name are admitted and trade; the previous registrar's are refused
+`409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR`, and the token exchange refuses each live registration
+of the name it wrote with the final `session_name_not_this_registrars:` refusal. The move revokes
+no access token: one already minted lives to its own expiry, at most `BROKER_ACCESS_TOKEN_SECONDS`
+after the move. The answer is `200` with the binding as stored and `previous_registrar`, which is
+absent for a name no registrar held. The broker logs each move at INFO, `broker: the operator moved
+a session name's binding to another registrar`, naming the operator, the session, the previous
+registrar and the new one.
 
 A daemon releases the session names it registered at `POST /v1/oauth/exchange/pod-sessions/release`,
 with the same login as the registration route, which answers `401` for a token that does not verify,
@@ -489,7 +519,7 @@ The token exchange does not read `BROKER_POD_REGISTRARS`: it honours a registrat
 its entry stood until the registration lapses or its registrar releases it. So removing an entry
 and redeploying the broker stops that registrar's new registrations at once and its old ones
 within 24 hours. The names that registrar bound stay bound to it: no other registrar registers
-them once the entry is gone, and no route moves them yet.
+them once the entry is gone, until the operator moves each to a registrar an entry names (above).
 
 A registration that a broker of a build before migration 0038 wrote names no registrar. It holds
 no name, and no exchange honours it: the exchange answers it as it answers no registration at all,

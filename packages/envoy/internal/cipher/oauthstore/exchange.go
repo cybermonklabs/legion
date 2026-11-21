@@ -406,15 +406,15 @@ func (e *PodSessionReleasedError) Error() string {
 func (e *PodSessionReleasedError) Unwrap() error { return ErrPodSessionReleased }
 
 // ErrPodSessionHeld is what RegisterPodSession's refusal (*PodSessionHeldError) is: the session
-// name is bound to another registrar, the daemon that first registered it, which holds it for
-// good, whatever the name's live rows.
+// name is bound to another registrar, the daemon that first registered it or the one the operator
+// moved it to (MovePodSessionBinding), which holds it whatever the name's live rows.
 var ErrPodSessionHeld = errors.New("another registrar holds this session name")
 
 // PodSessionHeldError is RegisterPodSession's refusal of a session name bound to another
-// registrar: the one that first registered it, which holds it for good, whether its rows are
-// live, lapsed, released or swept. It is ErrPodSessionHeld (errors.Is); Session is the name and
-// Holder the registrar it is bound to, which the registration route names to the registrar it
-// refuses.
+// registrar: the one that first registered it, or the one the operator moved it to, which holds it
+// whether its rows are live, lapsed, released or swept. It is ErrPodSessionHeld (errors.Is);
+// Session is the name and Holder the registrar it is bound to, which the registration route names
+// to the registrar it refuses.
 type PodSessionHeldError struct{ Session, Holder string }
 
 func (e *PodSessionHeldError) Error() string {
@@ -482,16 +482,17 @@ type PodSessionRegistration struct {
 // claim's answer (BindSession).
 //
 // registrar is the login account of the daemon writing (the registration route's serviceAuth
-// caller), and a session name is bound to the registrar that first registered it, for good,
-// whatever its live rows: the write binds the name to registrar when no registrar is bound to it
-// yet (bindPodSessionName, a row of pod_session_registrars), and a write of a name bound to
-// another registrar is refused with a *PodSessionHeldError naming the name and that registrar,
-// and writes nothing. No sweep deletes a binding and no route removes one, so the name stays its
-// registrar's while its rows are live, once they have lapsed or been swept, and after its
-// registrar released them. So two daemons listed for one pod account cannot each register a pod
-// under one name, at once or one after the other, and the exchange, which admits a trade only
-// for a live row that is not released and whose registrar is the one the name is bound to
-// (PodSessionRegistered), admits under a name only the pods its registrar registered. The same
+// caller), and a session name is bound to the registrar that first registered it, whatever its
+// live rows, until the operator moves it (MovePodSessionBinding): the write binds the name to
+// registrar when no registrar is bound to it yet (bindPodSessionName, a row of
+// pod_session_registrars), and a write of a name bound to another registrar is refused with a
+// *PodSessionHeldError naming the name and that registrar, and writes nothing. No sweep deletes a
+// binding and no route removes one, so the name stays its registrar's while its rows are live,
+// once they have lapsed or been swept, and after its registrar released them, and only the
+// operator's move gives it to another. So two daemons listed for one pod account cannot each
+// register a pod under one name, at once or one after the other, and the exchange, which admits a
+// trade only for a live row that is not released and whose registrar is the one the name is bound
+// to (PodSessionRegistered), admits under a name only the pods its registrar registered. The same
 // registrar registering another pod for the name, as a relaunch does, is admitted. An empty
 // registrar is refused, since a row naming none would admit nothing.
 //
@@ -571,11 +572,12 @@ func (s *Store) RegisterPodSession(ctx context.Context, registrar, podUID, sessi
 
 // bindPodSessionName binds the session name to registrar, in the transaction ctx carries, when no
 // registrar is bound to it yet, and refuses with a *PodSessionHeldError a name bound to another.
-// The insert does nothing for a name already bound, so a binding never moves once written, and
-// registered_at is the moment of the name's first registration. A first binding of the name that
-// another write has inserted and not yet committed makes this insert wait on the primary key until
-// that write commits or rolls back, and under read committed the read that follows, a statement
-// of its own, sees what that write committed.
+// The insert does nothing for a name already bound, so a registration never moves a binding (only
+// the operator's MovePodSessionBinding does), and registered_at is the moment of the name's first
+// registration, or of the operator's last move of it. A first binding of the name that another
+// write has inserted and not yet committed makes this insert wait on the primary key until that
+// write commits or rolls back, and under read committed the read that follows, a statement of its
+// own, sees what that write committed.
 func (s *Store) bindPodSessionName(ctx context.Context, registrar, session string) error {
 	if _, err := s.db(ctx).Exec(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2) on conflict (session_name) do nothing`, session, registrar); err != nil {
 		return fmt.Errorf("bind the session name: %w", err)
@@ -724,13 +726,14 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 //
 // The exchange refuses a released registration (PodSessionRegistered answers a
 // *PodSessionReleasedError), and the name stays bound to registrar, as every name stays bound to
-// the registrar that first registered it (RegisterPodSession), so no other registrar registers it
-// after the release either. Nothing is deleted and no expiry moves, and the sweep deletes the row
-// when it would have anyway. A row released before keeps the moment of its first release, so a
-// repeat changes nothing and answers the same, and a retry after a lost answer is safe. Only
-// registrar's own rows are released or counted: a row of the same name that another registrar,
-// or none, wrote is neither touched nor revealed. registrar's next write of a released row's pod
-// and name takes the row whole and makes that one registration live again (writePodSession).
+// the registrar that first registered it until the operator moves it (RegisterPodSession), so no
+// other registrar registers it after the release either. Nothing is deleted and no expiry moves,
+// and the sweep deletes the row when it would have anyway. A row released before keeps the moment
+// of its first release, so a repeat changes nothing and answers the same, and a retry after a lost
+// answer is safe. Only registrar's own rows are released or counted: a row of the same name that
+// another registrar, or none, wrote is neither touched nor revealed. registrar's next write of a
+// released row's pod and name takes the row whole and makes that one registration live again
+// (writePodSession).
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
 // is dropped as matching nothing rather than refused, and a name given twice matches the same
@@ -781,6 +784,106 @@ func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessio
 		return 0, fmt.Errorf("release the pod session names: %w", err)
 	}
 	return released, nil
+}
+
+// PodSessionBinding is one row of pod_session_registrars: a session name, the registrar it is
+// bound to, and when it was bound to that registrar, by its first registration or by the
+// operator's last move of it.
+type PodSessionBinding struct {
+	Session      string
+	Registrar    string
+	RegisteredAt time.Time
+}
+
+// MovePodSessionBinding binds session to registrar, whatever registrar it is bound to now, and
+// answers the binding as stored and the registrar it was bound to before, "" for a name bound to
+// none. It is what PUT /v1/pod-session-registrars/{session} does for the deployment's operator,
+// the one change of a binding there is: a registration binds a name only when it is bound to none
+// (bindPodSessionName), and nothing removes one.
+//
+// The name is bound throughout. The move is one transaction that reads the name's binding locked
+// and changes it in one statement, insert ... on conflict (session_name) do update set registrar,
+// registered_at = now(), and never deletes it. A removal followed by the new registrar's own first
+// registration would leave the name to whichever registrar registered it first in between; here a
+// registration of the name by any registrar but the two reads one of them as the holder, before
+// the move commits or after, and is refused; and of a registration's and the move's inserts of a
+// first binding of a name bound to none, the name's primary key lets one alone in. From its
+// commit, the exchange admits a trade under the name only for a registration the new registrar
+// wrote (PodSessionRegistered): each live row of the name another registrar wrote, the previous
+// one's included, is refused as a row of another registrar's, and the new registrar's next write
+// of such a row takes it whole (writePodSession). registered_at becomes the move's moment.
+//
+// It reads the binding before it changes it so it can answer the registrar it replaced, which the
+// route logs. A name bound to none at that read is inserted with on conflict do nothing, since a
+// registration's first binding may have been inserted, uncommitted, after the read began: the
+// insert then waits for that write, finds its binding and inserts nothing, and the binding is read
+// again, locked, and moved, so the answer names that registrar rather than none. The transaction
+// names read committed for that second read, which sees what the write it waited on committed, as
+// RegisterPodSession's does; so a ctx already carrying a transaction is refused; no caller passes
+// one.
+func (s *Store) MovePodSessionBinding(ctx context.Context, session, registrar string) (PodSessionBinding, string, error) {
+	if _, joined := TxFrom(ctx); joined {
+		return PodSessionBinding{}, "", errors.New("move the session name's binding: the move opens a read-committed transaction of its own, and the context already carries one")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return PodSessionBinding{}, "", fmt.Errorf("move the session name's binding: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	binding, previous, err := moveBinding(ctx, tx, session, registrar)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return PodSessionBinding{}, "", fmt.Errorf("move the session name's binding: %w", err)
+	}
+	return binding, previous, nil
+}
+
+// moveBinding is MovePodSessionBinding's write, in tx: the name's binding read locked and moved, or
+// inserted when there is none, and read again when a first registration inserted one meanwhile.
+// Nothing deletes a binding, so the second read finds the one the insert waited on.
+func moveBinding(ctx context.Context, tx pgx.Tx, session, registrar string) (PodSessionBinding, string, error) {
+	binding := PodSessionBinding{Session: session, Registrar: registrar}
+	for range 2 {
+		var previous string
+		err := tx.QueryRow(ctx, `select registrar from pod_session_registrars where session_name = $1 for update`, session).Scan(&previous)
+		switch {
+		case err == nil:
+			err = tx.QueryRow(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2)
+				on conflict (session_name) do update set registrar = $2, registered_at = now()
+				returning registered_at`, session, registrar).Scan(&binding.RegisteredAt)
+			return binding, previous, err
+		case !errors.Is(err, pgx.ErrNoRows):
+			return PodSessionBinding{}, "", fmt.Errorf("read the registrar the session name is bound to: %w", err)
+		}
+		err = tx.QueryRow(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2)
+			on conflict (session_name) do nothing
+			returning registered_at`, session, registrar).Scan(&binding.RegisteredAt)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return binding, "", err
+		}
+	}
+	return PodSessionBinding{}, "", errors.New("the binding a registration inserted after the move's read was gone when the move read it again")
+}
+
+// PodSessionBindings answers every row of pod_session_registrars, ordered by session name: each
+// session name a registrar has registered or the operator has moved, the registrar it is bound to,
+// and since when. It is what GET /v1/pod-session-registrars answers the operator.
+func (s *Store) PodSessionBindings(ctx context.Context) ([]PodSessionBinding, error) {
+	rows, err := s.db(ctx).Query(ctx, `select session_name, registrar, registered_at from pod_session_registrars order by session_name`)
+	if err != nil {
+		return nil, fmt.Errorf("list the session names' bindings: %w", err)
+	}
+	bindings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PodSessionBinding, error) {
+		var binding PodSessionBinding
+		err := row.Scan(&binding.Session, &binding.Registrar, &binding.RegisteredAt)
+		return binding, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the session names' bindings: %w", err)
+	}
+	return bindings, nil
 }
 
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and

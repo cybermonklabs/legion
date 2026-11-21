@@ -138,9 +138,11 @@ type Deps struct {
 	TrustedProxyHeader string
 	// OAuth is the machine login's OAuth provider and the token exchange. POST
 	// /v1/oauth/device_authorization, POST /v1/oauth/token, POST /v1/oauth/introspect, POST
-	// /v1/oauth/revoke, POST /v1/oauth/exchange/pod-sessions and POST
-	// /v1/oauth/exchange/pod-sessions/release are mounted only when it is set, with DeviceLogin
-	// and both TokenHooks, which it then requires (Register panics without them).
+	// /v1/oauth/revoke, POST /v1/oauth/exchange/pod-sessions, POST
+	// /v1/oauth/exchange/pod-sessions/release, and the operator's PUT
+	// /v1/pod-session-registrars/{session} and GET /v1/pod-session-registrars are mounted only
+	// when it is set, with DeviceLogin and both TokenHooks, which it then requires (Register
+	// panics without them).
 	OAuth *oauth.Provider
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
@@ -168,7 +170,8 @@ type Deps struct {
 	// NATSHold is the NATS writer hold's routes, /v1/nats-hold and the three under it, which
 	// the operator alone calls (NATSHold). Every Deps mounts them; the zero NATSHold refuses
 	// every caller 403 not_operator, as a broker whose BROKER_NATS_SERVICES lists no operator
-	// does.
+	// does. Its operator and verifier also admit the caller of the operator's routes of the
+	// session names' bindings (operatorAuth), which the OAuth provider's store holds.
 	NATSHold NATSHold
 }
 
@@ -239,11 +242,12 @@ func Register(mux *http.ServeMux, deps Deps) {
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
-		// them, and one whose provider composes no device grant (no BROKER_MACHINE_LOGIN_URL,
-		// so no page for a person to type a code into) serves no device authorization route:
-		// the row is simply not mounted, so the path is a 404 rather than a route answering an
-		// error no client could act on.
-		if deps.OAuth == nil && (strings.HasPrefix(route.Pattern, oauthRoutes) || route.Pattern == metadataPath) {
+		// them, nor the operator's routes of the session names' bindings, which its store holds,
+		// and one whose provider composes no device grant (no BROKER_MACHINE_LOGIN_URL, so no page
+		// for a person to type a code into) serves no device authorization route: the row is
+		// simply not mounted, so the path is a 404 rather than a route answering an error no
+		// client could act on.
+		if deps.OAuth == nil && (strings.HasPrefix(route.Pattern, oauthRoutes) || strings.HasPrefix(route.Pattern, podSessionRegistrarRoutes) || route.Pattern == metadataPath) {
 			continue
 		}
 		if deps.OAuth != nil && !deps.OAuth.DeviceGrant() && route.Pattern == deviceAuthorizationPath {
@@ -268,6 +272,11 @@ func Register(mux *http.ServeMux, deps Deps) {
 
 // oauthRoutes prefixes the routes the OAuth provider serves, which Register mounts only with one.
 const oauthRoutes = "/v1/oauth/"
+
+// podSessionRegistrarRoutes prefixes the operator's routes of the session names' bindings, the
+// table pod_session_registrars of the OAuth provider's store, which Register mounts only with the
+// provider.
+const podSessionRegistrarRoutes = "/v1/pod-session-registrars"
 
 // approvalRoutes and signInRoutes prefix the approval page's routes, which Register mounts only
 // with the page: a broker with BROKER_SIGNIN=off has none, nor does a rig that wires none, and

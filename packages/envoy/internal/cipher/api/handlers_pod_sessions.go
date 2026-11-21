@@ -117,18 +117,20 @@ type podSessionResponse struct {
 // says), and a session name no request could name back (400 SESSION_INVALID). Each refusal names
 // the account or the name it refused and repeats no token.
 //
-// A session name belongs, for good, to the registrar that first registered it: the row records
-// the caller's login account (registrar.Subject, never its service, which every Legion daemon
-// shares, nor its pod, which a restart changes), the name's first registration binds the name to
-// that account, and a write of a name bound to another registrar is 409
-// SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR, naming the session and the registrar that holds it, and
-// writes nothing (oauthstore.Store.RegisterPodSession). No sweep and no route ends the binding:
-// it holds whatever the name's registrations are, live, lapsed, released or deleted. Two daemons
-// listed for one pod account are two registrars, so neither registers a pod, its own or the
-// other's, under a name the other holds, and the exchange admits a pod under a name only when the
-// registrar holding it registered that pod. The registrar holding a name registers any number of
-// pods for it, as a relaunch does. The refusal is answered to the registrar alone and logged at
-// Warn, naming the registrar, the holder, the pod and the session.
+// A session name belongs to the registrar that first registered it, until the operator moves it
+// (PUT /v1/pod-session-registrars/{session}): the row records the caller's login account
+// (registrar.Subject, never its service, which every Legion daemon shares, nor its pod, which a
+// restart changes), the name's first registration binds the name to that account, and a write of
+// a name bound to another registrar is 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR, naming the
+// session and the registrar that holds it, and writes nothing
+// (oauthstore.Store.RegisterPodSession). No sweep and no route ends the binding, and only the
+// operator's move gives it to another registrar: it holds whatever the name's registrations are,
+// live, lapsed, released or deleted. Two daemons listed for one pod account are two registrars, so
+// neither registers a pod, its own or the other's, under a name the other holds, and the exchange
+// admits a pod under a name only when the registrar holding it registered that pod. The registrar
+// holding a name registers any number of pods for it, as a relaunch does. The refusal is answered
+// to the registrar alone and logged at Warn, naming the registrar, the holder, the pod and the
+// session.
 //
 // The body may name the thumbprint of the key the session's own role proves, which binds the
 // registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
@@ -198,7 +200,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			"service", registrar.Service, "registrar", registrar.Subject, "holder", held.Holder,
 			"account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
 		writeError(w, http.StatusConflict, "SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR",
-			fmt.Sprintf("the session name %s is bound to another registrar, %s, which registered it first and holds it for good", held.Session, held.Holder))
+			fmt.Sprintf("the session name %s is bound to another registrar, %s, which holds it until the deployment's operator moves it", held.Session, held.Holder))
 	case err != nil:
 		writeInternal(w, "register the pod's session name", err)
 	default:
@@ -350,11 +352,11 @@ type podSessionReleaseResponse struct {
 // released: from its commit on, the exchange refuses each registration of each named session that
 // the caller's login account wrote (a permanent invalid_grant); the rows stay until they expire, at
 // most oauthstore.PodSessionRetention after their last write; each name stays bound to that
-// account, as it is for good from its first registration, so no other registrar registers it,
-// then or later; and a later registration write of a pod and name by that account makes that one
-// registration live again and nothing else. released: 0, for a name that account holds no
-// registration of, is still released. A repeat of the call answers the same and changes nothing,
-// so a retry after a lost answer is safe.
+// account, as it is from its first registration until the operator moves it, so no other
+// registrar registers it, then or later; and a later registration write of a pod and name by that
+// account makes that one registration live again and nothing else. released: 0, for a name that
+// account holds no registration of, is still released. A repeat of the call answers the same and
+// changes nothing, so a retry after a lost answer is safe.
 //
 // Every other answer releases nothing: the refusals above, a 5xx, and a 404 or 405 from a broker
 // of an older build or with no OAuth provider, which mounts no /v1/oauth/ route. Only a 200 says

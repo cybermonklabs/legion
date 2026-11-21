@@ -501,10 +501,10 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 // set it and the key it replaced (oauthstore.Store.RegisterPodSession): a write naming no key
 // keeps the one a live row of the registrar's names, a write of a lower generation than such a
 // row's changes nothing, and a name bound to another registrar, the one that first registered it
-// and holds it for good, is refused with an *oauthstore.PodSessionHeldError
-// (oauthstore.ErrPodSessionHeld) naming that registrar. It is what POST
-// /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the only way
-// a row the exchange's gate reads is written.
+// or the one the operator moved it to, which holds it, is refused with an
+// *oauthstore.PodSessionHeldError (oauthstore.ErrPodSessionHeld) naming that registrar. It is what
+// POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the only
+// way a row the exchange's gate reads is written.
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
@@ -522,12 +522,30 @@ func (p *Provider) RegisterPodSession(ctx context.Context, registrar, account, p
 // sessions that the registrar registrar, the login account of the caller, wrote, and answers how
 // many of the registrar's live registrations of those names are released after the call
 // (oauthstore.Store.ReleasePodSessions). From its commit the exchange refuses a pod's trade under
-// each such registration, and each name stays bound to the registrar, as it is for good. It is
-// what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
+// each such registration, and each name stays bound to the registrar until the operator moves it.
+// It is what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
 // admits nothing, and a name no registration could have taken matches no row, so there is nothing
 // the configuration has to refuse.
 func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (int, error) {
 	return p.store.ReleasePodSessions(ctx, registrar, sessions)
+}
+
+// MovePodSessionBinding binds the session name session to the registrar registrar, whatever
+// registrar it is bound to now, and answers the binding as stored and the registrar it replaced,
+// "" for none (oauthstore.Store.MovePodSessionBinding). From its commit only registrar registers
+// pods under the name and only its registrations trade under it. It is what PUT
+// /v1/pod-session-registrars/{session} does for the deployment's operator, once the route has
+// checked that BROKER_POD_REGISTRARS names registrar. The policy is not asked: a binding admits no
+// trade by itself, and a registration under the name is still the policy's to refuse.
+func (p *Provider) MovePodSessionBinding(ctx context.Context, session, registrar string) (oauthstore.PodSessionBinding, string, error) {
+	return p.store.MovePodSessionBinding(ctx, session, registrar)
+}
+
+// PodSessionBindings answers every session name's binding, ordered by name
+// (oauthstore.Store.PodSessionBindings). It is what GET /v1/pod-session-registrars answers the
+// deployment's operator.
+func (p *Provider) PodSessionBindings(ctx context.Context) ([]oauthstore.PodSessionBinding, error) {
+	return p.store.PodSessionBindings(ctx)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.

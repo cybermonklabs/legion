@@ -28,6 +28,18 @@ func (p PodRegistrars) Lists(registrar, pod string) bool {
 	return listed
 }
 
+// ListsRegistrar reports whether an entry names registrar as its registrar, for any pod account:
+// the operator's move binds a session name only to such an account, since a name bound to any
+// other would admit no registration of it at all.
+func (p PodRegistrars) ListsRegistrar(registrar string) bool {
+	for pair := range p {
+		if pair.Registrar == registrar {
+			return true
+		}
+	}
+	return false
+}
+
 // Registrars is every registrar account an entry names, sorted and each once, for the boot's
 // line naming a registrar BROKER_SERVICE_LOGINS does not list.
 func (p PodRegistrars) Registrars() []string {

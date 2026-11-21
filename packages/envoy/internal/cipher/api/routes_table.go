@@ -230,7 +230,8 @@ func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, appro
 	}}
 }
 
-// operatorAuth is a route of the NATS writer hold, for its one caller: the operator entry of
+// operatorAuth is a route the deployment's operator alone calls, the NATS writer hold's and those
+// of the session names' bindings, for its one caller: the operator entry of
 // BROKER_NATS_SERVICES, presenting its own platform token (Authorization: Bearer), the
 // Kubernetes ServiceAccount token for the NATS audience that the auth service verifies the
 // operator's connection by. The token is verified with the auth service's own verifier
@@ -240,7 +241,8 @@ func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, appro
 // session that person's agents run, so it cannot single out one operator. Every route of the
 // class spends its source address's bucket first, the one the account class spends
 // (authenticate), so a flood of forged tokens costs no verification. The handler is given the
-// operator's account, which every row it writes names as its writer.
+// operator's account, which every hold row it writes names as its writer and every move of a
+// binding logs.
 //
 // It is a class of its own rather than a power of accountAuth's because the operator is no caller
 // BROKER_API_ACCOUNTS lists: its authority is the operator entry of the NATS auth service's list,
@@ -317,17 +319,29 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/oauth/revoke", accountAuth(relaysDecisions, (*server).revokeOAuthToken)},
 		// Register that one pod may exchange under one session name: the row the token exchange
 		// reads before it mints a token for a pod of an account that fixes no session, written by
-		// the deployment's own daemon as it starts that pod. A name's first registration binds it,
-		// for good, to the daemon that wrote it, and another daemon's registration of the name is
+		// the deployment's own daemon as it starts that pod. A name's first registration binds it
+		// to the daemon that wrote it, until the operator moves it (PUT
+		// /v1/pod-session-registrars/{session}), and another daemon's registration of the name is
 		// 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. Mounted only when the broker runs its OAuth
 		// provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions", serviceAuth((*server).registerPodSession)},
 		// Release session names the caller's login account registered: each live registration of
 		// each name that the account wrote, whichever of its pods wrote it, is marked released, so
 		// the token exchange refuses the trade under it of the pod the registration names, and the
-		// name stays bound to that account, as it is for good. Mounted only when the broker runs
-		// its OAuth provider.
+		// name stays bound to that account, as it is until the operator moves it. Mounted only when
+		// the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", serviceAuth((*server).releasePodSessions)},
+		// Bind a session name to the daemon the body names, whatever daemon it is bound to now, in
+		// one statement that never leaves it bound to none, so the daemon's registrations under it
+		// are admitted and trade, and every other daemon's are refused: the one move of a name's
+		// binding there is, for the operator alone. A registrar BROKER_POD_REGISTRARS does not name
+		// is 400 registrar_not_listed. Mounted only when the broker runs its OAuth provider, whose
+		// store holds the bindings.
+		{http.MethodPut, "/v1/pod-session-registrars/{session}", operatorAuth((*server).movePodSessionBinding)},
+		// List every session name's binding: the name, the daemon it is bound to and since when,
+		// ordered by name, for the operator alone. Mounted only when the broker runs its OAuth
+		// provider.
+		{http.MethodGet, "/v1/pod-session-registrars", operatorAuth((*server).listPodSessionBindings)},
 		// Extend the calling session's lease.
 		{http.MethodPost, "/v1/enrollments/{id}/renew", renewAuth((*server).renewEnrollment)},
 		// Describe the calling session's enrollment and its live grants.

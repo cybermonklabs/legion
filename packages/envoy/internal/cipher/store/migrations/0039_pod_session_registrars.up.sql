@@ -1,20 +1,24 @@
--- packages/envoy/internal/broker/store/migrations/0039_pod_session_registrars.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0039_pod_session_registrars.up.sql
 -- Which registrar a pod session name is bound to: one row for each name a daemon has registered
 -- a pod for (POST /v1/oauth/exchange/pod-sessions), naming the login account of the daemon that
 -- registered it first (the serviceAuth caller's ServiceAccount subject, as 0038's registrar
--- column is) and when. The name is that daemon's for good: another daemon's registration of it,
--- of any pod, is refused (409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR) whatever the name's rows
--- in oauth_pod_sessions hold, live, lapsed, released or swept, and the exchange admits a pod's
--- trade under the name only for a live row whose registrar is the one bound here
--- (oauthstore.Store.RegisterPodSession, oauthstore.Store.PodSessionRegistered). Without this
+-- column is) and when. The name is that daemon's until the operator moves it: another daemon's
+-- registration of it, of any pod, is refused (409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR)
+-- whatever the name's rows in oauth_pod_sessions hold, live, lapsed, released or swept, and the
+-- exchange admits a pod's trade under the name only for a live row whose registrar is the one
+-- bound here (oauthstore.Store.RegisterPodSession, oauthstore.Store.PodSessionRegistered). Without this
 -- table a name was held only while a live row of it named its registrar, so once those rows
 -- lapsed another daemon listed for the same pod account could register the name and its pods
 -- trade under it.
 --
--- A binding is never swept and no route moves or removes it: a daemon that stops using a name
--- keeps it. The operator's move of a binding to another daemon is plan E's t-e-70
--- (dispatch://INFRA-840), which needs an operator's token no broker route verifies yet. The table starts empty, with no
--- backfill from oauth_pod_sessions, because no deployment registers pods today.
+-- A binding is never swept and no route removes it: a daemon that stops using a name keeps it.
+-- The deployment's operator alone moves a binding to another daemon (PUT
+-- /v1/pod-session-registrars/{session}, oauthstore.Store.MovePodSessionBinding), in one statement
+-- that never leaves the name bound to none. The table starts empty, with no backfill from
+-- oauth_pod_sessions, because no deployment registers pods today.
+--
+-- This text replaces the one first shipped, whose header said no route moved a binding:
+-- replaces: 0039_pod_session_registrars.up.sql sha256:8aa496443b97f2fbdf1026f323df1b74c0d21b1b3ccc9d838f9b7a8474d73f98
 --
 -- It replaces 0038's live-row holder, the write's check of the name's live rows that this table
 -- now answers; 0038's header still names that refusal's old code,

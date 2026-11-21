@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The deployment's operator moves a pod session name's binding to another registrar:
+  `PUT /v1/pod-session-registrars/<session name>` with `{"registrar": "<registrar account>"}`
+  binds the name to that registrar, whatever registrar holds it, in one statement that never
+  leaves the name bound to none, so no other daemon can register it in between, and answers the
+  binding with `previous_registrar`. `GET /v1/pod-session-registrars` lists every binding. Both
+  routes admit only the `operator` entry of `BROKER_NATS_SERVICES` with its own platform token,
+  as the NATS writer hold's routes do, and answer every other caller `403 not_operator`; a
+  registrar no `BROKER_POD_REGISTRARS` entry names is `400 registrar_not_listed`. From the move,
+  the new registrar's registrations of the name are admitted and trade, and the previous
+  registrar's are refused `409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` and, at the exchange,
+  `session_name_not_this_registrars:`. Each move is logged at INFO. A session name now belongs to
+  the registrar that first registered it until the operator moves it, and the registration
+  route's `409` says so.
+time: 2026-11-21T01:34:02Z
+custom:
+    Issue: operator-moves-session-binding

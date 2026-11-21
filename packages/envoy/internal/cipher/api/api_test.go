@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -173,6 +174,15 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		}
 	}
 
+	// The operator entry of BROKER_NATS_SERVICES, as cmd/cipherd wires the routes only it calls
+	// (holdRoutes): its platform token verified at holdNATSAudience by the auth service's own
+	// verifier, here of the same issuer, over the schema the store's migrations ran in.
+	natsTokens := natscallout.PlatformTokens{K8sIssuer: issuer.URL(), K8s: enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), holdNATSAudience, keys)}}
+	var schema string
+	if err := st.Pool.QueryRow(context.Background(), `select current_schema()`).Scan(&schema); err != nil {
+		t.Fatalf("read the schema the store's tables are in: %v", err)
+	}
+
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
@@ -197,6 +207,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		NATSHold: api.NATSHold{Pool: st.Pool, Schema: schema, OperatorToken: natsTokens.Verify, OperatorAccount: holdOperatorAccount},
 	}
 	adjust(&deps)
 	api.Register(mux, deps)

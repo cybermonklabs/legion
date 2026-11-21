@@ -1203,12 +1203,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // a pod uid) that no live registration names for the session the token would write under,
 // reading oauthstore.Store.PodSessionRegistered in the exchange's own transaction. A registration
 // counts only while it names a registrar, that registrar has not released it, and the session
-// name is bound to that registrar: a name is bound for good to the daemon that first registered
-// it (oauthstore.Store.RegisterPodSession refuses it to every other), so a pod trades under a name
-// only when the daemon holding that name registered it. A row no registrar is named on, which a
-// broker of the build before registrars wrote, is answered as no row is. An exchange whose claims
-// carry no instance is not gated: a fixed-session entry's pod, a workflow run and a dev box each
-// carry a name their configuration or their person decides, and nothing of theirs is registered.
+// name is bound to that registrar: a name is bound to the daemon that first registered it, or to
+// the one the operator moved it to (oauthstore.Store.RegisterPodSession refuses it to every other,
+// and oauthstore.Store.MovePodSessionBinding is the move), so a pod trades under a name only when
+// the daemon holding that name registered it. A row no registrar is named on, which a broker of
+// the build before registrars wrote, is answered as no row is. An exchange whose claims carry no
+// instance is not gated: a fixed-session entry's pod, a workflow run and a dev box each carry a
+// name their configuration or their person decides, and nothing of theirs is registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
 // another principal the name, an account paired with the holder's excepted
@@ -1251,14 +1252,14 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // a name bound to none, is refused invalid_grant with a description beginning
 // oauthwire.SessionNameNotThisRegistrars and a colon, never oauthwire.PodSessionNotRegistered: no
 // later trade cures it, so both clients read it as final. A name another daemon holds is that
-// daemon's for good, so only that daemon's registration of the pod would admit it. No route of
-// this build writes a live row of a name bound to none, since the route binds the name in the
-// transaction that writes the row; only a hand edit of the database, a row written or a binding
-// deleted by hand, makes one, and only a registration that binds the name to the pod's registrar
-// admits the pod. Each case logs a WARN line of its own and has a hint of its own. Each hint names
-// the session and neither names a daemon, for the reason the released refusal names no daemon.
-// Each WARN line names the principal, the pod, the session and the registrar that wrote the
-// registration, and the line of a name another daemon holds names the holder too; the operator
+// daemon's until the operator moves it, so only that daemon's registration of the pod would admit
+// it. No route of this build writes a live row of a name bound to none, since the route binds the
+// name in the transaction that writes the row; only a hand edit of the database, a row written or
+// a binding deleted by hand, makes one, and only a registration that binds the name to the pod's
+// registrar admits the pod. Each case logs a WARN line of its own and has a hint of its own. Each
+// hint names the session and neither names a daemon, for the reason the released refusal names no
+// daemon. Each WARN line names the principal, the pod, the session and the registrar that wrote
+// the registration, and the line of a name another daemon holds names the holder too; the operator
 // reads them and the pod does not.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
