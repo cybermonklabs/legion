@@ -50,12 +50,15 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  * shows each passkey the person enrolled and when, so an owner sees a link someone else used
  * first; Invite, where Dispatch would make the person a link (`invitable`: named directly, from
  * outside the Workspace, no full member), which shows the link to send and when it stops; and
- * Reset, for a person with a passkey, which deletes them, ends the person's sign-in and revokes
- * the device logins they approved.
+ * Reset, for a person with a passkey, which deletes their passkeys and their unused links of every
+ * project, ends their sign-in, and revokes their personal tokens and the device logins they
+ * approved.
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
  * under no write key, so a later Invite makes a new link, which ends this one. A Reset deletes it,
- * so the row stops showing it once the owner confirms the Reset.
+ * so the row stops showing it once the owner confirms the Reset. A new link and when it stops are
+ * announced to a screen reader through a status region the row holds while Invite can be pressed,
+ * since a region that mounts with its words already in it is not announced by every reader.
  */
 export function AccessPersonRow({
   email,
@@ -101,7 +104,7 @@ export function AccessPersonRow({
   const reset = () => {
     if (
       !window.confirm(
-        `Reset ${email}? Dispatch deletes their passkeys and unused links for ${project}, signs them out, and revokes the device logins they approved. They sign in again only through a new link.`
+        `Reset ${email}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
       )
     ) {
       return;
@@ -159,6 +162,11 @@ export function AccessPersonRow({
       </div>
       {shown && (invitable || enrolled.length > 0 || invitation !== undefined) ? (
         <div className="grid basis-full gap-2">
+          <p className="sr-only" data-testid="access-invitation-announcement" role="status">
+            {invitation === undefined
+              ? ""
+              : `Made a link for ${email}. It works once, until ${exactTimeLabel(new Date(invitation.expires_at))}.`}
+          </p>
           {enrolled.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>No passkey yet</p>
           ) : (

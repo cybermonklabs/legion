@@ -925,10 +925,47 @@ test("a link Dispatch made whose answer was lost says so, and Invite makes a new
   );
   try {
     await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
-    expect(await within(personRow(ana)).findByRole("status")).toHaveTextContent(
-      "Dispatch made a link, but its answer was lost on the way. Press Invite again: a new link ends that one."
+    // A status, so a screen reader announces it; the row's empty announcement region is another.
+    expect(
+      await within(personRow(ana)).findByText(
+        "Dispatch made a link, but its answer was lost on the way. Press Invite again: a new link ends that one."
+      )
+    ).toHaveAttribute("role", "status");
+    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toHaveTextContent(
+      /^$/
     );
     expect(within(personRow(ana)).queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// The link appears beside the Invite button the owner just pressed, where the focus stays, so a
+// screen reader hears of it through the row's status region: the region is there before the press
+// and empty, and the press fills it with the address and when the link stops, not the link itself.
+test("a new link and when it stops are announced to a screen reader, through a region there before the press", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2026-11-21T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await screen.findByRole("button", { name: `Invite ${ana}` });
+    const region = within(personRow(ana)).getByTestId("access-invitation-announcement");
+    expect(region).toHaveAttribute("role", "status");
+    expect(region).toHaveTextContent(/^$/);
+
+    await user.click(screen.getByRole("button", { name: `Invite ${ana}` }));
+    await waitFor(() =>
+      expect(region).toHaveTextContent(
+        /^Made a link for ana@other\.example\. It works once, until .+\.$/
+      )
+    );
+    // The same node, so the reader announces the change rather than meeting a new region.
+    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toBe(region);
+    expect(region.textContent).not.toContain("enroll#");
   } finally {
     panel.restore();
     invite.mockRestore();
@@ -945,7 +982,7 @@ test("Reset asks first, then the person's passkeys are gone from the row", async
   try {
     await user.click(await screen.findByRole("button", { name: `Reset ${ana}` }));
     expect(confirm).toHaveBeenCalledWith(
-      `Reset ${ana}? Dispatch deletes their passkeys and unused links for CORE, signs them out, and revokes the device logins they approved. They sign in again only through a new link.`
+      `Reset ${ana}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
     );
     expect(reset).not.toHaveBeenCalled();
 
@@ -996,6 +1033,9 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
     expect(
       within(personRow(ana)).queryByTestId("access-invitation-expiry")
     ).not.toBeInTheDocument();
+    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toHaveTextContent(
+      /^$/
+    );
     // Invite still makes a new link.
     expect(
       within(personRow(ana)).getByRole("button", { name: `Invite ${ana}` })

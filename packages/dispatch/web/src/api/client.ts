@@ -1131,9 +1131,9 @@ export class DispatchApiClient {
     );
   }
 
-  /** The owner's Reset of a person from outside: deletes their passkeys and their unused links
-   *  for the project, ends their sign-in and revokes the device logins they approved, at once.
-   *  Answers the project's access as the write left it. */
+  /** The owner's Reset of a person from outside: deletes their passkeys and their unused links of
+   *  every project, ends their sign-in, and revokes their personal tokens and the device logins
+   *  they approved, at once. Answers the project's access as the write left it. */
   resetProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
     return this.post(
       "/api/v1/projects/{key}/access/people/{email}/reset",
