@@ -99,11 +99,11 @@ var (
 	// key does not parse, it names no App id). Its owner stores a new value.
 	ErrMintStoredValue = errors.New("the stored value cannot be minted from")
 	// ErrMintRefused: the minter refuses the release (an Azure login that is not the configured
-	// human-tier secret), or GitHub or Google refused (a 4xx other than GitHub's 422 to a narrowed
-	// token, a Google login that needs a new sign-in, an App with no installation on a listed
-	// account, a 401 to the App's own JWT). A refusal of the narrowing a release asked for is
-	// ErrMintNarrowingRefused, and the one refusal that is about the account alone is
-	// ErrMintNoInstallation.
+	// human-tier secret), or GitHub or Google refused (a 4xx that is no 408 and no rate limit, other
+	// than GitHub's 422 to a narrowed token: a Google login that needs a new sign-in, an App with no
+	// installation on a listed account, a 401 to the App's own JWT). A refusal of the narrowing a
+	// release asked for is ErrMintNarrowingRefused, and the one refusal that is about the account
+	// alone is ErrMintNoInstallation.
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the narrowing the release asked for cannot be served: it names an
 	// account the secret's github-owners tag does not list, which requests.Machine.Values refuses
@@ -113,9 +113,9 @@ var (
 	// caller fixes the narrowing; neither the App nor the secret is at fault.
 	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
 	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
-	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes
-	// as wider than the narrowing asked, which GitHubApp.Mint revokes at GitHub before it refuses),
-	// or the broker's Azure projected token is unreadable, malformed or expired.
+	// a 5xx, a 408, a rate limit, a body past its cap or one that does not decode, a token GitHub
+	// describes as wider than the narrowing asked, which GitHubApp.Mint revokes at GitHub before it
+	// refuses), or the broker's Azure projected token is unreadable, malformed or expired.
 	// The broker's operator looks at the projected volume, egress and the upstream's status.
 	ErrMintUpstream = errors.New("the upstream could not be asked")
 	// ErrMintNotBound: the google-service-account secret this release names is not bound to the

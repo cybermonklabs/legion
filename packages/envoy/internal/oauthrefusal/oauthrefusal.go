@@ -3,8 +3,10 @@
 // grant, and which are a server that could not answer now, whatever its body says. Every reader of
 // a token endpoint's error code that decides something on it - a sign-in refused, a client
 // rejected, a login denied or ended - reads it through Refusal or EndsGrant, so each rule has one
-// definition. It imports only the standard library and golang.org/x/oauth2, so a command that links
-// no OpenID Connect verifier can use it.
+// definition. The broker's minters read GitHub's and Google's statuses by Refuses too
+// (internal/cipher/secrets, mintStatusError), beside their own rate-limit reading. It imports only
+// the standard library and golang.org/x/oauth2, so a command that links no OpenID Connect verifier
+// can use it.
 package oauthrefusal
 
 import (

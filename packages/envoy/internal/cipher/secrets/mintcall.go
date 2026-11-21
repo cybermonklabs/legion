@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -26,10 +27,11 @@ import (
 const mintResponseLimit = 1 << 20
 
 // mintStatusError is an upstream answer whose status is not the one the call wanted. It wraps
-// ErrMintRefused for a 4xx and ErrMintUpstream for anything else, a rate-limited 4xx among them,
-// from every minter call (GitHub's installation list, token requests narrowed or not, and revokes,
-// and Google's refresh): a rate limit is no verdict on the App, the login or a narrowing, and
-// lifts by itself, so it is not the App owner's to fix. It names the numeric status alone: an
+// ErrMintRefused for a refusal (refused) and ErrMintUpstream for anything else, a 408, a 5xx and a
+// rate-limited 4xx among them, from every minter call (GitHub's installation list, token requests
+// narrowed or not, and revokes, Google's refresh and Google's service-account token): a 408 is the
+// upstream timing the request out and a rate limit lifts by itself, so neither is a verdict on the
+// App, the login or a narrowing, nor the App owner's to fix. It names the numeric status alone: an
 // upstream's reason phrase is its own text, which a malformed or hostile answer can fill with what
 // the request sent.
 type mintStatusError struct {
@@ -50,10 +52,17 @@ func (e *mintStatusError) Error() string {
 }
 
 func (e *mintStatusError) Unwrap() error {
-	if e.code >= 400 && e.code < 500 && !e.rateLimited {
+	if e.refused() {
 		return ErrMintRefused
 	}
 	return ErrMintUpstream
+}
+
+// refused reports whether the answer is the upstream refusing the request: a status
+// oauthrefusal.Refuses (any 4xx but 408 and 429, the rule the module reads a token endpoint's
+// refusal by) that is no rate limit, which GitHub can also answer with a 403 (rateLimited).
+func (e *mintStatusError) refused() bool {
+	return oauthrefusal.Refuses(e.code) && !e.rateLimited
 }
 
 // mintTransportError is an attempt that got no answer it could read: the call failed, or the
@@ -291,10 +300,10 @@ func tracesConnections(client *http.Client) bool {
 }
 
 // classify is the one rule for what an attempt's failure was, as broker_mint_attempts_total
-// names it, and whether the call is made again. A 5xx, a rate limit and a call or body read that
-// failed while the caller's context lives are retried; a 4xx that is no rate limit, a call the
-// caller's context ended (cancelled or past its deadline), an answer past its cap and a 2xx or
-// 3xx the call did not want are not.
+// names it, and whether the call is made again. A 5xx, a 408, a rate limit and a call or body read
+// that failed while the caller's context lives are retried; a refusal (mintStatusError.refused), a
+// call the caller's context ended (cancelled or past its deadline), an answer past its cap and a
+// 2xx or 3xx the call did not want are not.
 func classify(ctx context.Context, err error) (outcome string, retry bool) {
 	var status *mintStatusError
 	var transport *mintTransportError
@@ -305,9 +314,9 @@ func classify(ctx context.Context, err error) (outcome string, retry bool) {
 		switch {
 		case status.rateLimited:
 			return attemptRateLimited, true
-		case status.code >= 500:
+		case status.code >= 500 || status.code == http.StatusRequestTimeout:
 			return attemptUpstream, true
-		case status.code >= 400:
+		case status.refused():
 			return attemptRefused, false
 		}
 		return attemptUpstream, false

@@ -18,6 +18,8 @@ body: |-
   5xx naming `invalid_grant` now keeps the login and is retried, where it deleted the machine file.
   The broker's mint of a google-login secret reads Google's `invalid_grant` the same way: a 5xx
   naming it is now Google's failure (`upstream`), not a login that needs a new sign-in (`refused`).
+  Every minter call to GitHub or Google now reads a 408 as the upstream timing the request out:
+  it is `upstream` and retried, as a 5xx is, where it was `refused` and not retried.
 time: 2026-11-21T08:18:38Z
 custom:
     Issue: pr4696

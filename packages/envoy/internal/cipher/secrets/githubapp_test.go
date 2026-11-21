@@ -306,10 +306,10 @@ func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
 // rate limit, on a release with no narrowing as on a narrowed one, is no verdict on the App and
 // not its owner's to fix, so a rate-limited 4xx is upstream, never refused: GitHub's primary limit
 // (a 403 with X-RateLimit-Remaining: 0), a 429, and a 403 whose body names its secondary limit.
-// Each row mints under a Retry on a clock the test sets, and names the attempts it made: a 502
-// and a GitHub it cannot reach are tried three times; a refusal once; and each rate limit here
-// names no wait, which counts as a minute and so ends the mint at its first attempt. A stored
-// value the minter refuses makes no attempt at all.
+// Each row mints under a Retry on a clock the test sets, and names the attempts it made: a 502, a
+// 408 (GitHub timing the request out) and a GitHub it cannot reach are tried three times; a refusal
+// once; and each rate limit here names no wait, which counts as a minute and so ends the mint at
+// its first attempt. A stored value the minter refuses makes no attempt at all.
 func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -326,6 +326,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		return server
 	}
 	refused, down := answer(http.StatusUnauthorized, nil, "no"), answer(http.StatusBadGateway, nil, "no")
+	timedOut := answer(http.StatusRequestTimeout, nil, "no")
 	forbidden := answer(http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`)
 	primary := answer(http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"0"}}, `{"message":"API rate limit exceeded for installation."}`)
 	tooMany := answer(http.StatusTooManyRequests, nil, "no")
@@ -346,6 +347,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		"GitHub answers 401":                 {github(refused), value, "refused", false, 1},
 		"GitHub answers 403":                 {github(forbidden), value, "refused", false, 1},
 		"GitHub answers 502":                 {github(down), value, "upstream", false, 3},
+		"GitHub answers 408":                 {github(timedOut), value, "upstream", false, 3},
 		"GitHub cannot be reached":           {secrets.GitHubApp{Base: "http://127.0.0.1:1"}, value, "upstream", false, 3},
 		"GitHub's primary rate limit, 403":   {github(primary), value, "upstream", true, 1},
 		"GitHub answers 429":                 {github(tooMany), value, "upstream", true, 1},

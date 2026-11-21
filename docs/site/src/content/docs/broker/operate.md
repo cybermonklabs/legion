@@ -1836,18 +1836,19 @@ lines name is the store's own: Secrets Manager's version id, Secret Manager's ve
 ### The mint retry
 
 A minter's call to GitHub or Google is made again when another attempt can succeed: an answer of
-500 or above, a rate limit (a `429`, GitHub's `X-RateLimit-Remaining: 0`, or a body naming a rate
-limit), or a call or a read of its answer that failed while the caller's request was still open.
-The broker does not retry a `4xx` that is no rate limit, a call whose request its caller ended, an
-answer larger than the minter reads, or a `2xx` or `3xx` answer other than the one the call asked
-for. One more call is not retried: the GitHub token request that the check of a `github_app`
-narrowing before the approval request makes, once it failed in any way but one known to come
-before a connection, since GitHub may have received it whole and minted a token that the check
-will never hold, whatever the broker's own write reported. The same call that failed before a
-connection, because its name did not resolve, its connection or a proxy's tunnel could not be
-made, or the broker did not trust GitHub's certificate, minted nothing and is retried as any other
-call is. A TLS record error or alert after the handshake counts as a failure after the request
-went out; a TLS failure during the handshake comes before a connection, so the call is retried.
+500 or above, a `408` (the upstream timed the request out), a rate limit (a `429`, GitHub's
+`X-RateLimit-Remaining: 0`, or a body naming a rate limit), or a call or a read of its answer that
+failed while the caller's request was still open. The broker does not retry a `4xx` that is no
+`408` and no rate limit, a call whose request its caller ended, an answer larger than the minter
+reads, or a `2xx` or `3xx` answer other than the one the call asked for. One more call is not
+retried: the GitHub token request that the check of a `github_app` narrowing before the approval
+request makes, once it failed in any way but one known to come before a connection, since GitHub
+may have received it whole and minted a token that the check will never hold, whatever the
+broker's own write reported. The same call that failed before a connection, because its name did
+not resolve, its connection or a proxy's tunnel could not be made, or the broker did not trust
+GitHub's certificate, minted nothing and is retried as any other call is. A TLS record error or
+alert after the handshake counts as a failure after the request went out; a TLS failure during
+the handshake comes before a connection, so the call is retried.
 The revokes of a give-back, which return to GitHub a token a release minted and handed to nobody
 (after a release that failed, and after every session release of a github-app name behind the
 airlock), are made once each and never retried, so they take nothing from the retry budget below.
@@ -1894,7 +1895,7 @@ own listing.
 | Metric | Type | Labels | What it holds |
 | --- | --- | --- | --- |
 | `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
-| `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
+| `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, a `408`, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no `408` and no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
 | `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |
