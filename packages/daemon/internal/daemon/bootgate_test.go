@@ -809,9 +809,10 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 }
 
 // Oh My Pi dying after it loaded the plugin, with an exit of its own or by a signal (the kernel's
-// out-of-memory kill), or a probe the budget cut off before it answered, says nothing about the
-// plugin: the gate waits it out and asks again. A pass slower than a second or two passes on the
-// first attempt that answers, as it does on a loaded machine.
+// out-of-memory kill), says nothing about the plugin: the gate waits it out and asks again, as it
+// does a probe the budget cut off before it answered (TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime).
+// A pass slower than a second or two passes on the first attempt that answers, as it does on a
+// loaded machine.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
