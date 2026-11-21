@@ -65,7 +65,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "retry_or_escalate",
     "sign_off",
     "close_root",
-    "park_child",
     "rerun_child",
     "read_record",
     "read_release_records",
@@ -102,7 +101,6 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
-  park_child: ["issue"],
   rerun_child: ["issue"],
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
@@ -374,12 +372,12 @@ function toolSchema(pi: PiApi): unknown {
     issues: z.array(z.string()).optional(),
     to: phaseOp.to,
     // The why of the operations that take one, a string as the phase op's own `reason` is.
-    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // Agents sent it to rerun_child too, whose daemon route keeps no why, so the field says where
     // that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -408,17 +406,16 @@ function requiredString(
 }
 
 /** Refuses every field `operation` does not take, in the phase ops' wording
- * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
- * why goes: agents send one there, and the daemon keeps no why for either. */
+ * (`unknownFieldsRefusal`). A `reason` refused on rerun_child also says where its why goes:
+ * agents send one there, and the daemon keeps no why for it. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
   const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
   if (refused.length === 0) return;
   const refusal = unknownFieldsRefusal(operation, refused, fields);
-  const childOperation = operation === "park_child" || operation === "rerun_child";
   throw new Error(
-    childOperation && refused.includes("reason")
+    operation === "rerun_child" && refused.includes("reason")
       ? `${refusal}. Say why in a dispatch comment on the child`
       : refusal
   );
@@ -485,7 +482,12 @@ export function createLegionTool(deps: {
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its sign_off and the controller's operations: the exact text
     // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed.
+    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
+    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // daemon's TestTheEndChildRuleGolden writes both texts to
+    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
+    // description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -498,12 +500,30 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-        "to done, and sign off again. " +
-        "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-        "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
+        "Sign off again when each of them has left the workflow. " +
+        "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
+        "End a child with your own status write in Dispatch. " +
+        "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+        "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+        "For a fold, name the carrier in the reason: the issue that carries the work. " +
+        "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+        "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+        "Before done on a running child, have its worker push the work that the carrier needs. " +
+        "Done ends the worker's turn and the pod at once. " +
+        "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+        "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+        "Do this before done, or at once after a done that you wrote first. " +
+        "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+        "A restart is backlog, then rerun_child. " +
+        "Say why in a dispatch comment. " +
+        "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+        "After each move, read the child back (dispatch read --issue <KEY>). " +
+        "When the daemon set the move back, write it again. " +
+        "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+        "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+        "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
@@ -512,7 +532,7 @@ export function createLegionTool(deps: {
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
-        "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+        "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -755,13 +775,12 @@ export function createLegionTool(deps: {
             });
             return jsonSuccess({});
           }
-          case "park_child":
           case "rerun_child": {
             const grantId = await mintClaimGrant(client, active);
-            const request = { grantId, issue: requiredString(parameters, operation, "issue") };
-            await (operation === "park_child"
-              ? client.childPark(request)
-              : client.childRerun(request));
+            await client.childRerun({
+              grantId,
+              issue: requiredString(parameters, operation, "issue"),
+            });
             return jsonSuccess({});
           }
           default:

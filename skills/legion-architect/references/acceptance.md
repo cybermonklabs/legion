@@ -39,11 +39,8 @@ A tree often brings its own shortfall written up; that is no permission: your jo
   run answers is yours to correct in the check.
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the
   `phase-finished` may never have reached you.
-- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, or
-  park it with `park_child` only when a person asked for that move, or when the work is done,
-  folded into another issue or no longer needed, and say in a comment which of those it is; then
-  sign off again. Ask the person about one that can do neither, and hold the acceptance until they
-  answer. One issue beneath never holds it: one the daemon itself holds at `admitted` under an
+- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done,
+  and sign off again. One issue beneath never holds it: one the daemon itself holds at `admitted` under an
   ancestor it has already accepted, which starts when that ancestor closes.
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under
   `Open asks:` whose question opens `Finding from ` or `Clear defect from `. Follow it
@@ -65,8 +62,7 @@ deploy skill says. A child's result proves no check of the parent: a child carry
 parent's requirement proves it with a check of its own whose `serves` names it. Nothing builds on
 the parent's merge, which comes last: a child that waits for it waits forever, so work another
 child builds on is a child of its own. Until those children close, leave the issue in
-`accepting`; that wait is no reason to park a child. Before you park a child, move its criterion
-to the parent's own pull request or a released, open child; never downgrade it. Then, in one turn:
+`accepting`. Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
    test round of every check of the issue with no `ci_check`."

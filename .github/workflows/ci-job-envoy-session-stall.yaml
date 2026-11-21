@@ -90,8 +90,10 @@ jobs:
       - name: Session state rig of a stalled session
         run: bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
+      # Through the package's own test script, so the file's hooks get the one --timeout that
+      # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
       - name: Stall test of pi-envoy
-        run: bun test extensions/envoy.test.ts -t "NATS path freezes"
+        run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts

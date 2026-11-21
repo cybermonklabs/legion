@@ -1,6 +1,6 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing or parking children, a wake, a worker's escalation, accepting a reviewed head. Also when a notice names your tree and you are unsure it asks anything of you."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing children, a wake, a worker's escalation, accepting a reviewed head. Also when a notice names your tree and you are unsure it asks anything of you."
 ---
 
 # Legion architect
@@ -68,7 +68,7 @@ skill the procedures.
   whose blockers are not `done`. Never hold a release back for a close: a child released after the
   root's merge runs as an orphan root. Never block a child on its own parent, which merges last.
 - Read `skill://legion-architect/references/architect-in-flight.md` before you set a child's
-  `--blocked-by` links, park or rerun a child, and on each `child-closed`.
+  `--blocked-by` links, end or rerun a child, and on each `child-closed`.
 
 ## 3. Children complete
 

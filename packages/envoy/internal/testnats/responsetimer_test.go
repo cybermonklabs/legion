@@ -1,9 +1,14 @@
 package testnats
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/nats-io/jwt/v2"
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nkeys"
 )
 
 // A server of this rig answers a request through each service export of its system account that a
@@ -54,4 +59,56 @@ func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 	check("after a reload")
 	grant.srv.Restart(t, publishGrantConfig(public, allow))
 	check("after a restart")
+}
+
+// A server in operator mode, whose system account is an account JWT its operator signed, starts
+// through StartConfig as the configuration says. nats-server refuses
+// SetServiceExportResponseThreshold on such a claim-based account ("claim based accounts can not be
+// updated directly"), so the rig must leave its exports' response thresholds as nats-server sets
+// them. The test also reads that the server's system account is that JWT account, so it cannot pass
+// on a server that made a system account of its own.
+func TestAServerWhoseSystemAccountIsAJWTStarts(t *testing.T) {
+	key := func(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string) {
+		t.Helper()
+		pair, err := create()
+		if err != nil {
+			t.Fatalf("create an nkey: %v", err)
+		}
+		public, err := pair.PublicKey()
+		if err != nil {
+			t.Fatalf("read the nkey's public key: %v", err)
+		}
+		return pair, public
+	}
+	operator, operatorPublic := key(nkeys.CreateOperator)
+	operatorJWT, err := jwt.NewOperatorClaims(operatorPublic).Encode(operator)
+	if err != nil {
+		t.Fatalf("sign the operator JWT: %v", err)
+	}
+	_, systemPublic := key(nkeys.CreateAccount)
+	systemClaims := jwt.NewAccountClaims(systemPublic)
+	systemClaims.Name = "SYS"
+	systemJWT, err := systemClaims.Encode(operator)
+	if err != nil {
+		t.Fatalf("sign the system account JWT: %v", err)
+	}
+	config := fmt.Sprintf("operator: %q\nsystem_account: %q\nresolver: MEMORY\nresolver_preload: {\n  %s: %q\n}\n",
+		operatorJWT, systemPublic, systemPublic, systemJWT)
+
+	server, _ := StartConfig(t, config, nil, false)
+	srv := server.natsServer()
+	if srv == nil {
+		t.Fatal("the operator-mode server is not running after StartConfig")
+	}
+	system := srv.SystemAccount()
+	if system == nil || system.GetName() != systemPublic {
+		t.Fatalf("the server's system account is %v, want the JWT account %s", system, systemPublic)
+	}
+	accounts, err := srv.Accountz(&natsserver.AccountzOptions{Account: systemPublic})
+	if err != nil {
+		t.Fatalf("read the system account %s: %v", systemPublic, err)
+	}
+	if accounts.Account == nil || accounts.Account.Jwt != systemJWT {
+		t.Fatalf("the server's system account %s is not the claim-based account its JWT makes", systemPublic)
+	}
 }
