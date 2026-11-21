@@ -51,7 +51,7 @@ func testDSN(t *testing.T) string {
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}
-	bounded, err := testdb.PoolBounded("LEGION_TEST_PG_DSN", dsn)
+	bounded, err := testdb.PoolBounded(dsn, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

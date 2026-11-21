@@ -75,7 +75,7 @@ func Clone(t testing.TB, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clone, err = testdb.PoolBounded("LEGION_TEST_PG_DSN", clone); err != nil {
+	if clone, err = testdb.PoolBounded(shared.server, clone); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := shared.admin.Exec(context.Background(), cloneStatement(name)); err != nil {
@@ -190,7 +190,8 @@ func dropInBackground(name string) {
 // the memoisation this file exists for, which is what the test of it counts.
 //
 // The admin database's URL and the template's are testdb.DatabaseURL's, as each clone's is
-// (Clone), and this file makes no rewrite of its own: that helper's comment says what it refuses.
+// (Clone), with the pool keys testdb.PoolBounded gives the pools on them, and this file makes no
+// rewrite of its own: those helpers' comments say what they refuse.
 // The template's URL is made before the `create database`, so a refused rewrite leaves no
 // database behind.
 func prepare(dsn string) error {
@@ -199,15 +200,13 @@ func prepare(dsn string) error {
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(adminURL)
-	if err != nil {
-		return fmt.Errorf("parse the admin database URL: %w", err)
+	// Drops run concurrently on this pool. Sized by the CPU count, on a large machine the
+	// packages testing against one server at once would exceed its connection limit.
+	if adminURL, err = testdb.PoolBounded(dsn, adminURL); err != nil {
+		return err
 	}
-	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
-	// machine the packages testing against one server at once would exceed its connection limit.
-	config.MaxConns = 4
-	admin, err := pgxpool.NewWithConfig(ctx, config)
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, adminURL)
 	if err != nil {
 		return fmt.Errorf("open the admin pool: %w", err)
 	}
@@ -223,7 +222,7 @@ func prepare(dsn string) error {
 		return err
 	}
 	// The template is opened only by the store that migrates it.
-	if templateURL, err = testdb.PoolBounded("LEGION_TEST_PG_DSN", templateURL); err != nil {
+	if templateURL, err = testdb.PoolBounded(dsn, templateURL); err != nil {
 		return err
 	}
 	// A file copy of template1, for the reason each clone of it is one.

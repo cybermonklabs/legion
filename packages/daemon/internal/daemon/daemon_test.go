@@ -73,7 +73,7 @@ func testDSN(t *testing.T) string {
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	bounded, err := testdb.PoolBounded("LEGION_TEST_PG_DSN", testdb.RunDatabaseFor(dsn))
+	bounded, err := testdb.PoolBounded(dsn, testdb.RunDatabaseFor(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}

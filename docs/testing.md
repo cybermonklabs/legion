@@ -515,12 +515,14 @@ database they are given).
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
 of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
-than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` appends
-`pool_max_conns=4` to a URL that sets no size; `testdb.Database`, `testpg`'s `Clone`, and the
-`testDSN` of `internal/daemon` and `internal/store` answer such URLs. A URL that
-libpq, `pgx.Connect`, `psql`, a scratch Dispatch or another child process reads takes
-`testdb.PlainDatabase` instead: those readers send `pool_max_conns` to the server, which refuses
-it.
+than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
+`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+`internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
+another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
+hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
+key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
+`pool_max_conns`.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test

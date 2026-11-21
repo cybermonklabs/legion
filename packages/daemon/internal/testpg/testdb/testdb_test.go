@@ -1,11 +1,14 @@
 package testdb
 
 import (
+	"context"
 	"maps"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -237,34 +240,37 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 	}
 }
 
-// PoolBounded holds every pool pgxpool opens on the URL to PoolConns connections, keeps the size a
-// DSN sets itself, as internal/daemon's daemonDSN sets one connection, and keeps every byte of the
-// query it does not add: pgx reads the query with its own libpq-style parser, which decodes only
-// %XX and keeps a `+`, so a query rebuilt by Go's encoder (`%20` written as `+`) would send the
-// server another value.
+// PoolBounded gives a pool on the URL the pool keys LEGION_TEST_PG_DSN sets (server) in place of
+// any the URL holds, and pool_max_conns=PoolConns where server sets no size: a size the DSN sets,
+// as internal/daemon's daemonDSN sets one connection, is kept, whether the URL is server itself or
+// a URL DatabaseURL made without it. It keeps every byte of the query it does not change: pgx
+// reads the query with its own libpq-style parser, which decodes only %XX and keeps a `+`, so a
+// query rebuilt by Go's encoder (`%20` written as `+`) would send the server another value.
 func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 	t.Setenv("PGPORT", "")
 	t.Setenv("PGUSER", "legion_test")
 	for _, tc := range []struct {
-		name, dsn, want string
-		conns           int32
+		name, server, dsn, want string
+		conns                   int32
 	}{
-		{"a DSN that sets no size", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
+		{"a DSN that sets no size", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
 			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=4", PoolConns},
-		{"a DSN with no query", "postgres://legion_test@127.0.0.1:5433/run",
+		{"a DSN with no query", "postgres://legion_test@127.0.0.1:5433/run", "postgres://legion_test@127.0.0.1:5433/run",
 			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4", PoolConns},
-		{"a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable",
-			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable", 1},
-		{"a DSN whose options hold an encoded space", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable",
+		{"a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable",
+			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=1", 1},
+		{"a database URL made from a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/legion?pool_max_conns=2&pool_min_conns=1&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
+			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=2&pool_min_conns=1", 2},
+		{"a DSN whose options hold an encoded space", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable",
 			"postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable&pool_max_conns=4", PoolConns},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := PoolBounded("LEGION_TEST_PG_DSN", tc.dsn)
+			got, err := PoolBounded(tc.server, tc.dsn)
 			if err != nil {
 				t.Fatalf("PoolBounded refused %s: %v", tc.dsn, err)
 			}
 			if got != tc.want {
-				t.Fatalf("PoolBounded(%s) = %s, want %s", tc.dsn, got, tc.want)
+				t.Fatalf("PoolBounded(%s, %s) = %s, want %s", tc.server, tc.dsn, got, tc.want)
 			}
 			config, err := pgxpool.ParseConfig(got)
 			if err != nil {
@@ -281,6 +287,80 @@ func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 				t.Fatalf("pgx reads the parameters %v from %s, want %v as from %s", config.ConnConfig.RuntimeParams, got, before.ConnConfig.RuntimeParams, tc.dsn)
 			}
 		})
+	}
+}
+
+// DatabaseURL takes every key pgxpool reads out of the URL it makes, whatever LEGION_TEST_PG_DSN
+// holds, and keeps every other byte of the query: its URL goes to readers that are no pool (an
+// admin connection, psql, a scratch Dispatch), and pgx.Connect sends a pool key to the server as a
+// setting the server refuses, where psql refuses the URL itself and Dispatch refuses one that sets
+// pool_max_conns.
+func TestDatabaseURLCarriesNoPoolKey(t *testing.T) {
+	t.Setenv("PGPORT", "")
+	t.Setenv("PGUSER", "legion_test")
+	const dsn = "postgres://legion_test@127.0.0.1:5433/legion?pool_max_conns=2&options=-c%20search_path%3Dx&pool_min_conns=1&sslmode=disable"
+	const want = "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable"
+	got, err := DatabaseURL(dsn, "run")
+	if err != nil {
+		t.Fatalf("DatabaseURL refused %s: %v", dsn, err)
+	}
+	if got != want {
+		t.Fatalf("DatabaseURL(%s) = %s, want %s", dsn, got, want)
+	}
+	config, err := pgconn.ParseConfig(got)
+	if err != nil {
+		t.Fatalf("pgx refused %s: %v", got, err)
+	}
+	for key := range config.RuntimeParams {
+		if strings.HasPrefix(key, "pool_") {
+			t.Errorf("pgx reads %s from %s, which pgx.Connect sends to the server", key, got)
+		}
+	}
+}
+
+// A LEGION_TEST_PG_DSN that sets one of pgxpool's keys, as a developer sizes a run's pools,
+// reaches every reader on the server it names: a plain URL carries no pool key, so pgx.Connect
+// connects with it, and a pool URL keeps the size the DSN set.
+func TestADSNThatSetsAPoolSizeReachesEveryReader(t *testing.T) {
+	dsn := os.Getenv("LEGION_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip(SkipMessage)
+	}
+	sized, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal("LEGION_TEST_PG_DSN: net/url refuses it")
+	}
+	if sized.RawQuery != "" {
+		sized.RawQuery += "&"
+	}
+	sized.RawQuery += "pool_max_conns=2"
+	t.Setenv("LEGION_TEST_PG_DSN", sized.String())
+
+	plain := PlainDatabase(t, "legion_testdb_pool_key")
+	conn, err := pgx.Connect(t.Context(), plain)
+	if err != nil {
+		t.Fatalf("connect to the plain database: %v", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var one int
+	if err := conn.QueryRow(t.Context(), "select 1").Scan(&one); err != nil {
+		t.Fatalf("read on the plain database: %v", err)
+	}
+
+	config, err := pgxpool.ParseConfig(Database(t, "legion_testdb_pool_key"))
+	if err != nil {
+		t.Fatalf("pgxpool refuses the pool URL: %v", err)
+	}
+	if config.MaxConns != 2 {
+		t.Fatalf("a pool on the pool URL holds %d connections, want the 2 LEGION_TEST_PG_DSN sets", config.MaxConns)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatalf("open a pool on the pool URL: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(t.Context()); err != nil {
+		t.Fatalf("ping the pool: %v", err)
 	}
 }
 
