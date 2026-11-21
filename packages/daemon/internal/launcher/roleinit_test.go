@@ -97,9 +97,10 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 // it nor, from a further namespace of its own, replace or remove it, and the launcher's file
 // stays a regular file; it sees and can signal only its own processes; what it writes under its
 // home and in its temporary directories lands on its own layer, invisible to the container; every
-// mount its home carried is still there; its config home is its own, a copy of the pod's shared
-// one that no sibling reads; and when the role's init exits nothing of the role is left, not even
-// a detached process that ignores SIGTERM.
+// mount its home carried is still there; a mount the container's /tmp hides is not carried into
+// the role's, and the role sees nothing of the container's /tmp at its path; its config home is
+// its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
+// nothing of the role is left, not even a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -148,6 +149,15 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent home-mount-writes", "volume", "what the role writes into a volume under its home reaches the volume"},
 		{"agent home-mounts-view", "0", "the container's view of the home's volumes is covered: the role sees each at its own path alone"},
 		{"agent tmp-mount", "mounted-a", "a mount /tmp carried is bound back over the role's own /tmp"},
+		{"agent tmp-mount-nested", "nested-a", "a mount inside a mount /tmp carries comes back with it"},
+		{"agent tmp-mount-nested-extra", "0", "role-init binds back only the outermost mount /tmp carries, whose recursive bind brings the one inside it, so the inner mount has no bind of its own: role-init resolves no path inside a volume every role writes, where a sibling role could put a link"},
+		// The two mounts the container's /tmp hides (runStage): the stage's rows say its mount
+		// table lists each and no path under /tmp reaches it, so the agent's rows read hidden
+		// mounts and not mounts that were never made.
+		{"stage shadowed", "listed reaches=absent", "the container's mount table lists the mount its /tmp hides under a later mount, and nothing is at its path"},
+		{"stage beneath", "listed reaches=container", "the container's mount table lists the mount made beneath its /tmp after it, and its path reaches the container's own directory there"},
+		{"agent tmp-shadowed", "absent", "a mount the container's /tmp hides under a later mount is not carried: no path under /tmp reaches it, and the role sees nothing at its path"},
+		{"agent tmp-beneath", "absent", "a mount the container's /tmp hides, listed after the mount that hides it, is not carried either: the role sees nothing of the container's /tmp at its path"},
 		{"agent home-carryover", "absent", "the role's first generation starts on a home layer with nothing of its own"},
 		{"agent home-dir-rename", "ok", "the role renames a directory on its own home layer and the sandbox lives; under gVisor without userxattr the rename panics the sandbox instead"},
 		{"stage upper-home", "present", "what the role wrote under its home landed on its own layer"},
@@ -156,7 +166,6 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"stage container-home", "absent", "what the role wrote under its home is invisible to the container"},
 		{"stage container-tmp", "absent", "what the role wrote in /tmp is invisible to the container"},
 		{"stage container-shm", "absent", "what the role wrote in /dev/shm is invisible to the container"},
-		{"stage shadowed", "stood-in", "the mount the stage's own /tmp hides has a stand-in at its path, as no container's /tmp hides a mount: role-init carries every mount listed under /tmp, from its path"},
 		{"stage detached", "gone", "a detached process of the role that ignores SIGTERM is gone once the role's init exits"},
 		{"stage status", "0", "role-init reports the shim's own wait status"},
 		// The role's relaunch: a second generation of the same role, over the same role-homes
@@ -267,9 +276,12 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 // this binary: the helper, and role-init, which starts the agent through the role's own /proc.
 const stageSelf = "/proc/self/exe"
 
-// stageShadowed is the stage's own mount under the /tmp it covers, which its own /tmp then hides
-// (runStage, standInForHidden).
-const stageShadowed = "/tmp/shadowed"
+// stageShadowed and stageBeneath are the stage's own mounts under the /tmp it covers, which its
+// own /tmp then hides: the first made before that /tmp, the second beneath it after (runStage).
+const (
+	stageShadowed = "/tmp/shadowed"
+	stageBeneath  = "/tmp/beneath"
+)
 
 // stageMountPoint is a directory the stage can cover with a memory filesystem of its own. It is
 // the one piece of the machine the test needs: the layout must sit outside /tmp and outside the
@@ -328,37 +340,46 @@ func runStage(plan stagePlan) error {
 	if err := mountTmpfs(plan.Mount, "size=96m"); err != nil {
 		return err
 	}
-	// A mount the machine's /tmp carries, as a machine's /tmp may (a container runtime's leftover,
-	// say): made on a memory filesystem of the stage's own over the machine's /tmp, so the machine
-	// never sees it, and hidden by the stage's own /tmp below as any mount of the machine's is. So
-	// the row needs on every machine what a machine whose /tmp carries a mount needs.
+	// Two mounts under /tmp that the container's own /tmp hides, as it would hide a mount the
+	// machine's /tmp carries (a container runtime's leftover, say): made on a memory filesystem of
+	// the stage's own over the machine's /tmp, so the machine never sees them. stageShadowed is
+	// hidden by a mount made after it, the stage's own /tmp. stageBeneath is made after that /tmp,
+	// beneath it, through a handle on the directory it covers, so the mount table lists it after
+	// the mount that hides it, as a namespace gVisor copies may list a hidden mount: it numbers the
+	// copy's mounts in the order it walks each mount's children, a Go map's (cloneMountTree,
+	// gVisor's pkg/sentry/vfs/mount.go). The stage's own /tmp holds a directory of its own at
+	// stageBeneath's path, so a role-init that carried a mount by its path alone would hand the
+	// role the container's directory there.
 	if err := mountTmpfs("/tmp", "size=1m"); err != nil {
 		return err
 	}
-	if err := os.Mkdir(stageShadowed, 0o755); err != nil {
+	below, err := os.Open("/tmp")
+	if err != nil {
 		return err
 	}
-	if err := mountTmpfs(stageShadowed, "size=1m"); err != nil {
+	defer below.Close()
+	if err := mountHidden(stageShadowed); err != nil {
 		return err
 	}
 	// The stage's own /tmp and /dev/shm, so what the role plants if its privacy broke lands here
 	// and never on the machine, and the stage can see that it did not. Each hides every mount the
-	// machine's carries, and the stage's container carries a stand-in of each instead.
-	stoodIn := false
+	// machine's carries.
 	for _, dir := range []string{"/tmp", "/dev/shm"} {
 		if err := mountTmpfs(dir, "size=16m"); err != nil {
 			return err
 		}
-		hidden, err := standInForHidden(dir)
-		if err != nil {
-			return err
-		}
-		stoodIn = stoodIn || slices.Contains(hidden, stageShadowed)
 	}
-	if stoodIn {
-		fmt.Println("stage shadowed=stood-in")
-	} else {
-		fmt.Printf("stage shadowed=not listed under /tmp once hidden: %s\n", stageShadowed)
+	if err := mountHidden(fmt.Sprintf("/proc/self/fd/%d/%s", below.Fd(), filepath.Base(stageBeneath))); err != nil {
+		return err
+	}
+	if err := os.Mkdir(stageBeneath, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(stageBeneath, "marker"), []byte("container"), 0o644); err != nil {
+		return err
+	}
+	for _, path := range []string{stageShadowed, stageBeneath} {
+		fmt.Printf("stage %s=%s\n", filepath.Base(path), hiddenMount(path))
 	}
 	rolesDir := filepath.Join(plan.Mount, "roles")
 	fixedRoot := filepath.Join(plan.Mount, "fixed")
@@ -421,8 +442,9 @@ func runStage(plan stagePlan) error {
 	// under the home mounts at their path relative to the home, as the pod builder renders them,
 	// so the home itself carries none. One sits shallow and holds a mount of its own; one sits
 	// deep, under directories the home does not have. A mount /tmp carries, as an operator's
-	// volume may, is carried over the role's own /tmp. The pod's shared config home sits at its
-	// own place, holding the jj configuration workspace-init writes there and a mount of its own.
+	// volume may, is carried over the role's own /tmp, with a mount of its own inside it. The
+	// pod's shared config home sits at its own place, holding the jj configuration workspace-init
+	// writes there and a mount of its own.
 	carried := filepath.Join(plan.Mount, "carried")
 	nested := filepath.Join(plan.Mount, "nested")
 	shared := filepath.Join(plan.Mount, "shared-config")
@@ -449,6 +471,7 @@ func runStage(plan stagePlan) error {
 		{carried, filepath.Join(homeMounts, "other", "cache")},
 		{carried, filepath.Join(homeMounts, "deep", "sessions")},
 		{carried, "/tmp/mounted"},
+		{nested, "/tmp/mounted/nested"},
 		{shared, filepath.Join(homeMounts, ConfigHomeDir)},
 		{nested, filepath.Join(homeMounts, ConfigHomeDir, "nested")},
 	} {
@@ -592,30 +615,54 @@ func copyExecutable(source, target string) error {
 	return os.WriteFile(target, body, 0o755)
 }
 
-// standInForHidden gives every mount still listed strictly under dir, which the stage's own
-// memory filesystem at dir now hides, a memory filesystem of the stage's own at that path, each
-// path's parent first, and answers those paths. The stage's container must be one an issue pod's
-// can be, and no pod's container lists a mount under its /tmp that it cannot reach: no mount may be
-// at or above /tmp there (CheckPod), so nothing hides one. role-init carries every mount listed
-// under /tmp from its path, and one it cannot find there stops the role (carryOver). A machine's
-// /tmp may carry mounts — a container runtime's leftover, or the stage's own (stageShadowed) — so
-// the stage's container carries an empty volume at each such path, as an operator's volume
-// under /tmp is carried, and nothing of the machine's reaches the role.
-func standInForHidden(dir string) ([]string, error) {
-	_, hidden, err := mountsUnder(dir)
+// mountHidden makes path a memory filesystem of the stage's own that holds the marker `hidden`.
+func mountHidden(path string) error {
+	if err := os.Mkdir(path, 0o755); err != nil {
+		return err
+	}
+	if err := mountTmpfs(path, "size=1m"); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, "marker"), []byte("hidden"), 0o644)
+}
+
+// hiddenMount says how the stage's container sees a mount it hid at path: whether its mount table
+// lists a mount there, read from mountinfo itself, and what the path reaches (reached).
+func hiddenMount(path string) string {
+	listed := "unlisted"
+	switch count, err := mountsAt(path); {
+	case err != nil:
+		return "unreadable: " + err.Error()
+	case count > 0:
+		listed = "listed"
+	}
+	return listed + " reaches=" + reached(path)
+}
+
+// mountsAt is how many mounts this process's mount table lists at path, read from mountinfo
+// itself.
+func mountsAt(path string) (int, error) {
+	table, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	slices.Sort(hidden)
-	for _, path := range hidden {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return nil, err
-		}
-		if err := mountTmpfs(path, "size=1m"); err != nil {
-			return nil, err
+	count := 0
+	for _, line := range strings.Split(string(table), "\n") {
+		if fields := strings.Fields(line); len(fields) > 4 && fields[4] == path {
+			count++
 		}
 	}
-	return hidden, nil
+	return count, nil
+}
+
+// reached is what path reaches where the stage hid a mount: `absent` where nothing is there, else
+// the marker of what is there, `hidden` for the hidden mount itself and `container` for the
+// directory the container's own /tmp holds over it.
+func reached(path string) string {
+	if found := presence(path); found != "present" {
+		return found
+	}
+	return content(filepath.Join(path, "marker"))
 }
 
 // runGeneration runs one generation of the role over the stage's layout and reports the wait
@@ -758,6 +805,24 @@ func TestRoleInitAgentHelper(t *testing.T) {
 		say("home-mounts-view", strconv.Itoa(len(entries)))
 	}
 	say("tmp-mount", content(filepath.Join("/tmp", "mounted", "marker")))
+	say("tmp-mount-nested", content(filepath.Join("/tmp", "mounted", "nested", "marker")))
+	// How many mounts the role's table lists at the carried mount and at the mount inside it. The
+	// container's own mount at each path is in the role's table too, hidden under the role's own
+	// /tmp, so the row reads how many more the inner path has than the outer one: one more is a
+	// bind role-init made of the inner mount by its own path.
+	outer, outerErr := mountsAt(filepath.Join("/tmp", "mounted"))
+	inner, innerErr := mountsAt(filepath.Join("/tmp", "mounted", "nested"))
+	if err := errors.Join(outerErr, innerErr); err != nil {
+		say("tmp-mount-nested-extra", "unreadable: "+err.Error())
+	} else {
+		say("tmp-mount-mounts", strconv.Itoa(outer))
+		say("tmp-mount-nested-mounts", strconv.Itoa(inner))
+		say("tmp-mount-nested-extra", strconv.Itoa(inner-outer))
+	}
+	// The mounts the container's /tmp hides are no mounts of /tmp's to carry: nothing is at their
+	// paths in the role's own /tmp, neither the mount nor the container's directory over it.
+	say("tmp-shadowed", reached(stageShadowed))
+	say("tmp-beneath", reached(stageBeneath))
 	// What an earlier generation of this role wrote under its home is still the role's own: the
 	// writable layer is the role's across its generations, as a role container's filesystem was.
 	say("home-carryover", presence(filepath.Join(plan.Home, "planted")))
