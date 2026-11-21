@@ -465,10 +465,10 @@ func TestARelaySocketWhoseWriteFailsIsDroppedAtOnce(t *testing.T) {
 // A socket whose client reads its frames slower than they come falls past its subscription's
 // pending limits: nats.go drops the frames past them, and the socket closes 1013 slow_consumer at
 // its next check, on which its client opens it again and the owning relay sends the dropped frames
-// again, since it heard no receipt for them. The client here reads one frame each 50 ms, and 40
-// frames of 512 KiB come at once: it reads the frames written before the close and then the close.
-// Control: the subscription left at nats.go's own limits (64 MiB); nothing is dropped, the socket
-// stays open, and the row fails naming it.
+// again, since it heard no receipt for them. The client here reads one frame each 50 ms, and 80
+// frames of 512 KiB come at once, past the socket's 32 frames and 16 MiB: it reads the frames
+// written before the close and then the close. Control: the subscription left at nats.go's own
+// limits (64 MiB); nothing is dropped, the socket stays open, and the row fails naming it.
 func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_slow_consumer"
@@ -485,7 +485,7 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
-	flood(t, rig.owner.url, session, 40)
+	flood(t, rig.owner.url, session, 80)
 	select {
 	case err := <-ended:
 		var closed *websocket.CloseError
@@ -493,7 +493,7 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 			t.Fatalf("the socket that fell behind ended with %v, want a close %d %q", err, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 40 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
+		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 80 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 	}
 }
 
@@ -556,19 +556,64 @@ func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
 }
 
 // An open socket closes 4401 at its token's expiry, not at the next check, which here is an hour
-// away: its client trades for a fresh token at once. Control: no check at the expiry; the socket
-// stays open past it, and the row fails naming how long it waited.
+// away: its client trades for a fresh token at once. The stand-in answers the token live all
+// along with exp the whole second at or before its expiry, as the real broker answers it for up
+// to a second past that exp, so the close rests on the socket reading the exp and not on the
+// broker's refusal. Control: the verdict reading only the broker's refusal as expired; the socket
+// stays open past the exp, and the row fails naming it.
 func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_expiring"
 	token := "access-token-that-expires-in-two-seconds"
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), 2*time.Second, relaySocketProject))
 	client := rig.openWith(t, session, token)
-	// What the broker answers once the token's life ended.
-	rig.broker.Says(token, ciphertoken.Introspection{})
 	if code, text := client.closeCode(4 * time.Second); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
 		t.Fatalf("the socket closed %d %q at its token's expiry, want %d %q\n%s", code, text, relaySocketCloseExpired, relaySocketReasonExpired, rig.logs.String())
 	}
+}
+
+// A client that reads promptly keeps its socket however large the session's backlog: an edge
+// relay holds at most relayEdgeInFlight of a session's frames in flight (its consumers'
+// MaxAckPending), within the socket's pending limits, so a restart at the ack floor with 300
+// frames waiting sends them as fast as the client answers them. The backlog is stored while no
+// socket subscribes, and the session's next registration restarts the relay at the floor.
+// Control: the edge's consumers at bus.SessionConsumerMaxAckPending; the restart sends hundreds
+// at once, past the socket's limits, and the socket closes 1013 slow_consumer.
+func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session, backlog = "ses_edge_backlog", 300
+	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
+	stored := map[string]bool{}
+	for range backlog {
+		item, _ := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
+		stored[item.EventID] = true
+	}
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	<-client.pongs
+	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
+	seen := map[string]bool{}
+	deadline := time.After(60 * time.Second)
+	for len(seen) < backlog {
+		select {
+		case frame := <-client.frames:
+			if frame.Op != "msg" {
+				t.Fatalf("the socket sent %s after %d of %d frames, want only msg frames", frame.raw, len(seen), backlog)
+			}
+			var item contracts.Envelope
+			if err := json.Unmarshal(frame.data(t), &item); err != nil || !stored[item.EventID] {
+				t.Fatalf("the socket sent %q (%v), which is none of the stored backlog", frame.data(t), err)
+			}
+			seen[item.EventID] = true
+			client.pub(frame.Reply, relayReplyDone)
+		case err := <-client.closed:
+			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
+		case <-deadline:
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames in 60s", len(seen), backlog)
+		}
+	}
+	client.stillOpen(time.Second, "after the backlog")
 }
 
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and

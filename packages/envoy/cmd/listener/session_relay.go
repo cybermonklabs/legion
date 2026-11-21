@@ -498,17 +498,27 @@ type relayFrame struct {
 	answered bool
 }
 
+// relayEdgeInFlight is how many of a session's frames an edge listener's relay holds in flight,
+// awaiting done or nak: its session consumers' MaxAckPending (bus.SessionConsumers.SetMaxAckPending),
+// in place of bus.SessionConsumerMaxAckPending. A relay socket buffers what a client has not read
+// yet (relaySocketPendingMsgs, relaySocketPendingBytes), so a restart at the ack floor sends a
+// prompt client no more than its socket holds, however large the session's backlog.
+const relayEdgeInFlight = 16
+
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
 //
 // An edge listener's relay (cfg.edge set) takes its receipts under bus.RelayReplyPrefix and a nuid
 // of its own rather than under a reply inbox: the session of an edge listener answers its frames
 // over its relay socket, whose replica may be the other one, and the edge's grant publishes no
-// reply inbox (natsgrant.Edge) but does publish and subscribe that family.
+// reply inbox (natsgrant.Edge) but does publish and subscribe that family. Its consumers hold at
+// most relayEdgeInFlight frames in flight; it is started before /v1 opens, so before any
+// consumer is created.
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := delivery.consumers.NewInbox()
 	if cfg.edge != nil {
 		inbox = bus.RelayReplyPrefix + nuid.Next()
+		delivery.consumers.SetMaxAckPending(relayEdgeInFlight)
 	}
 	m := &sessionRelays{
 		delivery:    delivery,
