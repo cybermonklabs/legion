@@ -262,6 +262,23 @@ async function takeStale(
 }
 
 /**
+ * Keeps `released`, the failure to let go of a lock after `work` failed with `failed`, on `failed`
+ * itself, so `work`'s caller is answered the very error `work` threw, of its own type: as its
+ * `cause` where it has none, and else as its `releaseFailure`, so the cause `work` gave it stays.
+ * An error that takes no field (a frozen one) is left as it is: a write to it throws, and that
+ * throw would take the place of `work`'s error.
+ */
+function keepReleaseFailure(failed: unknown, released: unknown): void {
+  if (!(failed instanceof Error)) return;
+  Reflect.defineProperty(failed, failed.cause === undefined ? "cause" : "releaseFailure", {
+    value: released,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * Runs `work` holding the lock of the login at `path`, `<path>.lock`, and answers what it
  * answers. The caller has made the login's directory and checked that no other user can write to
  * it, so no other user picks what is at the lock's path. A lock another process holds is tried
@@ -272,7 +289,7 @@ async function takeStale(
  * that is slow is never taken for dead, and lets go of it when `work` settles, removing it only
  * while it still holds its own value ({@link removeOwn}). Where `work` rejects and letting go then
  * fails too, `work`'s error is the one rejected with, since it says what `work` did and did not
- * do, and the release's is kept as its cause where it has none. `work` is handed `held`, which
+ * do, and the release's is kept on it ({@link keepReleaseFailure}). `work` is handed `held`, which
  * reads the lock again and says whether it still holds this call's value: false once another
  * caller took it from a holder that was stopped. `named` names the login in an error.
  */
@@ -306,9 +323,9 @@ export async function withLoginLock<T>(
     answer = await work(async () => (await look(lock, locked))?.value === mine);
   } catch (error) {
     clearInterval(beat);
-    await removeOwn(lock, mine, locked).catch((released: unknown) => {
-      if (error instanceof Error && error.cause === undefined) error.cause = released;
-    });
+    await removeOwn(lock, mine, locked).catch((released: unknown) =>
+      keepReleaseFailure(error, released)
+    );
     throw error;
   }
   clearInterval(beat);

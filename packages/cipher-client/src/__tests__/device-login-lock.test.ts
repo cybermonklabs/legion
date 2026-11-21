@@ -588,6 +588,70 @@ test("a holder whose work fails and whose release then fails is told the work's 
   expect(await readdir(dirname(path))).toContain("device-login.json.lock");
 });
 
+/** Fails each move of the lock at `lock` aside, `EIO`, until its `mockRestore`: a holder's
+ *  release fails. */
+function failTheRelease(lock: string) {
+  const realRename = fs.rename;
+  return spyOn(fs, "rename").mockImplementation((async (
+    from: Parameters<typeof fs.rename>[0],
+    to: Parameters<typeof fs.rename>[1]
+  ) => {
+    if (String(from) === lock) throw Object.assign(new Error("refused"), { code: "EIO" });
+    return await realRename(from, to);
+  }) as typeof fs.rename);
+}
+
+test("a holder whose work fails with a cause of its own, and whose release then fails, keeps both", async () => {
+  // A caller tests what the work threw by its type, and reads its cause: the release's failure is
+  // kept beside that cause, which stays the work's own.
+  class WorkFailure extends Error {}
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const why = new Error("the work's own cause");
+  const failure = new WorkFailure("the work's own failure", { cause: why });
+  const renames = failTheRelease(lock);
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  expect(caught).toBe(failure);
+  expect(caught).toBeInstanceOf(WorkFailure);
+  expect(failure.cause).toBe(why);
+  const released = "releaseFailure" in failure ? failure.releaseFailure : undefined;
+  expect(released).toBeInstanceOf(Error);
+  const said = released instanceof Error ? released.message : "";
+  expect(said).toContain("move the lock beside");
+  expect(said).toContain("EIO");
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
+test("a holder whose work fails with an error that takes no field is told that very error", async () => {
+  // A frozen error cannot be written to: a write to it throws, and that throw must not take the
+  // place of the work's error.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const failure = Object.freeze(new Error("the work's own failure"));
+  const renames = failTheRelease(lock);
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  expect(caught).toBe(failure);
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
 test("a lock in a directory others may write is refused before it is opened or made", async () => {
   // In such a directory another user picks what is at the lock's path.
   const path = loginPath();
