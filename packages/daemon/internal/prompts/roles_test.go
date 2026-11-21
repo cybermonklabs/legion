@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -35,11 +36,11 @@ var (
 	}
 	repoSpecific = []string{
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
-		// A deployment's own name for itself, for the repository it runs the daemon from, for the
-		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
-		// is case-sensitive, so the deployment's name stands here in both the forms a part could
-		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
-		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+		// The runbook a deployment sends a heavy run to, and the bucket it keeps one's output in.
+		// A deployment's own names are not here, since a public test cannot hold the names it
+		// refuses: TestNoReusablePartNamesARepositoryOrLibrary reads them from the deployment's own
+		// term list, as check-private-names does.
+		"running-heavy-jobs", "gs://",
 	}
 )
 
@@ -77,21 +78,46 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // and every go/ part, because the pod memory rule tells a role where its deployment's instructions
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
+//
+// Each part is held to three checks. repoSpecific holds the names any reader may see. The
+// deployment's own names are read from PRIVATE_NAME_TERMS, the term list
+// .github/scripts/check-private-names.sh reads, and matched as that script matches them
+// (deploymentTerms, termPattern); a part that names one fails with the term's place in the list
+// and never the term. Where the variable holds no term, the test checks none and logs one UNKNOWN
+// line that says so. The rules leakguard ports from that script, the company's name among them,
+// read each part whatever the variable holds.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	for _, file := range reusableParts {
-		text := rolePart(t, file)
+	terms := deploymentTerms(os.Getenv(privateNameTermsVar))
+	if len(terms) == 0 {
+		t.Log("UNKNOWN: " + privateNameTermsVar + " holds no term, so no part was checked for a term of the deployment's own list")
+	} else {
+		t.Logf("%s: %d terms read", privateNameTermsVar, len(terms))
+	}
+	patterns := make([]*regexp.Regexp, len(terms))
+	for i, term := range terms {
+		patterns[i] = termPattern(term)
+	}
+	guard := leakguard.New(leakguard.Options{})
+	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
-				t.Errorf("%s contains %q", file, needle)
+				t.Errorf("%s contains %q", name, needle)
 			}
+		}
+		for i, pattern := range patterns {
+			if pattern.MatchString(text) {
+				t.Errorf("%s names term %d of %s (counted from 1, its key: and blank lines skipped)", name, i+1, privateNameTermsVar)
+			}
+		}
+		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
+	for _, file := range reusableParts {
+		check(file, rolePart(t, file))
+	}
 	err := eachPart(goParts, "go", func(name string, body []byte) error {
-		for _, needle := range repoSpecific {
-			if strings.Contains(string(body), needle) {
-				t.Errorf("go/%s contains %q", name, needle)
-			}
-		}
+		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {
