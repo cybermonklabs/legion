@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -460,7 +460,10 @@ describe("dispatch inbox", () => {
       ),
     };
 
-    const { code, stdout, stderr } = await runInbox();
+    // The command dates each age by its own clock when it prints, after its four reads: the clock
+    // stands at `now` until then, so each age is the one written above, however long they take.
+    setSystemTime(new Date(now));
+    const { code, stdout, stderr } = await runInbox().finally(() => setSystemTime());
 
     expect(stderr).toBe("");
     expect(code).toBe(0);
