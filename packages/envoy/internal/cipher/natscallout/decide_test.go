@@ -241,25 +241,46 @@ func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
 	require.Positive(t, narrowed, "no row's scoped grant held a stream call, so the narrowing above was read nowhere")
 }
 
-// The operator is the one service whose answer keeps its stream calls: its entry is answered with
-// natsgrant.Operator of the hold's phase whole, the create of ENVOY_MEASURE among them, while a
-// listener listed beside it is answered without any (TestNoAnswerCreatesOrChangesAStream).
+// The operator is the one service whose answer keeps its stream calls: under a held row its entry
+// is answered with natsgrant.Operator(held) whole, ENVOY_MEASURE's create and update among them,
+// while a listener listed beside it is answered without any (TestNoAnswerCreatesOrChangesAStream).
+// Outside a hold the operator's grant holds no stream create or update at all.
 func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
 	const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
 	now := time.Now()
+	signer := newHoldSigner(t)
+	stub := &holdStub{}
+	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")))
 	services := append(slices.Clone(exampleServices), ServiceEntry{Kind: KindOperator, Account: operatorAccount, AllProjects: true})
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
 		"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(10 * time.Minute)},
 		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(10 * time.Minute)},
-	})}
+	}), Now: func() time.Time { return now }, HoldRead: stub.read, HoldKeys: signer.HoldKeys}
 	operator, err := Decide(t.Context(), deps, services, serviceRequest("operator-token"))
 	require.NoError(t, err)
 	require.Equal(t, "operator/"+operatorAccount, operator.Name)
-	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseReleased), operator.Grant, "the operator's answer was narrowed")
+	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld), operator.Grant, "the operator's answer was narrowed")
 	require.Contains(t, operator.Grant.Publish, "$JS.API.STREAM.CREATE.ENVOY_MEASURE")
+	require.Contains(t, operator.Grant.Publish, "$JS.API.STREAM.UPDATE.ENVOY_MEASURE")
 	listener, err := Decide(t.Context(), deps, services, serviceRequest("listener-token"))
 	require.NoError(t, err)
 	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), listener.Grant)
+	require.Empty(t, streamWriters(natsgrant.Operator(natsgrant.OperatorPhaseReleased)), "the released operator holds a stream create or update")
+}
+
+// streamWriters are the entries of p's publish list through which a stream create, update, delete
+// or restore is allowed, as natsgrant_test's own reader names them.
+func streamWriters(p natsgrant.Permissions) []string {
+	var writers []string
+	for _, entry := range p.Publish {
+		for _, call := range []string{"$JS.API.STREAM.CREATE.>", "$JS.API.STREAM.UPDATE.>", "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.RESTORE.>"} {
+			if server.SubjectsCollide(entry, call) && !slices.ContainsFunc(p.PublishDeny, func(deny string) bool { return server.SubjectMatchesFilter(call, deny) }) {
+				writers = append(writers, entry)
+				break
+			}
+		}
+	}
+	return writers
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
