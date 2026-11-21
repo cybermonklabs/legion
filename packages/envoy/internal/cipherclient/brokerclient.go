@@ -373,12 +373,11 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	if c.held != nil && c.now().Before(c.held.Expiry.Add(-c.renewBefore)) {
 		return c.held, nil
 	}
-	token, err := c.trade(ctx)
+	token, err := c.tradeHeld(ctx)
 	if err == nil {
-		c.held = token
 		return token, nil
 	}
-	if !finalRefusal(err) && c.held != nil && c.now().Before(c.held.Expiry) {
+	if c.held != nil && c.now().Before(c.held.Expiry) {
 		what, attrs := retriedTrade(err)
 		c.logf(ctx, what+"; the token in hand is still live", attrs...)
 		return c.held, nil
@@ -414,14 +413,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	var since, logged time.Time
 	for {
 		c.mu.Lock()
-		token, err := c.trade(ctx)
-		final := finalRefusal(err)
-		switch {
-		case err == nil:
-			c.held = token
-		case final:
-			c.held = nil
-		}
+		token, err := c.tradeHeld(ctx)
 		c.mu.Unlock()
 		switch {
 		case err == nil:
@@ -445,7 +437,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		var refused *RefusedError
 		isRefusal := errors.As(err, &refused)
 		switch {
-		case final:
+		case finalRefusal(err):
 			return err
 		case isRefusal && refused.PodSessionUnregistered():
 			now := c.now()
@@ -541,6 +533,21 @@ func (c *Client) logf(ctx context.Context, message string, args ...any) {
 		return
 	}
 	c.log.InfoContext(ctx, message, append([]any{"broker", c.brokerURL, "identity", c.subject.Describe()}, args...)...)
+}
+
+// tradeHeld is trade, leaving in c.held what the trade leaves in hand: the new token when one
+// lands, and nothing on a refusal no retry can cure (finalRefusal), since the token in hand is
+// then the ended identity's; every other failure leaves the token in hand as it was. Token and
+// Run both trade through it, so the two keep one rule. The caller holds c.mu.
+func (c *Client) tradeHeld(ctx context.Context) (*Token, error) {
+	token, err := c.trade(ctx)
+	switch {
+	case err == nil:
+		c.held = token
+	case finalRefusal(err):
+		c.held = nil
+	}
+	return token, err
 }
 
 // trade is one RFC 8693 exchange: the subject token this moment's Source answers, the actor
