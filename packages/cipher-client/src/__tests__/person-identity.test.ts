@@ -157,6 +157,26 @@ test("an issuer that is down is an ordinary error, and the next read asks again"
   expect((await source.read()).tokenType).toBe(SUBJECT_TOKEN_TYPE_PERSON);
 });
 
+// Only the issuer's 400 or 401 invalid_grant (RFC 6749 section 5.2) ends a sign-in, the rule the
+// Go client's DeviceFlow.Refresh and Dispatch's own refresh read by: a 429 or a 5xx is the issuer
+// busy or down, and a 403 no refusal of the grant, whatever the body names, and reading one as the
+// end would drop a live token and stop the client over an outage.
+test.each([
+  [400, true],
+  [401, true],
+  [403, false],
+  [429, false],
+  [500, false],
+  [503, false],
+])("an issuer's %i naming invalid_grant ends the sign-in: %p", async (status, ended) => {
+  const issuer = await issuerFor(() => ({ status, body: { error: "invalid_grant" } }));
+  const refusal = await refusalOf(async () =>
+    personIdentity(await signedIn(PERSON), flowAt(issuer.url)).read()
+  );
+  expect(refusal instanceof SignInEndedError).toBe(ended);
+  expect(isFinalRefusal(refusal)).toBe(ended);
+});
+
 test("a discovery that failed is not kept: the next read asks the issuer again", async () => {
   const issuer = await issuerFor();
   let calls = 0;

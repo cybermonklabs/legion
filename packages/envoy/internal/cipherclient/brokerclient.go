@@ -17,8 +17,9 @@
 //
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
-// has refused the identity or the held token has run out, so a caller that writes only with what
-// Token gave it never writes with no identity.
+// has refused the identity, the issuer has ended the person's sign-in it trades, or the held
+// token has run out, so a caller that writes only with what Token gave it never writes with no
+// identity.
 package cipherclient
 
 import (
@@ -213,6 +214,16 @@ func (e *RefusedError) PodSessionUnregistered() bool {
 	return e.Code == "invalid_grant" && strings.HasPrefix(e.Description, oauthwire.PodSessionNotRegistered+":")
 }
 
+// finalRefusal reports whether err ends the identity a client trades, which no retry cures: the
+// broker refusing it for good (RefusedError.Permanent), or the issuer refusing to renew the
+// person's sign-in the client trades (ErrSignInEnded, from DeviceFlow.Refresh through
+// PersonIdentity). Token drops the token in hand on one, though it is still live, and Run stops on
+// one, as the TypeScript client's isFinalRefusal decides for both.
+func finalRefusal(err error) bool {
+	var refused *RefusedError
+	return (errors.As(err, &refused) && refused.Permanent()) || errors.Is(err, ErrSignInEnded)
+}
+
 // Config is one client: the broker it trades at, the identity it trades, and the key it proves.
 type Config struct {
 	// BrokerURL is the broker's base URL, with or without the slashes it ends in: New drops
@@ -352,9 +363,10 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 // trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
 // Dispatch holds), while the held token is still live answers that token, since a client that
 // already holds an identity need not stop for a broker that is merely down or busy; a refusal no
-// retry can cure (RefusedError.Permanent), and a failure with nothing live left, answer the
-// error, so no caller writes with no identity. Token trades once; a caller that waits for a
-// registration to land runs Run, which trades again.
+// retry can cure (finalRefusal: the broker's RefusedError.Permanent, or a sign-in the issuer has
+// ended, ErrSignInEnded), and a failure with nothing live left, answer the error and drop the
+// token in hand, so no caller writes with no identity. Token trades once; a caller that waits
+// for a registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -366,8 +378,7 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 		c.held = token
 		return token, nil
 	}
-	var refused *RefusedError
-	if !(errors.As(err, &refused) && refused.Permanent()) && c.held != nil && c.now().Before(c.held.Expiry) {
+	if !finalRefusal(err) && c.held != nil && c.now().Before(c.held.Expiry) {
 		what, attrs := retriedTrade(err)
 		c.logf(ctx, what+"; the token in hand is still live", attrs...)
 		return c.held, nil
@@ -381,8 +392,9 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 // something to keep fresh takes — a credential to install, a token file to rewrite — and
 // nothing of that caller restarts across a renewal.
 //
-// It stops with a plain error when the broker refuses the identity in a way no retry can cure
-// (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
+// It stops with a plain error on a refusal no retry can cure (finalRefusal) — the broker refusing
+// the identity for good (RefusedError.Permanent), or the issuer ending the person's sign-in it
+// trades (ErrSignInEnded) — and when onToken fails. A broker that does not answer, or answers
 // 429, either of its DPoP refusals, that it holds no registration for this pod's session yet, or
 // that Dispatch holds the person the identity names, is retried, from defaultRetryWait doubling
 // to maxRetryWait, for as long as ctx lives: an outage past the token's own life is the same
@@ -427,7 +439,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		var refused *RefusedError
 		isRefusal := errors.As(err, &refused)
 		switch {
-		case isRefusal && refused.Permanent():
+		case finalRefusal(err):
 			return err
 		case isRefusal && refused.PodSessionUnregistered():
 			now := c.now()
