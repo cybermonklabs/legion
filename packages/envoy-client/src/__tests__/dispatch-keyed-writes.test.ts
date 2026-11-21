@@ -1724,13 +1724,54 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(1);
   });
 
-  // A 2xx with a valid JSON body settles a write regardless of a key echo.
-  test("a 2xx without the key settles the write", async () => {
+  // While no answer of the call carried the key back, a 2xx with a valid JSON body settles the
+  // write without one: nothing in this call shows that Dispatch's keyed layer answered it.
+  test("a 2xx without the key settles the write while no answer of the call carried the key", async () => {
     const { fetchImpl } = scripted([json(posted, 201)], { echo: false });
 
     await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
       posted
     );
+  });
+
+  // Dispatch's keyed layer answers every keyed write with its key, so once an answer of the call
+  // carried it back, a 2xx without exactly that key is something in Dispatch's place (a gateway's
+  // own JSON 201), which says nothing of whether the write ran: unsettled, carrying the key. The
+  // evidence is the call's own answers: no probe, and nothing kept across calls.
+  test.each([
+    {
+      name: "without the key leaves the write unsettled",
+      echoes: false,
+      outcome: (key: string) => ({
+        error: expect.objectContaining({
+          name: "DispatchWriteUnsettledError",
+          key,
+          message: expect.stringContaining(
+            "POST http://dispatch.test/api/v1/issues/DSP-1/comments answered 201 without carrying " +
+              "back its Idempotency-Key, though an earlier answer of this write carried it and " +
+              "Dispatch answers every keyed write with it, so something in Dispatch's place answered"
+          ),
+        }),
+      }),
+    },
+    { name: "with the key settles the write", echoes: true, outcome: () => ({ value: posted }) },
+  ])("an echoed 503, then a JSON 201 $name", async ({ echoes, outcome }) => {
+    const { fetchImpl, sent } = scripted(
+      [refusal(503, "UNAVAILABLE", "the database is restarting"), json(posted, 201)],
+      { echo: (request) => request === 1 || echoes }
+    );
+
+    const settled = await client(fetchImpl, pacing().retry)
+      .comment("DSP-1", comment)
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+
+    expect(sent).toHaveLength(2);
+    const key = sent[0]?.headers["Idempotency-Key"] as string;
+    expect(sent[1]?.headers["Idempotency-Key"]).toBe(key);
+    expect(settled).toEqual(outcome(key));
   });
 
   // F5: a write behind a redirect names the origin the redirect pointed at, which is what tells a

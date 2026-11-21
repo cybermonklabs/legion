@@ -46,8 +46,9 @@ export type WriteEvent =
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that is no Dispatch answer: a captive portal's or proxy's empty or non-JSON page, so
-   *  it says nothing of whether the write ran. */
+  /** A 2xx that is no Dispatch answer: a captive portal's or proxy's empty or non-JSON page, or
+   *  one without the write's key after an earlier answer of the call carried it back, so it says
+   *  nothing of whether the write ran. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */

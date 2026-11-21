@@ -183,7 +183,8 @@ export class DispatchGatewayError extends DispatchServiceError {
 
 /**
  * A write that ended, once an attempt may have landed (write-outcome.ts), without a 2xx Dispatch
- * wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one), its
+ * wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one; not one
+ * without exactly this request's key once an earlier answer of the call carried it), its
  * `409 KEY_COMMITTED` or a final refusal, so it may or may not have taken effect.
  * A final refusal is an answer marked `Idempotency-Replayed: ?1` (including a recovery replay),
  * `422 KEY_REUSED` echoing exactly this request's key, or a fresh answer echoing exactly that key
@@ -576,6 +577,10 @@ interface WriteProgress {
    *  excepted, which keeps the schedule) or answered 409 KEY_IN_FLIGHT. The pacing asks again
    *  sooner and for longer while it is. */
   running: boolean;
+  /** Whether an answer of this call carried back exactly the call's key: Dispatch's keyed layer
+   *  answered it, and that layer answers every keyed write with the key, so a later 2xx of the
+   *  call without it is no answer of Dispatch's (`answerEvent`). Only this call's answers set it. */
+  keyEchoed: boolean;
 }
 
 /** A POST or PATCH call: its one `Idempotency-Key`, the request as a text names it
@@ -707,8 +712,14 @@ function isStoredKeyStatus(status: number): boolean {
 }
 
 /**
- * The table's event for an answer (`WriteEvent`, write-outcome.ts). After the retries
- * (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
+ * The table's event for an answer (`WriteEvent`, write-outcome.ts). A 2xx is `applied` once its
+ * body was read whole, except where it is no answer of Dispatch's (`foreign-2xx`): its body is
+ * empty or not JSON-typed where its status carries one (`notJson`), or it lacks exactly this
+ * request's key after an earlier answer of the call carried it (`keyEchoed`), since Dispatch's
+ * keyed layer answers every keyed write with the key once it reads it (`keyedWrites`,
+ * request_keys.go). A 2xx whose body is not the JSON it says it is was cut short on the way
+ * (`body-malformed`). After the retries (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a
+ * non-2xx is final (`judged`) when:
  * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
  * - it is `422 KEY_REUSED` echoing exactly this request's key: every attempt of a call carries the
@@ -724,13 +735,14 @@ function isStoredKeyStatus(status: number): boolean {
 function answerEvent(
   answer: WriteAnswer,
   requestKey: string,
+  keyEchoed: boolean,
   canTellDeadToken: boolean
 ): WriteEvent {
   const { status } = answer.response;
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
     if (answer.malformed) return "body-malformed";
-    return "applied";
+    return keyEchoed && answer.keyEcho !== requestKey ? "foreign-2xx" : "applied";
   }
   if (status >= 300 && status < 400) return "redirect";
   if (status === 401 && answer.code === BROKER_TOKEN_NOT_ACTIVE) {
@@ -2068,7 +2080,7 @@ export class DispatchClient {
       key: key ?? crypto.randomUUID(),
       request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
       writes,
-      progress: { sent: 0, running: false },
+      progress: { sent: 0, running: false, keyEchoed: false },
     };
   }
 
@@ -2312,6 +2324,8 @@ export class DispatchClient {
         };
       }
       const heard = { retryAfterMs: retryAfterMs(response) };
+      // Its headers came: an echo of the key counts for the call whether or not the body follows.
+      if (response.headers.get(IDEMPOTENCY_KEY_HEADER) === key) progress.keyEchoed = true;
       let answer: WriteAnswer;
       try {
         answer = await writeAnswer(response);
@@ -2337,6 +2351,7 @@ export class DispatchClient {
         event: answerEvent(
           answer,
           write.key,
+          progress.keyEchoed,
           this.#credential.stale !== undefined && !deadTokenTold
         ),
         answer,
@@ -2533,7 +2548,9 @@ export class DispatchClient {
       own = new Error(
         answer.notJson
           ? `${request} answered ${status} with ${bodyForText(answer.text, this.#sent.with(this.token), "JSON")}, though every Dispatch write answers JSON, so something in Dispatch's place answered`
-          : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
+          : event === "foreign-2xx"
+            ? `${request} answered ${status} without carrying back its ${IDEMPOTENCY_KEY_HEADER}, though an earlier answer of this write carried it and Dispatch answers every keyed write with it, so something in Dispatch's place answered`
+            : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
       );
     } else if (answer !== undefined) {
       own =

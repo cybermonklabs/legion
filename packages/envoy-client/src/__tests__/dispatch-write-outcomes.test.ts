@@ -815,10 +815,14 @@ function finalAfterLanding(event: Kind): boolean {
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
- * broker say each is (`Kind`), the write's state and the limits it has spent.
+ * broker say each is (`Kind`), the write's state, the key echoes it has seen and the limits it has
+ * spent.
  */
 function oracle(events: readonly Kind[]): Decision[] {
   let landed = false;
+  // Whether an answer of this call carried back exactly its key: Dispatch's keyed layer answered
+  // the call, and it answers every keyed write with the key (`keyedWrites`, request_keys.go).
+  let echoed = false;
   let running = false;
   let pauses = 0;
   let roundPauses = 0;
@@ -833,10 +837,12 @@ function oracle(events: readonly Kind[]): Decision[] {
     const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
     if (event.at === "attempt") credentialFailed = false;
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
+    if (event.keyEcho === "exact") echoed = true;
     switch (event.role) {
       case "applied":
-        // A 2xx whose body is empty or not JSON is no answer of Dispatch's.
-        if (event.notJson) return end(UNSETTLED);
+        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
+        // exactly the key once an answer of the call carried it.
+        if (event.notJson || (echoed && event.keyEcho !== "exact")) return end(UNSETTLED);
         return end({ as: "resolved" });
       case "refusal":
         return finalAfterLanding(event) ? end(refusal) : endAfter(refusal);

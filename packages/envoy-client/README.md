@@ -672,7 +672,8 @@ read it), its answer's body broke off or was ended by the deadline or the caller
 ended by either while it was in flight; a refused connection or a name that did not resolve
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
 body is read whole. From "may have landed", only a 2xx Dispatch wrote, read whole (not an empty,
-untyped or non-JSON one; a bodiless 204 or 205 is one), `409 KEY_COMMITTED` (a landing) or a final
+untyped or non-JSON one; a bodiless 204 or 205 is one; not one without exactly this request's key
+once an earlier answer of the call carried it), `409 KEY_COMMITTED` (a landing) or a final
 refusal settles the write. A final refusal is one of these:
 
 - an answer marked `Idempotency-Replayed: ?1`: Dispatch's stored answer, or a recovery replay;
@@ -681,7 +682,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2067`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2080`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
@@ -699,7 +700,10 @@ Each clause holds only once every replica runs `b1c42d1d7d` (below). Every resen
 (`packages/envoy/internal/contracts/generated.go`), after which Dispatch deletes a key and claims
 a later request under it fresh. A 2xx that is no answer of Dispatch
 settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
-200 page; every Dispatch write answers JSON, or a bodiless 204 or 205). Every other end — a 3xx,
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), or one without exactly the
+request's key once an earlier answer of the same call carried it back, since Dispatch's keyed
+layer answers every keyed write with the key (a gateway's own JSON 201). Only the call's own
+answers count; nothing is kept across calls. Every other end — a 3xx,
 a page something in Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer
 ran (a 401, `403 READ_ONLY_TOKEN`, a second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that
 cannot present, no route to the end, the deadline, the caller's stop, or no attempt or time left,

@@ -18,7 +18,10 @@ body: |-
     read the write back before sending it again. A gateway page followed by a stored refusal so
     keeps what each caller reads: the dispatch command's `POSSIBLE_DUPLICATE` candidate list,
     pi-envoy's typed-input fallback reply, AskGate's `KEY_REUSED` decision-record recovery and
-    `docEdit`'s `TARGET_AMBIGUOUS` candidates. Writes with no key are unchanged.
+    `docEdit`'s `TARGET_AMBIGUOUS` candidates. A 2xx that lacks exactly the request's key after an
+    earlier answer of the same call carried it is still no answer of Dispatch's and leaves the
+    write `DispatchWriteUnsettledError`; what earlier calls saw no longer counts for it. Writes
+    with no key are unchanged.
 time: 2026-11-17T20:27:50.206250540Z
 custom:
     Issue: pr4379

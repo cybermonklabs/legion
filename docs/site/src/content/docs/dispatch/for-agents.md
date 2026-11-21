@@ -399,7 +399,8 @@ it asks again. Dispatch makes the write once per key and answers a repeat with t
 the command never makes a write twice. When the write landed but Dispatch has no answer to give for
 it (`409 KEY_COMMITTED`, or a first answer too large to keep), the command exits 0 and says it was
 made: read it back to see it. When an attempt may have landed, the command settles only on a 2xx
-Dispatch wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one),
+Dispatch wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one;
+not one without exactly its request key once an earlier answer to the same write carried it),
 or on a final refusal: `Idempotency-Replayed: ?1` (also a recovery replay),
 `422 KEY_REUSED` that echoes exactly its request key (every attempt of one command sends the same
 bytes, so a key held for another request was never claimed by this one), or a fresh answer that
