@@ -139,6 +139,37 @@ func TestARequestObjectHoldsNoRuneTheStoreCannotKeep(t *testing.T) {
 	}
 }
 
+// TestAStoredRecordIsReadBackWhateverTextItHolds: the store-text refusal is a new request's, made
+// before anything is written. A record the broker already stored is read back as it was signed,
+// so a machine login stored before the refusal existed, whose login_hint ends in a tab
+// (CanonicalLogin trims it, so it could be approved), still verifies through
+// VerifyStoredRequestObject, while the same object sent as a new request is refused.
+//
+// The named revert: run validateStoredText inside verifyRequestObject, and the stored read is
+// refused too.
+func TestAStoredRecordIsReadBackWhateverTextItHolds(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const audience = "https://secrets.test"
+	now := time.Now()
+	compact, err := Sign(key, audience, []AuthorizationDetail{{Type: KindLauncherCredential, Identifier: "devbox.example"}}, "", "ada@outside.example\t", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyRequestObject(compact, audience, time.Minute, now); !errors.Is(err, ErrRequestInvalid) {
+		t.Fatalf("the object as a new request = %v, want ErrRequestInvalid", err)
+	}
+	stored, err := VerifyStoredRequestObject(compact, audience, "", time.Minute, now)
+	if err != nil {
+		t.Fatalf("the object read back as a stored record = %v, want it verified", err)
+	}
+	if stored.LoginHint != "ada@outside.example\t" {
+		t.Fatalf("the stored record's login_hint = %q, want it as it was signed", stored.LoginHint)
+	}
+}
+
 // jsonEscape is s as the text of a JSON string, without its quotes.
 func jsonEscape(s string) string {
 	text, _ := json.Marshal(s)

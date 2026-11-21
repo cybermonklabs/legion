@@ -189,18 +189,19 @@ func TestTheEdgeKeysBucketsOnTheGoogleClientAddress(t *testing.T) {
 	}
 }
 
-// TestTheEdgeKeysOnTheLastForwardedForLineAlone: a request may carry X-Forwarded-For as several
-// header lines, and the edge reads the last alone, the one the load balancer writes or appends
-// to. A client that spends its burst with a forged line of its own before the balancer's is
-// refused past it, whatever forged line it sends and with the balancer's entries merged into one
-// line, while another client behind the balancer is served; and a last line of one entry, which
-// the balancer never writes, is refused 400 REQUEST_INVALID whatever the lines before it hold.
+// TestTheEdgeRefusesMoreThanOneForwardedForLine: a login request that carries X-Forwarded-For as
+// more than one header line is refused 400 REQUEST_INVALID before it spends a bucket or writes a
+// row, whichever line holds the balancer's entries, since which line a balancer appends to is not
+// documented. One real client sends more than its burst of logins, each with the balancer's
+// entries on the first line and a line of its own after them: every one is refused, none is
+// served and none is rate-limited. The control is the same count sent as one line by another
+// client: the burst is served and the rest are 429 RATE_LIMITED, so the one-line edge is as before.
 //
-// The named revert: read every line as one list, and the request whose last line is one entry is
-// keyed on the balancer's own address and served.
-func TestTheEdgeKeysOnTheLastForwardedForLineAlone(t *testing.T) {
+// The named revert: read the last line of several, and the client's own trailing line picks a
+// new bucket for each login, so all of them are served past the burst.
+func TestTheEdgeRefusesMoreThanOneForwardedForLine(t *testing.T) {
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
-	const client = "203.0.113.80"
+	burst := api.DefaultLauncherLimits.PerAddress.Burst
 	login := func(person string, lines ...string) answered {
 		t.Helper()
 		req := request(t, http.MethodPost, rig.EdgeURL+"/v1/oauth/device_authorization", strings.NewReader(edgeDeviceForm(t, rig.EdgeURL, person).Encode()),
@@ -210,29 +211,38 @@ func TestTheEdgeKeysOnTheLastForwardedForLineAlone(t *testing.T) {
 		}
 		return send(t, http.DefaultClient, req)
 	}
-	burst := api.DefaultLauncherLimits.PerAddress.Burst
-	for i := range burst {
-		forged := fmt.Sprintf("198.51.100.%d, 198.51.100.%d", i+1, i+100)
-		if answer := login(fmt.Sprintf("lines-%d@outside.example", i), forged, forwardedFor("", client)); answer.status != http.StatusOK {
-			t.Fatalf("edge login %d of %d from %s under a forged first line = %d %s, want 200", i+1, burst, client, answer.status, answer.body)
-		}
-	}
-	for _, lines := range [][]string{{"192.0.2.1, 192.0.2.2", forwardedFor("", client)}, {"192.0.2.3", forwardedFor("", client)}, {forwardedFor("192.0.2.4", client)}} {
-		if answer := login("late-lines@outside.example", lines...); answer.status != http.StatusTooManyRequests || !strings.Contains(string(answer.body), `"code":"RATE_LIMITED"`) {
-			t.Errorf("an edge login from %s past its burst with X-Forwarded-For lines %q = %d %s, want 429 RATE_LIMITED", client, lines, answer.status, answer.body)
-		}
-	}
-	if answer := login("other-lines@outside.example", "198.51.100.250, 198.51.100.251", forwardedFor("", "203.0.113.81")); answer.status != http.StatusOK {
-		t.Fatalf("an edge login from another client behind the balancer under a forged first line = %d %s, want 200", answer.status, answer.body)
-	}
+	const client, control = "203.0.113.150", "203.0.113.151"
 	before := loginRows(t, rig)
-	for _, lines := range [][]string{{forwardedFor("", "203.0.113.82"), "198.51.100.7"}, {"198.51.100.8", edgeBalancer}} {
-		if answer := login("one-entry@outside.example", lines...); answer.status != http.StatusBadRequest || !strings.Contains(string(answer.body), `"code":"REQUEST_INVALID"`) {
-			t.Errorf("an edge login whose last X-Forwarded-For line is one entry, lines %q = %d %s, want 400 REQUEST_INVALID", lines, answer.status, answer.body)
+	for i := range burst + 5 {
+		answer := login(fmt.Sprintf("trailing-line-%d@outside.example", i), forwardedFor("", client), fmt.Sprintf("198.51.100.%d, 198.51.100.200", i+1))
+		if answer.status != http.StatusBadRequest || !strings.Contains(string(answer.body), `"code":"REQUEST_INVALID"`) {
+			t.Errorf("edge login %d of %d from %s with the balancer's line first and a line of the client's after it = %d %s, want 400 REQUEST_INVALID", i+1, burst+5, client, answer.status, answer.body)
+		}
+	}
+	for _, lines := range [][]string{{"198.51.100.7, 198.51.100.8", forwardedFor("", client)}, {forwardedFor("", client), forwardedFor("", client)}} {
+		if answer := login("two-lines@outside.example", lines...); answer.status != http.StatusBadRequest || !strings.Contains(string(answer.body), `"code":"REQUEST_INVALID"`) {
+			t.Errorf("an edge login with X-Forwarded-For lines %q = %d %s, want 400 REQUEST_INVALID", lines, answer.status, answer.body)
 		}
 	}
 	if after := loginRows(t, rig); after != before {
-		t.Fatalf("a refused edge login wrote %d rows, want none", after-before)
+		t.Fatalf("the refused edge logins wrote %d rows, want none", after-before)
+	}
+	served, limited := 0, 0
+	for i := range burst + 5 {
+		answer := login(fmt.Sprintf("one-line-%d@outside.example", i), fmt.Sprintf("198.51.100.%d, %s, %s", i+1, control, edgeBalancer))
+		switch {
+		case answer.status == http.StatusOK:
+			served++
+		case answer.status == http.StatusTooManyRequests && strings.Contains(string(answer.body), `"code":"RATE_LIMITED"`):
+			limited++
+		default:
+			t.Errorf("one-line edge login %d from %s = %d %s, want 200 or 429 RATE_LIMITED", i+1, control, answer.status, answer.body)
+		}
+	}
+	// A token the bucket refills while the loop runs may serve one login past the burst, so the
+	// control asks for the burst served and the rest refused, and not for an exact split.
+	if served < burst || limited == 0 || served+limited != burst+5 {
+		t.Fatalf("%d one-line edge logins from %s: %d served and %d rate-limited, want the burst of %d served and the rest 429", burst+5, control, served, limited, burst)
 	}
 }
 

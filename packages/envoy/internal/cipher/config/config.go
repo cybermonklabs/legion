@@ -854,9 +854,12 @@ type Config struct {
 	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
 	// the connection's own address, which is right only when nothing proxies the broker. Set it
 	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket. The broker's
-	// edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its buckets key on the second-to-last
-	// X-Forwarded-For entry, the one its load balancer appends for the client.
+	// otherwise a caller can forge the header and pick its own rate-limit bucket. Only a header of
+	// one line is read, the line such a proxy writes when it folds what the client sent into its
+	// own; a request that carries the header as several lines is keyed on the connection's own
+	// address. The broker's edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its buckets key on the
+	// second-to-last entry of its one X-Forwarded-For line, the one its load balancer appends for
+	// the client.
 	TrustedProxyHeader string
 }
 

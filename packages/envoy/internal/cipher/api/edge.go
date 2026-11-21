@@ -150,9 +150,9 @@ func edgeTokenGate(_ Edge, w http.ResponseWriter, r *http.Request) bool {
 }
 
 // edgeFormGate refuses, 400 invalid_request REQUEST_INVALID, a login request the edge cannot
-// judge: one whose X-Forwarded-For names no client address (edgeClientAddress), one whose body is
-// not application/x-www-form-urlencoded, and one whose form does not parse within
-// maxOAuthFormBytes (readOAuthForm). It reports whether the request passed, its form parsed.
+// judge: one whose X-Forwarded-For is not one line naming a client address (edgeClientAddress),
+// one whose body is not application/x-www-form-urlencoded, and one whose form does not parse
+// within maxOAuthFormBytes (readOAuthForm). It reports whether the request passed, its form parsed.
 //
 // The body's type is held because the provider's library reads a multipart body as a form too,
 // after the broker's own parse has read nothing of it, so a gate that judged the form the broker
@@ -160,7 +160,7 @@ func edgeTokenGate(_ Edge, w http.ResponseWriter, r *http.Request) bool {
 func edgeFormGate(w http.ResponseWriter, r *http.Request) bool {
 	if _, ok := edgeClientAddress(r); !ok {
 		oauth.WriteRefusal(w, &oauth.Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID",
-			Message: "the broker's edge reads its caller's address from the second-to-last X-Forwarded-For entry, the one its load balancer appends, and this request carries no such entry"})
+			Message: "the broker's edge reads its caller's address from the second-to-last entry of one X-Forwarded-For line, the entry its load balancer appends, and this request carries no such line"})
 		return false
 	}
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/x-www-form-urlencoded" {

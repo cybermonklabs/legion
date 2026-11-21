@@ -1201,7 +1201,10 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   nothing else, never one an agent's pod runs as. An account listed as `listener` reads tokens
   back and decides nothing, which is the whole of what that name carries.
 - Behind a reverse proxy, set `BROKER_TRUSTED_PROXY_HEADER` so the machine-login, token-endpoint
-  and secret-reread rate limiters see each caller's address rather than the proxy's. The token
+  and secret-reread rate limiters see each caller's address rather than the proxy's. The broker
+  reads the header's last entry, and only from a header of one line, the line a proxy writes when
+  it folds what the client sent into its own: a request carrying the header as several lines is
+  keyed on the connection's own address, so a line a caller adds picks it no bucket. The token
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.
@@ -1353,16 +1356,16 @@ refuses it.
 
 What the edge does that the API's port does not:
 
-- **The caller's address is the second-to-last entry of the last `X-Forwarded-For` line.**
+- **The caller's address is the second-to-last entry of the one `X-Forwarded-For` line.**
   Google's external Application Load Balancer writes the header as `[<what the client
   sent>,]<client address>,<load balancer address>`, so the last entry is the balancer's own, the
-  same for every caller, and anything before the second-to-last is the caller's own text. Only the
-  last line of the header is read, so a line the client sent itself is never read in its place,
-  whether the balancer merges every line into one, appends to the last line or adds a line of its
-  own. A login request whose last line holds fewer than two entries, or whose entry is no IP
-  address, did not come through the balancer as it writes the header, and is refused `400
-  invalid_request` `REQUEST_INVALID`. `GET /healthz` reads no address: the balancer's own probe
-  calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the edge.
+  same for every caller, and anything before the second-to-last is the caller's own text. A login
+  request that carries the header as more than one line is refused `400 invalid_request`
+  `REQUEST_INVALID`: Google documents the header as one line and not which of several lines it
+  appends to, and a balancer that appended to the first line would leave the client's own line
+  last. So is one whose line holds fewer than two entries, or whose entry is no IP address: it did
+  not come through the balancer as it writes the header. `GET /healthz` reads no address: the
+  balancer's own probe calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the edge.
 - **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
   [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
