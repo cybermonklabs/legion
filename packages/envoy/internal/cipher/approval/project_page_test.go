@@ -1,10 +1,14 @@
 package approval_test
 
 import (
+	"context"
 	"crypto/ecdsa"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -307,12 +311,15 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 // TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable: ben's page prints his request, and
 // then Dispatch stops answering altogether, its person route included. His approval is refused,
 // since the broker cannot learn whether ben is a restricted member, and the request stays
-// pending. The page he lands on answers 503: it cannot learn whether he may decide secret requests
-// either, so it shows him none and says to try again shortly. The broker writes no ERROR line:
-// Dispatch not answering is no fault of the page's.
+// pending; the address it lands on carries the refusal's code, error. The page there answers 503:
+// it cannot learn whether he may decide secret requests either, so it shows him none and says to
+// try again shortly. The broker writes no ERROR line: Dispatch not answering is no fault of the
+// page's. Once Dispatch answers, the same address says the request is still pending because the
+// broker could not decide it.
 func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	access := &projectaccesstest.Swappable{}
-	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
+	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access.Serve(up)
 	r := newRig(t, func(s *rigSetup) { s.projects = access })
 	session, key := r.benSession(t, "ben-member-kind-box")
 	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
@@ -329,11 +336,12 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	logtest.SetDefault(t, &records)
 
 	res := b.FromPage(t, "/approve", decision(form, "approve"))
-	if res.Status != http.StatusSeeOther {
-		t.Fatalf("approve while Dispatch is down = %d, want 303:\n%s", res.Status, res.Body)
+	to := res.Header.Get("Location")
+	if want := "&refused=" + req.recordID + ":error"; res.Status != http.StatusSeeOther || !strings.Contains(to, want) {
+		t.Fatalf("approve while Dispatch is down = %d to %q, want 303 carrying %q:\n%s", res.Status, to, want, res.Body)
 	}
 	r.requirePending(t, req.recordID)
-	landed := b.Get(t, res.Header.Get("Location"))
+	landed := b.Get(t, to)
 	if text := pageText(t, landed.Body); landed.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) || strings.Contains(text, "SHARED_SECRET") {
 		t.Fatalf("the page the approval lands on = %d; want 503 saying %q, and nothing of the request:\n%s", landed.Status, kindUnreadNote, text)
 	}
@@ -345,13 +353,90 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	if down.Calls() == 0 {
 		t.Fatal("the down Dispatch was never asked: the test is blind")
 	}
+
+	access.Serve(up)
+	const couldNotDecide = "SHARED_SECRET: still pending; it was not decided: the secrets broker could not decide it. Try again shortly."
+	if back := b.Get(t, to); back.Status != http.StatusOK || !strings.Contains(pageText(t, back.Body), couldNotDecide) {
+		t.Fatalf("the address the approval landed on, once Dispatch answers = %d; want 200 saying %q:\n%s", back.Status, couldNotDecide, pageText(t, back.Body))
+	}
+}
+
+// stalledKinds is a projectaccess.Access whose member-kind reads, once stall is set, Dispatch never
+// answers: each waits until its caller's context ends, and records how long that context had left.
+// A read whose context has no deadline would wait as long as its caller, so it is answered at once
+// with an error and counted as unbounded, which the row reads as the fault. Until stall is set,
+// and for every other question, it answers as answers does.
+type stalledKinds struct {
+	answers   projectaccess.Access
+	stall     atomic.Bool
+	mu        sync.Mutex
+	unbounded int
+	bounds    []time.Duration
+}
+
+func (s *stalledKinds) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return s.answers.Access(ctx, project, person)
+}
+
+func (s *stalledKinds) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return s.answers.States(ctx, projects)
+}
+
+func (s *stalledKinds) MemberKind(ctx context.Context, person string) (string, error) {
+	if !s.stall.Load() {
+		return s.answers.MemberKind(ctx, person)
+	}
+	deadline, bounded := ctx.Deadline()
+	s.mu.Lock()
+	if !bounded {
+		s.unbounded++
+		s.mu.Unlock()
+		return "", errors.New("stalledKinds: a member-kind read with no deadline")
+	}
+	s.bounds = append(s.bounds, time.Until(deadline))
+	s.mu.Unlock()
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// TestTheApprovalPageReadsTheMemberKindWithinItsBound: the page reads the signed-in person's
+// member kind before it reads any record, and one call to Dispatch may take longer than a person
+// waits on a page (projectaccess's requestTimeout), so that read has a bound of its own,
+// projectaccess.RelayedReadBound. ben's page prints his request while Dispatch answers; once
+// Dispatch stops answering his member-kind read, the page answers 503 saying it could not ask,
+// and every member-kind read it made had no more than that bound to run.
+func TestTheApprovalPageReadsTheMemberKindWithinItsBound(t *testing.T) {
+	stand := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	stalled := &stalledKinds{answers: projectaccess.New(stand.URL, stand.Account, nil)}
+	r := newRig(t, func(s *rigSetup) { s.projects = stalled })
+	session, key := r.benSession(t, "ben-stalled-box")
+	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, req.recordID, person(ben))
+	b.Page(t, req.recordID)
+	stalled.stall.Store(true)
+
+	got := b.Get(t, "/approve/"+req.recordID)
+	if text := pageText(t, got.Body); got.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) {
+		t.Fatalf("ben's page while Dispatch does not answer = %d; want 503 saying %q:\n%s", got.Status, kindUnreadNote, text)
+	}
+	stalled.mu.Lock()
+	defer stalled.mu.Unlock()
+	if stalled.unbounded != 0 || len(stalled.bounds) == 0 {
+		t.Fatalf("the page asked %d member-kind reads with no deadline and %d with one; want at least one, each bounded", stalled.unbounded, len(stalled.bounds))
+	}
+	for _, bound := range stalled.bounds {
+		if bound > projectaccess.RelayedReadBound {
+			t.Fatalf("the page read a member kind with %s to run; want no more than %s", bound, projectaccess.RelayedReadBound)
+		}
+	}
 }
 
 // The page's own words for a person it shows no secret request: one Dispatch calls a restricted
 // member, and one whose member kind it cannot learn.
 const (
-	restrictedNote = "Dispatch calls you a restricted member, who decides no secret request, so this page shows you none."
-	kindUnreadNote = "The secrets broker could not ask Dispatch whether you may decide secret requests, so it shows you none and decides none. Try again shortly."
+	restrictedNote = "A person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one, so this page shows you no secret request."
+	kindUnreadNote = "The secrets broker could not ask Dispatch whether you may decide secret requests, so this page shows you none, nor what became of a decision you made. Try again shortly."
 )
 
 // TestTheApprovalPageShowsARestrictedMemberNothing: the page signs in only the deployment's

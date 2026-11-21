@@ -258,10 +258,13 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	writePage(w, status, "record.html", view)
 }
 
-// The words of the page that shows a signed-in person no secret request (mayShowRecords).
+// The words of the page that shows a signed-in person no secret request (mayShowRecords). The 403
+// opens with the restricted-member clause, as every refusal of such a person does
+// (projectaccess.NoApprover). The 503 shows no outcome of a decision either, so it says so rather
+// than that nothing was decided: a decision made before Dispatch stopped answering stands.
 const (
-	restrictedViewer = "Dispatch calls you a restricted member, who decides no secret request, so this page shows you none."
-	kindUnreadViewer = "The secrets broker could not ask Dispatch whether you may decide secret requests, so it shows you none and decides none. Try again shortly."
+	restrictedViewer = "A person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one, so this page shows you no secret request."
+	kindUnreadViewer = "The secrets broker could not ask Dispatch whether you may decide secret requests, so this page shows you none, nor what became of a decision you made. Try again shortly."
 )
 
 // mayShowRecords reports whether the page may show sess's person a secret request at all, and
@@ -271,9 +274,13 @@ const (
 // asks to sign in as someone else (switching) is sent to sign in, naming no login_hint: the
 // record that would name one is not read. The person's kind is read as the decision reads it
 // (requests.Machine.DecidesSecrets), so a page that shows a request offers a decision that reads
-// the same answer while it is young.
+// the same answer while it is young, and within projectaccess.RelayedReadBound, so a Dispatch that
+// does not answer leaves the person waiting no longer than a route Dispatch relays: one call to
+// Dispatch may take longer.
 func (p *Page) mayShowRecords(w http.ResponseWriter, r *http.Request, sess Session, id string, switching bool) bool {
-	decides, err := p.cfg.Machine.DecidesSecrets(r.Context(), sess.Login)
+	read, cancel := context.WithTimeout(r.Context(), projectaccess.RelayedReadBound)
+	decides, err := p.cfg.Machine.DecidesSecrets(read, sess.Login)
+	cancel()
 	if err == nil && decides {
 		return true
 	}

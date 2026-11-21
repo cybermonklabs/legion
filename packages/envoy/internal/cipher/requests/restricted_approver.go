@@ -124,10 +124,10 @@ var errRestrictedRevoker = projectaccess.NoApprover(ErrNotApprover, "a secret, s
 // DecidesSecrets reports whether login, a person signed in to the broker's approval page, may be
 // shown and decide secret requests there: false for a person Dispatch calls a restricted member,
 // who is no approver of a secret, and the *projectaccess.MemberKindUncheckable restrictedPerson
-// returns when that cannot be asked. It reads as the page's decision does (ApplyDecision): on the
-// page's own context, from the client's cache while its answer is young, so the page and the
-// decision it offers read one answer. A machine with no client of Dispatch asks nothing, and
-// everyone decides as before.
+// returns when that cannot be asked. It reads as the page's decision does (ApplyDecision): not
+// asked afresh, from the client's cache while its answer is young, so the page and the decision
+// it offers read one answer; the page bounds the read (projectaccess.RelayedReadBound). A machine
+// with no client of Dispatch asks nothing, and everyone decides as before.
 func (m *Machine) DecidesSecrets(ctx context.Context, login string) (bool, error) {
 	restricted, err := m.restrictedPerson(ctx, record.CanonicalLogin(login))
 	return err == nil && !restricted, err
