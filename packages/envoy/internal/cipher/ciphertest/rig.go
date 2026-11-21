@@ -202,8 +202,9 @@ func WithPersonPod(account, service, person string) Option {
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
 // no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
-// (storetest.Open's own contract).
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
+// when the calling package's TestMain does not run its tests through storetest.Main or
+// storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour}
