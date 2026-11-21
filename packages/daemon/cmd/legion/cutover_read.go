@@ -34,7 +34,7 @@ func newCutoverReadCommand(stdout io.Writer) *cobra.Command {
 		{"drain", "step 3: nothing but listener_ready unread on the shared wake subject past each wake durable's ack floor", (*intake.CutoverReader).Drain},
 		{"filters", "after deploy 4: every daemon durable on exactly its kind's filters", (*intake.CutoverReader).Filters},
 	} {
-		cmd := &cobra.Command{Use: mode.name + " --projects <KEY,…>", Short: mode.short, Args: noArguments}
+		cmd := &cobra.Command{Use: mode.name + " --projects <KEY,…>", Short: mode.short, Args: noArguments, Hidden: true}
 		var projects string
 		cmd.Flags().StringVar(&projects, "projects", "", "the deployment's daemon projects, comma-separated")
 		read := mode.read
