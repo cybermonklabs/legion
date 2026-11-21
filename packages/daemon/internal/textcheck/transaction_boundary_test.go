@@ -240,11 +240,11 @@ func pgxTx(loaded []*packages.Package) (*types.Interface, error) {
 var boundaryFunctions = []string{"Transact", "TransactWith", "ReadOnly", "transactUntilCommitted"}
 
 // mixedContexts is every call inside a transaction body of the store's boundary whose context
-// argument does not come from the body's own context (R4): a variable declared outside the body,
-// or an expression that names no variable declared inside it, such as r.Context(). Such a call
-// runs outside the commit scope, so a hook it registers panics, a wake it sends comes before the
-// commit, and a transaction it opens is its own. A function literal inside a body is not walked:
-// a hook runs once the commit is over, and a literal that is itself a body is checked as one.
+// argument is not the body's own context (R4): a variable declared outside the body, a local that
+// holds one, or any other expression, such as r.Context() (bodyContexts). Such a call runs outside
+// the commit scope, so a hook it registers panics, a wake it sends comes before the commit, and a
+// transaction it opens is its own. A function literal inside a body is not walked: a hook runs
+// once the commit is over, and a literal that is itself a body is checked as one.
 func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
 	var found []token.Pos
 	ast.Inspect(decl, func(node ast.Node) bool {
@@ -256,12 +256,13 @@ func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
 		if !ok {
 			return true
 		}
+		contexts := newBodyContexts(info, body)
 		ast.Inspect(body.Body, func(inner ast.Node) bool {
 			switch inner := inner.(type) {
 			case *ast.FuncLit:
 				return false
 			case *ast.CallExpr:
-				if len(inner.Args) > 0 && takesContextFirst(info, inner) && !namesAVariableOf(info, inner.Args[0], body) {
+				if len(inner.Args) > 0 && takesContextFirst(info, inner) && !contexts.admits(inner.Args[0]) {
 					found = append(found, inner.Args[0].Pos())
 				}
 			}
@@ -301,19 +302,129 @@ func takesContextFirst(info *types.Info, call *ast.CallExpr) bool {
 	return ok && signature.Params().Len() > 0 && signature.Params().At(0).Type().String() == "context.Context"
 }
 
-// namesAVariableOf reports whether expr names a variable declared inside lit: the body's context,
-// or one the body derived from it.
-func namesAVariableOf(info *types.Info, expr ast.Expr, lit *ast.FuncLit) bool {
-	found := false
-	ast.Inspect(expr, func(node ast.Node) bool {
-		if ident, ok := node.(*ast.Ident); ok {
-			if variable, ok := info.Uses[ident].(*types.Var); ok && variable.Pos() >= lit.Pos() && variable.Pos() < lit.End() {
-				found = true
-			}
+// contextDerivations are the functions the daemon's transaction bodies derive a context with, each
+// named by its one kind of caller: intake.OpenSettlers, the run settlers that ApplyFact, the
+// reconcile (reconcileListing) and the outbox's settling bodies open on their own context. It
+// takes a context first and answers, as its first result, that context with the settlers added,
+// so the context it answers is still in the body's commit scope. A derivation no body uses is not
+// admitted: the body that first needs one names it here.
+var contextDerivations = []string{modulePath + "/internal/intake.OpenSettlers"}
+
+// bodyContexts is what R4 admits as a context argument in one transaction body: the body's own
+// context parameter; a call of a contextDerivations function on an admitted context; and a
+// variable the body declares, or its own parameter, each value of which the body gives it is an
+// admitted context. A local whose value is anything else — another context, r.Context(), a
+// derivation of either — is not admitted, wherever it is declared.
+type bodyContexts struct {
+	info  *types.Info
+	lit   *ast.FuncLit
+	param *types.Var
+	// values is each value the body gives a variable, in its body or in a function literal inside
+	// it, nil for a value the guard cannot read: a result of a call other than the first, or a
+	// declaration with no value.
+	values  map[*types.Var][]ast.Expr
+	decided map[*types.Var]bool
+}
+
+func newBodyContexts(info *types.Info, lit *ast.FuncLit) *bodyContexts {
+	b := &bodyContexts{info: info, lit: lit, values: map[*types.Var][]ast.Expr{}, decided: map[*types.Var]bool{}}
+	if params := lit.Type.Params.List; len(params) > 0 && len(params[0].Names) > 0 {
+		if param, ok := info.Defs[params[0].Names[0]].(*types.Var); ok && param.Type().String() == "context.Context" {
+			b.param = param
 		}
-		return !found
+	}
+	ast.Inspect(lit.Body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			b.record(node.Lhs, node.Rhs)
+		case *ast.ValueSpec:
+			names := make([]ast.Expr, len(node.Names))
+			for i, name := range node.Names {
+				names[i] = name
+			}
+			b.record(names, node.Values)
+		}
+		return true
 	})
-	return found
+	return b
+}
+
+// record keeps the value each of lhs is given by rhs: one value each, or the first result of the
+// one call rhs holds for lhs's first, and nil for the rest.
+func (b *bodyContexts) record(lhs, rhs []ast.Expr) {
+	for i, target := range lhs {
+		ident, ok := target.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		object := b.info.Defs[ident]
+		if object == nil {
+			object = b.info.Uses[ident]
+		}
+		variable, ok := object.(*types.Var)
+		if !ok {
+			continue
+		}
+		var value ast.Expr
+		switch {
+		case len(rhs) == len(lhs):
+			value = rhs[i]
+		case len(rhs) == 1 && i == 0:
+			value = rhs[0]
+		}
+		b.values[variable] = append(b.values[variable], value)
+	}
+}
+
+// admits reports whether expr is an admitted context of the body.
+func (b *bodyContexts) admits(expr ast.Expr) bool {
+	switch expr := expr.(type) {
+	case *ast.ParenExpr:
+		return b.admits(expr.X)
+	case *ast.Ident:
+		variable, ok := b.info.Uses[expr].(*types.Var)
+		if !ok || (variable != b.param && (variable.Pos() < b.lit.Pos() || variable.Pos() >= b.lit.End())) {
+			return false
+		}
+		return b.admitsVariable(variable)
+	case *ast.CallExpr:
+		return len(expr.Args) > 0 && b.derives(expr) && b.admits(expr.Args[0])
+	}
+	return false
+}
+
+// admitsVariable reports whether every value the body gives variable is an admitted context, and
+// that it is the body's parameter or is given one. A variable met again while it is decided is
+// taken as admitted there: its other values decide it.
+func (b *bodyContexts) admitsVariable(variable *types.Var) bool {
+	if decided, ok := b.decided[variable]; ok {
+		return decided
+	}
+	b.decided[variable] = true
+	values := b.values[variable]
+	admitted := variable == b.param || len(values) > 0
+	for _, value := range values {
+		if value == nil || !b.admits(value) {
+			admitted = false
+		}
+	}
+	b.decided[variable] = admitted
+	return admitted
+}
+
+// derives reports whether call calls one of contextDerivations.
+func (b *bodyContexts) derives(call *ast.CallExpr) bool {
+	var name *ast.Ident
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		name = fun
+	case *ast.SelectorExpr:
+		name = fun.Sel
+	default:
+		return false
+	}
+	function, ok := b.info.Uses[name].(*types.Func)
+	return ok && slices.Contains(contextDerivations, function.FullName())
 }
 
 // openerRule is R1 for an identifier that names a pgx function that opens a transaction by hand,
@@ -474,6 +585,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -483,11 +595,25 @@ func plantedMixed(ctx context.Context, pool *store.Pool, r *http.Request) error 
 		if _, err := tx.Exec(r.Context(), "select 1"); err != nil { // L16 reported: R4, the request's context
 			return err
 		}
+		read := r.Context()
+		if _, err := tx.Exec(read, "select 1"); err != nil { // L18 reported: R4, a local alias of the request's context
+			return err
+		}
 		if _, err := tx.Exec(listing, "select 1"); err != nil { // L17 reported: R4, a context from outside the body
 			return err
 		}
-		derived := context.WithoutCancel(ctx)
-		if _, err := tx.Exec(derived, "select 1"); err != nil { // a context the body derived from its own
+		settled, settle := intake.OpenSettlers(ctx)
+		if _, err := tx.Exec(settled, "select 1"); err != nil { // the first result of a derivation of the body's own
+			return err
+		}
+		if err := settle(settled, tx); err != nil { // the same derived context, passed on
+			return err
+		}
+		defer func() { _ = listing.Err() }() // a deferred literal, which is not the body's statement
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, "select 1") // a nested body's own context
+			return err
+		}); err != nil {
 			return err
 		}
 		store.OnCommit(ctx, func() { _ = listing.Err() }) // a hook, which runs once the commit is over
@@ -520,12 +646,12 @@ var plantedMark = regexp.MustCompile(`// (L[0-9]+) reported: (R[0-9])`)
 
 // TestNoTransactionOrStatementBypassesTheBoundary runs the guard over the module with the planted
 // files added. The production code must add no line; the planted files must add exactly their
-// seventeen marked lines. A real call outside the boundary fails by being listed, a guard blind to
+// eighteen marked lines. A real call outside the boundary fails by being listed, a guard blind to
 // a receiver kind, a method, a method value, a method expression, a context of another type,
-// database/sql, a dot import, a context from outside a transaction's body or a package fails by a
-// missing marked line, and a guard that reaches into the boundary fails by listing the
-// TransactWith body, the savepoint, the statement in a transaction, a context the body derived or
-// a hook.
+// database/sql, a dot import, a context from outside a transaction's body, a local that holds one,
+// or a package fails by a missing marked line, and a guard that reaches into the boundary fails
+// by listing the TransactWith body, the savepoint, the statement in a transaction, a context the
+// body derived, a nested body's own context, a deferred literal or a hook.
 func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 	dir := moduleDir(t)
 	overlay := map[string][]byte{}
@@ -544,8 +670,8 @@ func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 			want = append(want, "internal/daemon/"+file.name+":"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+file.function(mark[1]))
 		}
 	}
-	if len(want) != 17 {
-		t.Fatalf("the planted files mark %d lines, want 17", len(want))
+	if len(want) != 18 {
+		t.Fatalf("the planted files mark %d lines, want 18", len(want))
 	}
 	slices.Sort(want)
 
