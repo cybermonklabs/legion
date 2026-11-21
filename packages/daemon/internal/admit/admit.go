@@ -2541,9 +2541,18 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 		for _, summary := range parentsFirst(held) {
 			// A held summary older than a fact the daemon applied records nothing, and that fact,
 			// applied after Reconcile deferred the summary, refreshed it or left a trace of its own
-			// (Reconcile says which), so nothing more is owed for it here.
-			if _, err := a.applySummary(ctx, tx, summary, live, false); err != nil {
+			// (Reconcile says which), so nothing more is owed for it here. It is said at Info all the
+			// same, so a change that ever leaves such an issue with no trace shows in the log.
+			outcome, err := a.applySummary(ctx, tx, summary, live, false)
+			if err != nil {
 				return nil, err
+			}
+			if outcome == summaryStale {
+				key, listed := summary.Key, summary.Seq
+				intake.OnCommit(ctx, func() {
+					a.log.Info("admission: a held summary is older than an issue fact of the issue the daemon applied after it was held, so its release records nothing; that fact decided the issue",
+						"issue", key, "listed", listed)
+				})
 			}
 		}
 	}

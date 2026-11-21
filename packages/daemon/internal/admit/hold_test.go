@@ -439,10 +439,12 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 // answered for the new one) is newer information all the same: release finds the held summary
 // older than that event in the copy of Dispatch's issues, which the event wrote first, and records
 // nothing from it. The issue waits for its new repository's recovery. Before, release admitted the
-// issue on the repository the held summary named, and the edit reached no record.
+// issue on the repository the held summary named, and the edit reached no record. The release says
+// so at Info, naming the issue, so a change that ever leaves such an issue with no trace shows.
 func TestAHeldSummaryOlderThanAnAppliedEventRecordsNothingAtItsRelease(t *testing.T) {
 	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var logs bytes.Buffer
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	mirror := blockers.NewMirror(record.NewStore(), testProject)
 
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
@@ -467,6 +469,10 @@ func TestAHeldSummaryOlderThanAnAppliedEventRecordsNothingAtItsRelease(t *testin
 		t.Fatalf("released LEGION-EDIT = %#v, want it unrecorded: the held summary at sequence 2 is older than the edit at sequence 3 the daemon applied", got)
 	}
 	assertSlots(t, pool, nil)
+	const said = "level=INFO msg=\"admission: a held summary is older than an issue fact of the issue the daemon applied after it was held"
+	if line := logs.String(); !strings.Contains(line, said) || !strings.Contains(line, "issue=LEGION-EDIT") {
+		t.Fatalf("the release logged\n%s\nwant an Info line naming LEGION-EDIT whose held summary it found older than an applied fact", line)
+	}
 }
 
 // A root held back from a boot's admission pass keeps the place the line's own order gives it —
