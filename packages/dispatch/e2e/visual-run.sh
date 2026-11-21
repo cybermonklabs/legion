@@ -88,6 +88,10 @@ seed_in_container=/tmp/dispatch-visual-seed.json
 # rather than a file it polls: the read below ends on the last line the stack prints, and it
 # ends on the harness itself where that line never comes.
 exports_fifo="${TMPDIR:-/tmp}/dispatch-visual-exports.$$"
+# A file made just before the container starts. A file the run writes under its results
+# directory is newer than it, and a file an earlier run left there is not: that is how a failed
+# run below tells a run that wrote results from one that wrote none.
+run_started="${TMPDIR:-/tmp}/dispatch-visual-run-started.$$"
 
 # The stack goes down however this script ends, and this waits for it: its Postgres and its Go
 # servers are that process's own children (e2e/harness-up.ts), so they are gone only once it is,
@@ -98,7 +102,7 @@ cleanup() {
     kill "$harness" 2>/dev/null || true
     wait "$harness" 2>/dev/null || true
   fi
-  rm -f "$exports_fifo" "$seed_json"
+  rm -f "$exports_fifo" "$seed_json" "$run_started"
 }
 trap cleanup EXIT
 # A signal exits, and the exit runs the trap above. A cleanup bound to INT or TERM directly
@@ -170,6 +174,7 @@ done
 # a new baseline, a diff, a trace - owned by the person who ran it, and `HOME=/tmp` gives that
 # uid, which the image has no home for, a writable one.
 status=0
+: > "$run_started"
 # shellcheck disable=SC2086
 docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   --cpus 2 --memory 4g \
@@ -205,6 +210,14 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
 # dash, so never an `--output`, and which end a cluster of short options. A short option that
 # takes a value takes the rest of its cluster where there is one (`-Gx`), else the next word.
 # e2e/__tests__/visual-run.test.ts reads both lists against that help and fails when they differ.
+# A run that wrote no results has no shots, so it names no directory. Playwright refuses an
+# argument it cannot read - `-uG`, whose `G` is no `--update-snapshots` mode, or an option it does
+# not know - before it runs a row, and exits 1 as a failed row does, so the status cannot tell the
+# two apart. What the run wrote can: a run whose rows ran writes its `.last-run.json` under its
+# results directory, or a failed row's shots there where `--last-failed-file` moves that file. So
+# the line names the directory only when something under it is newer than the moment the
+# container started, and otherwise says that Playwright ran no row. What an earlier run left there
+# is older, so it does not count.
 # The status stays the container's however the lines go: a write to a closed stderr fails and is
 # ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end this shell
 # before the EXIT trap stopped the stack, so the signal is ignored from here on - after `docker`
@@ -251,14 +264,20 @@ if [ "$status" -ne 0 ]; then
         ;;
     esac
   done
+  # Playwright's own directory where no `--output` names one, and the path `find` reads it by, on
+  # which a name that starts with a dash is no option of `find`'s.
+  [ -n "$output" ] || output=e2e/test-results
   case $output in
-    "") output=packages/dispatch/e2e/test-results ;;
-    /*) ;;
-    *) output=packages/dispatch/${output#./} ;;
+    /*) results=$output shown=$output ;;
+    *) results=./$output shown=packages/dispatch/${output#./} ;;
   esac
-  printf '%s\n' "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/." >&2 || :
-  if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
-    printf '%s\n' "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+  if [ -n "$(find "$results" -newer "$run_started" -print -quit 2>/dev/null)" ]; then
+    printf '%s\n' "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${shown%/}/." >&2 || :
+    if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
+      printf '%s\n' "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+    fi
+  else
+    printf '%s\n' "e2e/visual-run.sh: the run failed, and Playwright ran no row: it wrote no results in this run, so there are no shots to look at. The output above says why (an argument Playwright refuses stops it before any row)." >&2 || :
   fi
 fi
 
