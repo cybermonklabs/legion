@@ -638,10 +638,11 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 // issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
 // with nothing written. An unforced create that the near-copy gate would refuse is refused for
 // its parent or blocker first, so the gate writes no near_copy_checks row for a create the
-// credential may not make. A parent of its own project is the control, and so is the same near
-// copy under its own project's parent, which the gate refuses.
+// credential may not make, and a PATCH that also closes the issue is refused before the close
+// settles its documents, so it writes no version. A parent of its own project is the control,
+// and so is the same near copy under its own project's parent, which the gate refuses.
 func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
-	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
+	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
 	caller := newBrokerCaller(t)
 	for _, project := range []string{"ALPHA", "BETA"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
@@ -718,6 +719,42 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	expectRefusal(t, "a scoped move under a parent of another project", moved, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
 	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent != nil {
 		t.Fatalf("the refused move left %s under %s, want no parent", own, *parent)
+	}
+	// A move under another project's issue that also closes the issue is refused before the
+	// close settles the issue's documents (settleIssueBeforeClose), so the refusal indexes no ask
+	// and writes no version of the spec, and the issue stays open. The issue is new, its spec holds
+	// a decision block, and the rig settles a document only after an hour, so the spec still owes
+	// the settlement that would open the block's ask and write a version.
+	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
+	}))
+	settled := func() (versions, asks int) {
+		t.Helper()
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select (select count(*) from artifact_versions where artifact_id = $1::uuid),
+			       (select count(*) from asks where issue_key = $2)
+		`, closer.PrimaryArtifactID, closer.Key).Scan(&versions, &asks); err != nil {
+			t.Fatalf("count the versions of %s's spec and its asks: %v", closer.Key, err)
+		}
+		return versions, asks
+	}
+	versionsBefore, asksBefore := settled()
+	for _, field := range []string{"parent", "blocked_by"} {
+		var target any = approved
+		if field == "blocked_by" {
+			target = []string{approved}
+		}
+		closing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+			field: target, "status": "done",
+		}))
+		expectRefusal(t, "a scoped close with a "+field+" of another project", closing, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	}
+	if versions, asks := settled(); versions != versionsBefore || asks != asksBefore {
+		t.Fatalf("the refused closes took %s from %d spec versions and %d asks to %d and %d, want no settlement",
+			closer.Key, versionsBefore, asksBefore, versions, asks)
+	}
+	if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+closer.Key, nil)).Status; status == "done" {
+		t.Fatalf("the refused closes left %s done", closer.Key)
 	}
 
 	allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": sibling}))
