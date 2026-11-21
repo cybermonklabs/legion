@@ -115,6 +115,9 @@ export interface CensusLookups {
   issueAt(key: string, before: number): IssueFacts | undefined;
   documentAt(artifactId: string, before: number): DocumentFacts;
   closingOf(askId: string): { answer: AnswerFacts | null; resolution: ResolutionFacts | null };
+  /** The id of the ask's first ask.opened, whatever window the census counts in: a later one
+   * restores the ask. */
+  firstOpeningOf(askId: string): number | undefined;
 }
 
 /** A spec-approval ask on a root whose chain, read up to its first issue of another project, reaches
@@ -243,6 +246,7 @@ export function eventLookups(events: readonly LogEvent[]): CensusLookups {
   const reviews = new Map<string, Array<{ id: number; review: ReviewFacts }>>();
   const answers = new Map<string, AnswerFacts>();
   const resolutions = new Map<string, ResolutionFacts>();
+  const openings = new Map<string, number>();
   for (const event of [...events].sort((left, right) => left.id - right.id)) {
     const { payload } = event;
     switch (event.type) {
@@ -292,6 +296,10 @@ export function eventLookups(events: readonly LogEvent[]): CensusLookups {
           });
         }
         break;
+      case "ask.opened":
+        if (payload.id !== undefined && !openings.has(payload.id))
+          openings.set(payload.id, event.id);
+        break;
       case "ask.answered":
         if (payload.id !== undefined) {
           answers.set(payload.id, {
@@ -327,6 +335,7 @@ export function eventLookups(events: readonly LogEvent[]): CensusLookups {
       answer: answers.get(askId) ?? null,
       resolution: resolutions.get(askId) ?? null,
     }),
+    firstOpeningOf: (askId) => openings.get(askId),
   };
 }
 
@@ -411,16 +420,20 @@ function askRow(event: LogEvent, lookups: CensusLookups): CrossProjectAsk | unde
   };
 }
 
-/** The first ask.opened of each ask among `events`, in event order: a later one restores the ask. */
-function firstOpenings(events: readonly LogEvent[]): LogEvent[] {
+/**
+ * Each ask.opened among `events` that is its ask's first, by the whole history `lookups` read and
+ * by `events` alike, in event order. Dispatch appends another ask.opened when it restores an ask,
+ * so an ask first opened before the window and restored inside it is no new request.
+ */
+function firstOpenings(events: readonly LogEvent[], lookups: CensusLookups): LogEvent[] {
   const seen = new Set<string>();
   return [...events]
     .sort((left, right) => left.id - right.id)
     .filter((event) => {
-      if (event.type !== "ask.opened" || event.payload.id === undefined) return false;
-      if (seen.has(event.payload.id)) return false;
-      seen.add(event.payload.id);
-      return true;
+      const ask = event.payload.id;
+      if (event.type !== "ask.opened" || ask === undefined || seen.has(ask)) return false;
+      seen.add(ask);
+      return (lookups.firstOpeningOf(ask) ?? event.id) >= event.id;
     });
 }
 
@@ -428,14 +441,15 @@ function firstOpenings(events: readonly LogEvent[]): LogEvent[] {
  * Each spec-approval ask among `events` on a root whose chain, read up to its first issue of
  * another project, reaches an issue whose spec held a person's approval of its latest version when
  * the ask opened. A root is an issue whose every ancestor of its own project is done. `events` are
- * the asks counted, those of the named projects in the window; `lookups` read the chain and the
- * approvals as of each ask, and an issue on a chain that they hold nothing of is refused.
+ * the asks counted, those of the named projects in the window; `lookups` read the chain, the
+ * approvals and the ask's first opening as of each ask, and an issue on a chain that they hold
+ * nothing of is refused.
  */
 export function crossProjectAsks(
   events: readonly LogEvent[],
   lookups: CensusLookups
 ): CrossProjectAsk[] {
-  return firstOpenings(events).flatMap((event) => askRow(event, lookups) ?? []);
+  return firstOpenings(events, lookups).flatMap((event) => askRow(event, lookups) ?? []);
 }
 
 /** A message in basisOpenedMessage's format: its first line, and the ancestor its line names. */
@@ -488,7 +502,7 @@ function pairReading(events: readonly LogEvent[], pair: Pair, lookups: CensusLoo
   const onRoot = events.filter((event) => event.issue_key === pair.root);
   return {
     ...pair,
-    asks: firstOpenings(onRoot).flatMap((event) => pairAsk(event, pair, lookups) ?? []),
+    asks: firstOpenings(onRoot, lookups).flatMap((event) => pairAsk(event, pair, lookups) ?? []),
     openings: onRoot.flatMap((event) => {
       const opening = openingOf(event);
       return opening?.ancestor === pair.ancestor ? [opening] : [];
@@ -511,7 +525,8 @@ function windowOf(events: readonly LogEvent[], options: CensusOptions): LogEvent
 /**
  * The census of `events`: the cross-project asks and the gate openings on the named projects'
  * issues in the window, and each pair's root, read with `lookups`, which are the events' own unless
- * the caller read more history than the window holds.
+ * the caller read more history than the window holds. An ask in the window counts only where it
+ * first opened, as `lookups` read its whole history, so a restore in the window is no new request.
  */
 export function censusReport(
   events: readonly LogEvent[],
@@ -627,7 +642,9 @@ async function readHistories(config: DispatchConfig, keys: readonly string[]): P
 }
 
 /** The issues `lookups` hold nothing of that the census of `window` reads, each with the refusal
- * that names it: each step of the reading runs as the census runs it, ask by ask. */
+ * that names it: each step of the reading runs as the census runs it, ask by ask. A spec-approval
+ * ask's own issue is among them until it is read, so its whole history, each ask.opened of the ask
+ * included, is read before the census decides which opening is the ask's first. */
 function unreadIssues(
   window: readonly LogEvent[],
   options: CensusOptions,
@@ -642,7 +659,7 @@ function unreadIssues(
       unread.set(error.key, error.message);
     }
   };
-  for (const event of firstOpenings(window)) {
+  for (const event of firstOpenings(window, lookups)) {
     if (event.issue_key !== null && options.projects.includes(projectOf(event.issue_key))) {
       step(() => askRow(event, lookups));
     }
@@ -655,8 +672,9 @@ function unreadIssues(
 
 /**
  * The census of the window Dispatch's event log holds now. The asks and the openings are the
- * window's; the chains and the approvals they are read against are each issue's whole history, so
- * a parent set or an approval given before the window is read as it stood.
+ * window's; the chains, the approvals they are read against and each ask's first opening are each
+ * issue's whole history, so a parent set, an approval given or an ask opened before the window is
+ * read as it stood.
  */
 async function liveCensus(
   config: DispatchConfig,

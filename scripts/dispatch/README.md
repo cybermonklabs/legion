@@ -89,7 +89,10 @@ bun scripts/dispatch/cross-project-basis-census.ts \
 project are counted. The census reads them as Dispatch's events state them:
 
 - A spec-approval ask is the first `ask.opened` of an approval request whose document is the
-  issue's primary document, the `primary_artifact_id` its issue events name.
+  issue's primary document, the `primary_artifact_id` its issue events name. The first is decided
+  from the ask's whole history before the window applies: Dispatch appends another `ask.opened`
+  when it restores an ask on an issue that reopens, so an ask first opened before `--from` and
+  restored in the window is not counted, in the lists or in a `--pair` reading.
 - A root is an issue whose every ancestor of its own project is `done`, read up its `parent` chain
   as the issue events left each issue when the ask opened. The read ends at the first ancestor of
   another project.
@@ -107,16 +110,16 @@ event through that id, 1,000 events a page, and keeps each event whose `created_
 Dispatch stamps an event with its transaction's start, and a transaction that started earlier can
 append later, so no event's time says where the window's other events lie. The cost is that a live
 census reads the whole event log once, whatever the window. The asks and the messages counted are
-the window's. The chains and the approvals they are read against are each issue's whole history
-(`GET /api/v1/issues/{key}/events`), read for each ask's issue and for each issue its chain
-reaches, eight issues at a time, so a parent set or an approval given before the window is read as
-it stood. Dispatch is resolved as for the ask census above.
+the window's. The chains, the approvals they are read against and each ask's first opening are
+each issue's whole history (`GET /api/v1/issues/{key}/events`), read for each ask's issue and for
+each issue its chain reaches, eight issues at a time, so a parent set, an approval given or an ask
+opened before the window is read as it stood. Dispatch is resolved as for the ask census above.
 
 `--events-file PATH` reads a saved log instead, one event to a line as the event log route serves
 it, such as the `dispatch-events.jsonl` an end-to-end run keeps. `--from` and `--to`, when given,
-only narrow the asks and the messages counted; the whole file is read for the chains and the
-approvals. A chain that reaches an issue the log holds no issue event of stops the run and names
-the issue, in both modes.
+only narrow the asks and the messages counted; the whole file is read for the chains, the
+approvals and each ask's first opening. A chain that reaches an issue the log holds no issue event
+of stops the run and names the issue, in both modes.
 
 `--pair ROOT=ANCESTOR` repeats. For each pair it prints every spec-approval ask on the root in the
 window: whether the ancestor was on the root's chain, the ancestor spec's latest version and newest

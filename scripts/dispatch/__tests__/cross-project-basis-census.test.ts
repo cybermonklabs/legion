@@ -67,6 +67,29 @@ const expected: CensusReport = {
   pairs: [],
 };
 
+/** The fixture's log with the listed ask restored after its last event. Dispatch appends another
+ * ask.opened of an ask when it restores the ask on an issue that reopens (`recordRestoredAsksTx` in
+ * `packages/envoy/internal/dispatch/api/issue_ask_lifecycle.go`). */
+const restoredLog: readonly LogEvent[] = [
+  ...events,
+  { ...event(ASK_UNDER_OTHER_PROJECT.event), id: 37, seq: 7, created_at: "2026-11-21T18:50:44Z" },
+];
+
+/** A window that starts after the listed ask's first opening and holds its restore. */
+const afterFirstOpening = {
+  from: event(ASK_UNDER_SAME_PROJECT.event).created_at,
+  to: "2026-11-22T00:00:00Z",
+};
+
+/** The pair of the listed ask's root, and the census's whole answer on `restoredLog` in
+ * `afterFirstOpening`: the opening, and no ask, as the ask was first opened before the window. */
+const restoredPair = { root: "LEGION-2", ancestor: "OTHR-1" };
+const restoredInWindow: CensusReport = {
+  asks: [],
+  openings: expected.openings,
+  pairs: [{ ...restoredPair, asks: [], openings: expected.openings }],
+};
+
 describe("the census of gates opened across projects", () => {
   test("lists the ask under an approved issue of another project and the opening that names one, and nothing else", () => {
     expect(censusReport(events, { projects, pairs: [] })).toEqual(expected);
@@ -184,6 +207,18 @@ describe("the census of gates opened across projects", () => {
     expect(() => crossProjectAsks(events, eventLookups(withoutAncestor))).toThrow(
       "the log holds no issue event of OTHR-1"
     );
+  });
+
+  test("an ask first opened before the window and restored inside it is no new request, in the asks or in a pair's reading", () => {
+    // Over the whole log the restore is read as the same ask, listed once, as it first opened.
+    const whole = censusReport(restoredLog, { projects, pairs: [restoredPair] });
+    expect(whole.asks).toEqual(expected.asks);
+    expect(whole.pairs[0]?.asks.map((ask) => ask.openedAt)).toEqual([
+      event(ASK_UNDER_OTHER_PROJECT.event).created_at,
+    ]);
+    expect(
+      censusReport(restoredLog, { projects, pairs: [restoredPair], ...afterFirstOpening })
+    ).toEqual(restoredInWindow);
   });
 });
 
@@ -360,6 +395,28 @@ describe("the census command", () => {
     expect(logQueries.filter((query) => query.endsWith("limit=1000"))).toEqual([
       "?after=0&limit=1000",
     ]);
+  });
+
+  test("without --events-file an ask restored in the window is read against its issue's whole history, and is no new request", async () => {
+    const run = await spawnCensus(
+      [
+        "--project",
+        "LEGION",
+        "--project",
+        "OTHR",
+        "--from",
+        afterFirstOpening.from,
+        "--to",
+        afterFirstOpening.to,
+        "--pair",
+        `${restoredPair.root}=${restoredPair.ancestor}`,
+        "--json",
+      ],
+      { DISPATCH_URL: stubDispatch([], restoredLog), DISPATCH_TOKEN: "token" }
+    );
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual(restoredInWindow);
   });
 
   test("an event with a later id and an earlier time hides no event of the window", async () => {
