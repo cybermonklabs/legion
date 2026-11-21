@@ -476,6 +476,15 @@ import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
 local-instance-support.test.ts:2-5, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
+## dispatch_ui: The route index and the GitHub proxy's expression the restricted sweep's tests read
+
+The route index, `packages/envoy/internal/dispatch/api/testdata/routes.txt`, which
+`e2e/__tests__/restricted-sweep.test.ts` and `restricted-sweep-judging.test.ts` read, holding
+`e2e/acceptance/restricted-sweep.sh`'s kinds and calls to it (that script reads it row by row);
+and the GitHub proxy's `readable` expression, `githubapi/proxy.go`, which
+`restricted-sweep.test.ts` reads and holds the sweep's proxy reads to. Both suites run in this
+job's test step.
+
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -1354,6 +1363,9 @@ so the filter names the module whole: what every caller reads is the drivers' su
 reads a few hundred routes from each build, minutes rather than tens of them, so the output
 carries no `full-ci` term: a pull request that changes what any caller reads finds out on its own
 run.
+
+The job reads pull requests (`pull-requests: read`) to find the branch the read check's pull
+request targets, the base of `e2e/__tests__/restricted-sweep.test.ts`'s control build.
 
 ## Why the tool fallback proof carries no full-ci term
 

@@ -28,6 +28,15 @@ name: CI job dispatch-project-access
 # databases, so the step makes the database it names, with the vector extension the driver's
 # shared prerequisites ask of it.
 #
+# restricted-sweep.test.ts (c-restricted-sweep) runs its stack rows here, as only a job that names
+# a harness Postgres runs them: e2e/acceptance/restricted-sweep.sh against this tree's server, and
+# against a build with no read check, which it must FAIL. That build is the merge base of this tree
+# and the branch the read check's pull request targets, which the step reads from GitHub: this
+# pull request's base, or, where that base is itself the head of an open pull request (a stacked
+# branch), that pull request's base; main for a merge group. The stack helper takes it from
+# DISPATCH_E2E_SWEEP_BASE_BRANCH (e2e/__tests__/restricted-sweep-stack.ts) and refuses, by name, a
+# commit that holds the read check or no restricted members.
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -53,7 +62,7 @@ env:
 jobs:
   dispatch-project-access:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -97,6 +106,42 @@ jobs:
           base=$(jq -r '.merge_group.base_sha // empty' "$GITHUB_EVENT_PATH")
           base=${base:-$(git rev-parse HEAD^1)}
           bash e2e/acceptance/project-access-blob.sh --base-commit "$base"
+        working-directory: packages/dispatch
+      - name: Read the connections the sweep's stacks' Postgres must allow
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+      # The job token reads pull requests here alone, so the sweep's step below runs without it. A
+      # pull request of a fork whose branch has the base's name is no stacked branch of this
+      # repository's, so only this repository's own pull requests are read.
+      - name: Read the branch the read check's pull request targets
+        id: sweep_base
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=${GITHUB_BASE_REF:-main}
+          below=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$base" --state open \
+            --json baseRefName,headRepository,headRepositoryOwner \
+            --jq "[.[] | select(.headRepositoryOwner.login + \"/\" + .headRepository.name == \"$GITHUB_REPOSITORY\")][0].baseRefName // empty")
+          branch=origin/${below:-$base}
+          # Only a ref's own bytes reach the sweep step's script, which names the output.
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::the base branch '$branch' holds a byte no ref name this job reads holds"; exit 1; }
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "the build with no read check: the merge base of this tree and $branch"
+      # The step's limit is beyond the stack child's own bound (bounded-subprocess.ts's
+      # twoStackBuild, 30 minutes), so a hung stack is stopped by the test, which names the child.
+      - name: Sweep every GET route and both sockets as a restricted member, here and with no read check
+        timeout-minutes: 32
+        run: |
+          export DISPATCH_E2E_SWEEP_BASE_BRANCH=${{ steps.sweep_base.outputs.branch }}
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun run test:harness e2e/__tests__/restricted-sweep.test.ts
         working-directory: packages/dispatch
 
       - name: Report ci-ok when this job decides a merge-group run

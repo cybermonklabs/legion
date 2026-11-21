@@ -719,6 +719,7 @@ jobs:
       contents: read
       actions: read
       checks: write
+      pull-requests: read
     uses: ./.github/workflows/ci-job-dispatch-project-access.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}

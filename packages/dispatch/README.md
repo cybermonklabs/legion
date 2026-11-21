@@ -828,8 +828,8 @@ DATABASE_URL=<a PostgreSQL this run may truncate> DISPATCH_E2E_ACCESS_ISSUER=1 \
   bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
 ```
 
-Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh` and `outside-path-reach.sh`
-sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh`, `outside-path-reach.sh` and
+`restricted-sweep.sh` sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
@@ -936,6 +936,153 @@ network refuses that address at once, and `outside-path-reach-tmout.test.ts` for
 a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+
+`e2e/acceptance/restricted-sweep.sh` is the driver of the check `c-restricted-sweep`: a read sweep
+of a deployment as a restricted member, for the objects of one project whose access list does not
+name that member. Its parts are the files beside it: `restricted-sweep-lib.sh` (requests and
+lines), `-fills.sh` (the fills file), `-writer.sh` (writer mode), `-lookup.sh` (the identities and
+the full member's lookup), `-judge.sh` (the row rule and the rows) and `-sockets.sh` (the sockets).
+A full member's token looks the project's objects up first: an issue whose spec has blocks, a
+comment, an ask, a message, a handoff, a document of the project itself, a near-copy check, a
+priority, a broadcast and a delivery run, with a person and a session that worked in it and a
+repository only its issues resolve to. It also asks one question of the project as the full member
+(`POST /api/v1/going/requests`), since no route lists a question's run, and reads the conversation
+file `SWEEP_CONVERSATION_FILE` names, since no route lists those either. Then every GET row of the
+route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the member,
+its wildcards filled with those objects, and each list once more for each of its query parameters
+that names a project's object (read from the API document): a filter by a session
+(`author_session`, `parent_agent`) with a session of the project alone, answered to the member as
+one nobody holds, and a filter by a person (`assignee`, `author`, `approver`, `person`) with a
+person of the project, whose answer the markers read; `session`, the session a caller acts as, is
+no filter. A GET route the deployment's own index (`GET /api/v1`) lists and `routes.txt` lacks was
+never called, and leaves the run `UNKNOWN`, naming it; a test hook (a `_test` path) is no
+deployment's. A direct message to a session that
+worked in the project alone is read by its own routes too, the live socket's agent view of that
+session must answer the member as a session no one answers for, and every read the GitHub proxy
+forwards (`/api/github/rest/`, `githubapi/proxy.go`'s `readable`) is called with the repository
+only the project's issues resolve to. Each answer must be 404, 403, what a missing object is
+answered, or one that holds no row of the project; any answer for the project's object (a 2xx, or
+a refusal other than 403 and 404) where a missing one is answered otherwise is a row of it too,
+since it says the object exists, and a proxy read must answer as a repository the App is not
+installed on does, or refuse 403. `GET /api/v1/github/app-installation/{owner}/{repo}`, which the
+server holds to the proxy's rule, must answer the member exactly what it answers them for a
+missing repository, status and text, filled with the repository only the project's issues resolve
+to (one the member's own project resolves to as well may answer them installed); it can fail only
+where the App is installed on that repository and not on a missing one. A string an answer holds
+is a row when it is, whole, the project's key, an issue key of it or an object the lookup found. A
+string a person wrote (a `body`, `title`, `snippet` and the like) counts no project key and no
+issue key, even whole, and a found object only whole, since a member's own comment may cite the
+project's items, even as its whole body; any other string with no whitespace (a reference, a path,
+a URL) is one too when such a key or object stands in it as a whole part between `/ : # ? & =`. A
+session or a person the lookup read in the project that works in no project the member sees is a
+row of it as well. It also holds both sockets: the member is not admitted to the room of the
+project's document, while the same probe admits them to a document of their own, and the member's
+event feed, open for the whole of `SWEEP_LIVE_SECONDS` (60 by default), is sent no event of the
+project while the full member comments on `SWEEP_WRITE_ISSUE` and sends the project's session a
+direct message that names no issue, both of which the full member's own feed must be sent; and
+the member's feed must be sent the direct message the member sends their own session,
+`SWEEP_MEMBER_SESSION`, in the window, which they then read by `GET /api/v1/messages/{id}`. A
+subscription the server ends or refuses on an open socket covers no window. The comment, the
+direct messages and the question are the writes it makes. Its inputs are `SWEEP_ORIGIN`
+(`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`,
+`SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION`,
+`SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`, a file in the
+conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
+member's session cookie: the GitHub proxy and the agent view read as the browser's person and never
+as a token, and a direct message is a person's write, so without it the proxy reads cannot fail,
+and the run is `UNKNOWN`, naming them. It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or
+later, and bun with this checkout's dependencies installed (`bun install`), which runs the socket
+probe `e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
+
+```bash
+SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 \
+  SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FULL_TOKEN=... SWEEP_FULL_COOKIE=... \
+  SWEEP_RESTRICTED_COOKIE=... SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
+```
+
+Where no full member's credential may be, as on a public runner, the sweep splits in three. Fills
+mode (`SWEEP_MODE=fills`), where the full member's token is, does the full member's half: the
+lookup, the question and each row's can-fail call, and writes them to `SWEEP_FILLS_FILE` (ASCII
+`name<TAB>value` lines, version 3, at most 40 KiB, no credential, the origin they were made at and
+the target issue's title among them, as the search rows' text). It names the route index it was
+made from by its SHA-256 (`routes`), and the deployment by the SHA-256 of the key and creation
+time of each of the member's own projects (`deployment`), which tell one deployment from another
+and read the same at its private origin and its public one; fills mode and a runner each refuse a
+list of projects that gives no creation time of each of them. A row that can fail is a
+`can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
+them, and every row it judged has a `full_status` line. Fills mode needs `SWEEP_FULL_COOKIE` too,
+since a proxy read it cannot make fail leaves no file, and writes none that lacks a fill. It takes
+the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the ones whose access
+lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
+half with the member's cookie alone, refuses a full member's credential, and refuses fills of
+another project, made from another route index than its own, older than 55 minutes, lacking a fill
+whole fills hold, or made at another deployment; it names the origin they were made at, and the
+member's login, by the first 12 digits of their SHA-256 alone. Those digits keep the value itself
+out of the log; they do not hide a login or a host name someone can guess, whose SHA-256 anyone
+can take and compare. A row the fills hold no line of,
+from fills made from another API document, was never asked of the full member: the member's
+answer still FAILs it where it holds a row of the project, and otherwise the row is `UNKNOWN`,
+never `blind`. A runner reads the member's live feed over a window it prints,
+`live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
+closes, so `SWEEP_LIVE_SECONDS` is at least 30 on a runner; it writes the member's own direct
+message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
+cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
+the fills' session of the project a direct message, and prints
+`write <UTC> <comment id> <message id> delivered`, or `not delivered`, as both reach the full
+member's own feed within `SWEEP_WRITE_EVERY` seconds (at least 5, at most that 15) or do not. The
+runner's live check holds only once a delivered write falls strictly inside its window, which
+whoever ran both joins. The verdict is always a run's last line.
+
+```bash
+SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_FULL_TOKEN=... \
+  SWEEP_FULL_COOKIE=... SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv \
+  bash e2e/acceptance/restricted-sweep.sh
+SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
+  SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
+SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
+  SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
+```
+
+Every row's line says whether it can fail (the full member is answered the project's object
+otherwise than a missing one, or a row of it) or is `blind` (the full member is answered no row of
+the project there either). A full member's read a row needs that is answered no rule reads (401,
+429, a 5xx, no answer), or an answer the sweep could not mask, leaves the run `UNKNOWN`, naming it,
+as does a GitHub proxy read or the app-installation row that cannot fail. A proxy read can fail
+only where the full member's read of the project's repository is answered and a missing one's is
+the proxy's own answer for a repository the App is not installed on (503
+`GITHUB_TOKEN_UNAVAILABLE`); any other 5xx on either side, a rate limit or an outage, is no
+answer. `PASS` (exit 0) needs every GET row filled and called, every kind of object found, at
+least one row that can fail and every socket control held; `FAIL` (exit 1) names each answer that
+gave the member a row of the project and, in its verdict, the first; everything that proved
+nothing, a project the full member finds nothing of among them, is `UNKNOWN` (exit 2). A `FAIL`
+line names the route, the status and the row of the project the answer held (a key or an id; the
+issue's title by its issue; the project's repository, a person of the project alone and a file of
+its conversation by that kind), never the answer's text, and a line about either socket names the
+member's answer by its status or frame types, never a body the server wrote, since a public
+runner's log is public. `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request, which
+keeps a run far under an edge's per-address request limit.
+`e2e/__tests__/restricted-sweep-judging.test.ts`, `-sockets.test.ts` and `-split.test.ts` hold each
+judging rule alone, against a fake Dispatch (`restricted-sweep-fake.ts`) that keeps every route
+from the member but the one a row plants a leak in, and hold the sweep to calling every GET row,
+read from what the fake was sent.
+`bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs, the kinds it fills
+wildcards with and the proxy reads it makes (against the server's route probes and `proxy.go`),
+and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against stacks of the local
+harness, in one run and split: this checkout's server, where it passes, every write the writer
+makes is delivered and one falls inside the runner's window, and a build with no read check, where
+it fails naming the route, a session's direct message, a GitHub proxy read, the agent view and both
+sockets. CI's `dispatch-project-access` job runs those rows. That build's commit is read from git,
+never written down: the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by
+default; while the read check's pull request is open, the branch it targets), or, once a squash
+merge has put the read check on that branch, the commit just before it. `DISPATCH_E2E_SWEEP_BASE`
+names the commit outright. A commit that holds the read check, or no restricted members, is
+refused by name.
+
+```bash
+DISPATCH_E2E_PG_BIN=<a directory holding initdb and pg_ctl, PostgreSQL with vector> \
+  DISPATCH_E2E_SWEEP_BASE_BRANCH=origin/<the branch the read check's pull request targets> \
+  bun run test:harness e2e/__tests__/restricted-sweep.test.ts
+```
 
 ## Acceptance run against the deployed image
 

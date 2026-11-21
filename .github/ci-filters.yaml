@@ -1463,6 +1463,9 @@ dispatch_ui:
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
   - 'packages/contracts/schemas/dispatch-openapi.json'
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-route-index-and-the-github-proxys-expression-the-restricted-sweeps-tests-read
+  - 'packages/envoy/internal/dispatch/api/testdata/routes.txt'
+  - 'packages/envoy/internal/dispatch/githubapi/proxy.go'
   - 'packages/envoy/going/testdata/**'
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/process-tree.sh'
@@ -2060,6 +2063,7 @@ dispatch_project_access:
   - 'packages/envoy/**'
   - 'packages/dispatch/e2e/**'
   - 'packages/contracts/**'
+  - 'packages/test-fixtures/src/**'
   - 'scripts/e2e/lib/two-builds.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'
