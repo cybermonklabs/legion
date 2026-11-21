@@ -581,7 +581,7 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 		g.killFailed(target.Process, err)
 		return
 	}
-	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
+	if start, err := ReadStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
 		_ = h.Close()
 		return
 	}
@@ -671,7 +671,7 @@ type assessment struct {
 // alike. The processes it may end are the only ones whose files it reads, so they alone are the
 // holders and the mappers of memfds among which a memfd counts once (addHeldMemfds).
 func (g *Guard) assess() (assessment, error) {
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		return assessment{}, err
 	}
@@ -921,7 +921,7 @@ func (g *Guard) takeScan() {
 func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
-	if t, err := scan(g.proc); err == nil {
+	if t, err := Scan(g.proc); err == nil {
 		classes := g.classes(t)
 		clear(g.scanMemfds)
 		read := make([]candidate, 0, len(t.byPID))
