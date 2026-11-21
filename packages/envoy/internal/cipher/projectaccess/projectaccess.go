@@ -178,13 +178,24 @@ func Restricted(ctx context.Context, a Access, person string) (bool, error) {
 	if err != nil {
 		return false, &MemberKindUncheckable{Person: person, Err: err}
 	}
+	restricted, err := restrictedKind(kind, person)
+	if err != nil {
+		return false, &MemberKindUncheckable{Person: person, Err: err}
+	}
+	return restricted, nil
+}
+
+// restrictedKind is the one reading of a member kind Dispatch answered for person: MemberRestricted
+// is a restricted member, MemberFull and MemberNone are not, and any other kind, an empty one
+// included, is ErrUnknownMemberKind naming it. Restricted and ListAllowed both decide by it.
+func restrictedKind(kind, person string) (bool, error) {
 	switch kind {
 	case MemberFull, MemberNone:
 		return false, nil
 	case MemberRestricted:
 		return true, nil
 	}
-	return false, &MemberKindUncheckable{Person: person, Err: fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)}
+	return false, fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)
 }
 
 // ProjectNotFoundError is Access's answer for a project Dispatch does not hold: it is
@@ -350,6 +361,25 @@ func fresh(ctx context.Context) bool {
 	return marked
 }
 
+// askedNowKey marks a context whose member-kind reads take no failure an earlier read kept and
+// join no call already in flight (askedNow), though they still take a young answer from the
+// cache: a read whose failure lets something through, as ListAllowed's empty list does. It is a
+// context marker rather than a method, so an Access that hands the context on, a wrapper
+// included, keeps the rule.
+type askedNowKey struct{}
+
+// askedNow is ctx for a member-kind read that is asked of Dispatch itself whenever the cache
+// holds no young answer (askedNowKey).
+func askedNow(ctx context.Context) context.Context {
+	return context.WithValue(ctx, askedNowKey{}, true)
+}
+
+// isAskedNow reports whether ctx is one askedNow or Fresh made, or derived from one.
+func isAskedNow(ctx context.Context) bool {
+	marked, _ := ctx.Value(askedNowKey{}).(bool)
+	return marked || fresh(ctx)
+}
+
 // Access is Dispatch's answer for project and person, from the cache while it is younger than
 // CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
 // empty person asks whether the project is public. An answer is aged from before its question was
@@ -400,17 +430,18 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
 // ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
-// empty one included, is ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// empty one included, is ErrUnknownMemberKind naming it, never kept as an answer; like any other
+// failure of a call to Dispatch, it is kept failureTTL as that person's failure.
 //
 // Reads of one person in flight together share one call to Dispatch, which runs on none of their
 // contexts, so a reader that gives up ends only its own wait; and a read that failed is the
 // answer to that person's reads for failureTTL from when it came back. So while Dispatch does not
 // answer, a person's reads wait on one call at a time, each for no longer than that call's
-// requestTimeout, rather than each making a call of its own. A read under Fresh joins no call
-// already in flight, which may have been asked before the change it must see, and takes no kept
-// failure: it asks Dispatch itself (memberKindAskedNow).
+// requestTimeout, rather than each making a call of its own. A read under Fresh, or one ListAllowed
+// asks (askedNow), joins no call already in flight, which may have been asked before the change it
+// must see, and takes no kept failure: it asks Dispatch itself (memberKindAskedNow).
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
-	if fresh(ctx) {
+	if isAskedNow(ctx) {
 		return c.memberKindAskedNow(ctx, person)
 	}
 	person, err := askedPerson(person)
@@ -449,7 +480,9 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 // flight: an answer from the cache younger than CacheTTL unless ctx is one Fresh made, else a call
 // of its own on ctx, settled as any other. A read under Fresh asks it, and so does a read whose
 // failure lets something through (ListAllowed), so that what it lets through lasts no longer than
-// Dispatch does not answer.
+// Dispatch does not answer. The call runs on the caller's own context, so a call that failed
+// because that context ended, its deadline passed or its caller cancelled, keeps no failure for the
+// person's next reads: that ending says nothing of Dispatch.
 func (c *Client) memberKindAskedNow(ctx context.Context, person string) (string, error) {
 	person, err := askedPerson(person)
 	if err != nil {
@@ -463,6 +496,9 @@ func (c *Client) memberKindAskedNow(ctx context.Context, person string) (string,
 	c.mu.Unlock()
 	asked := c.now()
 	kind, err := c.readKind(ctx, person)
+	if err != nil && ctx.Err() != nil {
+		return "", err
+	}
 	c.mu.Lock()
 	c.settleKindLocked(person, asked, kind, err)
 	c.mu.Unlock()
@@ -495,23 +531,22 @@ func (c *Client) askKind(ctx context.Context, person string, flight *kindFlight)
 
 // settleKindLocked keeps the outcome of a member-kind call for person asked at asked: an answer
 // is kept CacheTTL, aged from before its question, unless one to a question asked later is
-// already held, and clears a kept failure; a failure is kept failureTTL from when it came back,
-// unless it is the caller's own giving up, which says nothing of Dispatch. c.mu is held.
+// already held, and clears a kept failure; a failure is kept failureTTL from when it came back.
+// A caller whose own context ended settles nothing (memberKindAskedNow), and the shared call runs
+// on no caller's context (askKind). c.mu is held.
 func (c *Client) settleKindLocked(person string, asked time.Time, kind string, err error) {
 	if len(c.kinds) >= maxCached || len(c.failures) >= maxCached {
 		c.sweepLocked()
 	}
-	switch {
-	case errors.Is(err, context.Canceled):
-	case err != nil:
+	if err != nil {
 		if len(c.failures) < maxCached {
 			c.failures[person] = failedKind{err: err, at: c.now()}
 		}
-	default:
-		delete(c.failures, person)
-		if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
-			c.kinds[person] = cachedKind{kind: kind, at: asked}
-		}
+		return
+	}
+	delete(c.failures, person)
+	if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
+		c.kinds[person] = cachedKind{kind: kind, at: asked}
 	}
 }
 
@@ -779,39 +814,32 @@ func (c *Client) clock() time.Time { return c.now() }
 // ListAllowed is the one statement of the rule for a person's list, used by the exchange and by
 // an enrollment alike. A non-empty list must pass Visible. An empty list is refused with
 // ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
-// answers a kind that is none of the three; MemberFull and MemberNone answer nil, so a person
-// Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
+// answers a kind that is none of the three (restrictedKind); MemberFull and MemberNone answer nil,
+// so a person Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
 // ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
 // either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
 // list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
 // logs that it did so unchecked. Because that failure lets the list through, the member kind is
-// asked afresh (memberKindAskedNow on a *Client), never answered by a failure an earlier read
-// kept: the list goes through unchecked only while Dispatch does not answer.
+// asked afresh (askedNow, which any Access that hands the context on honours), never answered by
+// a failure an earlier read kept: the list goes through unchecked only while Dispatch does not
+// answer.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
-	kind, err := askedNow(ctx, a, person)
+	kind, err := a.MemberKind(askedNow(ctx), person)
 	switch {
 	case errors.Is(err, ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
 	case err != nil:
 		return fmt.Errorf("%w: %w", ErrUnchecked, err)
 	}
-	switch kind {
-	case MemberFull, MemberNone:
-		return nil
-	case MemberRestricted:
+	restricted, err := restrictedKind(kind, person)
+	switch {
+	case err != nil:
+		return err
+	case restricted:
 		return fmt.Errorf("%w: %s", ErrListRequired, person)
 	}
-	return fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)
-}
-
-// askedNow is a's member kind for person with no failure an earlier read kept: a *Client's
-// memberKindAskedNow, and MemberKind for any other Access, which keeps none.
-func askedNow(ctx context.Context, a Access, person string) (string, error) {
-	if c, ok := a.(*Client); ok {
-		return c.memberKindAskedNow(ctx, person)
-	}
-	return a.MemberKind(ctx, person)
+	return nil
 }

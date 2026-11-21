@@ -845,6 +845,62 @@ func TestAnEmptyListAsksDispatchAfreshOnceItAnswersAgain(t *testing.T) {
 	}
 }
 
+// TestAReadWhoseCallerEndedKeepsNoFailure: a member-kind read asked for itself (under Fresh, as
+// the judge's approval asks, or for an empty list, as ListAllowed asks) on a caller's context that
+// ends before Dispatch answers, its deadline passed or its caller cancelled, leaves no failure for
+// the person's next reads to take: that ending says nothing of Dispatch. The next read asks
+// Dispatch and gets its answer. The client reads a fake clock, never advanced, so no wait decides
+// it.
+func TestAReadWhoseCallerEndedKeepsNoFailure(t *testing.T) {
+	ended := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+	for _, c := range []struct {
+		name string
+		ctx  func() context.Context
+	}{
+		{"a deadline that passed", func() context.Context {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+			t.Cleanup(cancel)
+			return ctx
+		}},
+		{"a cancelled caller", ended},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := standIn(t)
+			client := clientOf(server)
+			clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+			projectaccess.SetClock(client, clock.read)
+			if _, err := client.MemberKind(projectaccess.Fresh(c.ctx()), "bob@example.com"); err == nil {
+				t.Fatal("MemberKind(bob) on an ended context answered, want its context's error")
+			}
+			if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted {
+				t.Fatalf("MemberKind(bob) after a read whose caller ended = %q, %v; want restricted from Dispatch: an ended caller says nothing of Dispatch", kind, err)
+			}
+		})
+	}
+}
+
+// TestAWrapperOfTheClientKeepsTheEmptyListsFreshRead: ListAllowed's empty list asks the member kind
+// afresh, never answered by a kept failure, through any Access that hands the context on, a
+// wrapper such as projectaccesstest.Swappable included, not only through *Client itself.
+func TestAWrapperOfTheClientKeepsTheEmptyListsFreshRead(t *testing.T) {
+	server := standIn(t)
+	wrapper := &projectaccesstest.Swappable{}
+	wrapper.Serve(server)
+	server.SetDown(true)
+	if _, err := wrapper.MemberKind(t.Context(), "bob@example.com"); err == nil {
+		t.Fatal("MemberKind(bob) while Dispatch is down answered, want a failure")
+	}
+	server.SetDown(false)
+	asked := server.Calls()
+	if err := projectaccess.ListAllowed(t.Context(), wrapper, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrListRequired) || server.Calls() != asked+1 {
+		t.Fatalf("ListAllowed(bob, none) through the wrapper, with Dispatch answering = %v with %d more calls; want ErrListRequired from a call of its own, not the kept failure", err, server.Calls()-asked)
+	}
+}
+
 // TestOnlyDispatchsProjectNotFoundIsAnAnswer: a 404 is Dispatch holding no such project only when
 // its body's code is PROJECT_NOT_FOUND. Any other 404 — a Dispatch that does not serve the
 // project-access routes, or a wrong path behind an ingress — is a failure, never cached and never
