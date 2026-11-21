@@ -270,6 +270,11 @@ func (s *Server) URL() string { return s.url }
 // a stream's or a consumer's cluster information. A lone server has none and answers "".
 func (s *Server) Name() string { return s.name }
 
+// StoreDir is the server's store directory, the same across every Stop and Start: JetStream keeps
+// a stream's files under jetstream/<account>/streams/<stream> in it, and a consumer's state at
+// obs/<consumer>/o.dat below that, which a forced-order test reads (hooks.go).
+func (s *Server) StoreDir() string { return s.store }
+
 // MonitorURL is the server's monitoring endpoint, where /varz and /connz are. The monitoring
 // listener is the server's own rather than the relay's, so a Stop and a Start give it a new port
 // and a test reads this again after one.
