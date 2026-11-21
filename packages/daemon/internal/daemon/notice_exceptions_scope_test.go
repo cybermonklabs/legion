@@ -51,3 +51,14 @@ func TestTheExceptionSubscriptionHearsOnlyItsOwnProjectsLanes(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 }
+
+// The daemon subscribes under the project its role tokens name, the one notify.RoleTopic publishes
+// its notices under, whatever its Dispatch key: a project token that is no project key in upper
+// case names no project, and its lanes are under `_`.
+func TestTheExceptionSubscriptionIsUnderTheProjectTheRoleTokensName(t *testing.T) {
+	for token, want := range map[string]string{"legion": "LEGION", "capture": "CAPTURE", "acme2": "ACME2", "cybermonklabslegion": "_"} {
+		if got := roleLaneProject(token); got != want {
+			t.Errorf("roleLaneProject(%q) = %q, want %q", token, got, want)
+		}
+	}
+}
