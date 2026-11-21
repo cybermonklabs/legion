@@ -99,11 +99,11 @@ if [ -n "${NATS_TOKEN_FILE:-}" ]; then
 else
   mkdir -p "$work/key"
   cp "${NATS_NKEY:-}" "$work/key/listener.nk" 2>"$work/err" &&
-    NKEYS_PATH="$work/nkeys" NSC_HOME="$work/nsc" HOME="$work" nsc import keys --dir "$work/key" >"$work/nsc.out" 2>&1
+    HOME="$work" nsc import keys --all-dirs "$work/nsc" --dir "$work/key" >"$work/nsc.out" 2>&1
   status=$?
   grep -oE 'U[A-Z2-7]{55}' "$work/nsc.out" 2>/dev/null | head -n 1 >"$work/out"
   [ "$status" = 0 ] || cat "$work/nsc.out" >>"$work/err" 2>/dev/null
-  rm -rf "$work/key" "$work/nkeys" "$work/nsc"
+  rm -rf "$work/key" "$work/nsc"
   emit credential nkey "$status"
 fi
 

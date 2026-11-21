@@ -183,7 +183,11 @@ stream_info() {
      state: {messages: 9, first_ts: $first}}'
 }
 
-readonly user_info_refused="nats: permissions violation: Permissions Violation for Publish to \"\$SYS.REQ.USER.INFO\""
+# A request the grant refuses, as nats-box 0.19.0 answered it against nats-server 2.15.1 under the
+# listener's grant: status 0, nothing on standard output, and the server's error logged on standard
+# error with the time first.
+readonly user_info_refused="04:10:18 Unexpected NATS error from server nats://envoy-hub.envoy.svc.cluster.local:4222: nats: permissions violation: Permissions Violation for Publish to \"\$SYS.REQ.USER.INFO\""
+readonly consumer_list_refused="04:10:18 Unexpected NATS error from server nats://envoy-hub.envoy.svc.cluster.local:4222: nats: permissions violation: Permissions Violation for Publish to \"\$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS\""
 
 # clean_consumers prints the clean fleet's consumers: a Legion daemon's three, on today's filters;
 # a session's consumer filtering both forms of its own agent subject; and the three listeners'
@@ -548,10 +552,10 @@ expect_no_line "consumer ses_twin"
 done_case
 
 new_case "a consumer list that cannot be read is UNKNOWN, naming the refused request"
-replace_row consumers 0 "$(line consumers 0 0 "" "nats: permissions violation: Permissions Violation for Publish to \"\$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS\"")"
+replace_row consumers 0 "$(line consumers 0 0 "" "$consumer_list_refused"$'\n')"
 reading
 expect_status 3
-expect_line "UNKNOWN: the stream's consumers: the request \$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS at offset 0 was answered with nothing: nats: permissions violation: Permissions Violation for Publish to \"\$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS\""
+expect_line "UNKNOWN: the stream's consumers: the request \$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS at offset 0 was answered with nothing: $consumer_list_refused"
 expect_last "UNKNOWN"
 done_case
 
