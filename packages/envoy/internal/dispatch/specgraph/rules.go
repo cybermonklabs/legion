@@ -72,11 +72,23 @@ func Validate(t Tree, o Options) []Problem {
 // relations the loop finder walks, and the problems found so far.
 type validator struct {
 	tree     Tree
-	kinds    map[string]string // id -> "statement", "check", "component" or "interface", of its first node
+	kinds    map[string]string // id -> kindOf its first node
 	first    map[string]Position
 	retired  map[string]bool
 	edges    map[string][]edge
 	problems []Problem
+}
+
+// relationKinds is the kinds of node that each relation may name, by the kind of the node that
+// sets it and its member: the one rule of a relation, which Validate reads in the files and the
+// approved reader in the approved spec (relationFault).
+var relationKinds = map[string][]string{
+	"statement parent": {"statement"},
+	"statement serves": {"statement"},
+	"statement about":  {"component", "interface"},
+	"check serves":     {"statement"},
+	"component parent": {"component"},
+	"component joins":  {"component"},
 }
 
 // problem records a problem of node at pos; detail begins with the rule.
@@ -103,11 +115,7 @@ func (v *validator) ids() {
 		all = append(all, held{c.ID, "check", c.Pos})
 	}
 	for _, c := range v.tree.Components {
-		kind := "component"
-		if c.Interface {
-			kind = "interface"
-		}
-		all = append(all, held{c.ID, kind, c.Pos})
+		all = append(all, held{c.ID, kindOf(c), c.Pos})
 	}
 	for _, term := range v.tree.Terms {
 		all = append(all, held{term.ID, "term", term.Pos})
@@ -160,19 +168,19 @@ func (v *validator) statement(s Statement) {
 		v.problem(s.Pos, s.ID, fmt.Sprintf("bad-kind: %q is not behavior, structure or property", s.Kind))
 	}
 	if s.Parent != "" {
-		if v.kinds[s.Parent] == "statement" {
+		if slices.Contains(relationKinds["statement parent"], v.kinds[s.Parent]) {
 			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
 		} else {
 			v.problem(s.Pos, s.ID, fmt.Sprintf("no-parent: the files hold no statement %q", s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
-		if v.target(s.Pos, s.ID, "serves", id, "statement") {
+		if v.target(s.Pos, s.ID, "serves", id, relationKinds["statement serves"]...) {
 			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: "serves"})
 		}
 	}
 	for _, id := range s.About {
-		v.target(s.Pos, s.ID, "about", id, "component", "interface")
+		v.target(s.Pos, s.ID, "about", id, relationKinds["statement about"]...)
 	}
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
@@ -195,7 +203,7 @@ func (v *validator) served(id string) bool {
 }
 
 func (v *validator) check(c Check) {
-	if strings.Contains(c.Serves, " ") || v.kinds[c.Serves] != "statement" {
+	if strings.Contains(c.Serves, " ") || !slices.Contains(relationKinds["check serves"], v.kinds[c.Serves]) {
 		v.problem(c.Pos, c.ID, "check-serves: a check serves exactly one statement of the files")
 	}
 	for _, part := range []struct{ value, detail string }{
@@ -263,7 +271,7 @@ func (v *validator) component(c Component) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
-		if v.kinds[c.Parent] == "component" {
+		if slices.Contains(relationKinds["component parent"], v.kinds[c.Parent]) {
 			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
 		} else {
 			v.problem(c.Pos, c.ID, fmt.Sprintf("bad-component: parent %q is no component", c.Parent))
@@ -277,7 +285,7 @@ func (v *validator) component(c Component) {
 	}
 	if c.Interface {
 		for _, id := range c.Joins {
-			if v.kinds[id] != "component" {
+			if !slices.Contains(relationKinds["component joins"], v.kinds[id]) {
 				v.problem(c.Pos, c.ID, fmt.Sprintf("bad-interface: joins %q, which is no component", id))
 			}
 		}
