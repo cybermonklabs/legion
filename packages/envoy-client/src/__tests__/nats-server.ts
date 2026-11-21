@@ -54,15 +54,25 @@ export function useNatsServerDirectory(): string {
  * configuration file is written there, and `stop` removes that file.
  */
 export async function startNatsServer(directory: string, nkeyUser?: string): Promise<NatsServer> {
-  const name = `legion-nats-test-${crypto.randomUUID()}`;
-  const config = path.join(directory, `${name}.conf`);
-  writeFileSync(
-    config,
+  return startNatsServerWithConfig(
+    directory,
     nkeyUser === undefined
       ? "jetstream {}\n"
-      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
-    { mode: 0o644 }
+      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`
   );
+}
+
+/**
+ * Runs a NATS server container as {@link startNatsServer} does, whose whole configuration is
+ * `config`: a row that needs users with grants of their own writes their `authorization` block.
+ */
+export async function startNatsServerWithConfig(
+  directory: string,
+  configuration: string
+): Promise<NatsServer> {
+  const name = `legion-nats-test-${crypto.randomUUID()}`;
+  const config = path.join(directory, `${name}.conf`);
+  writeFileSync(config, configuration, { mode: 0o644 });
   const stop = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
