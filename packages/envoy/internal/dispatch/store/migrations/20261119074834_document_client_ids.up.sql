@@ -43,10 +43,12 @@
 -- The person a row names never changes, but the row does: presented_at is moved to now each time
 -- a socket's admission gives the id back to the page that presented it, and every 5 minutes while
 -- a socket that holds the id is open and no edit has landed under it; landed is set once an edit
--- under the id has landed in the document - integrated, not only parked behind a clock the room
--- lacks - from the socket given the id or from another of the person's that holds it, such as a
--- page replaying a closed tab's saved edits. A person holds at most 64 rows of minted ids in a
--- document that never landed an edit: an admission past that deletes, in the statement that writes
+-- from the socket given the id, or from another of the person's that holds it, such as a page
+-- replaying a closed tab's saved edits, leaves the document holding an edit under the id -
+-- integrated, not only parked behind a clock the room lacks - or once the document has stored a
+-- later edit that landed what such a socket had parked under the id while that socket was still
+-- open. A person holds at most 64 rows of minted ids in a document that never landed an edit: an
+-- admission past that deletes, in the statement that writes
 -- its own row, the person's one there presented least recently, and only one no socket has
 -- presented for 15 minutes, which no open socket's is; where none is that old, the admission is
 -- refused for the editor to retry. A row whose id never landed an edit and that nothing has

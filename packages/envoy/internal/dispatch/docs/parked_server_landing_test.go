@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // A browser's frame parked behind clocks a server write then supplies lands in that write's
@@ -284,6 +285,37 @@ func TestAServerWritesDrainLeavesTheQueueFigureReadingTheQueue(t *testing.T) {
 	}
 }
 
+// After a server write whose drain the room's check refused, the room's figure of its pending
+// queue reads the queue the discard left (serverApplyError): mallory parks two pastes the room's
+// next remote apply drains (parkPastesBehindTheRoomsOwnClock), and a catch-up of a batch the room
+// holds whole, which commits nothing ygo logs, has that drain discarded. The queue is then empty,
+// and the room is weighed resident at its tracked state alone. Before, no drain of the room's log
+// handed the catch-up over, since it logged no commit, so nothing read the queue: the figure kept
+// the discarded pastes, the room charged for them and the next browser's state-cap allowance that
+// much smaller, until the room's next commit.
+func TestAServerWritesDiscardedDrainLeavesTheQueueFigureReadingTheQueue(t *testing.T) {
+	service, artifactID, room := parkPastesBehindTheRoomsOwnClock(t)
+	applies := service.roomWeighingOf(room).applies()
+	if queued, held := applies.queuedBytes(), room.PendingStats().ContentBytes; queued == 0 || queued != int64(held) {
+		t.Fatalf("before the catch-up the room's queue figure reads %d against the queue's %d content bytes, want mallory's pastes in both",
+			queued, held)
+	}
+	catchUpPastTheBound(t, service, artifactID, room, crdt.EncodeStateAsUpdateV1(room, nil), "a catch-up the room held whole", 0)
+	parked := room.PendingStats()
+	if queued := applies.queuedBytes(); queued != int64(parked.ContentBytes) {
+		t.Fatalf("after the catch-up's drain was discarded the room's queue figure reads %d against the queue's %d content bytes",
+			queued, parked.ContentBytes)
+	}
+	if ranges := applies.parkedRangeCount(); ranges != int64(parked.DeleteRanges) {
+		t.Fatalf("after the catch-up's drain was discarded the room's figure of its parked delete ranges reads %d against the queue's %d",
+			ranges, parked.DeleteRanges)
+	}
+	if resident, tracked := applies.residentBytes(), applies.stateBytes(); resident != tracked {
+		t.Fatalf("after the catch-up's drain was discarded the room is weighed at %d resident against %d tracked, with nothing queued",
+			resident, tracked)
+	}
+}
+
 // Content a server write's drain lands is credited to the browsers connected as the room took it,
 // as a browser's commit is (classifyDrained): alice's frame, parked behind bob's clocks, lands in
 // the catch-up or the publish that supplies them, and alice, the one browser connected, is among
@@ -306,6 +338,89 @@ func TestContentAServerWritesDrainLandsIsCreditedToTheBrowsersConnected(t *testi
 			if !slices.ContainsFunc(owed, func(author model.Actor) bool { return actorKey(author) == actorKey(alice) }) {
 				t.Fatalf("after %s landed alice's parked frame the document owes %v, want alice (%v) among them", server.name, owed, alice)
 			}
+		})
+	}
+}
+
+// An ask block a server write's drain lands is attributed by the rule that commit's credit follows
+// (classifyDrained, observeAskBlocksForUpdate): alice's frame, parked behind bob's clocks, adds an
+// ask block, and the catch-up or the publish that supplies the clocks lands it. The block is
+// alice's, the one browser connected, in the room's record and in the durable one the landing
+// commit's append writes (doc_ask_block_authors). Before, the author was chosen by the commit's
+// origin before the landing was known: a catch-up's named no one, the append recorded none, and a
+// settlement indexed alice's ask under its own actor.
+func TestAnAskBlockAServerWritesDrainLandsIsTheConnectedBrowsers(t *testing.T) {
+	const askID = "alice-ask"
+	addAsk := func(t *testing.T, page *crdt.Doc) []byte {
+		tree, err := treeOf(page)
+		if err != nil {
+			t.Fatalf("read alice's page: %v", err)
+		}
+		edited := appendBlocks(t, ":::ask{#"+askID+" urgency=\"med\" multiple=\"false\"}\nWhich region goes first?\n:::\n")(tree)
+		fragment := page.GetXmlFragment(fragmentName)
+		return docstest.Transact(page, func(txn *crdt.Transaction) {
+			if err := pmdoc.Update(txn, fragment, edited); err != nil {
+				t.Errorf("add alice's ask block: %v", err)
+			}
+		})
+	}
+	for _, server := range serverLandings() {
+		t.Run(server.name, func(t *testing.T) {
+			drive := parkChangesBehindAServerWrite(t, server, addAsk)
+			state := drive.pair.taskA.room(drive.pair.artifactID)
+			state.mu.Lock()
+			connected := slices.Collect(maps.Values(state.connected))
+			state.mu.Unlock()
+			if len(connected) != 1 {
+				t.Fatalf("task A's room has %v connected, want alice's page alone", connected)
+			}
+			alice := connected[0]
+			drive.land(t, drive.room)
+			if parked := drive.room.PendingStats(); parked.Items != 0 {
+				t.Fatalf("task A's room still parks %+v after %s supplied bob's clocks", parked, server.name)
+			}
+			waitForLandedAppends(t, drive.pair.taskA, drive.pair.artifactID)
+			state.mu.Lock()
+			_, observed := state.askBlocks[askID]
+			author, attributed := state.askAuthors[askID]
+			state.mu.Unlock()
+			if !observed {
+				t.Fatalf("task A's room did not observe alice's ask block once %s landed it, so nothing here is tested", server.name)
+			}
+			if !attributed || actorKey(author) != actorKey(alice) {
+				t.Fatalf("once %s landed alice's ask block task A attributes it to %+v (attributed %t), want alice (%v)",
+					server.name, author, attributed, alice)
+			}
+			if recorded := recordedAskAuthors(t, drive.pair.database, drive.pair.artifactID); actorKey(recorded[askID]) != actorKey(alice) {
+				t.Fatalf("doc_ask_block_authors once %s landed alice's ask block = %+v, want %s recorded as alice (%v)",
+					server.name, recorded, askID, alice)
+			}
+		})
+	}
+}
+
+// The id a frame parked under is marked landed once a server write's drain lands the frame
+// (resyncLanded, markParkedLanded): alice's page, given an id of its own, types only after bob's
+// paragraph, so her one frame parks behind bob's clocks and her row says no edit landed under the
+// id; the catch-up or the publish that supplies the clocks lands it, and once the room has stored
+// that commit her row says so, though her page writes nothing more. Before, only an apply of her
+// own socket's that left the room holding a struct under the id marked it (settleClients): the
+// landing was another apply's, her answer to the resync wrote under no id, and the row stayed
+// unmarked while the stored history named the id, one a give-back or the sweep could take.
+func TestAFrameParkedUnderASocketsIDMarksItsRowLandedOnceAServerWriteLandsIt(t *testing.T) {
+	for _, server := range serverLandings() {
+		t.Run(server.name, func(t *testing.T) {
+			drive := parkBehindAServerWrite(t, server, " Alice's ending.")
+			own := drive.alice.doc.ClientID()
+			if landed, stored := clientIDLanded(t, drive.pair.taskA, drive.pair.artifactID, own); !stored || landed {
+				t.Fatalf("before %s alice's row is stored %t and says an edit landed %t, want it stored and unmarked: her one frame only parked",
+					server.name, stored, landed)
+			}
+			drive.land(t, drive.room)
+			if parked := drive.room.PendingStats(); parked.Items != 0 {
+				t.Fatalf("task A's room still parks %+v after %s supplied bob's clocks", parked, server.name)
+			}
+			awaitLanded(t, drive.pair.taskA, drive.pair.artifactID, own, "alice's row once "+server.name+" landed her frame")
 		})
 	}
 }
@@ -390,6 +505,24 @@ type serverLandingDrive struct {
 // Task A's room parks each behind bob's clocks and answers it not applied.
 func parkBehindAServerWrite(t *testing.T, server serverLanding, edits ...string) serverLandingDrive {
 	t.Helper()
+	changes := make([]func(*testing.T, *crdt.Doc) []byte, len(edits))
+	for i, edit := range edits {
+		changes[i] = func(_ *testing.T, page *crdt.Doc) []byte {
+			return docstest.Transact(page, func(txn *crdt.Transaction) {
+				texts := paragraphTextsOf(txn.GetXmlFragment(fragmentName))
+				last := texts[len(texts)-1]
+				last.Insert(txn, last.Len(), edit, nil)
+			})
+		}
+	}
+	return parkChangesBehindAServerWrite(t, server, changes...)
+}
+
+// parkChangesBehindAServerWrite is parkBehindAServerWrite for changes other than typing: each of
+// changes makes its change in alice's page's document and answers the update it made, which the
+// page records as a row and sends as an Update after bob's paragraph.
+func parkChangesBehindAServerWrite(t *testing.T, server serverLanding, changes ...func(t *testing.T, page *crdt.Doc) []byte) serverLandingDrive {
+	t.Helper()
 	drive := serverLandingDrive{pair: newProcessPair(t), start: time.Now(), lines: new([]string), linesMu: new(sync.Mutex)}
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -412,12 +545,8 @@ func parkBehindAServerWrite(t *testing.T, server serverLanding, edits ...string)
 	if err := crdt.ApplyUpdateV1(alice.doc, loaded.Update, "remote"); err != nil {
 		t.Fatalf("give alice's page bob's paragraph: %v", err)
 	}
-	for _, edit := range edits {
-		typed := docstest.Transact(alice.doc, func(txn *crdt.Transaction) {
-			texts := paragraphTextsOf(txn.GetXmlFragment(fragmentName))
-			last := texts[len(texts)-1]
-			last.Insert(txn, last.Len(), edit, nil)
-		})
+	for _, change := range changes {
+		typed := change(t, alice.doc)
 		alice.mu.Lock()
 		alice.nextOrdinal++
 		alice.rows = append(alice.rows, lcRow{ordinal: alice.nextOrdinal, update: typed})

@@ -451,8 +451,9 @@ var errVersionDisagrees = errors.New("a stored version disagrees with the stored
 // transaction on pool, opened once the fold's own read has ended, and finds none when the rows at
 // or below the fold point are no longer the ones the fold read: the write that follows drops that
 // fold (writeCompaction). It replays the rows one at a time through the last update a version in
-// their range records, under a load grant weighed on their bytes as the fold's read is (foldRead),
-// and stops at the first version that disagrees.
+// their range records, under a load grant weighed on their bytes and on the structs the fold's
+// state declares (declaredStructs), which the replay's document comes to hold at most, and stops
+// at the first version that disagrees.
 //
 // A compaction runs it only for a fold whose document parked something (fold). ygo merges a
 // document's encoding only when it holds parked structs or deletions, and under
@@ -490,7 +491,7 @@ func (p *PgVersioned) disagreeingVersion(ctx context.Context, pool *pgxpool.Pool
 		at[version.docUpdateVersion] = append(at[version.docUpdateVersion], version)
 		through = max(through, version.docUpdateVersion)
 	}
-	release, err := holdLoad(ctx, copyWeight(folded.bytes, 0))
+	release, err := holdLoad(ctx, copyWeight(folded.bytes, int64(declaredStructs(folded.state))))
 	if err != nil {
 		return StoredOrderMismatch{}, false, err
 	}

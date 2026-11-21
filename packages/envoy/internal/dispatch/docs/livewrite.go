@@ -679,9 +679,9 @@ func (s *Service) rebuildFork(ctx context.Context, write *liveWrite) (*crdt.Doc,
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 		}
-		// The stored history has not been decoded, so no struct count can be read of it and
-		// the state term alone weighs the fork (copyWeight).
-		if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)), 0)); err != nil {
+		// The fork is weighed on the stored history's bytes and the structs its headers declare
+		// (storedCopyWeight), read before anything decodes it.
+		if err := write.coverFork(ctx, storedCopyWeight(loaded.Update)); err != nil {
 			return nil, err
 		}
 		if fork, err = buildForkHeld(ctx, write.clientID, loaded.Update); err != nil {
@@ -901,9 +901,9 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 		loaded.Update = nil
 		return s.warmFork(ctx, write, live)
 	}
-	// The stored history has not been decoded, so no struct count can be read of it and the
-	// state term alone weighs the fork (copyWeight).
-	if err := write.coverFork(ctx, copyWeight(int64(len(loaded.Update)), 0)); err != nil {
+	// The fork is weighed on the stored history's bytes and the structs its headers declare
+	// (storedCopyWeight), read before anything decodes it.
+	if err := write.coverFork(ctx, storedCopyWeight(loaded.Update)); err != nil {
 		loaded.Update = nil
 		return nil, err
 	}
@@ -946,11 +946,11 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 // is dropped (releaseFork). The hold here therefore waits for nothing.
 //
 // A caller whose context carries no grant - a test that forks a room directly - takes one of the
-// server's own for the decode alone, weighed on the state it decodes, as every other
-// whole-document decode is (holdServerLoad, copyWeight). The structs that state holds are not
-// known until this decode counts them, so the state term alone weighs that grant.
+// server's own for the decode alone, weighed on the state it decodes, its bytes and the structs
+// its headers declare, as every other decode of stored state is (holdServerLoad,
+// storedCopyWeight).
 func buildForkHeld(ctx context.Context, client crdt.ClientID, state []byte) (*crdt.Doc, error) {
-	defer holdServerLoad(ctx, copyWeight(int64(len(state)), 0))()
+	defer holdServerLoad(ctx, storedCopyWeight(state))()
 	return buildFork(client, state)
 }
 
@@ -1328,7 +1328,9 @@ func (s *Service) publishLiveUpdate(room string, update []byte, version persiste
 	ctx := withOwnerVerified(context.Background())
 	slot := s.prepareSuppressedPersistence(room)
 	origin := &liveWriteOrigin{slot: slot, rendering: rendering, shadow: shadow, writtenApply: writtenApply{written: update}}
+	var roomDoc *crdt.Doc
 	recorded, err := s.applyCaptured(ctx, room, origin, func(doc *crdt.Doc) error {
+		roomDoc = doc
 		instance := s.instanceOf(doc)
 		// Tagged against the document Apply hands here, not the one the room held when the
 		// publish began (liveWriteOrigin.marginOnly).
@@ -1343,7 +1345,7 @@ func (s *Service) publishLiveUpdate(room string, update []byte, version persiste
 		}
 		return applyServerWrite(doc, update, origin)
 	})
-	if err = s.serverApplyError(room, update, err); err != nil {
+	if err = s.serverApplyError(room, roomDoc, update, err); err != nil {
 		s.cancelSuppressedPersistence(room, slot)
 		return fmt.Errorf("apply committed live document write: %w", err)
 	}

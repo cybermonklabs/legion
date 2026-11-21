@@ -350,12 +350,13 @@ func heldBy(room *crdt.Doc) crdt.StateVector {
 // The first apply of a socket after which the room holds a struct under the socket's own id, from
 // an update writing under it, marks that id's row (recordLanded), unless the row said an edit had
 // landed as the socket was admitted: an update whose structs under the id only parked leaves the
-// room holding none of them and the row unmarked, so a later mint may still give it back once its
-// socket has gone. It asks the room for that one client's clock (roomHolds), never for its state
-// vector, which would copy every client the room holds on every keystroke, and only until the
-// mark is written. A socket makes one mark at a time (socketClients.marking), and only a written
-// one sets landed: a mark the store refused leaves the socket presenting its row (keepPresenting),
-// and the next such apply marks it again.
+// room holding none of them and the row unmarked until a later commit lands them
+// (markParkedLanded), so a mint may still give back the row of a frame that parked and never
+// landed once its socket has gone. It asks the room for that one client's clock (roomHolds), never
+// for its state vector, which would copy every client the room holds on every keystroke, and only
+// until the mark is written. A socket makes one mark at a time (socketClients.marking), and only a
+// written one sets landed: a mark the store refused leaves the socket presenting its row
+// (keepPresenting), and the next such apply marks it again.
 //
 // Each other id from mintedClientFloor up the update wrote under whose row awaits the socket's
 // mark (judged.marks: a closed tab's id whose saved rows the page replays) is marked the same
@@ -378,25 +379,55 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 		}
 		return
 	}
-	if judged.writesOwn && !clients.landed.Load() && roomHolds(info.Doc, clients.own) &&
-		clients.marking.CompareAndSwap(false, true) {
+	s.markLanded(info.Room, info.Doc, connection, judged.writesOwn, judged.marks)
+}
+
+// markParkedLanded marks, for socket, a browser connection whose parked frames a later commit of
+// the room landed - another browser's apply whose drain filled their gap, or a server write's -
+// the rows of the ids those frames reached past the room (reached, parkedNeeds) that await the
+// socket's mark: its own, and each from mintedClientFloor up its updates showed are its person's
+// (socketClients.unmarked). The commit that landed them was no apply of the socket's, so its
+// settleClients marks none of the socket's ids, and the socket's answer to the resync is a step 2
+// of nothing new, which writes under no id (resyncLanded). Before, the row stayed unmarked until
+// the socket wrote under the id again, so a tab closed by then left a row a give-back or the sweep
+// could take while the stored history named the id. It runs once the room's store holds the
+// landing commit, and marks as settleClients does (markLanded). A socket that ended before the
+// landing is listed no longer (parkedWaits.note) and marks nothing: its row stays unmarked.
+func (s *Service) markParkedLanded(room string, live *crdt.Doc, socket *connectionState, reached crdt.StateVector) {
+	if socket == nil || socket.clients == nil {
+		return
+	}
+	clients := socket.clients
+	_, reachesOwn := reached[clients.own]
+	s.markLanded(room, live, socket, reachesOwn && clients.isOwn(clients.own), clients.awaitingMarks(reached))
+}
+
+// markLanded starts the marks an apply of socket's left due in room (settleClients,
+// markParkedLanded): of the socket's own id, where own says the apply wrote under it, its row did
+// not say an edit had landed as the socket was admitted and doc, the room's document, holds a
+// struct under it; and of each of marks, ids whose rows await the socket's mark, that doc holds a
+// struct under. Each runs off the caller's goroutine, one at a time for each id
+// (socketClients.marking, startMark).
+func (s *Service) markLanded(room string, doc *crdt.Doc, socket *connectionState, own bool, marks []crdt.ClientID) {
+	clients := socket.clients
+	if own && !clients.landed.Load() && roomHolds(doc, clients.own) && clients.marking.CompareAndSwap(false, true) {
 		go func() {
 			defer clients.marking.Store(false)
-			if s.recordLanded(info.Room, connection.actor, clients.own) {
+			if s.recordLanded(room, socket.actor, clients.own) {
 				clients.landed.Store(true)
 			}
 		}()
 	}
 	var starting []crdt.ClientID
-	for _, client := range judged.marks {
-		if roomHolds(info.Doc, client) && clients.startMark(client) {
+	for _, client := range marks {
+		if roomHolds(doc, client) && clients.startMark(client) {
 			starting = append(starting, client)
 		}
 	}
 	if len(starting) > 0 {
 		go func() {
 			for _, client := range starting {
-				clients.endMark(client, s.recordLanded(info.Room, connection.actor, client))
+				clients.endMark(client, s.recordLanded(room, socket.actor, client))
 			}
 		}()
 	}

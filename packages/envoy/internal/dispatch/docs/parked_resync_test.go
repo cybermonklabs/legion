@@ -552,7 +552,7 @@ func TestParkedSendersAreResyncedOnceForTheStoredCommitThatLandsThem(t *testing.
 	if landed := applies.landedParked(4); len(landed) != 0 {
 		t.Fatalf("senders %v were resynced before the store held the commit that landed them", landed)
 	}
-	if landed := applies.landedParked(5); len(landed) != 1 || landed[0] != "bob" {
+	if landed := applies.landedParked(5); len(landed) != 1 || landed[0].origin != "bob" {
 		t.Fatalf("the store through commit 5 resynced %v, want bob alone, once", landed)
 	}
 	if landed := applies.landedParked(6); len(landed) != 0 {

@@ -873,9 +873,9 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 // (crdt.UpdateLog.Reset), which the load never rendered; recover clears loaded too, so even a
 // recover before the first run leaves nothing to take. The caller holds mu.
 func (r *renderedReplica) start(room string, base []byte) {
-	// The structs the base holds are not known until it is decoded, and the decode is what this
-	// grant covers, so the state term alone weighs it (copyWeight).
-	release := holdFreeLoad(copyWeight(int64(len(base)), 0))
+	// The base is weighed by its bytes and the structs its headers declare (storedCopyWeight),
+	// read before this decode builds any of them.
+	release := holdFreeLoad(storedCopyWeight(base))
 	doc := newDocumentCopy()
 	err := crdt.ApplyUpdateV1(doc, base, nil)
 	release()

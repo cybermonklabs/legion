@@ -345,18 +345,19 @@ type loadedHistory struct {
 // (Service.maxPendingItems), which parks what the history parks, for the reader to hold against a
 // room's caps (parkedPastRoomCaps).
 // The grant is the history's own weight, which the read has in hand by the time the grant is
-// taken (copyWeight of the bytes it read). Nothing has decoded the history yet, so no struct
-// count can be read of it and the state term alone weighs it; a room of a mebibyte of prose
-// loads beside thirteen others rather than behind them.
+// taken: its bytes and the structs their headers declare (storedCopyWeight), read before anything
+// decodes it, so a history heavy in structs is weighed by them; a room of a mebibyte of prose loads
+// beside thirteen others rather than behind them.
 //
 // refuse, where it is not nil, is read from the history before the grant is taken and before
 // anything is decoded (loadableHistory), for a history no decode should be paid for.
 //
-// The read's fold, when the history holds several updates, covers the grant where it reads them,
-// taking it on the rows' own bytes (foldRead), and the decode runs inside it. The error is the
-// read's, the refusal's or the grant's, a wait ctx ended included, and leaves nothing decoded;
-// ygo's refusal of the bytes themselves is the history's refused. A history whose runs do not
-// apply in order is the read's error (unappliedHistory): the store has no bytes of it to decode.
+// The read's fold, when the history holds several updates, takes the grant on the rows it reads -
+// their bytes, and the structs their headers declare where it holds them in memory (foldRead) -
+// and the decode runs inside it. The error is the read's, the refusal's or the grant's, a wait ctx
+// ended included, and leaves nothing decoded; ygo's refusal of the bytes themselves is the
+// history's refused. A history whose runs do not apply in order is the read's error
+// (unappliedHistory): the store has no bytes of it to decode.
 func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID string, maxPending int, refuse func(update []byte) error) (loadedHistory, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
@@ -365,7 +366,7 @@ func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID str
 		err = refuse(loaded.Update)
 	}
 	if err == nil {
-		err = slot.take(ctx, copyWeight(int64(len(loaded.Update)), 0))
+		err = slot.take(ctx, storedCopyWeight(loaded.Update))
 	}
 	if err != nil {
 		return loadedHistory{}, err

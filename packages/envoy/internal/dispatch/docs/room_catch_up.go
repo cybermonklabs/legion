@@ -288,7 +288,7 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 			applied = append([]byte(nil), update...)
 		}
 	})
-	err = s.serverApplyError(room, batch, applyServerWrite(live, batch, origin))
+	err = s.serverApplyError(room, live, batch, applyServerWrite(live, batch, origin))
 	unsubscribe()
 	if applied == nil {
 		s.cancelSuppressedPersistence(room, slot)

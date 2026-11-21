@@ -117,11 +117,14 @@ func renderedSize(rendering *replicaRendering) int64 {
 // begins (peerApply.startAt), which the room's apply check weighs the apply against
 // (renderCheck.base). ygo asks for the apply's budget under the document's lock as the apply
 // begins, before the apply changes anything, so the room's document asks this there, beside the
-// budget (newRoomApplies). An apply of any other origin is placed nowhere.
+// budget (newRoomApplies). An apply of any other origin is placed nowhere for the check. Every
+// remote apply's position is kept for its report besides (begunAt), which tells by it whether the
+// apply logged a commit (noteApply).
 func (a *roomApplies) began(origin any, logged *loggedCommits) {
 	at, counted := logged.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.begunAt, a.begunCounted = at, counted
 	if running, reserved := a.inFlight[origin]; reserved {
 		running.startAt, running.counted = at, counted
 	}

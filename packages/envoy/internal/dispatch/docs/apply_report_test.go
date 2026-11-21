@@ -392,3 +392,46 @@ func TestParkedDeleteRangesAreChargedToTheRoomBudgetUntilTheyLand(t *testing.T) 
 			landed, want, parked)
 	}
 }
+
+// A frame of structs the room already holds commits nothing ygo logs, and so starts no drain of
+// the room's update log, which runs only while the log holds something (onLoadDocument), and it
+// keeps no report for a drain to pair either (roomApplies.noteApply): a socket resending a
+// keystroke the room took leaves the room's list of reports where it stood, however often it
+// resends it. Before, each resend's apply kept a report, and the list grew by one a frame, charged
+// to nothing, for as long as nobody committed. The next frame that commits is paired with its own
+// report and lands as any other.
+func TestAFrameTheRoomAlreadyHoldsKeepsNoReportForADrain(t *testing.T) {
+	room := newRCRoom(t, stateOf(t, "# Title\n\nParagraph one of the room.\n"))
+	keystroke := func(at int, typed string) []byte {
+		return room.edit(t, func(txn *crdt.Transaction, _ *crdt.Doc) {
+			paragraphTextsOf(txn.GetXmlFragment(fragmentName))[0].Insert(txn, at, typed, nil)
+		})
+	}
+	update := keystroke(0, "a")
+	if err := room.frame(t, "the keystroke", update); err != nil {
+		t.Fatalf("the keystroke was answered %v, want it taken", err)
+	}
+	applies := room.replica.applies()
+	reports := func() int {
+		applies.mu.Lock()
+		defer applies.mu.Unlock()
+		return len(applies.unpaired)
+	}
+	before := reports()
+	const resends = 64
+	for resend := range resends {
+		if err := room.weigh(update); err != nil {
+			t.Fatalf("resend %d of the keystroke was answered %v, want it taken", resend+1, err)
+		}
+	}
+	if after := reports(); after != before {
+		t.Fatalf("after %d resends of a keystroke the room holds it keeps %d reports for a drain, against %d before them",
+			resends, after, before)
+	}
+	if err := room.frame(t, "the keystroke after the resends", keystroke(1, "b")); err != nil {
+		t.Fatalf("the keystroke after the resends was answered %v, want it taken", err)
+	}
+	if after := reports(); after != 0 {
+		t.Fatalf("the drain of the keystroke after the resends left %d reports unpaired, want none", after)
+	}
+}

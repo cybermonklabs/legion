@@ -239,12 +239,12 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	if loaded, rendered, ok := a.service.takePreload(room); ok {
 		// The admission that read this state decoded it for its own schema check and kept no
 		// copy (loadTree), so the room's copy is decoded here, under the grant this load holds
-		// for it, weighed on the state the admission read (copyWeight). The grant is taken
-		// before this decode counts the state's structs, so the state term alone weighs it. A
-		// state ygo refuses the bytes of never reaches a preload - the admission's own decode
-		// refused it first - and is left to the room's decode either way, as the read's own
-		// path leaves it (loadDecoded).
-		_ = slot.take(context.Background(), copyWeight(int64(len(loaded.Update)), 0))
+		// for it, weighed on the state the admission read: its bytes and the structs its headers
+		// declare (storedCopyWeight), read before this decode builds any of them. A state ygo
+		// refuses the bytes of never reaches a preload - the admission's own decode refused it
+		// first - and is left to the room's decode either way, as the read's own path leaves it
+		// (loadDecoded).
+		_ = slot.take(context.Background(), storedCopyWeight(loaded.Update))
 		decoded, _ := decodeStoredCopy(loaded.Update, a.service.maxPendingItems)
 		load.read(loaded.Version, loaded.Update, decoded, slot, rendered)
 		return nil, nil
@@ -935,9 +935,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		// persistence observer, which the room registers after OnLoadDocument, hands the update to
 		// the room's worker, which waits on that slot (publishLiveUpdate, catchUpRoom). Both are
 		// then classified like any other update, and neither is credited to a local peer
-		// (creditContentChange), unless its drain landed a frame a local peer parked, which is
-		// credited as a browser's commit is (classifyDrained), nor names one as the author of the
-		// ask blocks it introduces (observeAskBlocksForUpdate).
+		// (creditContentChange) nor names one as the author of the ask blocks it introduces
+		// (observeAskBlocksForUpdate, registerAskAuthors), unless its drain landed a frame a local
+		// peer parked, which is credited, and its blocks attributed, as a browser's commit is
+		// (classifyDrained).
 		switch durable := origin.(type) {
 		case *liveWriteOrigin:
 			s.finishSuppressedPersistence(durable.slot, update)
@@ -1356,10 +1357,6 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		s.queueUpdateClass(room, logged.Update, class, true)
 		return false, false, false
 	}
-	var attributed map[string]model.Actor
-	if asks != nil {
-		attributed = s.observeAskBlocksForUpdate(room, asks(), logged.Origin)
-	}
 	class.durable = true
 	// A published write's update was stored by the transaction that wrote it, before the room
 	// took it, and a catch-up's is the stored row itself, so neither is stored again - unless the
@@ -1372,6 +1369,14 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	// update only the room holds, so it names its instance and is listed there until its append
 	// has returned.
 	landed := published && origin.landedBeyond(logged.Update) || remote && catchUp.landedBeyond(logged.Update)
+	// The ask blocks this render first showed are attributed by the rule the credit below follows:
+	// a catch-up's to none of this room's peers, since another process stored the rows that
+	// introduced them, unless its drain landed a frame one of them parked, whose blocks are that
+	// browser's (observeAskBlocksForUpdate).
+	var attributed map[string]model.Actor
+	if asks != nil {
+		attributed = s.observeAskBlocksForUpdate(room, asks(), remote && !landed)
+	}
 	// A commit is credited as its origin says (originCreditsNoOne), and a server write's whose
 	// drain landed a browser's parked frame as a browser's commit is: what it carries beyond its
 	// writer's rows is that browser's edit, which no writer credited, so it is credited to the peers
@@ -1561,11 +1566,15 @@ func soleConnectedActor(connected map[uint64]model.Actor) (sole *model.Actor, am
 // (askBlockIDs): the room's record is left as it is. It returns the authors it named for the
 // blocks no write registered, which the update's append records.
 //
-// An update another process stored, which a catch-up applied (origin is a remoteUpdateOrigin),
-// introduced its blocks on that process: none of this room's connected peers wrote them, so the
-// blocks are recorded with no author here, as the blocks a room loads with are, and a settlement
-// finds the author that process recorded (askBlockSources.author).
-func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]struct{}, origin any) map[string]model.Actor {
+// elsewhere says the blocks were introduced on another process: a catch-up's commit of the rows
+// that process stored, whose drain landed nothing a browser of this room parked. None of this
+// room's connected peers wrote them, so they are recorded with no author here, as the blocks a
+// room loads with are, and a settlement finds the author that process recorded
+// (askBlockSources.author). A catch-up whose drain landed a frame one of this room's browsers
+// parked is not elsewhere's: what it carries beyond the rows is that browser's edit, so its blocks
+// go to the browsers connected as the room took it, as the browser update whose drain landed the
+// frame would have named them, the rule its credit follows (classifyDrained).
+func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]struct{}, elsewhere bool) map[string]model.Actor {
 	if askBlocks == nil {
 		// The walk could not read the document it had to walk, and logged that
 		// (renderedReplica.spliceTouched): the room keeps the ask blocks and the authors it
@@ -1576,7 +1585,7 @@ func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]st
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
 	var author *model.Actor
-	if _, remote := origin.(*remoteUpdateOrigin); remote {
+	if elsewhere {
 		author = nil
 	} else if sole, ambiguous := soleConnectedActor(state.connected); ambiguous {
 		author = new(SettlementActor)

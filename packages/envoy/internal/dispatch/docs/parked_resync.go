@@ -28,7 +28,10 @@ import (
 // room's persistence, once it has stored through that position, resyncs the sender
 // (Service.resyncLanded). A sender is resynced once for each landing commit, whatever number of
 // its frames that commit landed; only once the room's store holds the commit, so the applied
-// answer the resync earns is the truth.
+// answer the resync earns is the truth. The same store marks the rows of the ids the sender's
+// frames wrote under that await its socket's mark (markParkedLanded): the landing was another
+// apply's, which marks its own socket's ids alone, and the sender's answer to the resync writes
+// under no id.
 //
 // What this keeps is bounded by the room's pending queue: a sender is listed only while a frame
 // of its has left something parked, with one clock for each client its frames reach past the
@@ -48,11 +51,16 @@ type parkedWaits struct {
 	waits map[any]*parkedWait
 }
 
-// parkedWait is one sender's frames that parked: needs, the clock the room must hold each client
-// to for all of them to have landed, coveredAt, the commit position at which the room first held
-// them, zero until it has, and unwatch, which stops the watch that drops the sender as its
-// connection ends, for a sender the list drops first.
+// parkedWait is one sender's frames that parked: origin, the origin ygo applies its updates with,
+// which the resync goes to; socket, the connection they came on, whose person the ids they reach
+// are marked landed for once they land (markParkedLanded), nil where the apply's context named
+// none; needs, the clock the room must hold each client to for all of them to have landed;
+// coveredAt, the commit position at which the room first held them, zero until it has; and
+// unwatch, which stops the watch that drops the sender as its connection ends, for a sender the
+// list drops first.
 type parkedWait struct {
+	origin    any
+	socket    *connectionState
 	needs     crdt.StateVector
 	coveredAt uint64
 	unwatch   func() bool
@@ -125,7 +133,7 @@ func parkedNeeds(doc *crdt.Doc, update []byte, readDeletes bool) crdt.StateVecto
 
 // note lists origin as waiting on needs, beside what it already waits on, and starts its wait over:
 // a frame that parks again has not landed. The connection's context drops it as the connection
-// ends.
+// ends, and names the socket whose person the ids its frames reach are marked for (connectionOf).
 func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.StateVector) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -134,7 +142,7 @@ func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.St
 	}
 	wait, listed := w.waits[origin]
 	if !listed {
-		wait = &parkedWait{needs: make(crdt.StateVector, len(needs))}
+		wait = &parkedWait{origin: origin, socket: connectionOf(connection), needs: make(crdt.StateVector, len(needs))}
 		w.waits[origin] = wait
 		w.held.Add(1)
 		if connection != nil {
@@ -199,17 +207,17 @@ func (a *roomApplies) coverParked(doc *crdt.Doc, seq uint64) {
 
 // landedParked takes out the senders whose frames landed at a commit position through, through
 // which the room's store now holds the room's commits.
-func (a *roomApplies) landedParked(through uint64) []any {
+func (a *roomApplies) landedParked(through uint64) []*parkedWait {
 	if a == nil || a.parked.held.Load() == 0 {
 		return nil
 	}
 	w := &a.parked
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	var landed []any
+	var landed []*parkedWait
 	for origin, wait := range w.waits {
 		if wait.coveredAt != 0 && wait.coveredAt <= through {
-			landed = append(landed, origin)
+			landed = append(landed, wait)
 			w.dropLocked(origin, wait)
 		}
 	}
@@ -219,13 +227,16 @@ func (a *roomApplies) landedParked(through uint64) []any {
 // resyncLanded resyncs every browser whose parked frames landed at or before through, a commit
 // position of instance through which the room's persistence has just stored the room's commits
 // (StoreUpdateStored), so the answer to the SyncStep2 its provider sends back clears the rows the
-// editor kept for those frames. A position of an instance the room no longer runs resyncs nothing.
+// editor kept for those frames, and marks the rows of the ids those frames wrote under that await
+// its socket's mark (markParkedLanded). A position of an instance the room no longer runs resyncs
+// and marks nothing.
 func (s *Service) resyncLanded(room string, instance *roomInstance, through uint64) {
 	live := s.srv.GetDoc(room)
 	if live == nil || instance == nil || s.instanceOf(live) != instance {
 		return
 	}
-	for _, origin := range s.roomWeighingOf(live).applies().landedParked(through) {
-		s.srv.ResyncPeer(origin)
+	for _, wait := range s.roomWeighingOf(live).applies().landedParked(through) {
+		s.srv.ResyncPeer(wait.origin)
+		s.markParkedLanded(room, live, wait.socket, wait.needs)
 	}
 }

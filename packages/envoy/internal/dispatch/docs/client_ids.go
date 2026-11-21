@@ -36,8 +36,11 @@ import (
 // admission (ServeHTTP) gives its page a client id for that document, stored with the person the
 // socket is signed in as (document_client_ids, minted) where the page may write, before the page
 // syncs or announces anything: the page presents the id it holds under DocumentClientIdParameter,
-// and the admission gives it back where it was given to the same person, and gives out a fresh one
-// otherwise. The answer is the first frame on the socket, a stateless message
+// and the admission gives it back where it was given to the same person; where no row names it,
+// keeps it for the page - stored for a page that may write, minted where it is in
+// [mintedClientFloor, mintedClientCeiling) and claimed where it is below and claimable, and sent
+// back unstored to a page that may not where it is in that range - and gives out a fresh one in
+// every other case (admitClients). The answer is the first frame on the socket, a stateless message
 // (DocumentClientIdMessagePrefix) written right after the upgrade's 101 (clientIDConn): the page
 // cannot read the upgrade's headers, and y-protocols' awareness takes the document's client id as
 // it is made, so the page needs the id before its provider sends anything of its own. The same
@@ -159,11 +162,13 @@ import (
 // given out by a mint, as no claim and no write of the server's own takes one (claimable;
 // crdt.NewClientID draws a uint32), and a row whose id landed an edit is neither given back nor
 // swept: a socket marks the row of its own id, and of each id from mintedClientFloor up its
-// updates wrote under besides, once the room holds a struct under it (settleClients). The history
-// can still name an id whose row went: a frame that only parked leaves its row unmarked, and so
-// does a landing whose mark the store refused before its socket closed (settleClients,
-// recordLanded). An update is never minted such an id: the judgement mints only an id the room
-// and the history hold no struct under. An admission may be: the person that row named had no
+// updates wrote under besides, once the room holds a struct under it after one of its applies
+// (settleClients), or once the room has stored a later commit that landed what the socket's frames
+// parked under it (markParkedLanded). The history can still name an id whose row went: a frame
+// that parked leaves its row unmarked where its socket ended before a commit landed it, and so does
+// a landing whose mark the store refused before its socket closed (settleClients, recordLanded).
+// An update is never minted such an id: the judgement mints only an id the room and the history
+// hold no struct under. An admission may be: the person that row named had no
 // socket presenting it - a give-back takes a row unpresented for clientPresenceLapses intervals,
 // and the sweep one unpresented for unusedClientIDAge - and what the room holds under the id lands
 // nothing when sent again. Where someone else is minted the id first, the page of the person the
@@ -211,8 +216,9 @@ import (
 // presenting its id after that is minted it as a page whose row was given back is. A row whose id
 // landed an edit is neither given back nor swept, and neither is a claimed row: a socket marks its
 // own row, and the row of each id from mintedClientFloor up its updates wrote under besides, once
-// the room holds a struct under the id after one of its applies (recordLanded), which a frame that
-// only parked leaves it holding none of, and a claim is stored as landed. A claim is bounded by
+// the room holds a struct under the id after one of its applies, or once the room has stored a
+// later commit that landed what the socket's frames parked under it while the socket was open
+// (recordLanded, markParkedLanded), and a claim is stored as landed. A claim is bounded by
 // the claim window and the claims' bounds rather than swept: a swept claim's id could be claimed
 // by another person while the tab that holds it is still open and writing under it.
 
@@ -712,10 +718,11 @@ func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64)
 // row the sweep or a give-back took while the socket stayed open is written again for its
 // person. It runs off the peer's read loop, one mark at a time for each id of a socket, after an
 // apply of the socket's that stood and left the room holding a struct under client
-// (settleClients) - not one whose structs under it only parked - and only where the row did not
-// say an edit had landed as the socket was admitted or confirmed the id, which a claimed row
-// does. A write that fails is logged; the socket goes on presenting its own row (keepPresenting),
-// and its next such apply under the id marks it.
+// (settleClients) - not one whose structs under it only parked - or once the room has stored a
+// later commit that landed what the socket's frames parked under it (markParkedLanded), and only
+// where the row did not say an edit had landed as the socket was admitted or confirmed the id,
+// which a claimed row does. A write that fails is logged; the socket goes on presenting its own
+// row (keepPresenting), and its next such apply under the id marks it.
 func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()

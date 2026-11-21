@@ -1435,3 +1435,57 @@ func TestAHoldersHeavierCopyTakesTheDifferenceAndALighterOneTakesNothing(t *test
 	}
 	slots.semaphore().Release(slots.poolBytes())
 }
+
+// A decode of stored state is granted at least what the copy it builds holds (storedCopyWeight): a
+// history of 200,000 empty paragraphs, the heaviest struct there is, decoded the way a load decodes
+// the runs of a log (runsDocument) and the way a write forks a stored history (buildForkHeld), each
+// on a pool of its own, holds no more heap once decoded than the grant it took. Before, each was
+// weighed by the state's bytes alone, 17 bytes of heap a byte, while the copy holds 34.91 a byte,
+// so the pool admitted copies holding more than it has.
+func TestADecodeOfStoredStateIsGrantedWhatItsCopyHolds(t *testing.T) {
+	skipUnderRace(t)
+	state := emptyElementState(t, 200_000)
+	declared := declaredStructs(state)
+	for _, site := range []struct {
+		name   string
+		decode func() (*crdt.Doc, error)
+	}{
+		{"a load's decode of a log's runs", func() (*crdt.Doc, error) {
+			return runsDocument(context.Background(), [][]byte{state}, maxUpdateItems)
+		}},
+		{"a write's fork of a stored history", func() (*crdt.Doc, error) {
+			return buildForkHeld(context.Background(), 0x5eed+1, state)
+		}},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			slots := useLoadSlots(t, newLoadSlots(1))
+			var granted atomic.Int64
+			slots.taken = func(held int64) {
+				if held > granted.Load() {
+					granted.Store(held)
+				}
+			}
+			held := int64(math.MaxInt64)
+			for range 3 {
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				doc, err := site.decode()
+				if err != nil {
+					t.Fatalf("decode the history: %v", err)
+				}
+				runtime.GC()
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				held = min(held, int64(after.HeapAlloc)-int64(before.HeapAlloc))
+				runtime.KeepAlive(doc)
+			}
+			t.Logf("%d bytes of state declaring %d structs: granted %d bytes, against %d by its bytes alone; its copy holds %d, %.2f bytes a byte of state",
+				len(state), declared, granted.Load(), copyWeight(int64(len(state)), 0), held, float64(held)/float64(len(state)))
+			if granted.Load() < held {
+				t.Fatalf("%s was granted %d bytes of the pool and its copy holds %d bytes of heap", site.name, granted.Load(), held)
+			}
+		})
+	}
+}

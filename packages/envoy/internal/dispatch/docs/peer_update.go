@@ -706,9 +706,18 @@ type roomApplies struct {
 	// left, guarded by mu; paired is whether the room keeps them, which a room whose commits a
 	// replica drains does (newRoomApplies). ygo logs a commit and then reports it under the same
 	// hold of the document's lock, so a drain that takes the reports made before it takes the log
-	// finds the report of every remote apply it hands over (reportsMade, reportPairing).
+	// finds the report of every remote apply it hands over (reportsMade, reportPairing). Only an
+	// apply whose transaction logged a commit keeps one (noteApply), so each stands for a commit
+	// the log holds or a drain has handed over, and the drain of the log drops it.
 	unpaired []madeReport
 	paired   bool
+	// begunAt is the room's commit position as the remote apply in hand began, and begunCounted
+	// whether it could be read then (began): what tells, as that apply reports, whether its
+	// transaction logged a commit (noteApply). ygo asks for every remote apply's budget and makes
+	// its report under one hold of the document's lock, so both are of the same apply. Guarded by
+	// mu.
+	begunAt      uint64
+	begunCounted bool
 	// checked is the room's rendering as the last browser's apply the check passed left it, at
 	// the commit position that apply's commit stood at (noteApply): what the next browser's
 	// apply is weighed against and spliced into while no other commit has landed and the
@@ -731,11 +740,16 @@ type madeReport struct {
 
 // checkedAt is the rendering report carries for the commit at position seq, and nil where it
 // carries none or carries one of another commit. The position is what makes the hand-over exact:
-// the pairing matches a commit with the first unpaired report of its origin, and a report made by
-// an apply that logged nothing - one the room already held - is such a report too, so the
-// report a commit is paired with can be another commit's (reportPairing.covers). Counting the
-// commit that way costs nothing, since every report of one origin counts alike; taking another
-// commit's rendering would make the replica's rendering a state it does not hold.
+// the pairing matches a commit with the first unpaired report of its origin, and a report whose own
+// commit a drain handed over before it took the report - one made between that drain's take of the
+// reports and its take of the log, or between a recover's take of them and its reset - waits for
+// the next drain, which pairs it with a later commit of its origin, so the report a commit is
+// paired with can be another commit's (reportPairing.covers). Counting the commit that way costs
+// nothing, since every report of one origin counts alike; taking another commit's rendering would
+// make the replica's rendering a state it does not hold. An apply that logged nothing keeps no
+// report (noteApply), so no commit is paired with one: where it was, a commit of an origin that
+// had resent what the room held met that report first, which carries no rendering, and was
+// rendered whole.
 func (report madeReport) checkedAt(seq uint64) *replicaRendering {
 	if report.checked == nil || report.checked.at != seq {
 		return nil
@@ -821,6 +835,19 @@ func newRoomApplies(live *crdt.Doc, paired bool, logged *loggedCommits) *roomApp
 // rendering is the commit's, and it becomes the room's record of its rendering at the commit's
 // position (checked, noteChecked) and rides the report to the drain that hands the commit over
 // (madeReport, takeChecked).
+//
+// The report is kept for a drain only where the apply's transaction logged a commit: the room's
+// commit position as it reports stands past the one it began at (began), since ygo logs a commit
+// before it reports it, under the same hold of the lock. An apply that logged nothing - a frame
+// of structs the room already holds - makes no commit for a drain to hand over, and starts no
+// drain either (onLoadDocument drains only while the log holds something), so a report of it
+// waited for the next commit anyone made: a socket resending what the room held grew the list by
+// one report a frame, charged to nothing, for as long as nobody committed
+// (TestAFrameTheRoomAlreadyHoldsKeepsNoReportForADrain). The pairing stays exact without them:
+// such a report covered no commit of its own, and every report of one origin counts a commit
+// alike (reportPairing.covers). A position that cannot be read at either end, which only a
+// recover's reset makes, keeps the report, and the next drain drops it with the rest it took
+// (settleReports).
 func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport, logged *loggedCommits) {
 	a.structs.Store(int64(report.Structs))
 	a.reported.Store(true)
@@ -832,7 +859,8 @@ func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport, logged *log
 	if running, mine := a.inFlight[origin]; mine {
 		made.checked = a.noteChecked(running, at, counted)
 	}
-	if a.paired {
+	loggedNothing := counted && a.begunCounted && at == a.begunAt
+	if a.paired && !loggedNothing {
 		a.unpaired = append(a.unpaired, made)
 	}
 	a.mu.Unlock()
@@ -961,9 +989,10 @@ func (a *roomApplies) reportsMade() []madeReport {
 }
 
 // settleReports drops the first n of the room's unpaired reports, the ones a drain took before
-// it took the log (reportsMade). Each was either paired with a commit the drain handed over or
-// made by an apply that logged nothing - one that changed the room in no way - so none is
-// wanted by a later drain.
+// it took the log (reportsMade). Each is of a commit logged before that take, which this drain or
+// one before it handed over, paired with it or not (reportPairing.covers), or, where a recover's
+// reset left the position unreadable, of an apply that may have logged nothing (noteApply), so
+// none is wanted by a later drain.
 func (a *roomApplies) settleReports(n int) {
 	if a == nil || n == 0 {
 		return
@@ -987,9 +1016,10 @@ type reportPairing struct {
 // and pairs the two, or false for a commit no report covers. ygo logs a commit and reports it under
 // one hold of the document's lock, so a remote apply's report is among those the drain took and
 // after every report of a commit before it: the first one from next with the commit's origin is
-// its own, or one an apply with that origin made without logging anything, which leaves the count
-// the same (and is why the rendering a report carries names its commit's position,
-// madeReport.checkedAt).
+// its own, or one whose own commit an earlier drain handed over before taking it, which leaves the
+// count the same (and is why the rendering a report carries names its commit's position,
+// madeReport.checkedAt). An apply that logged nothing keeps no report (noteApply), so none stands
+// here for a commit that is not.
 //
 // A commit no report covers is a local transaction - a server write, or ygo's format cleanup,
 // whose origin is nil - since no origin a local transaction is made with is one a remote apply
@@ -1477,18 +1507,31 @@ func (s *Service) closeDiscardedSenders(room string, update []byte, discarded *c
 }
 
 // serverApplyError is the error a server write fails with for err, what its apply of update to
-// room returned - a published live write's (publishLiveUpdate) or a catch-up's batch of stored
-// rows (applyRemoteBatch): nil for an apply whose drain of the room's pending queue was taken back
-// (crdt.ErrApplyCheckDrain), and err for any other. Such an apply stood: the room's apply check
-// refused what the drain would land (renderCheck.check), the update committed without it, and the
-// write goes on as one that applied. What the drain would have landed was discarded, and its
-// senders are closed as a browser's refused drain closes them (closeDiscardedSenders).
-func (s *Service) serverApplyError(room string, update []byte, err error) error {
+// room's document live returned - a published live write's (publishLiveUpdate) or a catch-up's
+// batch of stored rows (applyRemoteBatch): nil for an apply whose drain of the room's pending queue
+// was taken back (crdt.ErrApplyCheckDrain), and err for any other. Such an apply stood: the room's
+// apply check refused what the drain would land (renderCheck.check), the update committed without
+// it, and the write goes on as one that applied. What the drain would have landed was discarded,
+// and its senders are closed as a browser's refused drain closes them (closeDiscardedSenders).
+//
+// The discard took that content out of the room's pending queue, so the room's figures of the
+// queue are read again here, and the room weighed again where they moved, as the hook does after
+// a browser's apply (weighPeerUpdate). A write whose update the room already held logs no commit,
+// so no drain of the room's log hands it over and reads the queue (renderedReplica.chargeAdded):
+// the figures kept the discarded content until the room's next commit, the room charged for it and
+// the next browser's state-cap allowance that much smaller
+// (TestAServerWritesDiscardedDrainLeavesTheQueueFigureReadingTheQueue).
+func (s *Service) serverApplyError(room string, live *crdt.Doc, update []byte, err error) error {
 	if !errors.Is(err, crdt.ErrApplyCheckDrain) {
 		return err
 	}
 	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
 		s.closeDiscardedSenders(room, update, discarded)
+	}
+	weighing := s.roomWeighingOf(live)
+	applies := weighing.applies()
+	if applies.notePending(live.PendingStats()) {
+		weighing.roomCharge().weigh(applies.residentBytes(), int64(applies.structsHeld(live)), applies.parkedRangeCount())
 	}
 	return nil
 }
@@ -1779,10 +1822,11 @@ func documentTooLarge() *websocket.PeerClose {
 
 // documentBusy is the transient refusal of what the room cannot take for now - an update under the
 // room budget's pressure (peerRule.refusal), an update whose client ids the table could not be
-// read for (clientCheckFailed), an update whose rendering the check could not size yet
-// (renderRefusal.close) and the senders of a drain refused that way (closeDiscardedSenders), and a
-// first sync the pod's copy heap had no room to answer (refusedStateAnswer): the editor keeps its
-// edits and sends them again.
+// read or written for, or whose id's mint found every row its sender holds that no edit landed
+// under live (clientCheckFailed, errMintsLive), an update whose rendering the check could not size
+// yet (renderRefusal.close) and the senders of a drain refused that way (closeDiscardedSenders),
+// and a first sync the pod's copy heap had no room to answer (refusedStateAnswer): the editor keeps
+// its edits and sends them again.
 func documentBusy() *websocket.PeerClose {
 	return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
 }

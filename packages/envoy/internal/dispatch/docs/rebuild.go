@@ -748,9 +748,9 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 	if parked := s.parkedPastRoomCaps(history); parked != nil {
 		return history, read.loaded.Version, parked.Error(), historyClients(history), nil
 	}
-	// The stored history has not been decoded here, so no struct count can be read of it and
-	// the state term alone weighs the grant nearACap takes (copyWeight).
-	why, near, err := nearACap(ctx, history, copyWeight(int64(len(read.loaded.Update)), 0), int64(len(read.loaded.Update)))
+	// The grant nearACap takes is the stored history's weight, its bytes and the structs its
+	// headers declare (storedCopyWeight), which loadDecodedHistory took on this same slot.
+	why, near, err := nearACap(ctx, history, storedCopyWeight(read.loaded.Update), int64(len(read.loaded.Update)))
 	if err != nil {
 		return nil, 0, "", nil, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 	}
