@@ -9,10 +9,10 @@
 # guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper does three
 # things:
 #   - it gives every jj it runs `--config=git.executable-path="<the git wrapper>"`, in front of
-#     the command line, and, after a command it reads as a push, once more as the last layer of
-#     the command line: a configuration jj reads for one command alone (a `[[--scope]]` with
-#     `--when.commands`) is invisible to any read of the configuration, which is itself a command,
-#     and the command line's own layer outranks every file;
+#     the command line as a layer of its own, and, after a command it reads as a push, once more
+#     as the last layer of the command line: a configuration jj reads for one command alone (a
+#     `[[--scope]]` with `--when.commands`) is invisible to any read of the configuration, which
+#     is itself a command, and the command line's own layer outranks every file;
 #   - before a push, it reads the git jj's configuration names, and refuses another git by name,
 #     in the shared check's own setup-error words and with its status;
 #   - it reads the command line as jj does, aliases and the default command expanded, and runs
@@ -46,21 +46,39 @@ esac
 
 force="--config=git.executable-path=\"$wrapper\""
 
-# The commands jj has built in, the same 47 in jj 0.45.1-sami, 0.46.0-sami and 0.47.1 (`jj help`),
-# and clap's own other names for three of them (`op`, `obslog`, `evolution-log`). jj ignores an
-# alias that has one of these names ("Cannot define an alias that overrides the built-in
-# command"), so a command line whose command word is one of these, other than a push, runs at
-# once, with no read.
-builtins=' abandon absorb arrange bisect bookmark commit config converge describe diff diffedit duplicate edit evolog evolution-log file fix gerrit git help interdiff log metaedit new next obslog op operation parallelize prev rebase redo resolve restore revert root run show sign simplify-parents sparse split squash status tag undo unsign util version workspace '
+# run "$@" runs the real jj with the git wrapper in front of the line, a layer of its own.
+# Consecutive `--config` arguments are one layer, and jj refuses to set a whole table in a layer
+# that sets a key of it ("Would overwrite entire table", in all three versions), so the empty file
+# after it ends that layer, and a caller's `--config 'git={…}'` starts a layer of its own.
+run() {
+  exec "$real" "$force" --config-file=/dev/null "$@"
+}
+
+# The commands jj has built in, by clap's own names: each command's name and every other name
+# clap gives it, hidden ones included (`debug`, `op`, `obslog`, `evolution-log`), which are what
+# jj takes for a built-in command. jj ignores an alias that has one of these names ("Cannot define
+# an alias that overrides the built-in command"), and that warning names the same 51 in jj
+# 0.45.1-sami, 0.46.0-sami and 0.47.1, from an alias set for every name and other name in each
+# version's command list (jj-cli's commands/mod.rs). `jj help` leaves out the hidden ones. So a
+# command line whose command word is one of these, other than a push, runs at once, with no read.
+builtins=' abandon absorb arrange bisect bookmark commit config converge debug describe diff diffedit duplicate edit evolog evolution-log file fix gerrit git help interdiff log metaedit new next obslog op operation parallelize prev rebase redo resolve restore revert root run show sign simplify-parents sparse split squash status tag undo unsign util version workspace '
 
 # command_word "$@" sets at to the position of jj's command word, the first argument that is no
 # global option and no option's value (0 for none), word to that argument, and next to the
 # argument after it that is likewise neither: the `push` of `git push`. clap takes the global
-# options before the command word, between its two words and after them. The options whose value
-# is the next argument are `jj --help`'s Global Options, the same in all three versions; the
-# attached spellings (`-R<path>`, `-R=<path>`, `--repository=<path>`) are one word and need no
-# skip. An empty argument and a lone `-` are command words to jj (clap with external
-# subcommands), so they are to this too.
+# options before the command word, between its two words and after them. They are `jj --help`'s
+# Global Options, the same in all three versions: those whose value is the next argument, their
+# attached spellings (`-R<path>`, `-R=<path>`, `--repository=<path>`), which are one word, and the
+# flags; clap reads a word that starts `-h` or `-V` as help or version. An empty argument and a
+# lone `-` are command words to jj (clap with external subcommands), so they are to this too.
+#
+# Any other option in front of the command word is one clap does not know, and clap stops there,
+# before the command word: jj then reads no command word, and puts ui.default-command in front of
+# the line. Measured in all three versions, with a repository whose default command is `git push`:
+# `jj -b log` pushes the bookmark log. So for such a line at is 0, as it is for jj. A value clap
+# refuses (`--color=bad`, or a value that starts with `-`) stops clap as well, but jj then refuses
+# the line it puts the default command in front of at that same value, so this takes such a value
+# as clap takes a valid one.
 command_word() {
   word='' at=0 next='' takes='' i=0
   for arg; do
@@ -71,7 +89,13 @@ command_word() {
     fi
     case "$arg" in
       -R | --repository | --at-operation | --at-op | --color | --config | --config-file) takes=1 ;;
-      -?*) ;;
+      -R?* | --repository=* | --at-operation=* | --at-op=* | --color=* | --config=* | --config-file=*) ;;
+      --ignore-working-copy | --no-integrate-operation | --ignore-immutable | --debug | --quiet | --no-pager) ;;
+      -h* | --help | -V* | --version | --) ;;
+      -?*)
+        # After the command word, it is the command's own option.
+        [ "$at" -gt 0 ] || return 0
+        ;;
       *)
         if [ "$at" -eq 0 ]; then
           word=$arg
@@ -93,10 +117,10 @@ refuse() {
 command_word "$@"
 if [ "$at" -gt 0 ]; then
   case "$word" in
-    git) [ "$next" = push ] || exec "$real" "$force" "$@" ;;
-    gerrit) [ "$next" = upload ] || exec "$real" "$force" "$@" ;;
+    git) [ "$next" = push ] || run "$@" ;;
+    gerrit) [ "$next" = upload ] || run "$@" ;;
     "" | *[!A-Za-z0-9_-]*) ;;
-    *) case "$builtins" in *" $word "*) exec "$real" "$force" "$@" ;; esac ;;
+    *) case "$builtins" in *" $word "*) run "$@" ;; esac ;;
   esac
 fi
 
@@ -125,12 +149,12 @@ depth=0
 while :; do
   command_word "$@"
   if [ "$at" -eq 0 ]; then
-    # No command word. A help or version flag makes clap print and stop, before jj puts in a
-    # default command (measured: `jj --help` and `jj --version` push nothing when the default
-    # command is a push), so the line runs as it is.
+    # No command word, or an option clap does not know in front of it. A help or version flag
+    # makes clap print and stop, before jj puts in a default command (measured: `jj --help` and
+    # `jj --version` push nothing when the default command is a push), so the line runs as it is.
     for arg; do
       case "$arg" in
-        -h | --help | -V | --version) exec "$real" "$force" "$@" ;;
+        -h | --help | -V | --version) run "$@" ;;
       esac
     done
     # Otherwise jj puts ui.default-command in front of the line, or runs `log` when nothing sets
@@ -281,7 +305,7 @@ EOF
 done
 
 if [ "$final" = builtin ]; then
-  exec "$real" "$force" "$@"
+  run "$@"
 fi
 
 if [ "$final" = push ]; then
@@ -305,7 +329,10 @@ if [ "$final" = push ]; then
   # whatever git the push's repository named. `--at-operation` loads the repository at an operation
   # but reads the same configuration, and no other global option names a configuration, so the
   # read leaves them out. A `--` ends the options, and the read takes nothing after it: `jj git
-  # push` takes no positional argument, so jj refuses whatever follows one.
+  # push` takes no positional argument, so jj refuses whatever follows one. The read takes every
+  # `--config` and `--config-file` as one written in front of the command word, where jj keeps
+  # only those after it when there are any (the last layer below says why), so the read can refuse
+  # a git the push would not read, and reads every git the push would.
   #
   # --ignore-working-copy because this is a read: it must not snapshot the working copy of the
   # repository the push is about. The read cannot see a value scoped to the push's own command,
@@ -350,10 +377,33 @@ if [ "$final" = push ]; then
 fi
 
 # A push, or a line whose command jj may still expand (a word this wrapper found no alias for, or
-# no command word at all): the git wrapper goes in once more as the last layer of the line, ahead
-# of a `--`, which ends jj's options. Consecutive `--config` arguments are one layer, in which a
-# `[[--scope]]` value outranks a plain one, so `--config-file=/dev/null`, an empty file, ends the
-# caller's layer and the git wrapper's stands alone and last.
+# no command word at all): the git wrapper goes in once more as the last layer of the line.
+# Consecutive `--config` arguments are one layer, in which a `[[--scope]]` value outranks a plain
+# one, so `--config-file=/dev/null`, an empty file, ends the caller's layer and the git wrapper's
+# stands alone and last.
+#
+# Where it goes: clap keeps a global option's values from the deepest command that has any, so one
+# `--config` or `--config-file` after the command word drops every one in front of it (measured in
+# all three versions: `jj --config=a.b=1 config list a --config=a.c=2` lists a.c alone). On a push
+# with none after the command word, it goes in front of the command word, after the caller's own,
+# which still count: jj runs that line as it is, with nothing more to expand. Otherwise it goes
+# after the command's own options, ahead of the first `--`, which ends them, and after any words
+# jj may still put in place of a command word.
+before=0
+if [ "$final" = push ]; then
+  before=$at
+  k=0
+  for arg; do
+    k=$((k + 1))
+    [ "$k" -gt "$at" ] || continue
+    case "$arg" in
+      --config | --config=* | --config-file | --config-file=*)
+        before=0
+        break
+        ;;
+    esac
+  done
+fi
 total=$#
 k=0
 placed=''
@@ -361,11 +411,13 @@ while [ "$k" -lt "$total" ]; do
   k=$((k + 1))
   arg=$1
   shift
-  if [ -z "$placed" ] && [ "$arg" = -- ]; then
-    set -- "$@" --config-file=/dev/null "$force"
-    placed=1
+  if [ -z "$placed" ]; then
+    if [ "$k" -eq "$before" ] || { [ "$before" -eq 0 ] && [ "$arg" = -- ]; }; then
+      set -- "$@" --config-file=/dev/null "$force"
+      placed=1
+    fi
   fi
   set -- "$@" "$arg"
 done
 [ -n "$placed" ] || set -- "$@" --config-file=/dev/null "$force"
-exec "$real" "$force" "$@"
+run "$@"
