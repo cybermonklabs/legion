@@ -1,5 +1,5 @@
 import { baseUrl } from "./api";
-import { repeatOnNetworkChange, signInWithGoogle } from "./google-sign-in";
+import { goAgain, repeatOnNetworkChange, signInWithGoogle } from "./google-sign-in";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { sql } from "./psql";
 import { resetDatabase, sqlLiteral } from "./seed";
@@ -506,7 +506,7 @@ test.describe("outside passkey sign-in", () => {
       const callback = page.waitForResponse(
         (response) => new URL(response.url()).pathname === "/auth/callback"
       );
-      await open(page, `${canonical}/auth/start`);
+      await goAgain(page, `${canonical}/auth/start`);
       await signedIn(page, await callback);
     });
   });

@@ -44,6 +44,21 @@ export async function repeatOnNetworkChange<T>(
   }
 }
 
+/** Opens `url` in `page` after Chromium abandoned a navigation there. The abandoned navigation
+ *  commits Chromium's error page (`chrome-error://chromewebdata/`) shortly after its request
+ *  fails, and that commit would interrupt a navigation begun before it, so this waits for the
+ *  error page first (5 s at most), then navigates once. Navigating again after an interrupted
+ *  attempt would not do: the attempt Playwright reports interrupted can still run its redirect
+ *  chain, and a second one then finds the issuer's queued person spent. */
+export async function goAgain(page: Page, url: string): Promise<void> {
+  if (!page.url().startsWith("chrome-error:")) {
+    await page
+      .waitForURL((at) => at.protocol === "chrome-error:", { timeout: 5_000, waitUntil: "commit" })
+      .catch(() => undefined);
+  }
+  await page.goto(url);
+}
+
 /** The dev OIDC issuer's origin. */
 export function issuerOrigin(): string {
   return `http://127.0.0.1:${harnessPorts().signinIssuer.port}`;
@@ -126,7 +141,7 @@ export async function signInWithGoogle(
       repeats++;
       onRepeat(`${hop}: ${error}, made again`);
       // The repeat's own events settle the wait, and a failure of it reaches `failed` again.
-      void page.goto(request.url()).catch(() => undefined);
+      void goAgain(page, request.url()).catch(() => undefined);
       return;
     }
     reject(new Error(`the browser's request to ${hop} for ${email} failed: ${error}`));
