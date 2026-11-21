@@ -600,8 +600,8 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIG
 
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
-proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
-Verification document, and each runs that check's `run` and asserts its `negative_control`:
+proves it. It has one section for each of the checks `k1` to `k5` of the Verification document of
+the work that added it, and each runs that check's `run` and asserts its `negative_control`:
 
 - `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
   refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
@@ -726,15 +726,17 @@ All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an u
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
-`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
-(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
-were given to Dispatch, to measure which of our listed addresses that device reaches. What it
-measures is TCP connects from that device to the listed addresses and ports, nothing more: it
-cannot see a service the origin itself forwards by path or by Host on its own host and port, and
-it must run on the device itself, not in a VM, a container or a remote shell, whose network is
-another one. It is handed to that person as the one file with its target list, so it sources
-nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
-three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
+measures which of our listed addresses a machine reaches over the path given to a person from
+outside. What it measures is TCP connects from the machine it runs on to the listed addresses and
+ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its
+own host and port. So it runs where the path starts. For a path that only that person's device
+has, such as a tunnel, that is the device itself, not a VM, a container or a remote shell, whose
+network is another one; for a public path, any host on the public internet will do, since a public
+load balancer answers every address alike. It is handed to that person as the one file with its
+target list, so it sources nothing and needs only bash (3.2, as macOS ships it, or later), curl
+7.40 or later and sleep, all three on a stock macOS or Linux; curl's own `--connect-timeout` and
+`--max-time` bound every
 probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
 bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
 `sh` of macOS is bash, and runs it. Its inputs:
@@ -786,9 +788,10 @@ rounds are 6 s apart because a tunnel whose first handshake packet was lost stay
 WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
 together would all fall inside that.
 Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
-the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
-not by curl's exit code alone, since our services accept a connection and then wait for the
-client:
+the run measures what that device itself reaches. No line of its output names the device's host
+name, since that output can be posted where anyone reads it. Each probe is judged by whether TCP
+connected, not by curl's exit code alone, since our services accept a connection and then wait for
+the client:
 
 | curl's answer | Class |
 |---|---|
@@ -827,6 +830,22 @@ network refuses that address at once, and `outside-path-reach-tmout.test.ts` for
 a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+
+`e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
+edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
+whether one of the edge's routes took the request, by the `X-Outside-Edge-Backend` marker every
+route sets. `outside-path-reach.sh` cannot see this, since an address that answers on 443 forwards
+by path and by Host there. It needs bash 3.2 or later, curl 8.4.0 or later, `mktemp`, and
+`sha256sum` or `shasum`, and reads PASS (exit 0), FAIL (exit 1) or UNKNOWN (exit 2):
+
+```bash
+OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
+  OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
+```
+
+[`e2e/acceptance/outside-edge-refusals.md`](e2e/acceptance/outside-edge-refusals.md) says what its
+inputs are, how it reads an answer, when a signal ends it, and what its three test files hold;
+`cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals` runs them.
 
 ## Acceptance run against the deployed image
 
