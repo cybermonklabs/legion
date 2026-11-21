@@ -165,6 +165,11 @@ const (
 	messageHeaderBytes = 5
 )
 
+// copyEnd is the kind of the mark a CopyDone or a CopyFail leaves among the messages waiting when
+// it is sent before the server's CopyInResponse is read: where copy-in will end (copyIn). The
+// server answers neither.
+const copyEnd byte = 'c'
+
 // sent is one message a connection sent that the server answers, waiting for that answer: its
 // type, and what the answer makes of it.
 type sent struct {
@@ -188,8 +193,10 @@ type sent struct {
 // answered hold the bytes of a message not yet whole each way. waiting holds, in order, the
 // messages sent that the server has not yet answered; discarding is set from a refusal in an
 // extended query until the client's next Sync, since the server discards everything sent in
-// between. prepared holds the connection's prepared statements and portals its portals, by name,
-// each as the server last acknowledged it.
+// between. copying is set while the server is in copy-in, from its CopyInResponse until the
+// client's CopyDone or CopyFail, since the server ignores a Sync or a Flush sent then. prepared
+// holds the connection's prepared statements and portals its portals, by name, each as the server
+// last acknowledged it.
 type sendingConn struct {
 	net.Conn
 	recorder   *SentStatements
@@ -201,6 +208,7 @@ type sendingConn struct {
 	lost       bool
 	waiting    []sent
 	discarding bool
+	copying    bool
 	prepared   map[string]string
 	portals    map[string]SentStatement
 }
@@ -311,9 +319,11 @@ func (c *sendingConn) lose(what string) {
 
 // sentMessage reads one whole message the connection sent, and keeps the ones the server answers -
 // a Parse, a Bind, a Close, a Describe, an Execute, a Sync, a simple query, a function call - in
-// order, until their answers come. A Flush, a Terminate, and the copy and authentication messages
-// get no answer of their own. While the server discards what follows a refusal, everything before
-// the next Sync has no effect.
+// order, until their answers come. A Flush, a Terminate, a CopyData and the authentication
+// messages get no answer of their own. While the server discards what follows a refusal,
+// everything before the next Sync has no effect. In copy-in the server ignores a Sync and a Flush,
+// and a CopyDone or a CopyFail ends it; a CopyDone or a CopyFail sent before the server's
+// CopyInResponse is read is kept as the mark where copy-in will end (copyIn).
 func (c *sendingConn) sentMessage(kind byte, body []byte) {
 	if c.discarding {
 		if kind != 'S' {
@@ -321,7 +331,22 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 		}
 		c.discarding = false
 	}
+	if c.copying {
+		switch kind {
+		case 'd', 'S', 'H':
+			return
+		case 'c', 'f':
+			c.copying = false
+			return
+		}
+		// Any other message ends copy-in with an error the server answers the copy with.
+		c.copying = false
+	}
 	switch kind {
+	case 'c', 'f':
+		if len(c.waiting) > 0 {
+			c.waiting = append(c.waiting, sent{kind: copyEnd})
+		}
 	case 'P':
 		var parse pgproto3.Parse
 		if err := parse.Decode(body); err != nil {
@@ -442,7 +467,9 @@ func (c *sendingConn) answer(kind byte, body []byte) {
 		c.recorder.record(SentStatement{SQL: head.query})
 	case kind == 'V' && head.kind == 'F':
 		c.recorder.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", head.function)})
-	case (kind == 'D' || kind == 'G' || kind == 'H' || kind == 'W' || kind == 'd' || kind == 'c') && (head.kind == 'E' || head.kind == 'Q'):
+	case kind == 'G' && (head.kind == 'E' || head.kind == 'Q'):
+		c.copyIn()
+	case (kind == 'D' || kind == 'H' || kind == 'W' || kind == 'd' || kind == 'c') && (head.kind == 'E' || head.kind == 'Q'):
 	case kind == 'T' && head.kind == 'Q':
 	default:
 		c.lose(fmt.Sprintf("a %q message from the server, which the %q waiting for an answer does not expect", kind, head.kind))
@@ -452,6 +479,26 @@ func (c *sendingConn) answer(kind byte, body []byte) {
 // done drops the oldest message waiting, which its answer has ended.
 func (c *sendingConn) done() {
 	c.waiting = c.waiting[1:]
+}
+
+// copyIn reads the server's CopyInResponse to the oldest message waiting: the server is in copy-in
+// until the client's CopyDone or CopyFail, and ignores every Sync the client sends before it. The
+// Syncs already waiting, up to a CopyDone or CopyFail already sent, are dropped; if none was sent
+// yet, the Syncs to come are dropped as they are sent (copying). Any other message waiting ends
+// copy-in with an error the server answers the copy with, after which a Sync counts again.
+func (c *sendingConn) copyIn() {
+	for index := 1; index < len(c.waiting); {
+		switch c.waiting[index].kind {
+		case 'S':
+			c.waiting = append(c.waiting[:index], c.waiting[index+1:]...)
+		case copyEnd:
+			c.waiting = append(c.waiting[:index], c.waiting[index+1:]...)
+			return
+		default:
+			return
+		}
+	}
+	c.copying = true
 }
 
 // refused reads the server's ErrorResponse to the oldest message waiting. An Execute, a simple

@@ -345,3 +345,79 @@ func TestSentStatementsCountNothingTheServerRefuses(t *testing.T) {
 		})
 	}
 }
+
+// A client may send a Sync right after an Execute, before it reads whether the Execute started a
+// COPY FROM, and the server ignores every Sync and Flush it gets in copy-in. The recorder drops
+// those Syncs too, so the statement after the copy pairs with its own answers: here a COPY FROM
+// run with a Sync sent at once and ended by a CopyDone, which the server runs, or by a CopyFail,
+// which it refuses; and then a select, which the recorder records as run either way, with nothing
+// it could not read. Each scenario sends its end of the copy both after reading the
+// CopyInResponse and before it, in the same write as the Execute.
+func TestSentStatementsIgnoreTheSyncsCopyInIgnores(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const copying, after = "copy copy_sync from stdin", "select 99"
+	for _, scenario := range []struct {
+		name         string
+		end          pgproto3.FrontendMessage
+		ran, refused int
+		early        bool
+	}{
+		{name: "ended by a CopyDone", end: &pgproto3.CopyDone{}, ran: 1},
+		{name: "ended by a CopyFail", end: &pgproto3.CopyFail{Message: "the client gave up"}, refused: 1},
+		{name: "ended by a CopyDone sent with the Execute", end: &pgproto3.CopyDone{}, ran: 1, early: true},
+		{name: "ended by a CopyFail sent with the Execute", end: &pgproto3.CopyFail{Message: "the client gave up"}, refused: 1, early: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			if _, err := conn.Exec(ctx, "create temporary table copy_sync (n int)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			frontend := conn.Conn().PgConn().Frontend()
+			send := func(messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			}
+			before := len(sent.Statements())
+			start := []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}
+			end := []pgproto3.FrontendMessage{&pgproto3.CopyData{Data: []byte("1\n")}, scenario.end, &pgproto3.Sync{}}
+			if scenario.early {
+				send(append(start, end...)...)
+			} else {
+				send(start...)
+				for {
+					message, err := frontend.Receive()
+					if err != nil {
+						t.Fatalf("read the server's answer: %v", err)
+					}
+					if refusal, refused := message.(*pgproto3.ErrorResponse); refused {
+						t.Fatalf("the server refused the copy: %s %s", refusal.Code, refusal.Message)
+					}
+					if _, copyIn := message.(*pgproto3.CopyInResponse); copyIn {
+						break
+					}
+				}
+				send(end...)
+			}
+			drain(t, frontend, scenario.refused > 0)
+			send(&pgproto3.Parse{Query: after}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
+			drain(t, frontend, false)
+			ranCopy, refused := counted(sent, before, copying)
+			ranAfter, _ := counted(sent, before, after)
+			if ranCopy != scenario.ran || refused != scenario.refused || ranAfter != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the copy %d run and %d refused, the select after it %d run, blind %v; want %d, %d, 1 and nothing it could not read",
+					ranCopy, refused, ranAfter, sent.Blind(), scenario.ran, scenario.refused)
+			}
+		})
+	}
+}
