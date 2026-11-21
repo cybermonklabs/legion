@@ -374,8 +374,8 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 	core := createListedIssues(t, handler, "CORE", 4)
 	side := createListedIssues(t, handler, "SIDE", 1)
 	parent, child := core[0], side[0]
-	// The routes of this build refuse a parent of another project, so the test writes the link
-	// itself, as a later build's route would.
+	// The test writes the link itself rather than through the route, so it reads the same at a
+	// build whose routes still refuse a parent of another project.
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
 		t.Fatalf("put %s under %s: %v", child, parent, err)
 	}
