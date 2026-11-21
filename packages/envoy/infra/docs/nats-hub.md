@@ -60,7 +60,12 @@ Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
 naming the input. So the cloud-config is known at preview.
 
-The hub refuses these before it registers anything, with an error naming the input:
+The hub refuses these before it registers anything. Each refusal of an input is a
+`core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
+in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
+field's own path for its machine id (`users[0].machineId`); and the authorization's refusals of
+the listener's user and the session user as `listener` and `sessionUser`. A seed in the hub's own
+name and a missing provider refuse no input, so neither is one:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the

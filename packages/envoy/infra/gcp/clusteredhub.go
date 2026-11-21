@@ -3,12 +3,10 @@ package gcp
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"regexp"
-	"strings"
 
 	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -490,7 +488,7 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	}
 	auth, err := authorization(args.Users, listener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
-		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
+		return clusteredHubSettings{}, err
 	}
 	if s.authConf, err = auth.Render([]string{confHeader}); err != nil {
 		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
@@ -750,26 +748,6 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs) (*clusteredHubTailnet, e
 	tailnet.natsURL = fmt.Sprintf("nats://%s:%d", host, natsPort)
 	tailnet.envoyURL = fmt.Sprintf("http://%s:%d", host, core.DefaultListenerPort)
 	return tailnet, nil
-}
-
-// authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of
-// the callout names the hub's input authCallout (calloutRefusal); any other that already is passes
-// unchanged; any other names the input its message starts with, as authorization and core name a
-// user (users[<i>], the listener, the session user or its noAuthUser). The listener is named by
-// listenerPath, where it is declared: listener or tailnet.listener.
-func authorizationRefusal(err error, listenerPath string) error {
-	err = calloutRefusal(err)
-	var input *core.InputError
-	if errors.As(err, &input) {
-		return err
-	}
-	switch message := err.Error(); {
-	case strings.HasPrefix(message, "sessionUser"), strings.HasPrefix(message, "noAuthUser"):
-		return &core.InputError{Input: "sessionUser", Err: err}
-	case strings.HasPrefix(message, "listener") && listenerPath != "":
-		return &core.InputError{Input: listenerPath, Err: err}
-	}
-	return &core.InputError{Input: "users", Err: err}
 }
 
 // NewClusteredNatsHub registers a clustered hub. It refuses a seed in its name, then every invalid
