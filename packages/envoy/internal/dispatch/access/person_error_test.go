@@ -105,9 +105,12 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		{"Answer", func(tx pgx.Tx) error { _, err := Answer(ctx, tx, "PRIV", hiddenEmail); return err }},
 		{"Listed", func(tx pgx.Tx) error { _, err := Listed(ctx, tx, hiddenEmail); return err }},
 		{"Resolve", func(tx pgx.Tx) error { _, err := Resolve(ctx, tx, cookie(hiddenEmail)); return err }},
-		{"ReadProject", func(tx pgx.Tx) error { _, err := ReadProject(ctx, tx, "PRIV"); return err }},
+		{"ReadProject", func(tx pgx.Tx) error {
+			_, err := ReadProject(ctx, tx, "PRIV", viewerArg(t, *model.ServerViewer))
+			return err
+		}},
 		{"ReadGroup", func(tx pgx.Tx) error { _, err := ReadGroup(ctx, tx, "crew"); return err }},
-		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx); return err }},
+		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx, "", model.MaxGroupsPerOwner); return err }},
 		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew"); return err }},
 		{"SetOwner", func(tx pgx.Tx) error { _, _, err := SetOwner(ctx, tx, broker, "PRIV", hiddenEmail, by); return err }},
 		{"SetVisibility", func(tx pgx.Tx) error {
@@ -115,13 +118,13 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"SetSlackChannels", func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by, model.ServerViewer)
 			return err
 		}},
 		// OTHER lists C0SHARED001, so this write is refused once it has read who lists the channel:
 		// the refusal itself is this step succeeding.
 		{"SetSlackChannels of a channel another private project lists", func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, model.ServerViewer)
 			if errors.Is(err, ErrSlackChannelShared) {
 				return nil
 			}

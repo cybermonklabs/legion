@@ -3695,7 +3695,7 @@ func TestReplaceCarriesAnUnreadableAskWithWhatNoRenderingWrites(t *testing.T) {
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, ask)
 			test.setup(t, service, artifactID)
-			current, err := service.Text(context.Background(), artifactID)
+			current, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3756,7 +3756,7 @@ func TestSeedAndReplaceRefuseAnAskBodyTheSchemaDoesNotAllow(t *testing.T) {
 	if _, err := joinedReplaceText(service, artifactID, withCode, model.Actor{Kind: "user", ID: "alice"}); !errors.As(err, &invalid) {
 		t.Fatalf("ReplaceText(ask holding code) = %v, want ErrInvalidAskBlock", err)
 	}
-	if markdown, err := service.Text(context.Background(), artifactID); err != nil || markdown != "Intro.\n" {
+	if markdown, err := service.Text(context.Background(), serverReader, artifactID); err != nil || markdown != "Intro.\n" {
 		t.Fatalf("after a refused replace = %q (%v), want it unchanged", markdown, err)
 	}
 }
@@ -3768,7 +3768,7 @@ func TestReplaceCarriesAnAskTheBrowserLeftUnreadable(t *testing.T) {
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n:::\n")
 	editLiveTree(t, service, artifactID, appendToAsk(codeBlockNode("code")))
-	current, err := service.Text(context.Background(), artifactID)
+	current, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3850,7 +3850,7 @@ func TestEditsBesideAnAskTheBrowserLeftUnreadableAreAccepted(t *testing.T) {
 			t.Fatalf("%s = %v, want ErrInvalidAskBlock", name, err)
 		}
 	}
-	markdown, err := service.Text(context.Background(), artifactID)
+	markdown, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil || !strings.Contains(markdown, "Should we ship?") || !strings.Contains(markdown, "Later.") || strings.Contains(markdown, "a2") {
 		t.Fatalf("document = %q (%v), want only the accepted replace applied", markdown, err)
 	}
@@ -4455,7 +4455,7 @@ func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) 
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 
-	markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
+	markdown, blocks, err := service.TextWithBlocks(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read a closed issue's blocks: %v", err)
 	}
@@ -4661,7 +4661,7 @@ func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 	if versions != 1 {
 		t.Fatalf("settle wrote %d versions for a document outside the schema", versions)
 	}
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocSchema) {
 		t.Fatalf("Text err = %v, want ErrDocSchema", err)
 	}
 }
@@ -4685,10 +4685,10 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
-	if got, err := service.Text(joined, artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(joined, serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("document inside the transaction = %q (%v), want its own write", got, err)
 	}
-	if got, err := service.Text(ctx, artifactID); err != nil || got != "before\n" {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != "before\n" {
 		t.Fatalf("live document before commit = %q (%v), want before", got, err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -4696,7 +4696,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 	}
 	ledger.Discard()
 	time.Sleep(3 * settleInterval)
-	if got, err := service.Text(ctx, artifactID); err != nil || got != "before\n" {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != "before\n" {
 		t.Fatalf("live document after rollback = %q (%v), want before", got, err)
 	}
 	var versions int
@@ -5198,7 +5198,7 @@ func TestShutdownDrainsPendingUpdateBeforeSettling(t *testing.T) {
 	}
 	reloaded := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: time.Hour})
 	defer reloaded.Shutdown(context.Background())
-	if got, err := reloaded.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := reloaded.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after shutdown = %q (%v), want after", got, err)
 	}
 }
@@ -5343,7 +5343,7 @@ func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
 	waitForPersistedUpdates(t, service, artifactID, 2)
 	reloaded := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: time.Hour})
 	defer reloaded.Shutdown(context.Background())
-	if got, err := reloaded.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := reloaded.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after delayed shutdown = %q (%v), want after", got, err)
 	}
 }
@@ -5557,10 +5557,10 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := service.Text(ctx, artifactID); !errors.Is(err, context.Canceled) {
+	if _, err := service.Text(ctx, serverReader, artifactID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled text load = %v, want context.Canceled", err)
 	}
-	if _, err := service.Text(context.Background(), artifactID); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); err != nil {
 		t.Fatalf("text after cancelled load = %v, want room to remain available", err)
 	}
 }
@@ -5669,7 +5669,7 @@ func (s failingVersionedStore) Load(ctx context.Context, room string) (persisten
 	return s.VersionedStore.Load(ctx, room)
 }
 
-func (s failingVersionedStore) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+func (s failingVersionedStore) DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error) {
 	if s.respectContext && ctx.Err() != nil {
 		return DocumentStamp{}, ctx.Err()
 	}
@@ -5679,7 +5679,7 @@ func (s failingVersionedStore) DocumentStamp(ctx context.Context, room string) (
 	if s.loadUpdate != nil {
 		return DocumentStamp{Version: 1}, nil
 	}
-	return s.VersionedStore.DocumentStamp(ctx, room)
+	return s.VersionedStore.DocumentStamp(ctx, room, viewer)
 }
 
 func (s failingVersionedStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
@@ -6212,13 +6212,13 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		got, err := service.Text(context.Background(), artifactID)
+		got, err := service.Text(context.Background(), serverReader, artifactID)
 		if err == nil && got == want {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	got, err := service.Text(context.Background(), artifactID)
+	got, err := service.Text(context.Background(), serverReader, artifactID)
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
 }
 
@@ -6301,7 +6301,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	// The live edit was already persisted incrementally, so the reloaded text carries it; the
 	// room is not failed, so a new write still settles normally.
 	waitForNoLiveDocument(t, service, artifactID)
-	if got, err := service.Text(ctx, artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after mid-settle eviction = %q (%v), want the persisted live text", got, err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
@@ -6442,7 +6442,7 @@ func TestEditedLegacyTableCellPipeDocumentSettlesOnce(t *testing.T) {
 
 	settleCurrentGeneration(t, service, artifactID)
 	assertTableCellPipeVersionAndEventCounts(t, service.store, artifactID, 2, 1)
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != edited {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != edited {
 		t.Fatalf("settled edited text = %q (%v), want %q", got, err, edited)
 	}
 
@@ -6461,7 +6461,7 @@ func TestDurableContentEditSurvivesEvictionThenSettles(t *testing.T) {
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict edited document: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("reloaded text = %q (%v), want after", got, err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
@@ -6477,7 +6477,7 @@ func TestOpeningLegacyTableCellPipeDocumentDoesNotSettle(t *testing.T) {
 	`, artifactID, "| header |\n| :--- |\n| `one|two` |\n"); err != nil {
 		t.Fatalf("seed legacy canonical markdown: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "| header |\n| :--- |\n| `one\\|two` |\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "| header |\n| :--- |\n| `one\\|two` |\n" {
 		t.Fatalf("open legacy document = %q (%v)", got, err)
 	}
 	state := service.room(artifactID)
@@ -6569,7 +6569,7 @@ func TestQuiesceFlushesEveryLiveDocumentAndLeavesTheServiceUsable(t *testing.T) 
 	}
 
 	// The room is gone, so this text is what the store holds: the edit reached it.
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read document after quiesce: %v", err)
 	}

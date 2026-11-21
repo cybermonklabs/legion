@@ -679,7 +679,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// are read: this fleet still admits the writer's page, so the slow page's is the only socket
 	// it closes, and the end below is that revoke's and no other's.
 	revokedAt := time.Now()
-	revoked := service.schemaAdmissions.revokeUnless(fleet)
+	revoked := service.schemaAdmissions.revokeUnless(fleet.keeps, errSchemaRevoked)
 	if len(revoked) != 1 {
 		t.Fatalf("the re-check revoked %d sockets, want the slow page's alone", len(revoked))
 	}
@@ -722,7 +722,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	t.Logf("the server had the document on the wire %v after the dial; the revoked page's socket ends %s, after a document message of %d bytes in a send buffer of %d",
 		onTheWire, read.end, read.biggestMessage, grant)
 
-	want, err := service.Text(context.Background(), artifactID)
+	want, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the server's document: %v", err)
 	}
@@ -862,7 +862,7 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 			liveCtx, liveAdmission := admitSchemaSocket(t, service, room, token, live, true)
 			revokedCtx, revokedAdmission := admitSchemaSocket(t, service, room, token, losing, true)
 
-			closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1})
+			closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1}.keeps, errSchemaRevoked)
 			if len(closed) != 1 || closed[0] != revokedAdmission {
 				t.Fatalf("the rollback revoked %d sockets, want the page creating up to 2 alone", len(closed))
 			}
@@ -906,7 +906,7 @@ func TestARevokedPagesReconnectIsAdmittedBesideItsLateToken(t *testing.T) {
 	const room, token = "room", "2"
 	service := &Service{}
 	revokedCtx, revoked := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
-	if closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1}); len(closed) != 1 || closed[0] != revoked {
+	if closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1}.keeps, errSchemaRevoked); len(closed) != 1 || closed[0] != revoked {
 		t.Fatalf("the rollback revoked %d sockets, want the newer page's alone", len(closed))
 	}
 

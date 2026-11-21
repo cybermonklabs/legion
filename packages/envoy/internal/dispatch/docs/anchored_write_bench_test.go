@@ -209,7 +209,7 @@ func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchor
 			return err
 		})
 	}
-	text, err := service.Text(context.Background(), fixture.artifactID)
+	text, err := service.Text(context.Background(), serverReader, fixture.artifactID)
 	if err != nil {
 		b.Fatal(err)
 	}

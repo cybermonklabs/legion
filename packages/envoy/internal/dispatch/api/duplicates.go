@@ -14,7 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -168,7 +170,9 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // (duplicateNamesAnotherIssue).
 //
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
-// $5 the lowest score to return, $6 the headline options, $7 the new title.
+// $5 the lowest score to return, $6 the headline options, $7 the new title, $8 the creator's
+// viewer, whose project clause holds every issue of a project it does not see out of both arms:
+// such a project's gate finds nothing, as a project no row holds finds nothing.
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -179,14 +183,14 @@ hits as (
   select i.key, w.lexeme, w.idf
     from term_weights w
     join issues i on i.search @@ w.tq
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$8") + `
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
     join document_search d on d.search @@ w.tq
     join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$8") + `
 ),
 scored as (
   select h.key, sum(h.idf) / nullif((select weight from picked), 0) as score,
@@ -236,7 +240,8 @@ select s.key, i.title, i.status, s.shared, s.score,
 // name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
-// issue's ancestors, $5 the headline options.
+// issue's ancestors, $5 the headline options, $6 the creator's viewer, whose project clause holds
+// every issue of a project it does not see out, as duplicateScoreQuery's does.
 var duplicateEqualLexemesQuery = `
 with new_text as (
   select title_lexemes($2) as title_lex,
@@ -248,7 +253,7 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(n.title_lex) x)), $5) as headline
   from new_text n
   join issues i
-    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$6") + `
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
   left join document_search d on d.artifact_id = a.id
@@ -328,8 +333,9 @@ func duplicateGateText(title, spec string) string {
 }
 
 // duplicateGate scores the project's open issues, other than the new issue's ancestors, against
-// its title and spec. Both paths of a create run it, so the record of what a forced create went
-// past is the refusal an unforced one would have met.
+// its title and spec, as who reads them: a project who does not see holds no candidate. Both paths
+// of a create run it, so the record of what a forced create went past is the refusal an unforced
+// one would have met.
 //
 // It runs in a read transaction of its own, bounded by duplicateGateBound on the context and by
 // statement_timeout inside it, because the create waits on it. One bound for both paths: with
@@ -341,12 +347,12 @@ func duplicateGateText(title, spec string) string {
 // failure of the read itself are told apart there and in the log, because the second is the
 // server's own fault - before this gate it was a visible 500 - and happens whatever the bound is.
 func (s *server) duplicateGate(
-	ctx context.Context, project, title, spec string, ancestors []string,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
 	bound := s.duplicateGateBound()
 	gateCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
+	candidates, err := s.readDuplicateCandidates(gateCtx, who, project, title, spec, ancestors, bound, duplicateNudgeScore)
 	switch {
 	case err == nil:
 		return duplicateGateResult{Candidates: candidates}
@@ -362,11 +368,11 @@ func (s *server) duplicateGate(
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
-// against them, in one read transaction, answering those at or above floor, best score first.
-// The gate's floor is duplicateNudgeScore, the lowest score it ever names; the replay that sets
-// the two bars reads from zero, so the whole distribution is visible to it.
+// who sees against them, in one read transaction, answering those at or above floor, best score
+// first. The gate's floor is duplicateNudgeScore, the lowest score it ever names; the replay that
+// sets the two bars reads from zero, so the whole distribution is visible to it.
 func (s *server) readDuplicateCandidates(
-	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
+	ctx context.Context, who model.Actor, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
 ) ([]scoredDuplicate, error) {
 	// The test seam: a case holds the read here until its bound ends it (server
 	// beforeDuplicateRead). Nothing but a test sets it.
@@ -393,7 +399,7 @@ func (s *server) readDuplicateCandidates(
 		return nil, err
 	}
 	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
-	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := s.pickRelatedTerms(ctx, tx, who, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		return nil, err
 	}
@@ -414,14 +420,14 @@ func (s *server) readDuplicateCandidates(
 		// whose spec mentions a stopped one. Its answer is an equality rather than a score, so
 		// floor does not apply to it - a match is 1 and nothing else is answered.
 		rows, err := tx.Query(ctx, duplicateEqualLexemesQuery,
-			project, title, storedMarkdown(spec), ancestors, duplicateHeadlineOptions)
+			project, title, storedMarkdown(spec), ancestors, duplicateHeadlineOptions, refs.VisibilityArg(who))
 		if err != nil {
 			return nil, err
 		}
 		return scanDuplicateCandidates(rows)
 	}
 	rows, err := tx.Query(ctx, duplicateScoreQuery,
-		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title)
+		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

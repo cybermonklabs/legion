@@ -323,7 +323,7 @@ func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID stri
 // removeArtifact clears and the artifact row, and no node written.
 func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID string) error {
 	return pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		artifact, err := loadArtifactRowByID(ctx, tx, artifactID)
+		artifact, err := loadArtifactRowByID(ctx, tx, everyReader, artifactID)
 		if err != nil {
 			return fmt.Errorf("read document %s: %w", artifactID, err)
 		}
@@ -405,7 +405,7 @@ func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifac
 // document's rows away (deleteArtifactRows), failing the test where one fails.
 func clearAndDeleteArtifact(t *testing.T, ctx context.Context, tx pgx.Tx, artifactID string) {
 	t.Helper()
-	artifact, err := loadArtifactRowByID(ctx, tx, artifactID)
+	artifact, err := loadArtifactRowByID(ctx, tx, everyReader, artifactID)
 	if err != nil {
 		t.Fatalf("read document %s: %v", artifactID, err)
 	}

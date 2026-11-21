@@ -307,7 +307,7 @@ func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 // can mark a view for a change committed since the cursor reached latest.
 //
 // The relay subscription is taken on a goroutine of its own and handed to the intake on g.feeds
-// (seedEvents), and applying it marks every view dirty (applyFeed). Until the "events seeded"
+// (seedEventsLocked), and applying it marks every view dirty (applyFeed). Until the "events seeded"
 // note that apply ends with, the hand-over may be anywhere between the subscribe and the apply,
 // which the channel alone would not show; settle's wait on the event cursor passes it by whenever
 // the event log is empty, since then there is no event to wait for.
@@ -578,9 +578,10 @@ func livePipelineView(at *time.Time) DeliveryLiveView {
 	return DeliveryLiveView{Kind: deliveryLivePipeline, At: &s}
 }
 
-// subscribeFrame is a subscribe frame for a delivery view as the socket hands it to the hub.
+// subscribeFrame is a subscribe frame for a delivery view as the socket hands it to the hub, read
+// for the server's own viewer, which sees every repository and project these tests store.
 func subscribeFrame(sub string, view DeliveryLiveView) deliverySubscription {
-	return deliverySubscription{Sub: sub, View: view}
+	return deliverySubscription{Sub: sub, View: view, Reader: everyReader}
 }
 
 // seedHubSettings writes the delivery settings the hub tests run under.
@@ -1684,9 +1685,9 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 // event log from being proven, and an operator's psql session, a migration or another database's
 // job can hold one for as long as it likes. A fresh hub still serves its pages meanwhile: the
 // delivery change log has nothing to do with that horizon, and the relay subscription that waits
-// on it is taken on a goroutine of the generation's own (seedEvents), so the hub is ready at once,
-// answers a page its snapshot and carries a delivery change to it while the transaction is open,
-// and the issue event committed meanwhile reaches the page once the horizon is proven.
+// on it is taken on a goroutine of the generation's own (seedEventsLocked), so the hub is ready at
+// once, answers a page its snapshot and carries a delivery change to it while the transaction is
+// open, and the issue event committed meanwhile reaches the page once the horizon is proven.
 func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
@@ -1881,8 +1882,8 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	})
 	waitListening(t, database, "the relay's listener holding a LISTEN", relayDials)
 	rig.hub.Close(first)
-	// The hub's goroutines first: seedEvents, one of them, is what subscribes to the relay, so once
-	// they have returned nothing starts a relay generation while the relay's are waited for.
+	// The hub's goroutines first: seedEventsLocked's, one of them, is what subscribes to the relay,
+	// so once they have returned nothing starts a relay generation while the relay's are waited for.
 	waitReturned(t, "every goroutine of the hub to return after the last view's drop", &rig.hub.running)
 	waitReturned(t, "every goroutine of the relay to return after the last view's drop", &rig.relay.running)
 	for _, conn := range allDials() {
@@ -1919,17 +1920,17 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 // At a half, twenty rounds all miss a leak once in about a million runs.
 const handOverRounds = 20
 
-// TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber: seedEvents hands the
-// relay subscription it took to the intake, and the generation can end during that hand-over. No
-// subscription may outlive the generation's goroutines: one the intake never took and nobody
+// TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber: seedEventsLocked hands
+// the relay subscription it took to the intake, and the generation can end during that hand-over.
+// No subscription may outlive the generation's goroutines: one the intake never took and nobody
 // cancelled keeps the relay's generation, its LISTEN connection and its reads of the event log
 // running with no page open.
 //
 // Each round holds the intake inside its "connected" note, where it takes no feed, until
-// seedEvents has made its "feed ready" note; then it drops the generation's one sub, lets the
-// intake go and waits for every goroutine of the hub to return. A hand-over that left the feed in a
-// slot (g.feeds) leaves the intake's next select a choice between that feed and the generation's
-// end, which Go makes at random, so the round is repeated (handOverRounds).
+// seedEventsLocked's goroutine has made its "feed ready" note; then it drops the generation's one
+// sub, lets the intake go and waits for every goroutine of the hub to return. A hand-over that
+// left the feed in a slot (g.feeds) leaves the intake's next select a choice between that feed and
+// the generation's end, which Go makes at random, so the round is repeated (handOverRounds).
 func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *testing.T) {
 	type handOver struct {
 		hold, ready      sync.Once
@@ -1963,8 +1964,8 @@ func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *tes
 					}
 				})
 			case "feed ready":
-				// seedEvents makes this one as its hand-over begins, which waits for the intake to
-				// be held.
+				// seedEventsLocked's goroutine makes this one as its hand-over begins, which waits
+				// for the intake to be held.
 				select {
 				case <-r.held:
 				case <-r.stopped:
@@ -1984,8 +1985,8 @@ func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *tes
 		mu.Unlock()
 		conn := newFakeLiveConn()
 		rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-		// The relay's generation, which seedEvents subscribes to, starts behind the event horizon.
-		horizontest.WaitInProcess(t, fmt.Sprintf("round %d: seedEvents' hand-over of the relay's feed", i), r.readied, rig.database)
+		// The relay's generation, which seedEventsLocked subscribes to, starts behind the horizon.
+		horizontest.WaitInProcess(t, fmt.Sprintf("round %d: seedEventsLocked's hand-over of the relay's feed", i), r.readied, rig.database)
 		rig.hub.Close(conn)
 		close(r.release)
 		waitReturned(t, fmt.Sprintf("round %d: every goroutine of the hub to return after its generation ended", i), &rig.hub.running)
@@ -2049,6 +2050,34 @@ func (r *hubRig) waitConnected(t *testing.T) {
 			last, since = got, time.Now()
 		}
 	}
+}
+
+// waitListening waits for the hub's listener to have connected and caught the delivery change log
+// up, and for nothing else: all a test needs whose changes reach the hub through that log (a pull
+// request marked unfetchable, a reconcile error) or that hands the hub its events itself (hear).
+// It waits for no relay feed. The relay's first subscription waits for the safe horizon
+// (firstRelayCursor, events.Horizon.Await), which any transaction holding an id anywhere on the
+// test Postgres instance holds back - another package's suite running beside this one, say - so a
+// test that waited for "events seeded" took as long as that transaction, up to eventFeedWait.
+func (r *hubRig) waitListening(t *testing.T) {
+	t.Helper()
+	r.waitFor(t, 0, 5*time.Second, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+}
+
+// hear hands event to the running generation as the relay's feed hands the intake each event it
+// publishes (deliveryHub.receive), for a test of what the hub does with an event rather than of
+// the relay that carries it there: the relay publishes only up to the safe horizon, which any
+// transaction open on the test Postgres instance holds back (waitListening). The relay's own
+// carrying of an event to the hub is TestAnEventAnotherTaskCommittedReachesThisHub's.
+func (r *hubRig) hear(t *testing.T, event model.Event) {
+	t.Helper()
+	r.hub.mu.Lock()
+	g := r.hub.generation
+	r.hub.mu.Unlock()
+	if g == nil {
+		t.Fatalf("the hub runs no generation to hear %s", event.Type)
+	}
+	r.hub.receive(g, event)
 }
 
 // freshness is the next frame conn is sent, which must be a freshness frame.
@@ -2773,7 +2802,9 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	if refusal != nil {
 		t.Fatalf("a legion view of INFRA: %+v", refusal)
 	}
-	if spec.project != "INFRA" || spec.key != "legion|INFRA|" {
-		t.Fatalf("the spec = %+v, want the project it names and a key of its own", spec)
+	// parse sets the view's shape, and the hub's readFor makes its key of the shape and the reader
+	// (deliveryReaderKey), so two readers who see different projects never share one board view.
+	if spec.project != "INFRA" || spec.shape != "legion|INFRA|" {
+		t.Fatalf("the spec = %+v, want the project it names and a shape of its own", spec)
 	}
 }

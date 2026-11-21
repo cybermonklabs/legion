@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -616,7 +618,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -634,7 +636,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // failed with the bus would take every server process out of service at once.
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
 	database := storetest.Open(t)
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -662,7 +664,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -684,7 +686,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	failures.Inc([2]string{"reason", "denied"})
 
 	response := httptest.NewRecorder()
-	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /metrics status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -693,6 +695,42 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	}
 	if body := response.Body.String(); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 1`) {
 		t.Fatalf("GET /metrics body = %q, want the outbox's publish failures in it", body)
+	}
+}
+
+// A mount's read class names the check that decides what a caller may read of it
+// (readclass.Class), and the probes dispatchHandler mounts above the router hold no such check:
+// each answers whoever reaches Dispatch's HTTP port, with no credential. So each is classed as a
+// read of no row a caller's access decides (readclass.None). /metrics is one of them: it answers the
+// deployment's counters, which name no project, issue, person or session (readclass's
+// TestMetricsNameNoProject), to a caller that sends nothing, so readclass.Deployment, which a
+// restricted member and a credential that lists projects are refused, is not what it reads.
+func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *testing.T) {
+	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
+	})
+	mux, ok := dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).(*http.ServeMux)
+	if !ok {
+		t.Fatal("dispatchHandler answered no ServeMux, so the mounts it made cannot be read")
+	}
+	probes := slices.DeleteFunc(readclass.Patterns(mux), func(pattern string) bool { return pattern == "/" })
+	if !slices.Equal(probes, []string{"GET /healthz", "GET /livez", "GET /metrics"}) {
+		t.Fatalf("dispatchHandler mounts %q above the router, want the three probes", probes)
+	}
+	// Both probes a request with no dependency reaches are answered with no credential; /healthz
+	// reads the database, which this handler holds none of, and is classed as the other two are.
+	for _, path := range []string{"/livez", "/metrics"} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK && response.Code != http.StatusNoContent {
+			t.Fatalf("GET %s with no credential answered %d, want the probe's answer", path, response.Code)
+		}
+	}
+	for _, pattern := range probes {
+		if classes := readclass.ClassesOf(mux, pattern); !slices.Equal(classes, []readclass.Class{readclass.None}) {
+			t.Errorf("%s is mounted as a read of %q, want %q: it answers every caller, with no credential, and refuses none",
+				pattern, classes, readclass.None)
+		}
 	}
 }
 
@@ -705,7 +743,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -735,7 +773,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -774,7 +812,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil, nil)
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -812,7 +850,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
@@ -832,11 +870,74 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	}
 }
 
+// /healthz says that the service is degraded while the database holds a private project that
+// DISPATCH_PRIVATE_PROJECTS does not name, with one fixed reason code and nothing else: no key and
+// no count, since a probe answers a caller with no credential, and a key or a count tells it of a
+// project it cannot see (R2). The keys are the operator's, in the ERROR line the boot and each
+// maintenance pass log. It still answers 200 with ok true, so no probe takes the process out of
+// service for it. With none, the body is byte for byte the one a process with no such read
+// answers (R9).
+func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
+	database := storetest.Open(t)
+	probe := func(state *privateProjectsState) (int, string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
+			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		return response.Code, response.Body.String()
+	}
+	// read is the state as the boot leaves it: read once, before the listener serves.
+	read := func() *privateProjectsState {
+		t.Helper()
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+		if err != nil {
+			t.Fatalf("the first read of the private projects: %v", err)
+		}
+		return state
+	}
+	_, without := probe(nil)
+	if code, body := probe(read()); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
+	}
+	for _, key := range []string{"PRIV", "PRIVTWO"} {
+		if _, err := database.Pool.Exec(context.Background(),
+			`insert into projects (key, name, default_assignee, visibility) values ($1, 'Private', 'alice@example.com', 'private')`, key); err != nil {
+			t.Fatalf("seed the private project %s: %v", key, err)
+		}
+	}
+	code, body := probe(read())
+	var health map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &health); err != nil {
+		t.Fatalf("decode /healthz %s: %v", body, err)
+	}
+	if code != http.StatusOK || string(health["ok"]) != "true" {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
+	}
+	if got := string(health["degraded"]); got != `["`+unprovisionedPrivateProjectReason+`"]` {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want [%q]: %s", got, unprovisionedPrivateProjectReason, body)
+	}
+	if strings.Contains(body, "PRIV") {
+		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
+	}
+	// No count either: the body is the one without the read, field for field, plus degraded alone,
+	// so nothing in it changes with how many projects are unprovisioned.
+	delete(health, "degraded")
+	var withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
+		t.Fatalf("decode /healthz %s: %v", without, err)
+	}
+	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
+	}
+}
+
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
-// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// from the attempt it holds, with that attempt's time in UTC, and a failed one's cause by its class
+// alone: the status GitHub answered ("status 503"), or "no status" for a failure that carries
+// none, since the cause's text can name a repository (gitHubReadCauseClass). `at` and `cause` are
+// present and null wherever the state carries neither, and the four keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -869,7 +970,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	fromTheCopy := map[string]map[string]any{
 		"webhook_redelivery":  entry("no_attempt", nil, nil),
 		"architecture_import": entry("succeeded", &succeededAt, nil),
-		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"delivery_reconcile":  entry("failed", &failedAt, new("status 503")),
 		"ci_reconcile":        entry("off", nil, nil),
 	}
 
@@ -892,6 +993,15 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		"architecture_import": entry("unknown", nil, nil),
 		"delivery_reconcile":  entry("unknown", nil, nil),
 		"ci_reconcile":        entry("off", nil, nil),
+	})
+
+	// A failure that carries no status GitHub answered is the class "no status".
+	unanswered := &gitHubReads{recordCopy: loadedGitHubReadCopy(t, []githubreads.Recorded{
+		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: `GET https://api.github.com/repos/acme/deploy/pulls: dial tcp: lookup api.github.com: no such host`},
+	}), runs: reads.runs}
+	_, health = probeGitHubReads(t, database, unanswered)
+	requireGitHubReads(t, "with a failure that carries no status", health.GitHub, map[string]map[string]any{
+		"delivery_reconcile": entry("failed", &failedAt, new("no status")),
 	})
 }
 
@@ -921,7 +1031,7 @@ type gitHubReadsHealth struct {
 func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (int, gitHubReadsHealth) {
 	t.Helper()
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health gitHubReadsHealth
 	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health response %s: %v", response.Body.String(), err)
@@ -1003,7 +1113,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
+		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil, nil), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -1067,7 +1177,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -1128,7 +1238,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -1179,7 +1289,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -1239,7 +1349,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}

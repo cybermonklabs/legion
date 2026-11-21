@@ -1341,6 +1341,20 @@ The two-build job's Go step alone, behind a gate of its own (ci-job-dispatch-two
 says why). The dispatch_two_builds output decides whether the job runs at all, the `full-ci` term with
 it, so this one carries only the dispatched term.
 
+## The private-projects blob driver's job
+
+The private-projects acceptance drivers (dispatch-project-access, ci-job-dispatch-project-access.yaml
+holds the steps and why they are what they are): from packages/dispatch, e2e/acceptance/project-access.sh
+walks every route as each caller, with every project public and with PRIV made private by the
+store's own write, and e2e/acceptance/project-access-blob.sh builds ./cmd/dispatch of this tree
+and of the merge base through scripts/e2e/lib/two-builds.sh and the rig it sources, starts both
+beside the browser harness's fake Envoy (e2e/fake-envoy.ts, which imports the contracts), and
+compares what each caller reads of the two. The head build's closure spans most of packages/envoy,
+so the filter names the module whole: what every caller reads is the drivers' subject. The run
+reads a few hundred routes from each build, minutes rather than tens of them, so the output
+carries no `full-ci` term: a pull request that changes what any caller reads finds out on its own
+run.
+
 ## Why the tool fallback proof carries no full-ci term
 
 The second source of every tool install, proved by driving it: no `full-ci` term, so the

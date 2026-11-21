@@ -8,11 +8,19 @@ import {
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api, apiErrorMessage, type WriteBounds, type WriteMethod } from "../../api/client";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { Switch } from "../../components/Switch";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderDefault,
   card,
@@ -31,10 +39,11 @@ import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
- *  owner, one person or group named on its access list or taken off it, or the Slack channels
- *  its credentials may post to. */
+ *  owner, made public or private, one person or group named on its access list or taken off it,
+ *  or the Slack channels its credentials may post to. */
 type AccessChange =
   | { readonly kind: "owner"; readonly owner: string }
+  | { readonly kind: "visibility"; readonly visibility: ProjectAccess["visibility"] }
   | { readonly kind: "add-person" | "remove-person"; readonly email: string }
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
@@ -44,7 +53,7 @@ type AccessChange =
 type AccessSave = Mutation<ProjectAccess | null, Error, KeyedPress<AccessChange>>;
 
 /** Which part of the panel a change belongs to, and so where its refusal is shown. */
-type AccessPart = "owner" | "people" | "groups" | "slack";
+type AccessPart = "owner" | "visibility" | "people" | "groups" | "slack";
 
 /** What one change of a project's access is: the request that makes it and that request's
  *  method, what the shell's pending-writes indicator names it, the part of the panel its refusal
@@ -73,6 +82,17 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
         part: "owner",
         refusal: `Couldn't give ${project} to ${change.owner}.`,
         unconfirmed: `${project}'s new owner, ${change.owner}`,
+        made: "saved",
+      };
+    case "visibility":
+      return {
+        write: (bounds) =>
+          api.patchProjectAccess(project, { visibility: change.visibility }, bounds),
+        method: "PATCH",
+        label: `Make ${project} ${change.visibility}`,
+        part: "visibility",
+        refusal: `Couldn't make ${project} ${change.visibility}.`,
+        unconfirmed: `${project}'s visibility, ${change.visibility}`,
         made: "saved",
       };
     case "add-person":
@@ -126,6 +146,41 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
         unconfirmed: `${project}'s Slack channels`,
         made: "saved",
       };
+  }
+}
+
+/** What the owner who pressed the Private switch reads when Dispatch refuses it, by the refusal's
+ *  code. Dispatch's own words for these refusals are written for the deployment's operator (a
+ *  table, an envoy-dispatch command, a setting, the hub's bucket) and stay in the server's log and
+ *  record, so none of them is drawn here: each code the route answers (`api/project_access.go`)
+ *  has a sentence that says what the owner can do, and a code this dashboard does not know has one
+ *  that names nothing of Dispatch's. None offers Retry: each answer stays the same until someone
+ *  changes the deployment, the store or the project, and the switch itself can still be pressed.
+ *  PRIVATE_PROJECTS_UNAVAILABLE is one of them: this release of Dispatch has no writer of the
+ *  hub's private-projects record, so it refuses with that code every switch to private that passes
+ *  the other checks (`cmd/dispatch/README.md`). */
+function switchRefusal(
+  project: string,
+  visibility: ProjectAccess["visibility"],
+  code: string | undefined
+): string {
+  switch (code) {
+    case "PRIVATE_PROJECTS_OFF":
+      return "This deployment cannot make a project private yet: ask its operator to set up private projects.";
+    case "PRIVATE_PROJECT_NOT_PROVISIONED":
+      return `This deployment has not set up ${project} to be private: ask its operator to set it up.`;
+    case "PRIVATE_PROJECTS_INCOMPLETE":
+      return `This deployment is not ready to keep ${project} private yet: ask its operator to finish setting up private projects.`;
+    case "PRIVATE_PROJECTS_UNAVAILABLE":
+      return `This deployment cannot keep ${project}'s messages from other people yet, so ${project} stays public: ask its operator to set up private projects.`;
+    case "PROJECT_OWNER_REQUIRED":
+      return `Only ${project}'s owner can change who may see it.`;
+    case "PROJECT_NOT_FOUND":
+      return `You can no longer see ${project}, so you cannot change who may see it.`;
+    case "PROJECT_ACCESS_INPUT":
+      return "Dispatch did not take this change: reload the page and press the switch again.";
+    default:
+      return `Dispatch did not make ${project} ${visibility}: if this keeps happening, ask the deployment's operator.`;
   }
 }
 
@@ -253,11 +308,16 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
 
 /**
  * A project's Access tab: its one owner, its visibility, and the people and groups its access
- * list names, with the owner's controls to name and take off each and to give the project to
- * another person. Only the owner changes any of it, so every control is disabled for anyone else,
- * with the reason as its title and on the page above them; whether the reader is the owner is
- * `/auth/whoami`'s `login` against the answer's `owner`, read from the identity the shell already
- * holds. Visibility is shown and not offered: a project cannot be made private in this release.
+ * list names, with the owner's controls to name and take off each, to make the project public or
+ * private, and to give it to another person. Only the owner changes any of it, so every control
+ * is disabled for anyone else, with the reason as its title and on the page above them; whether
+ * the reader is the owner is `/auth/whoami`'s `login` against the answer's `owner`, read from the
+ * identity the shell already holds. Dispatch refuses the switch with a code (PRIVATE_PROJECTS_OFF,
+ * PRIVATE_PROJECT_NOT_PROVISIONED, PRIVATE_PROJECTS_INCOMPLETE, PRIVATE_PROJECTS_UNAVAILABLE and
+ * others), and the switch shows beside it the owner's sentence for that code (`switchRefusal`),
+ * never Dispatch's own words, which are the operator's. A switch to public, which shows the
+ * project and everything in it to every full member, is sent only once the owner confirms it, as
+ * giving the project away is; a switch to private asks nothing, since it shows nobody more.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -267,7 +327,11 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const [groupDraft, setGroupDraft] = useState("");
   const [channelsDraft, setChannelsDraft] = useState<string | null>(null);
   const access = useQuery(projectAccessQuery(project));
-  const groups = useQuery(accessGroupsQuery());
+  // The groups are only the owner's to add, and the list is the deployment's, which Dispatch
+  // refuses a restricted member (`useRestrictedMember`); an owner is a full member, so such a
+  // reader is never offered a group and never asked for the list.
+  const restricted = useRestrictedMember();
+  const groups = useQuery({ ...accessGroupsQuery(), enabled: !restricted });
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // A landed change lets go of the draft it was made from, and of no newer one.
   const write = useAccessWrite(project, (change) => {
@@ -312,6 +376,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const people = access.data.people ?? [];
   const notSignedIn = new Set(access.data.not_signed_in ?? []);
   const listedGroups = access.data.groups ?? [];
+  const isPrivate = access.data.visibility === "private";
   const channelsText = (access.data.slack_channels ?? []).join(" ");
   const channelsChangedAt = access.data.slack_channels_changed_at ?? null;
   const refusal =
@@ -325,6 +390,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     .filter((name) => !listedGroups.includes(name));
   const groupRefusal = refusal ?? groupsRefusal(groups, available);
   const pendingOf = (match: (change: AccessChange) => boolean) => write.pending.some(match);
+  const visibilityPending = pendingOf((change) => change.kind === "visibility");
   const refusalIn = (part: AccessPart): ReactNode => {
     const refused = write.refused;
     if (refused === undefined) {
@@ -334,28 +400,41 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     if (operation.part !== part) {
       return null;
     }
+    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a request
+    // Dispatch did not answer, a save the reader stopped, and every other part's refusal keep the
+    // operation's line and its Retry.
+    const shown =
+      refused.change.kind === "visibility" && refused.error instanceof ApiError
+        ? {
+            message: switchRefusal(project, refused.change.visibility, refused.error.code),
+            retry: false,
+          }
+        : {
+            message:
+              refused.error instanceof SendStoppedError
+                ? // The refusal is read from the mutation cache, not from a `KeyedWriteResult`,
+                  // so the method is the change's own (`accessOperation`). A panel opened after
+                  // the save holds no press to make again, so its Retry is a new save under a new
+                  // key. A save whose key ran out leaves no press to make again in any panel, the
+                  // one that made it included, and its note says what that Retry is
+                  // (`expiredRetryNote`).
+                  stoppedWriteNote(
+                    operation.unconfirmed,
+                    operation.made,
+                    refused.madeHere || !retriesUnderItsKey(refused.error)
+                      ? { method: operation.method, stopped: refused.error }
+                      : {
+                          anew: "This panel was opened after that save, so Retry sends it as a new save.",
+                        }
+                  )
+                : apiErrorMessage(refused.error, operation.refusal),
+            retry: true,
+          };
     return (
       <div className="mt-3">
         <QueryError
-          message={
-            refused.error instanceof SendStoppedError
-              ? // The refusal is read from the mutation cache, not from a `KeyedWriteResult`, so
-                // the method is the change's own (`accessOperation`). A panel opened after the
-                // save holds no press to make again, so its Retry is a new save under a new key. A
-                // save whose key ran out leaves no press to make again in any panel, the one that
-                // made it included, and its note says what that Retry is (`expiredRetryNote`).
-                stoppedWriteNote(
-                  operation.unconfirmed,
-                  operation.made,
-                  refused.madeHere || !retriesUnderItsKey(refused.error)
-                    ? { method: operation.method, stopped: refused.error }
-                    : {
-                        anew: "This panel was opened after that save, so Retry sends it as a new save.",
-                      }
-                )
-              : apiErrorMessage(refused.error, operation.refusal)
-          }
-          onRetry={write.retry}
+          message={shown.message}
+          onRetry={shown.retry ? write.retry : undefined}
           retrying={pendingOf((change) => accessOperation(project, change).part === part)}
         />
       </div>
@@ -445,16 +524,46 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         <h2 className={headingClass} id={`${ids}-visibility`}>
           Visibility
         </h2>
-        <p
-          className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
-          data-testid="access-visibility"
-        >
-          {access.data.visibility === "private" ? "Private" : "Public"}
-        </p>
+        <div className="mt-1 flex items-center gap-3">
+          {/* The switch follows Dispatch's answer, not the press: it reads the stored visibility,
+              and a refusal from Dispatch leaves it where it was. While a change of it is out, or
+              while the reader is refused it, it cannot be pressed, and says so with
+              `aria-disabled`, never `disabled`: a browser takes the focus off a control that
+              becomes disabled under it, which would drop a keyboard reader who pressed the switch
+              to the page's body. */}
+          <Switch
+            aria-describedby={refusal === null ? undefined : noteId}
+            aria-disabled={refusal === null && !visibilityPending ? undefined : true}
+            aria-label="Private"
+            checked={isPrivate}
+            className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+            onClick={() => {
+              if (refusal !== null || visibilityPending) return;
+              if (
+                isPrivate &&
+                !window.confirm(
+                  `Make ${project} public? Every full member can then see it and everything in it.`
+                )
+              ) {
+                return;
+              }
+              write.save({ kind: "visibility", visibility: isPrivate ? "public" : "private" });
+            }}
+            title={refusal ?? undefined}
+          />
+          <p
+            className={`text-sm font-medium ${textPrimaryOnCanvas}`}
+            data-testid="access-visibility"
+          >
+            {isPrivate ? "Private" : "Public"}
+          </p>
+        </div>
         <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-          Every full member can see a public project. A restricted member, who signs in from outside
-          the company, sees it only when the people below name them directly.
+          Every full member can see a public project. A private project is seen only by its owner
+          and the people and groups below. A restricted member, who signs in from outside the
+          company, sees either only when the people below name them directly.
         </p>
+        {refusalIn("visibility")}
       </section>
 
       <section aria-labelledby={`${ids}-slack`}>
@@ -628,11 +737,18 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           </RefusableButton>
         </form>
         <p className={`mt-2 text-sm ${textMutedOnSurface}`}>
-          A group admits only its full members. Groups are made and edited in{" "}
-          <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
-            Settings → Groups
-          </Link>
-          .
+          A group admits only its full members.
+          {/* A restricted member's Settings draws no Groups, so they are sent to none. */}
+          {restricted ? null : (
+            <>
+              {" "}
+              Groups are made and edited in{" "}
+              <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
+                Settings → Groups
+              </Link>
+              .
+            </>
+          )}
         </p>
         {groups.isError ? (
           <div className="mt-3">

@@ -75,7 +75,7 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 	var event model.Event
 	if err := inTx(t, database, func(tx pgx.Tx) error {
 		var err error
-		answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", []string{"GABCDEFGH1", "C012345678", "C012345678"}, by, by)
+		answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", []string{"GABCDEFGH1", "C012345678", "C012345678"}, by, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("SetSlackChannels: %v", err)
@@ -85,8 +85,8 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 		t.Fatalf("channels = %v (stored %v), want %v sorted and deduplicated", answer.SlackChannels, slackChannelsOf(t, database.Pool, "PUB"), want)
 	}
 	payload, ok := event.Payload.(model.ProjectAccessEventPayload)
-	if event.Type != "project.access_changed" || !ok || payload.Change != model.AccessSlackChannelsChanged || !slices.Equal(payload.SlackChannels, want) {
-		t.Fatalf("appended %s %+v, want project.access_changed with change %s carrying the list", event.Type, event.Payload, model.AccessSlackChannelsChanged)
+	if want := (model.ProjectAccessEventPayload{Project: "PUB", Change: model.AccessSlackChannelsChanged}); event.Type != "project.access_changed" || !ok || payload != want {
+		t.Fatalf("appended %s %+v, want project.access_changed carrying %+v alone, no channel id", event.Type, event.Payload, want)
 	}
 
 	seventeen := make([]string, 17)
@@ -103,7 +103,7 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 		{"seventeen ids", seventeen, "17"},
 	} {
 		err := inTx(t, database, func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", refused.channels, by, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", refused.channels, by, nil)
 			return err
 		})
 		if err == nil || !strings.Contains(err.Error(), refused.names) {
@@ -150,7 +150,7 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 				return err
 			}
 			var err error
-			if answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", channels, by, by); err != nil {
+			if answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", channels, by, nil); err != nil {
 				return err
 			}
 			return tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&after)
@@ -162,7 +162,8 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 	if got := changedAtOf(t, database.Pool, "PUB"); got != nil {
 		t.Fatalf("PUB's channels time before any write = %v, want null", got)
 	}
-	if read, err := ReadProject(ctx, database.Pool, "PUB"); err != nil || read.SlackChannelsChangedAt != nil {
+	server := viewerArg(t, *model.ServerViewer)
+	if read, err := ReadProject(ctx, database.Pool, "PUB", server); err != nil || read.SlackChannelsChangedAt != nil {
 		t.Fatalf("ReadProject of PUB before any write = %+v, %v; want its channels time null", read, err)
 	}
 
@@ -177,15 +178,19 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 	if first == nil || first.Before(before) || first.After(after) {
 		t.Fatalf("PUB's first write left its channels time at %v, want the write's own statement time, from %v to %v", first, before, after)
 	}
-	payload, _ := event.Payload.(model.ProjectAccessEventPayload)
-	read, readErr := ReadProject(ctx, database.Pool, "PUB")
+	// project.access_changed names the project and the change alone, no list and no time (every
+	// reader of the project's events reads it), so the time is carried by the write's answer, the
+	// access read and the membership answer.
+	if payload, ok := event.Payload.(model.ProjectAccessEventPayload); !ok || payload.Change != model.AccessSlackChannelsChanged {
+		t.Errorf("the write's project.access_changed = %#v, want the slack_channels change", event.Payload)
+	}
+	read, readErr := ReadProject(ctx, database.Pool, "PUB", server)
 	membership, answerErr := Answer(ctx, database.Pool, "PUB", "")
 	for _, carried := range []struct {
 		name string
 		at   *time.Time
 	}{
 		{"the write's answer", answer.SlackChannelsChangedAt},
-		{"the write's project.access_changed", payload.SlackChannelsChangedAt},
 		{"ReadProject", read.SlackChannelsChangedAt},
 		{"the membership answer", membership.SlackChannelsChangedAt},
 	} {
@@ -213,14 +218,14 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 // TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt: a Slack channel belongs to one
 // private project, so a write of a private project's list naming a channel another private project
 // lists is refused with ErrSlackChannelShared and writes nothing. The refusal names the other
-// project only to a caller who sees it by the read rule: Resolve over the request's own caller,
-// which the write is handed beside the person it records. An agent credential with no list sees
-// only public projects, so it reads the refusal that names no project however much its person
-// sees, and so does a caller with no person and no credential. A public project's list
-// is never refused for sharing a channel. OTHER is private and names C0SHARED001 here; each write
-// is of PRIV's list, or PUB's. Controls: name OTHER to a credential with no list whenever its
-// person sees OTHER, and olga's token and broker token listing nothing fail naming it; refuse a
-// public project's write too, and PUB's row fails.
+// project only to a caller who sees it by the read rule: the viewer Resolve answers for the
+// request's own caller, which the write is handed beside the person it records, and nothing the
+// write resolves itself. An agent credential with no list sees only public projects, so it reads
+// the refusal that names no project however much its person sees, and so does a write handed no
+// viewer. A public project's list is never refused for sharing a channel. OTHER is private and
+// names C0SHARED001 here; each write is of PRIV's list, or PUB's. Controls: name OTHER whenever
+// the recorded person sees it, and olga's token and broker token listing nothing fail naming it;
+// refuse a public project's write too, and PUB's row fails.
 func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -256,7 +261,7 @@ func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) 
 		// The owner's write runs as the caller's person; the refusal is written for the caller.
 		by := model.Actor{Kind: "user", ID: viewer.Person}
 		err = inTx(t, database, func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, row.caller)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, &viewer)
 			return err
 		})
 		if !errors.Is(err, ErrSlackChannelShared) || err.Error() != row.want {
@@ -267,13 +272,13 @@ func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) 
 		}
 	}
 	if err := inTx(t, database, func(tx pgx.Tx) error {
-		_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, model.Actor{Kind: "user", ID: olga}, model.Actor{})
+		_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, model.Actor{Kind: "user", ID: olga}, nil)
 		return err
 	}); !errors.Is(err, ErrSlackChannelShared) || err.Error() != hidden {
-		t.Errorf("a write for a caller with no person and no credential = %v, want ErrSlackChannelShared reading %q", err, hidden)
+		t.Errorf("a write handed no viewer = %v, want ErrSlackChannelShared reading %q", err, hidden)
 	}
 	if err := inTx(t, database, func(tx pgx.Tx) error {
-		_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", []string{"C0SHARED001"}, cookie(olga), cookie(olga))
+		_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", []string{"C0SHARED001"}, cookie(olga), nil)
 		return err
 	}); err != nil {
 		t.Errorf("a write of public PUB's list naming OTHER's channel = %v, want it stored: a public project's list is never refused for sharing", err)

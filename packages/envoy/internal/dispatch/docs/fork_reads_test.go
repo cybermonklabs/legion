@@ -489,7 +489,7 @@ func TestForkReadsAMarkQuoteAnswersItsAnchorAndAVersionAfterItReusesItsRendering
 			t.Run(mode.name+"/outside the schema/"+outside.name, func(t *testing.T) {
 				document, quote := outside.document(t)
 				mode.prepare(t, service, document)
-				_, readErr := service.Text(context.Background(), document)
+				_, readErr := service.Text(context.Background(), serverReader, document)
 				var readRefusal *OutsideSchemaError
 				if !errors.As(readErr, &readRefusal) {
 					t.Fatalf("a read of the document answered %v, want an OutsideSchemaError", readErr)

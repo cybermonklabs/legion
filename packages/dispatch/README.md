@@ -144,8 +144,8 @@ DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone se
 ```
 
 `DISPATCH_E2E_ACCESS_ISSUER=1` gives a run the secrets broker's service-account token, so a
-driver can read the membership answer (`GET /api/v1/access/projects/{key}`,
-`GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), which a harness without it
+driver can read the routes `DISPATCH_ACCESS_ACCOUNTS` gates (the membership answer and the
+repository answer, listed in `packages/envoy/cmd/dispatch/README.md`), which a harness without it
 refuses to every caller. The harness then starts one row more before the server,
 `e2e/run-access-issuer.sh`: `packages/envoy/cmd/dev-oidc-issuer`, which keeps the broker
 account's token in a file in the harness's own directory and reports its port as
@@ -179,6 +179,18 @@ next run holding a stubbed row was refused with
 `http://127.0.0.1:4319/index.html is already used`. It is Playwright's own leak, not this
 suite's - a run of the stubbed layer alone, which installs no signal handler here, leaks the
 same server - so `kill` that process, or use a Ctrl-C, which stops everything.
+
+A run killed outright - SIGKILL, an out-of-memory kill, a runner that crashes - runs no stop,
+and what it started stops all the same: each harness, and each run's stack Postgres, hands
+what it starts to a reaper (`Reaper`, `e2e/local-instance-support.ts`), which ends it once the
+process that started it is gone: every process group of the harness, each stack's container
+by the name the harness gives it, unique to the run, and each cluster of the binaries provider
+by its data directory. A container and a cluster are handed over before `docker run` or
+`pg_ctl start` begins, so a run killed while one starts leaves nothing the reaper cannot name,
+and the reaper removes again while a start of that name or data directory still runs.
+`e2e/__tests__/harness-orphans.test.ts` kills the parent of each with SIGKILL and finds
+nothing left: the listeners and an interrupted start in every run, and a stack's real Postgres
+where the run names a provider (`DISPATCH_E2E_PG_IMAGE` or `DISPATCH_E2E_PG_BIN`).
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session

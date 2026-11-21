@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -22,15 +24,19 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// listRepoProjects answers the repository mappings of the projects the caller sees: a mapping to a
+// project it does not see is one the list does not hold (access.ProjectClause).
 func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+repoProjectColumns+`
 		from repo_projects
+		where `+access.ProjectClause("project", "$1")+`
 		order by repo
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -69,7 +75,9 @@ type putRepoProjectInput struct {
 // owner/name and needs no mapping, so no issue holds a mapping in place. Every mapping the write
 // changes emits settings.repo_project.updated on its project, and a moved mapping emits one on
 // the project it left too, deleted:true there. lockRepoProjectWrite orders the write against
-// every other one.
+// every other one. A write that leaves the mapping its project's default is 403
+// REPOSITORY_NOT_AVAILABLE when the GitHub proxy hides the repository from the caller
+// (refuseRepoHidden), as an issue's own repository is.
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised and held to
 // GitHub's names as a source repository is (parseRepoRename). **Absent, and JSON null, leave the
@@ -97,8 +105,12 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	input.Project = strings.TrimSpace(input.Project)
-	if !projectKeyPattern.MatchString(input.Project) {
+	if !contracts.ValidProjectKey(input.Project) {
 		writeError(w, "INVALID_REPO_PROJECT", http.StatusBadRequest, projectKeyProblem("project", input.Project))
 		return
 	}
@@ -107,7 +119,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", input.Project).Scan(new(string)); err != nil {
+	// The target project as the writer reads it: one it does not see is a project no row holds.
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1 and "+
+		access.ProjectClause("key", "$2"), input.Project, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -123,7 +137,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor, input.Project)
+	previous, hidden, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor, &who, input.Project)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -132,6 +146,37 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	isDefault := previous != nil && !moved && previous.Default
 	if input.Default != nil {
 		isDefault = *input.Default
+	}
+	// A project's default is the repository each of its issues that names none resolves to, so a
+	// mapping this write leaves as a default is held to the rule an issue's own repository is
+	// (refuseRepoHidden), under the mapping's locks and before anything is written, and so is a
+	// write that moves or clears the default its project held: that takes the repository from the
+	// project's issues, which can show it to a reader the proxy hid it from. It is asked first, of
+	// the repository the path names, so a write naming a repository the proxy hides answers that
+	// refusal whether or not a hidden project's mapping holds it.
+	if isDefault || (previous != nil && previous.Default && (moved || !isDefault)) {
+		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A mapping of a project the writer does not see is one the write cannot move: it is answered
+	// exactly as a project no row holds, as the target above is (projectSeenBy). lockRepoProjectWrite
+	// answered it hidden before it took that project's locks, and a hidden mapping is refused
+	// whatever the write asks, since none of its locks is held; a project it saw is asked again under
+	// them, since an access change it waited behind may have taken it from the writer.
+	if hidden || moved {
+		seen := !hidden
+		if seen {
+			if seen, err = projectSeenBy(r.Context(), tx, who, previous.Project); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if !seen {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
 	}
 	// An absent or null renamed_to keeps the pair the mapping already holds, and a row this
 	// write creates holds none; `""` clears one, which adds no edge to the rename graph and so
@@ -229,6 +274,10 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	spelled := deletedRepoProjectSpelling(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -236,10 +285,27 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, spelled, actor)
+	previous, hidden, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, spelled, actor, &who)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A mapping of a project the writer does not see is one no row holds (projectSeenBy): it is
+	// answered as a path that names no stored mapping, and nothing is removed. lockRepoProjectWrite
+	// answered it hidden before it took that project's locks; a project it saw is asked again under
+	// them.
+	if hidden {
+		previous = nil
+	}
+	if previous != nil {
+		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !seen {
+			previous = nil
+		}
 	}
 	if previous == nil {
 		if err := checkRepoProjectPath(spelled); err != nil {
@@ -248,6 +314,16 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	// A project's default is the repository each of its issues that names none resolves to, and
+	// removing it gives that repository to no issue of the project, which can show it to a reader
+	// the proxy hid it from: the removal is held to the rule an issue's own repository is
+	// (refuseRepoHidden), as a write that leaves a default is.
+	if previous.Default {
+		if err := refuseRepoHidden(r.Context(), tx, who, &previous.Repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if _, err := tx.Exec(r.Context(), `delete from repo_projects where repo = $1`, previous.Repo); err != nil {
 		s.writeHandlerError(w, err)
@@ -282,42 +358,57 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //     change under it. No issue write takes a lock on this row: an issue names any owner/name as
 //     its repository, mapped or not, so nothing an issue write does depends on this row.
 //
+// A mapping whose current project who does not see (projectSeenBy) is answered hidden before any
+// lock of that project is taken: the mapping as read under repo's own lock alone, hidden true, and
+// neither the project's owner lock nor the row's. A write of such a mapping is refused as one of a
+// project no row holds, and a refusal that waited behind the hidden project's writers would tell
+// its writer that someone writes that project. A project who sees is locked and asked again by the
+// caller under the lock. A nil who sees every project.
+//
 // Every writer of a mapping goes through here: the PUT, the DELETE and the boot seed
 // (SeedRepoProjects).
-func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
+func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, who *model.Actor, projects ...string) (*model.RepoProject, bool, error) {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
 	`, repo); err != nil {
-		return nil, fmt.Errorf("lock repository mapping %s: %w", repo, err)
+		return nil, false, fmt.Errorf("lock repository mapping %s: %w", repo, err)
 	}
-	var current string
-	err := tx.QueryRow(ctx, `select project from repo_projects where repo = $1`, repo).Scan(&current)
+	current, err := scanRepoProject(tx.QueryRow(ctx, `select `+repoProjectColumns+` from repo_projects where repo = $1`, repo))
 	switch {
 	case err == nil:
-		projects = append(projects, current)
+		if who != nil {
+			seen, err := projectSeenBy(ctx, tx, *who, current.Project)
+			if err != nil {
+				return nil, false, err
+			}
+			if !seen {
+				return &current, true, nil
+			}
+		}
+		projects = append(projects, current.Project)
 	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, err
+		return nil, false, err
 	}
 	if len(projects) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	owners := make([]model.Event, 0, len(projects))
 	for _, project := range projects {
 		owners = append(owners, projectOwner(project).event("", actor, nil))
 	}
 	if err := broker.LockOwners(ctx, tx, owners...); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	mapping, err := scanRepoProject(tx.QueryRow(ctx, `
 		select `+repoProjectColumns+` from repo_projects where repo = $1 for update
 	`, repo))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &mapping, nil
+	return &mapping, false, nil
 }
 
 // SeedRepoProjects adds the DISPATCH_REPO_PROJECTS mappings (`owner/repo=KEY,...`) whose
@@ -364,7 +455,7 @@ func seedRepoProject(ctx context.Context, database *store.Store, broker *events.
 	if !exists {
 		return fmt.Errorf("project %s does not exist", project)
 	}
-	previous, err := lockRepoProjectWrite(ctx, tx, broker, repo, actor, project)
+	previous, _, err := lockRepoProjectWrite(ctx, tx, broker, repo, actor, nil, project)
 	if err != nil || previous != nil {
 		return err
 	}
@@ -394,9 +485,28 @@ func repoProjectEvent(mapping model.RepoProject, actor model.Actor, deleted bool
 	)
 }
 
-func (s *server) repoProject(ctx context.Context, repo string) (string, error) {
+// projectSeenBy reports whether who sees project key (access.ProjectClause). A mapping write reads
+// it of the project a mapping is in before it moves or removes that mapping, so a mapping of a
+// project the writer does not see is one the write cannot reach. A reader that sees every object,
+// as every open viewer of a deployment with no private project does, sees every project and reads
+// no statement for it (R9).
+func projectSeenBy(ctx context.Context, q queryer, who model.Actor, key string) (bool, error) {
+	if seesEveryObject(who) {
+		return true, nil
+	}
+	var seen bool
+	err := q.QueryRow(ctx, "select exists (select 1 from projects where key = $1 and "+
+		access.ProjectClause("key", "$2")+")", key, refs.VisibilityArg(who)).Scan(&seen)
+	return seen, err
+}
+
+// repoProject is the project repo maps to, as who reads the mapping: "" for a repository no
+// mapping holds, and for one a mapping of a project who does not see holds, so an external
+// reference into a hidden project answers as an unmapped repository and names nothing of it.
+func (s *server) repoProject(ctx context.Context, who model.Actor, repo string) (string, error) {
 	var project string
-	err := s.deps.Store.Pool.QueryRow(ctx, "select project from repo_projects where repo = $1", repo).Scan(&project)
+	err := s.deps.Store.Pool.QueryRow(ctx, "select project from repo_projects where repo = $1 and "+
+		access.ProjectClause("project", "$2"), repo, refs.VisibilityArg(who)).Scan(&project)
 	if err == nil {
 		return project, nil
 	}

@@ -32,7 +32,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -183,7 +186,11 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readLegionBoard(r.Context(), project)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	population, err := s.readLegionBoard(r.Context(), who, project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			writeError(w, legionNotConfiguredCode, http.StatusNotFound, legionNotConfiguredMessage)
@@ -255,20 +262,27 @@ type legionBoardIssue struct {
 	priority *int
 }
 
-// readLegionBoard reads one project's board. A project with no Legion setting is legion's
-// ErrNoSettings, which the route answers 404 and the live hub refuses the subscription with.
-func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBoardPopulation, error) {
+// readLegionBoard reads one project's board as who reads it. A project with no Legion setting is
+// legion's ErrNoSettings, which the route answers 404 and the live hub refuses the subscription
+// with. The daemon reports each blocked issue's blockers by key, and a blocker may be an issue of
+// another project, so an issue who may not see is left out of its card (leaveOutHiddenBlockers),
+// as an issue's own blocked_by leaves it out (leaveOutHiddenIssueReferences).
+func (s *server) readLegionBoard(ctx context.Context, who model.Actor, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
-	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
+	viewer := refs.VisibilityArg(who)
+	if _, err := legion.GetSettings(ctx, pool, project, viewer); err != nil {
 		return nil, err
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
-	if err := population.readSampled(ctx, pool); err != nil {
+	if err := population.readSampled(ctx, pool, viewer); err != nil {
 		return nil, err
 	}
-	if err := population.readIssues(ctx, pool); err != nil {
+	if err := population.leaveOutHiddenBlockers(ctx, pool, who); err != nil {
+		return nil, err
+	}
+	if err := population.readIssues(ctx, pool, who); err != nil {
 		return nil, err
 	}
 	if err := population.readPhaseWork(ctx, pool); err != nil {
@@ -277,36 +291,73 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	return population, nil
 }
 
+// leaveOutHiddenBlockers drops from the daemon's admission block every blocker that is an issue of
+// a project who may not see (access.ProjectClause). A key the daemon reports that no issue holds
+// stays as the daemon said it, which is what a deployment with no private project shows: what
+// is left out is an issue's key, and a card holds no sign of it. A reader that sees every object
+// keeps every key, with no read.
+func (p *legionBoardPopulation) leaveOutHiddenBlockers(ctx context.Context, q queryer, who model.Actor) error {
+	if p.admission == nil || seesEveryObject(who) {
+		return nil
+	}
+	var keys []string
+	for _, blocked := range p.admission.Blocked {
+		keys = append(keys, blocked.BlockedBy...)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	rows, err := q.Query(ctx, `
+		select key from issues where key = any($1::text[]) and not `+access.ProjectClause("project_key", "$2"),
+		keys, refs.VisibilityArg(who))
+	if err != nil {
+		return err
+	}
+	hidden, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(hidden) == 0 {
+		return err
+	}
+	for index, blocked := range p.admission.Blocked {
+		p.admission.Blocked[index].BlockedBy = slices.DeleteFunc(slices.Clone(blocked.BlockedBy), func(blocker string) bool {
+			return slices.Contains(hidden, blocker)
+		})
+	}
+	return nil
+}
+
 // readSampled reads what the sampler writes of the project — the newest read of its daemon, the
 // header's (readDaemonRead), and its legion_current, the cards' and the walk's (readCurrent) — in
 // one repeatable-read, read-only transaction, so the two answer one moment. RecordRead commits a
 // read's row and its observations together, and two reads at two moments would still let a commit
-// between them put the header of one read of the daemon over the cards of another.
-func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool) error {
+// between them put the header of one read of the daemon over the cards of another. Each statement
+// binds the project's clause for the board's reader (viewer, refs.VisibilityArg), so it holds on
+// its own rather than on legionProject's earlier read of the project.
+func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool, viewer any) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err := p.readDaemonRead(ctx, tx); err != nil {
+	if err := p.readDaemonRead(ctx, tx, viewer); err != nil {
 		return err
 	}
-	if err := p.readCurrent(ctx, tx); err != nil {
+	if err := p.readCurrent(ctx, tx, viewer); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows.
-func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) error {
+// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows, of
+// a project the reader sees (access.ProjectClause).
+func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx, viewer any) error {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `
 		select read_at, ok, error
 		from legion_reads
-		where project = $1
+		where project = $1 and `+access.ProjectClause("$1", "$2")+`
 		order by read_at desc, id desc
 		limit 1
-	`, p.project).Scan(&read.at, &read.ok, &read.failure)
+	`, p.project, viewer).Scan(&read.at, &read.ok, &read.failure)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -321,8 +372,8 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) e
 // transaction, so the cards and the tree walk answer the snapshot the header does. Its Newest are
 // the cards, and the project's own rows under legion.AdmissionKey (observeProject); its Reported
 // is the walk's (treeNode).
-func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) error {
-	current, err := legion.ReadCurrent(ctx, tx, p.project)
+func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx, viewer any) error {
+	current, err := legion.ReadCurrent(ctx, tx, p.project, viewer)
 	if err != nil {
 		return err
 	}
@@ -391,18 +442,19 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 	}
 }
 
-// readIssues reads the project's issues in Dispatch's rank order, records the parent of every one
-// of them — the chain the tree walk climbs, whatever the daemon reports of each — and fills the
-// title, priority and parent of every issue the daemon reported. An issue the daemon reports that
-// Dispatch does not hold keeps an empty title: the board shows what the daemon says, and a card
-// with no title is better than a card the reader never sees.
-func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool) error {
+// readIssues reads the project's issues in Dispatch's rank order, as who reads them
+// (access.ProjectClause: who has already been answered the project, legionProject), records the
+// parent of every one of them — the chain the tree walk climbs, whatever the daemon reports of
+// each — and fills the title, priority and parent of every issue the daemon reported. An issue the
+// daemon reports that Dispatch does not hold keeps an empty title: the board shows what the daemon
+// says, and a card with no title is better than a card the reader never sees.
+func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool, who model.Actor) error {
 	rows, err := pool.Query(ctx, `
 		select key, title, priority, coalesce(parent_key, '')
 		from issues
-		where project_key = $1
+		where project_key = $1 and `+access.ProjectClause("project_key", "$2")+`
 		order by rank asc, created_at asc, key asc
-	`, p.project)
+	`, p.project, refs.VisibilityArg(who))
 	if err != nil {
 		return err
 	}

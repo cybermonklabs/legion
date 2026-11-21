@@ -1498,22 +1498,26 @@ renders and Dispatch admits every account of the issuer and the audience, as it 
 input existed. It is refused without `oidcAudience`, as `oidcIssuer` is.
 
 `accessAccounts` (plain, a list) names the service-account subjects that may read Dispatch's
-membership answer, `GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and
-`GET /api/v1/access/private-projects`: it renders `DISPATCH_ACCESS_ACCOUNTS`, comma-joined.
-Production sets `system:serviceaccount:dispatch:envoy-broker`, the secrets broker. Where
-`oidcAccounts` is set, Dispatch refuses to boot with an access account it leaves out; with
+membership answer and repository answer, whose routes the `DISPATCH_ACCESS_ACCOUNTS` paragraph of
+`packages/envoy/cmd/dispatch/README.md` lists: it renders `DISPATCH_ACCESS_ACCOUNTS`,
+comma-joined. Production sets `system:serviceaccount:dispatch:envoy-broker`, the secrets broker.
+Where `oidcAccounts` is set, Dispatch refuses to boot with an access account it leaves out; with
 `oidcAccounts` unset, every account is admitted and any may be an access account. Unset or empty,
-nothing renders and no account reads the answer. It is refused without `oidcAudience`, as
+nothing renders and no account reads those routes. It is refused without `oidcAudience`, as
 `oidcIssuer` is.
 
 `projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
 full member, whom Dispatch makes, at boot, the owner of every project the migration left without
 one. Unset, nothing renders.
 
-`privateProjects`, `false` by default, renders `DISPATCH_PRIVATE_PROJECTS=1` when it is `true`;
-`false` or unset renders nothing, so the pod is the one it always was. No `envoy-dispatch` reads
-the setting yet, so setting it `true` makes no project private, while the stack would say it had:
-leave it unset.
+`privateProjects` (a list of project keys) is the keys of the projects whose private namespace,
+stores and grants the deployment has provisioned (the infrastructure repository passes `privateprojects.Projects()`);
+only these can be made private. It renders `DISPATCH_PRIVATE_PROJECTS=<KEY>,<KEY>`, sorted and each
+key once; empty or unset renders nothing, so the pod is the one it always was. An entry that is not a
+project key is ignored: it does not render, and `pulumi preview` prints a warning naming it, as
+Dispatch's boot ignores and logs one, so the project it meant is never provisioned. Set it only
+with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
+does not know the setting ignores it, and no project of that deployment can be made private.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the

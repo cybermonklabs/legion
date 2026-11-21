@@ -443,10 +443,10 @@ func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
 // TestAFailedLegionReadLeavesTheDeliveryFeedRunning: the board's reads, its phase-work read among
 // them (legionBoardPopulation.readPhaseWork), are the Legion view's own, and a read that fails is
 // that view's failure alone: the live hub retries the view (recompute), and the event feed every
-// Delivery view of the hub reads (seedEvents) never waits on a Legion read. Here the phase-work
-// read cannot succeed — the test's own database has its handoffs table renamed away — while a
-// Legion board and a timeline are open on one hub. The board's read fails, and the timeline's feed
-// must still carry every event the test writes.
+// Delivery view of the hub reads (seedEventsLocked) never waits on a Legion read. Here the
+// phase-work read cannot succeed — the test's own database has its handoffs table renamed away —
+// while a Legion board and a timeline are open on one hub. The board's read fails, and the
+// timeline's feed must still carry every event the test writes.
 //
 // So the hub's generation makes no Legion read beside its feed's cursor: a read made there that
 // failed would cancel the feed and try again, and while it failed no Delivery view of any
@@ -466,7 +466,7 @@ func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
 	}
 	seedLegionRead(t, rig.database, "INFRA", now.Add(-time.Minute), "")
 	legionExec(t, rig.database, `alter table handoffs rename to handoffs_unreadable`)
-	if _, err := rig.hub.server.readLegionBoard(t.Context(), "INFRA"); err == nil {
+	if _, err := rig.hub.server.readLegionBoard(t.Context(), everyReader, "INFRA"); err == nil {
 		t.Fatal("the board's read succeeded with no handoffs table, so nothing here fails a Legion read")
 	}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -41,6 +42,10 @@ type Reader struct {
 	serverURL string
 	// writer is the author of the source's text, whom its short ids resolve for (Items).
 	writer model.Actor
+	// seer is writer with the viewer its short ids are resolved under (seenBy): the writer as
+	// given where it carries one, else the person it records as the read rule resolves them;
+	// resolved at most once, the first time a short id is asked.
+	seer *model.Actor
 
 	// issues is every key this reader was asked about, to whether it names an issue, so the
 	// parts of one ask ask about a repeated key once.
@@ -276,7 +281,11 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 // resolveItem is the whole id key names for the reader's writer, "" where it names nothing or two
 // items or more. An error is a failure reaching the database alone.
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	candidate, err := ResolvePrefix(r.ctx, r.q, r.writer, key.kind, key.scope, key.prefix, Viewer{})
+	writer, err := r.seenBy()
+	if err != nil {
+		return "", err
+	}
+	candidate, err := ResolvePrefix(r.ctx, r.q, writer, key.kind, key.scope, key.prefix, Viewer{})
 	switch {
 	case err == nil:
 		return candidate.ID, nil
@@ -284,6 +293,30 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 		return "", nil
 	}
 	return "", err
+}
+
+// seenBy is the reader's writer as the visibility predicate binds it (VisibilityArg). A writer
+// the caller resolved carries its viewer, and is used as it is. A writer read from a stored row,
+// the author a source records, carries none, and with no viewer the predicate sees nothing
+// (VisibilityArg's closed viewer), so no short id would resolve: such a writer is read as the
+// person it records sees now (access.RecordedViewer: their member kind and the projects whose
+// access names them, no credential's list), which is what every later rebuild of the same text
+// resolves it as too. A session author names its owner, and one that records no person is no
+// person: it sees what a credential naming nobody sees.
+func (r *Reader) seenBy() (model.Actor, error) {
+	if r.seer != nil {
+		return *r.seer, nil
+	}
+	writer := r.writer
+	if writer.Viewer == nil {
+		viewer, err := access.RecordedViewer(r.ctx, r.q, writer)
+		if err != nil {
+			return model.Actor{}, err
+		}
+		writer.Viewer = &viewer
+	}
+	r.seer = &writer
+	return writer, nil
 }
 
 // PrefixScope is what one short id asks ResolvePrefix: the kind the reference names, the owner

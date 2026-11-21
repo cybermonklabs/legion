@@ -489,7 +489,7 @@ func (recordedResults) Close() error { return nil }
 func restateAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, document string) int {
 	t.Helper()
 	ctx := context.Background()
-	markdown, blocks, err := service.TextWithBlocks(ctx, document)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read %s: %v", document, err)
 	}

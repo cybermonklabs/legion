@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -70,11 +71,13 @@ func TestStatementTimings(t *testing.T) {
 
 	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
 	// dashboard opens. listIssues' arguments are those eight, the closed window, the `advances`
-	// keys and the move read's gate, named here as the request that asks for none of them, so
-	// both sides read the same rows; the listing's status is a list where main's was one value,
-	// so each side is passed its own empty status.
+	// keys and the move read's gate, named here as the request that asks for none of them, and
+	// the server's own viewer, which sees every project, so both sides read the same rows; the
+	// listing's status is a list where main's was one value, so each side is passed its own empty
+	// status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	viewer := refs.VisibilityArg(everyReader)
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false, viewer})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
@@ -90,15 +93,15 @@ func TestStatementTimings(t *testing.T) {
 
 	runner.Pair(t, "the project list",
 		benchtime.Statement{SQL: mainProjectList},
-		benchtime.Statement{SQL: projectListQuery})
+		benchtime.Statement{SQL: projectListQuery, Args: []any{refs.VisibilityArg(everyReader)}})
 
 	runner.Pair(t, "agentLastActivity",
 		benchtime.Statement{SQL: mainAgentLastActivityQuery, Args: []any{subjects.Sessions}},
-		benchtime.Statement{SQL: agentLastActivityQuery, Args: []any{subjects.Sessions}})
+		benchtime.Statement{SQL: agentLastActivityQuery, Args: []any{subjects.Sessions, refs.VisibilityArg(everyReader)}})
 
 	runner.Pair(t, "the issue's children",
 		benchtime.Statement{SQL: mainIssueChildrenQuery, Args: []any{subjects.Issue}},
-		benchtime.Statement{SQL: issueChildrenStatement, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: issueChildrenStatement, Args: []any{subjects.Issue, viewer}})
 
 	// Which side these three readings are is the schema's answer, not the statement's: their
 	// text is the same on both databases, and what differs is whether the indexes a migration
@@ -110,11 +113,11 @@ func TestStatementTimings(t *testing.T) {
 		oneSide = runner.Before
 	}
 	oneSide(t, "listIssueAsksQueryAll",
-		benchtime.Statement{SQL: listIssueAsksQueryAll, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: listIssueAsksQueryAll, Args: []any{subjects.Issue, planViewer}})
 	oneSide(t, "listIssueRootMessagesQuery",
-		benchtime.Statement{SQL: listIssueRootMessagesQuery, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: listIssueRootMessagesQuery, Args: []any{subjects.Issue, planViewer}})
 	oneSide(t, "listArtifactAsksQueryOpen",
-		benchtime.Statement{SQL: listArtifactAsksQueryOpen, Args: []any{subjects.AnchoredDocument}})
+		benchtime.Statement{SQL: listArtifactAsksQueryOpen, Args: []any{subjects.AnchoredDocument, planViewer}})
 
 	// Search is measured on the middling word: a word in a handful of items ranks almost
 	// nothing, and the commonest word is a query nobody runs. The related-item check is measured
@@ -148,9 +151,10 @@ func TestStatementTimings(t *testing.T) {
 	searchMeaningArguments := slices.Concat(searchArguments, meaning)
 	// Search's own two statements bind the search bar's filters and the issues a query names by
 	// key beside the eight and eleven main binds (searchQueryArguments). Every one of them is
-	// empty here, so the before and after texts are measured on the same subject.
+	// empty here, and the reader sees every project (everyReader), so the before and after texts
+	// are measured on the same subject.
 	afterSearchArguments := searchQueryArguments(searchParameters{
-		text: word, project: subjects.Project, limit: searchDefaultLimit,
+		text: word, project: subjects.Project, limit: searchDefaultLimit, who: everyReader,
 	})
 	afterSearchMeaningArguments := slices.Concat(afterSearchArguments[:8], meaning, afterSearchArguments[8:])
 	relatedKeywordArguments := slices.Concat(relatedArguments, []any{lexemes, weights})
@@ -249,6 +253,8 @@ func TestStatementTimings(t *testing.T) {
 	// the gate asks for next. The after side of each report is the excluding shape, the text a
 	// write runs; each report's name is its before text's, which is what a reader lines up
 	// against the Before branch's reading on the older schema.
+	// This release's arm reads the reader's viewer at $5 (searchProjectVisible), one that sees
+	// every project, so it finds the rows main's arm finds.
 	documentLegArguments := []any{lexemeQuery, subjects.Project, lexemes, weights}
 	runner.Pair(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
 		benchtime.Statement{
@@ -257,7 +263,7 @@ func TestStatementTimings(t *testing.T) {
 		},
 		benchtime.Statement{
 			SQL:  documentLegStatement(relatedDocumentKeywordLeg, relatedTermWeights),
-			Args: documentLegArguments,
+			Args: append(slices.Clone(documentLegArguments), refs.VisibilityArg(everyReader)),
 		})
 	runner.Report(t, "relatedKeywordQuery, the whole statement",
 		benchtime.Statement{SQL: mainRelatedKeywordQuery, Args: relatedKeywordArguments},
@@ -268,9 +274,10 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
+	// This release's probe reads the reader's viewer at $5, one that sees every project.
 	runner.Pair(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
-		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
+		benchtime.Statement{SQL: relatedProbeSQL, Args: append(slices.Clone(probeArguments), relatedViewer(everyReader))})
 }
 
 // documentLegStatement is the smallest statement that runs one keyword document arm and nothing
@@ -294,7 +301,8 @@ func TestStatementTimings(t *testing.T) {
 // have a gap, having no type for the one nothing reads. q.term is a literal for the same
 // reason, no arm reading it.
 //
-// Parameters: $1 the tsquery, $2 the project, $3 the chosen lexemes, $4 their idf.
+// Parameters: $1 the tsquery, $2 the project, $3 the chosen lexemes, $4 their idf, and for this
+// release's arm $5 the reader's viewer.
 func documentLegStatement(documentLeg string, termWeights func(lexemes int) string) string {
 	return `
 with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key),
@@ -309,7 +317,7 @@ select count(*) from document_arm`
 // relatedMeaningQuery rank their arms by, which makes it the after side of that arm's pair. It
 // is built here rather than beside those two statements because this measurement is its only
 // reader, and a server would otherwise build it at start for nothing.
-var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank)
+var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank, 5)
 
 // databaseHoldsDocumentSearch answers whether the database under measurement holds
 // document_search (migration 20261101182447), which is what decides how the five document-arm

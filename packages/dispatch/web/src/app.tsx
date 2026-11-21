@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
@@ -103,6 +103,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { isRestrictedMember } from "./hooks/useRestrictedMember";
 import {
   backdrop50,
   badgeBlocking,
@@ -247,6 +248,15 @@ function IssuePageFallback(): ReactNode {
       </div>
     </div>
   );
+}
+
+/** The pages that show only the deployment's own rows - Priorities and Pipeline, the
+ *  broadcasts, and the machine-login page - which Dispatch refuses a restricted member (403
+ *  DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in `api/read_classes.go`). Such a person reads
+ *  only the projects that name them (R4 of the private-projects spec), so these are no page of
+ *  theirs, and their addresses answer as an unknown one does, before any read. */
+function DeploymentPages({ restricted }: { restricted: boolean }): ReactNode {
+  return restricted ? <NotFoundPage /> : <Outlet />;
 }
 
 /**
@@ -716,6 +726,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
+  // A restricted member is offered none of the deployment's own pages (`DeploymentPages`), and
+  // no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
+  const restricted = isRestrictedMember(user);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -774,7 +787,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setInboxDrawerOpen((open) => !open),
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
-      when: () => !routeIsInbox(location.pathname),
+      when: () => !restricted && !routeIsInbox(location.pathname),
     },
     {
       id: "toggle-sidebar",
@@ -982,14 +995,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
                 <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
-                  >
-                    Peek
-                  </button>
+                  {restricted ? null : (
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                  )}
                   <Link className={inboxBadgeClass} to="/">
                     {inboxLabel}
                   </Link>
@@ -1103,15 +1118,23 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                   path="/replies"
                 />
                 <Route element={<AgentsPage />} path="/agents" />
-                <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
-                <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
                 <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={<PrioritiesPage />} path="/priorities" />
-                <Route element={<PriorityPage />} path="/priorities/:id" />
+                {/* Delivery is a restricted member's page too: its timeline and measures answer
+                    them the pull requests whose issue they see, and the page leaves out what it
+                    would read of the deployment's own (`DeliveryPage`). */}
+                <Route element={<DeliveryPage />} path="/delivery" />
+                <Route element={<DeploymentPages restricted={restricted} />}>
+                  <Route element={<PrioritiesPage />} path="/priorities" />
+                  <Route element={<PriorityPage />} path="/priorities/:id" />
+                  <Route element={<PipelinePage />} path="/pipeline" />
+                  <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
+                  <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
+                  <Route element={<MachineLoginRoute />} path="/credentials/machine" />
+                </Route>
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
@@ -1119,10 +1142,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/access" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
-                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>

@@ -566,7 +566,7 @@ func TestAConditionalEditIntroducesAnAskCreditedToItsAuthor(t *testing.T) {
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
-	_, token, err := service.TextWithToken(context.Background(), artifactID)
+	_, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read token: %v", err)
 	}

@@ -339,6 +339,7 @@ begin embedded
 # answers by words alone, and the keywords_only case has no meaning leg to take a row away from.
 timeout_hook=report_coverage
 until_true 180 "every seeded item to carry a vector from the dev embedder" every_item_embedded
+# shellcheck disable=SC2034 # read by lib/rig.sh's until_true, so a later wait runs no coverage report
 timeout_hook=''
 note "coverage: $coverage_reading"
 pass

@@ -72,7 +72,7 @@ func asksOn(t *testing.T, service *Service, document string) int {
 
 func requireCopiedStates(t *testing.T, service *Service, document string, want ...string) {
 	t.Helper()
-	text, err := service.Text(context.Background(), document)
+	text, err := service.Text(context.Background(), serverReader, document)
 	if err != nil {
 		t.Fatalf("read copy: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk
 	if blocks := openAskBlocksOn(t, service, second); blocks != "decision" {
 		t.Fatalf("the second document's open asks = %q, want its own decision", blocks)
 	}
-	text, err := service.Text(context.Background(), second)
+	text, err := service.Text(context.Background(), serverReader, second)
 	if err != nil {
 		t.Fatalf("read the second document: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 				t.Fatalf("the copy owes %d settlements after its source was %s, want one", owed, closing)
 			}
 			settleCurrentGeneration(t, service, copied)
-			text, err := service.Text(context.Background(), copied)
+			text, err := service.Text(context.Background(), serverReader, copied)
 			if err != nil {
 				t.Fatalf("read the copy: %v", err)
 			}
@@ -702,7 +702,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 					t.Fatalf("the copy owes %d settlements once its source's wording was restored at %s, want one", owed, restoration)
 				}
 				settleCurrentGeneration(t, service, copied)
-				text, err := service.Text(ctx, copied)
+				text, err := service.Text(ctx, serverReader, copied)
 				if err != nil {
 					t.Fatalf("read the copy: %v", err)
 				}
@@ -720,7 +720,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 				if owed := copyOwed(t, service, copied); owed != 0 {
 					t.Fatalf("the copy owes %d settlements after a second restoration, want none", owed)
 				}
-				if again, err := service.Text(ctx, copied); err != nil || again != text {
+				if again, err := service.Text(ctx, serverReader, copied); err != nil || again != text {
 					t.Fatalf("the copy changed after a second restoration (%v):\n%s", err, again)
 				}
 			})
@@ -766,7 +766,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 			}
 			settleCurrentGeneration(t, service, original)
 			requireCopiedStates(t, service, original, opener)
-			text, err := service.Text(ctx, original)
+			text, err := service.Text(ctx, serverReader, original)
 			if err != nil {
 				t.Fatalf("read the document: %v", err)
 			}
@@ -877,7 +877,7 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 	reworded := createIssueDocument(t, service.store, 1, "# Reworded copy")
 	seedServiceText(t, service, reworded, "Record\n\n"+tuesdayBlock)
 	settleCurrentGeneration(t, service, reworded)
-	text, err := service.Text(context.Background(), reworded)
+	text, err := service.Text(context.Background(), serverReader, reworded)
 	if err != nil {
 		t.Fatalf("read the copy of the reworded text: %v", err)
 	}
@@ -939,7 +939,7 @@ func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	settleCurrentGeneration(t, service, copied)
-	text, err := service.Text(context.Background(), copied)
+	text, err := service.Text(context.Background(), serverReader, copied)
 	if err != nil {
 		t.Fatalf("read the copy: %v", err)
 	}
@@ -995,7 +995,7 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 		open = openAsksUnder(t, service, "shared")
 		shown = map[string]string{}
 		for _, copy := range copies {
-			text, err := service.Text(context.Background(), copy)
+			text, err := service.Text(context.Background(), serverReader, copy)
 			if err != nil {
 				t.Fatalf("read a copy: %v", err)
 			}
@@ -1136,7 +1136,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	open := openAsksUnder(t, service, "shared")
 	shown := map[string]string{}
 	for _, copy := range copies {
-		text, err := service.Text(context.Background(), copy)
+		text, err := service.Text(context.Background(), serverReader, copy)
 		if err != nil {
 			t.Fatalf("read a copy: %v", err)
 		}

@@ -39,7 +39,8 @@ export const realStackReasons: Record<string, string> = {
     "the view is built from the session's replay over the relay, and each turn is drawn under the id Dispatch minted for the message it answers, folded with the reply the server stored",
   "agent-skill-completion.e2e.ts":
     "completion reads the session's commands from the replay the live relay carries, and what Send hands over is read back from the fake Envoy",
-  "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",
+  "agent-tokens.e2e.ts":
+    "token mint, attribution, privacy between two contexts, revoke; the projects a token names, minted and edited, re-read after a reload",
   "agent-view-cost.e2e.ts":
     "every view opens on a transcript at the stream's limit the relay replays, and the gap row turns on the relay itself: a frame published while a viewer is subscribed reaches the page, and one published to a sleeping view reaches nobody and is kept nowhere",
   "agent-view-settings.e2e.ts":
@@ -268,6 +269,8 @@ export const realStackReasons: Record<string, string> = {
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
+  "restricted-member.e2e.ts":
+    "the member kind whoami answers and the projects the server lists are its read rule over the people row and the access list the row writes: bob, whom PRIV's list names, is listed PRIV and not the public CORE; the delivery timeline answers him the pull requests of PRIV's issues alone, and the server's refusals of a deployment read are the instrument that shows his pages ask for none",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",

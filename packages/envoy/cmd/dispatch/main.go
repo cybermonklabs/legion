@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -90,9 +92,10 @@ type bootConfig struct {
 	DefaultProject string
 	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
 	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
-	// account of the issuer and audience), and those of them that read the membership answer.
-	// resolveBootConfig has held each to the subject's form, refused either without
-	// DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list leaves out.
+	// account of the issuer and audience), and those of them that read the routes of the read
+	// class accessAccount. resolveBootConfig has held each to the subject's form, refused either
+	// without DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list
+	// leaves out.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
@@ -209,6 +212,16 @@ type bootConfig struct {
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
 	OIDCAudience string
+	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
+	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
+	// private; the boot and the maintenance sweep report a private project it does not name, by key,
+	// and /healthz says only that one exists, naming none (reportPrivateProjects,
+	// unprovisionedPrivateProjectReason).
+	PrivateProjects []string
+	// PrivateProjectsIgnored is each entry of DISPATCH_PRIVATE_PROJECTS that is no project key, in
+	// the order given: never read as a key, and logged at boot as one ERROR line each
+	// (reportIgnoredPrivateProjects).
+	PrivateProjectsIgnored []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -286,6 +299,7 @@ func main() {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
 	}
+	reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
 	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
 	// a machine with none refuses to start, naming the setting, and a metadata server that does
 	// not answer later fails only the call it was asked for, which its delivery tries again.
@@ -469,6 +483,20 @@ func main() {
 		slog.Error("dispatch: give every project an owner", "error", err)
 		os.Exit(1)
 	}
+	// Whether any project is private, read once here, after the database's open and migrate and
+	// before the first loop and the repository seed, then every 30 s (privateProjectsState): every
+	// response says it (Dispatch-Private-Projects). This first read does not fail open: a failure
+	// ends the boot, as a database that will not open does.
+	privateState, err := startPrivateProjectsState(ctx, database.Pool, boot.PrivateProjects)
+	if err != nil {
+		slog.Error("dispatch: read the private projects", "error", err)
+		os.Exit(1)
+	}
+	// What the provisioned list says of private projects, reported and never refused: Dispatch
+	// runs as one process, so an exit here would stop every project, and the owner's repair
+	// through the API with it. Each condition fails closed for its own projects
+	// (reportPrivateProjects). The store's check is the maintenance loop's, as it starts.
+	reportPrivateProjects(privateState)
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
@@ -1153,12 +1181,13 @@ func main() {
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above.
+	// it resumes those deliveries through the API server built just above. With a list of private
+	// projects, it checks the store once as it starts, beside the serving process, then hourly.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1171,7 +1200,9 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	// Every response says whether any project is private, from the state read at boot.
+	handler := serveHandler(dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, privateState, reads), privateState)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1460,6 +1491,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
+	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS"))
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -1605,10 +1637,10 @@ func commaList(env settingValues, name string) []string {
 
 // checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
 // accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
-// would configure nothing, and each entry is a service account's subject. An account that reads
-// the membership answer must be one the deployment admits, which every account is while
-// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
-// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+// would configure nothing, and each entry is a service account's subject. An access account must
+// be one the deployment admits, which every account is while DISPATCH_OIDC_ACCOUNTS names none.
+// The owner fallback is a person as Dispatch stores one, a lowercase email; the refusal does not
+// repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
 func checkAccessSettings(boot bootConfig) error {
 	for _, list := range []struct {
 		name     string
@@ -1632,7 +1664,7 @@ func checkAccessSettings(boot bootConfig) error {
 	if len(boot.OIDCAccounts) > 0 {
 		for _, account := range boot.AccessAccounts {
 			if !slices.Contains(boot.OIDCAccounts, account) {
-				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer must be one the deployment admits", account)
+				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an access account must be one the deployment admits", account)
 			}
 		}
 	}
@@ -1958,6 +1990,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
+	built.PrivateProjects = boot.PrivateProjects
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
 	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
@@ -2070,12 +2103,19 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
+//
+// Each is mounted with what it reads (readclass.Handle). None of the three holds a check that
+// decides what a caller may read, since each answers whoever reaches the port with no credential,
+// so each is a read of no caller's rows (readclass.None): the probes read the process's own
+// health, and /metrics the deployment's counters, which name no project, issue, person or session
+// (readclass's TestMetricsNameNoProject). The router reads what each of its routes declares.
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.Handle("GET /metrics", registry.Handler())
-	mux.Handle("/", handler)
+	none := []readclass.Class{readclass.None}
+	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, privateState, reads))
+	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	readclass.Handle(mux, none, "GET /metrics", registry.Handler())
+	readclass.Handle(mux, none, "/", handler)
 	return mux
 }
 
@@ -2122,13 +2162,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2144,8 +2185,28 @@ func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[github
 	if row.Succeeded {
 		return gitHubReadEntry{State: gitHubReadSucceeded, At: &at}
 	}
-	cause := row.Cause
-	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &cause}
+	class := gitHubReadCauseClass(row.Cause)
+	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &class}
+}
+
+// gitHubStatus matches the first HTTP status a GitHub read's cause names, "status <n>", which is
+// the class itself. The client words every answer it notes as a failure with its status ahead of
+// any body GitHub sent ("<METHOD> <target>: status <n>: <body>", and "rate-limited by GitHub
+// (status <n>)"; githubapp's failedAnswer), so the first one is the answer's own.
+var gitHubStatus = regexp.MustCompile(`\bstatus [1-5][0-9]{2}\b`)
+
+// gitHubReadCauseClass is the class /healthz answers for a failed read's cause: "status <n>" for
+// the status GitHub answered, and "no status" for a failure that carries none (a request GitHub
+// never answered, or a failure of the read's own). A cause is GitHub's error text, which names the
+// repository the read read, one a private project maps or one GitHub keeps private, and /healthz
+// answers whoever reaches the port, from outside too where the deployment has an outside origin
+// (R2). So /healthz answers the class alone, in every deployment, which can name no repository,
+// and the operator reads the cause itself in github_read_attempts.
+func gitHubReadCauseClass(cause string) string {
+	if status := gitHubStatus.FindString(cause); status != "" {
+		return status
+	}
+	return "no status"
 }
 
 // gitHubReadsMember is /healthz's github member: one entry for each read, in the order
@@ -2262,8 +2323,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record
@@ -2291,7 +2355,14 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+//
+// `degraded` is `["private_project_unprovisioned"]` while the database holds a private project
+// that DISPATCH_PRIVATE_PROJECTS does not name (a read cached 30 s), and absent otherwise, so a
+// deployment with none answers the body it always did. It is a fixed reason code: /healthz answers
+// a caller with no credential, so it names no key and gives no count (R2); the operator reads the
+// keys in reportPrivateProjects' ERROR line. It never decides ok: such a project stays private,
+// and a probe that failed for it would take every project out of service.
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2347,6 +2418,13 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		if !ok {
 			status = http.StatusServiceUnavailable
 		}
+		// Never counted against ok: an unprovisioned private project stays private, and a probe
+		// that failed for it would take every project out of service. The state's last read
+		// decides it, so a probe adds no read.
+		var degraded []string
+		if databaseOK && len(privateState.Unprovisioned()) > 0 {
+			degraded = []string{unprovisionedPrivateProjectReason}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
@@ -2362,10 +2440,12 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int               `json:"schema_version"`
 			OutboxPublisher bool               `json:"outbox_publisher"`
 			IdempotencyKeys bool               `json:"idempotency_keys"`
+			Degraded        []string           `json:"degraded,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			Degraded: degraded,
 		})
 	}
 }

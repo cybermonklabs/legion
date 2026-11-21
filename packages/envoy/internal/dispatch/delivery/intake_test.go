@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -46,6 +47,11 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	return storetest.Open(t).Pool, t.Context()
 }
+
+// everyViewer is the visibility argument of the server's own viewer (model.ServerViewer), which
+// sees every project and every repository: the reads that hold their rows to a viewer answer these
+// tests everything the store holds.
+var everyViewer = refs.VisibilityArg(model.ServerReader)
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
 // this package drops to make a write of it fail the way a write fails (withoutBranchCommits).

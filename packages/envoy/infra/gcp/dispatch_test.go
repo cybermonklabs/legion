@@ -71,7 +71,7 @@ const (
 
 // dispatchBrokerAccount is the secrets broker's Kubernetes service account, the one subject the
 // production stack lists in both oidcAccounts and accessAccounts, and dispatchReaderAccount
-// another workload's, which Dispatch admits without letting it read the membership answer.
+// another workload's, which Dispatch admits without making it an access account.
 const (
 	dispatchBrokerAccount = "system:serviceaccount:dispatch:envoy-broker"
 	dispatchReaderAccount = "system:serviceaccount:example-agents:example-reader"
@@ -2887,18 +2887,25 @@ func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
 	}
 }
 
-// privateProjects renders DISPATCH_PRIVATE_PROJECTS=1 when it is true, and nothing at all when it
-// is false or unset, so a stack that never sets it, or sets it false, renders the pod it always
-// had.
-func TestDispatchRendersPrivateProjectsOnlyWhenTrue(t *testing.T) {
+// privateProjects is the keys of the projects whose private namespace, stores and grants the
+// deployment has provisioned. It renders DISPATCH_PRIVATE_PROJECTS sorted and each key once, and
+// nothing at all when it is empty or unset, so a stack that never sets it renders the pod it always
+// had. An entry that is not a project key is ignored and printed at preview, as Dispatch's boot
+// ignores and logs one: the key beside it still renders, and the program does not fail. Ignoring it
+// fails closed, since the project it meant is never provisioned. Control: a component that refused
+// the entry, or rendered it.
+func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		value *bool
+		value []string
 		want  string
 	}{
 		{name: "unset"},
-		{name: "false", value: pulumi.BoolRef(false)},
-		{name: "true", value: pulumi.BoolRef(true), want: "1"},
+		{name: "empty", value: []string{}},
+		{name: "a list", value: []string{"PRIV", "ALPHA", "PRIV"}, want: "ALPHA,PRIV"},
+		{name: "ignores 1", value: []string{"ALPHA", "1"}, want: "ALPHA"},
+		{name: "ignores priv", value: []string{"priv", "ALPHA"}, want: "ALPHA"},
+		{name: "ignores every entry", value: []string{"1"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -2908,6 +2915,18 @@ func TestDispatchRendersPrivateProjectsOnlyWhenTrue(t *testing.T) {
 			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
 			requireOptionalEnv(t, env, "DISPATCH_PRIVATE_PROJECTS", row.want)
 		})
+	}
+}
+
+// The warning preview prints for an ignored entry names the entry and what ignoring it means, so a
+// reader of the preview can fix the stack: the entry, that it is ignored, and that it provisions
+// nothing.
+func TestDispatchNamesAnIgnoredPrivateProjectsEntry(t *testing.T) {
+	for _, entry := range []string{"1", "priv"} {
+		message := gcp.PrivateProjectsIgnoredMessage(entry)
+		for _, want := range []string{fmt.Sprintf("%q is not a project key", entry), "it is ignored", "no project is provisioned by it"} {
+			require.Contains(t, message, want, "the preview warning for %q", entry)
+		}
 	}
 }
 

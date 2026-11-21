@@ -8,7 +8,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { Agent, UserAgentStates } from "../../api/types";
+import type { Agent, AuthenticatedUser, Project, UserAgentStates } from "../../api/types";
 import { liveViewsOf } from "../agent-view/live-views";
 import { Sidebar } from "./Sidebar";
 
@@ -59,31 +59,46 @@ function Probe(): ReactNode {
   );
 }
 
-/** The rail, signed in as alice, with `agentState` her per-agent state and `listed` the sessions
- *  Dispatch lists. `entries` is the history it is rendered over, newest last. */
+const ALICE: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
+
+/** The rail, signed in as `user` (alice, a full member, by default), with `agentState` their
+ *  per-agent state, `listed` the sessions Dispatch lists and `projects` the projects it lists to
+ *  them. `entries` is the history it is rendered over, newest last. The shell hands the rail a
+ *  Peek control on a wide screen, and `peek` says whether this one does. */
 function renderRail({
   agentState = {},
   entries = ["/"],
   listed = [agent(PLANNER, "Planner"), agent(REVIEWER, "Reviewer"), agent(TESTER, "Tester")],
+  peek = false,
+  projects = [],
+  user = ALICE,
 }: {
   agentState?: UserAgentStates;
   entries?: string[];
   listed?: Agent[];
-} = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
+  peek?: boolean;
+  projects?: Project[];
+  user?: AuthenticatedUser;
+} = {}): {
+  listPriorities: Mock<typeof api.listPriorities>;
+  putAgentState: Mock<typeof api.putAgentState>;
+  queryClient: QueryClient;
+} {
+  // The rail reads the two fault counts on every page; this deployment has written no
+  // priority, so its entry carries no number and these rows are about the agents alone.
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
   spies.push(
-    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "whoAmI").mockResolvedValue(user),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
-    // The rail reads the two fault counts on every page; this deployment has written no
-    // priority, so its entry carries no number and these rows are about the agents alone.
-    spyOn(api, "listPriorities").mockResolvedValue({
-      empty: "No priority is live now, so the list is empty.",
-      priorities: [],
-      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-    }),
+    listPriorities,
     spyOn(api, "listIssues").mockResolvedValue([]),
-    spyOn(api, "listProjects").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue(projects),
     spyOn(api, "listAgents").mockResolvedValue(listed),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState)
   );
@@ -95,21 +110,31 @@ function renderRail({
   });
   spies.push(putAgentState);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  queryClient.setQueryData(whoAmIQuery().queryKey, user);
   render(
     <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
       <QueryClientProvider client={queryClient}>
-        <Sidebar user={{ event_head: "0", kind: "user", login: "alice" }} />
+        <Sidebar onOpenInboxDrawer={peek ? () => {} : undefined} user={user} />
         <Probe />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { putAgentState, queryClient };
+  return { listPriorities, putAgentState, queryClient };
 }
+
+/** A project Dispatch lists, with no open ask. */
+function project(key: string): Project {
+  return { created_at: "2026-11-01T00:00:00Z", gated_steps: null, key, name: key, open_asks: 0 };
+}
+
+/** Where each of the rail's links goes, in the order the rail draws them. */
+function railTargets(): (string | null)[] {
+  return within(screen.getByRole("navigation", { name: "Navigation" }))
+    .getAllByRole("link")
+    .map((link) => link.getAttribute("href"));
+}
+
+const PEEK = "Peek at the inbox without leaving this page";
 
 /** The rows under the Agents heading, as the rail draws them. */
 function pinnedRows(): HTMLElement[] {
@@ -263,4 +288,46 @@ test("a move between pinned agents from the rail replaces the address, and one f
   expect(screen.getByTestId("address").textContent).toBe(`/agents/${TESTER}/live`);
   await user.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByTestId("address").textContent).toBe("/");
+});
+
+// A full member's rail is the one it was before member kinds existed: Inbox and its Peek,
+// Agents, the three views over every project, their projects, and Settings. Both rails here are
+// drawn on a page that is not the Inbox, where the Peek is offered.
+test("a full member's rail keeps Priorities, Delivery, Pipeline and Peek", async () => {
+  const { listPriorities } = renderRail({
+    entries: ["/settings"],
+    peek: true,
+    projects: [project("CORE")],
+  });
+
+  await screen.findByRole("link", { name: /^CORE/ });
+  expect(railTargets()).toEqual([
+    "/",
+    "/agents",
+    "/priorities",
+    "/delivery",
+    "/pipeline",
+    "/projects/CORE",
+    "/settings",
+  ]);
+  expect(screen.getByRole("button", { name: PEEK })).toBeTruthy();
+  expect(listPriorities).toHaveBeenCalled();
+});
+
+// A restricted member reads only the projects that name them (R4 of the private-projects spec).
+// Their rail is Inbox, Agents, Delivery, those projects and Settings: Delivery's timeline answers
+// them the pull requests whose issue they see, and the rail draws no Priorities, Pipeline or
+// Peek, and never reads the priorities, whose summary counts every project's work.
+test("a restricted member's rail is Inbox, Agents, Delivery, their projects and Settings", async () => {
+  const { listPriorities } = renderRail({
+    entries: ["/settings"],
+    peek: true,
+    projects: [project("PRIV")],
+    user: { event_head: "0", kind: "user", login: "bob", member_kind: "restricted" },
+  });
+
+  await screen.findByRole("link", { name: /^PRIV/ });
+  expect(railTargets()).toEqual(["/", "/agents", "/delivery", "/projects/PRIV", "/settings"]);
+  expect(screen.queryByRole("button", { name: PEEK })).toBeNull();
+  expect(listPriorities).not.toHaveBeenCalled();
 });

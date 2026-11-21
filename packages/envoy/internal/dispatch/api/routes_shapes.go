@@ -256,6 +256,14 @@ type eventLogQuery struct {
 	Limit int `query:"limit"`
 }
 
+// accessGroupsQuery is GET /api/v1/access-groups's query: one page of the groups, in name order.
+type accessGroupsQuery struct {
+	// Limit is how many groups the page holds, 1 to 100, and 100 by default.
+	Limit int `query:"limit"`
+	// After is the group name the page starts after, the page before's next; absent, the first.
+	After string `query:"after"`
+}
+
 // issueReferencesQuery is GET /api/v1/issues/{key}/references's query.
 type issueReferencesQuery struct {
 	// Versions, `latest`, leaves each member's artifact.versions holding only its latest
@@ -615,10 +623,11 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"PUT /api/v1/projects/{key}/access/groups/{name}":     {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {Status: http.StatusOK, Response: model.ProjectAccess{}},
-	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: []model.AccessGroup{}},
+	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: model.AccessGroupPage{}, Params: accessGroupsQuery{}},
 	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
 	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
 	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
+	"GET /api/v1/access/projects/{key}/repositories":      {Status: http.StatusOK, Response: projectRepositoriesAnswer{}},
 	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
 	"GET /api/v1/access/private-projects":                 {Status: http.StatusOK, Response: privateProjectsAnswer{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {

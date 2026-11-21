@@ -1,69 +1,60 @@
 package api
 
-// project_scope.go answers what a write is about to touch — which project does the object it
-// addresses belong to, and which session does its path name? — and refuses a caller whose
-// credential covers another project, or proves another session. owner.go is not this: it
-// resolves collaboration ownership, the issue or unlinked document a comment, an ask or an
-// event hangs from and whether that owner is still open, and decides no authority at all.
-// These resolvers decide authority.
+// project_scope.go holds what stands in front of every write: the caller's viewer, resolved once
+// for the write and handed to its handler and loaders, the deployment's rows held to an open
+// viewer, a session's own rows held to the session a credential proved, and no write by a
+// credential that names no person. owner.go is not this: it resolves collaboration ownership, the
+// issue or unlinked document a comment, an ask or an event hangs from, and decides no authority.
 //
-// Each check runs in one place — withinProjectScope and withinSessionScope, which register
-// wraps around every mutating route after the caller is resolved and before the handler —
-// rather than in each of the seventy routes that write. Two things make a pre-handler read
-// sound, and both were read out of the tree rather than assumed:
+// Each check runs in one place — withinProjectScope and withinSessionScope, which register wraps
+// around every mutating route after the caller is resolved and before the handler — rather than
+// in each of the routes that write.
 //
-//   - Nothing moves an object between projects. An issue's, an artifact's, an ask's, a comment's
-//     and a message's project is written when the row is inserted and updated by no route: no
-//     `update ... set project_key` and no `update ... set issue_key` exists outside the
-//     migrations and the tests, and the three writes that take another issue's project into
-//     account move nothing: a parent and a rank neighbour outside the issue's own project are
-//     refused, while a `blocked_by` target may be an issue of any project, which the write
-//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
-//     inside the write because this check reads the project of the object the path names and no
-//     key in the body). So the project this check reads before the handler runs is the project
-//     the handler will write, and the check needs no transaction of its own.
-//   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
-//     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     four access tokens the broker issues, each of which reaches brokerTokenActor with no
-//     Project. Two of them the broker scopes to a person rather than to one project, and both
-//     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
-//     of its own, and a machine's that names a service and no person, whose every write
-//     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
-//     entry that names no project (`<service account>==<person>`, the shared public-session
-//     account's), which names its person and writes wherever Dispatch's own rules let it
-//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
-//     and the scope `read` alone, names a service and no person, and never reaches this check:
-//     the read-only gate register puts outside it answers that token
-//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
-//     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
-//     every caller that exists today writes exactly what it wrote before, which is what lets
-//     this deploy before anything presents a broker token.
+// A write to a project's object is decided where the object is read, not here. Every loader a
+// write reads its object through binds the reader's project clause (access.ProjectClause), so an
+// object of a project the caller does not see is a row the read does not find, and the write
+// answers it exactly as it answers an object nobody holds: the same status and the same bytes,
+// and nothing written. That holds for every caller alike — a person at a browser, a credential
+// that lists the projects it may use, the shared token — because the viewer is what differs, not
+// the rule. What a credential's list decides is access.CredentialCovers': a full member's list
+// decides only which private projects it reaches, so its write to a public project's object reaches
+// the handler whatever it lists, and its write to a private project it does not list is one to an
+// object it does not see; a restricted member's list narrows every project it reaches.
+// TestNoWriteReachesAHiddenObject calls every write row that names an object, on PRIV's object and
+// on one nobody holds, and holds the two to one answer; undecidableWrites refuses to mount a
+// project's write that walk has no probe for.
 //
-// For a credential that does name a project, the check fails closed: only a target that
-// resolves to that credential's own project reaches the handler. A target that resolves to
-// another project, to no project at all, or to nothing at all — no such row, or an id Postgres
-// will not read as a uuid — is refused. Each resolver sends Postgres the value the prefix layer
-// resolved, the one the handler behind it sends too: an id written as a unique prefix is the
-// whole id by the time either reads it, and anything else is the path value as written
-// (resolveIDPrefixes, which register wraps outside this check for exactly that reason). So the
-// parser that decides what this check resolved is the parser the handler then addresses its row
-// by, and the two cannot disagree about which object a path names: Go's uuid.Parse refuses
-// spellings Postgres accepts (a hyphen after any group of four digits), and a check that
-// resolved nothing where the handler resolves a row would be a write nothing judged.
+// A read-only token, which carries `project_scope` `none` and the scope `read` alone and names a
+// service and no person, never reaches these checks: the read-only gate register puts outside
+// them answers that token 403 READ_ONLY_TOKEN on every route the read list does not name, every
+// write among them (refuseReadOnlyToken, readScopeRoutes).
 //
-// Failing closed does not close the existence oracle, and does not claim to. The two refusals
-// still read differently — a target of another project is told which project that is, and one
-// that resolved to nothing is told the write resolves to no project of that credential's — so a
-// scoped caller can tell an object of another project from an id nobody holds. Nothing is read
-// out that way: no GET route is project-scoped, so every answer this check can colour is a
-// refusal of the caller's own write, and what it learns is which of its own refused writes
-// addressed something that exists.
+// A target a credential's list does not cover is the handler's missing object, so no refusal names
+// the project an object it cannot see belongs to. The two writes that take their project from the
+// body rather than the path, the issue create and the going request (scopeProjectInBody), refuse
+// by name a project the list does not cover (refuseOutsideCallerProjects), since the name is the
+// caller's own, and answer a project the caller does not see as they answer one nobody holds.
+//
+// One credential's writes are held further, whatever the deployment holds: a full member's broker
+// token an operator's entry mapped to one project (model.Credential.NamedProject), whose writes
+// were held to that project before projects could be private, and still are (namedProjectOf; a
+// later change of that scope is not this file's). It reads as its list lets it, but a deployment's
+// row is 403 PROJECT_SCOPE_DEPLOYMENT, a project's row whose object is of another project, of none,
+// or of no row at all is 403 PROJECT_SCOPE naming what the object resolved to
+// (writeOutsideTheBrokerProject), a body's project outside it is 403 PROJECT_SCOPE
+// (refuseOutsideCallerProjects), and a blocked_by target outside it is 403 PROJECT_SCOPE
+// (writeBlockedBy), each in the words it was answered before (R9). An object of a project the
+// token does not see resolves to no project, so that refusal answers it exactly as one nobody
+// holds, and no refusal names a project the token may not see. A restricted member's such token is
+// held by its list instead, which covers that project alone, and an object outside it answers as
+// missing.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -71,28 +62,35 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
-	// codeProjectScope refuses a write the caller's credential does not cover: an object of
-	// another project, or one this check could not resolve to the caller's own.
+	// codeProjectScope refuses a write whose body names a project the caller's credential does
+	// not list: the issue create and the going request.
 	codeProjectScope = "PROJECT_SCOPE"
-	// codeProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
+	// codeProjectScopeDeployment refuses a viewer that is not open a write that belongs to the
 	// deployment rather than to any one project.
 	codeProjectScopeDeployment = "PROJECT_SCOPE_DEPLOYMENT"
 	// codeSessionScope refuses a caller whose credential proved one session a write addressed
 	// to another session's own rows.
 	codeSessionScope = "SESSION_SCOPE"
+	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
+	codeSessionNotFound = "SESSION_NOT_FOUND"
+	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment, and
+	// an issue write that names repo (refuseRepoOfRestrictedMember).
+	codeRestrictedMember = "RESTRICTED_MEMBER"
 )
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
 // whether this request presents one that resolved at all. Every other credential answers false
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
-// service-account token and the shared token each name no project and prove no session, so a
-// request presenting no DPoP-bound token is outside both checks. A credential that does not
-// resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
-// write and by the handler for any other.
+// service-account token and the shared token each prove no session, so a request presenting no
+// DPoP-bound token is outside the session check. A credential that does not resolve is outside it
+// too: its refusal is written further in, by the keyed layer for a keyed write and by the handler
+// for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	if _, presented := ciphertoken.Presented(r); !presented {
 		return model.Actor{}, false
@@ -104,16 +102,58 @@ func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	return actor, true
 }
 
-// callerProject is the one project this request's credential lets the caller write, and whether
-// it names one at all. Only an access token the secrets broker issued for a named project
-// carries one (model.Actor.Project, set by brokerTokenActor from the token and never from a
-// body).
-func (s *server) callerProject(r *http.Request) (string, bool) {
-	actor, resolved := s.brokerCredentialActor(r)
-	if !resolved || actor.Project == nil || *actor.Project == "" {
+// listOf is the request's credential as access.CredentialCovers reads it: its list
+// (model.Credential.Projects), whether its person is a restricted member, which reader's viewer
+// says as access.Resolve answered it, and whether it is the person's own browser, which reader's
+// kind and act say as access.Resolve reads them. A nil credential lists none.
+func listOf(reader model.Actor, credential *model.Credential) access.Credential {
+	cred := access.Credential{
+		Browser:    reader.Kind == "user" && reader.Act == nil,
+		Restricted: reader.Viewer != nil && reader.Viewer.Restricted,
+	}
+	if credential != nil {
+		cred.Listed = credential.Projects
+	}
+	return cred
+}
+
+// writesHeldTo is the list of projects that holds reader's writes, sorted: the one project a full
+// member's broker token scoped to one project writes (namedProjectOf); otherwise the credential's
+// own list, which holds it to no row of the whole deployment (withinProjectScope): a list decides
+// which private projects a full member's credential reads, and a write of the whole deployment
+// stays a person's or an unlisted credential's. That holds in every state for a personal token's
+// list, which is new with private projects, and for a restricted member's; a broker token acting as
+// its person carries the list its trade asked for, which limited no write before projects could be
+// private, so it holds that token's writes only once a project is private (R9). A list holds no
+// write of a project's object by name: what it covers (access.CredentialCovers) is what the reads a
+// write makes find.
+func writesHeldTo(reader model.Actor, credential *model.Credential) []string {
+	if project, named := namedProjectOf(reader.Viewer, credential); named {
+		return []string{project}
+	}
+	viewer := reader.Viewer
+	if viewer == nil || viewer.All || credential == nil || len(credential.Projects) == 0 {
+		return nil
+	}
+	if credential.Session != "" && !viewer.AnyPrivate && !viewer.Restricted {
+		return nil
+	}
+	return credential.Projects
+}
+
+// namedProjectOf is the one project a full member's broker token an operator's entry mapped to
+// one project may write, and whether credential is such a token (model.Credential.NamedProject),
+// viewer being what access.Resolve answered it may read. Its writes were held to that project
+// before projects could be private, and still are, whatever the deployment holds (R9): its write
+// of a project's object resolves the object's project before the handler (withinProjectScope), and
+// its body's project and its blocked_by targets are held to it (refuseOutsideCallerProjects,
+// writeBlockedBy). A restricted member's such token is held by its list instead, which covers that
+// project alone, so an object outside it is one its reads do not find.
+func namedProjectOf(viewer *model.Viewer, credential *model.Credential) (string, bool) {
+	if credential == nil || credential.NamedProject == "" || viewer == nil || viewer.All || viewer.Restricted {
 		return "", false
 	}
-	return *actor.Project, true
+	return credential.NamedProject, true
 }
 
 // callerSession is the session this request's credential proved, and whether it proved one at
@@ -129,31 +169,178 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 	return actor.ID, true
 }
 
-// projectResolver answers the project a request's addressed object belongs to. An empty project
-// with no error means the address resolved to no project: an object that belongs to none, a
-// target that does not exist, or an id Postgres will not read as a uuid.
-type projectResolver func(ctx context.Context, q queryer, r *http.Request) (string, error)
+// withinProjectScope runs in front of one mutating route's handler. It resolves the caller once
+// (withCallerResolved) and the caller's viewer once (readerOf), and puts both in the request's
+// context, where the handler and every loader it reads through find them (optionalActor,
+// resolveReader), so a write reads each once. A row that writes nothing and reads no row
+// (scopeNoWrite) needs neither and is returned unchanged.
+//
+// A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
+// restricted member — as the read of the deployment's rows is (withinReadScope): what it writes
+// belongs to no project such a viewer could be held to; and to a credential whose writes a list
+// holds (writesHeldTo), a full member's included, which reads those rows as an open viewer but does
+// not write them. The rows personsOwnAtTheBroker names end what is the caller's own at the secrets
+// broker, so a restricted member makes them as a full member does, and only a credential whose
+// writes a list holds is refused them; the broker decides whose each grant or sign-in is, for
+// every caller alike. Every other row reaches its handler, whose loaders answer an object the
+// viewer does not see as missing (the file comment), but for a full member's broker token scoped
+// to one project, whose write to an object outside its project is refused here as it was before
+// (writeOutsideTheBrokerProject).
+func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	if route.Scope == scopeNoWrite {
+		return handler
+	}
+	deployment := route.Scope == scopeDeployment
+	theirOwn := personsOwnAtTheBroker[route.Method+" "+route.Pattern]
+	resolve, addressed := s.projectResolverFor(route.Pattern)
+	return func(w http.ResponseWriter, r *http.Request) {
+		r = s.withCallerResolved(r)
+		reader, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		credential := resolvedCredential(r.Context())
+		covers, named := namedProjectOf(reader.Viewer, credential)
+		if deployment {
+			held := writesHeldTo(reader, credential)
+			if (reader.Viewer.Restricted || len(held) > 0) && !(theirOwn && len(held) == 0) {
+				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
+				return
+			}
+		}
+		if named && route.Scope == scopeProject {
+			belongsTo := ""
+			if addressed {
+				var err error
+				if belongsTo, err = resolve(r.Context(), s.deps.Store.Pool, r, refs.VisibilityArg(reader)); err != nil {
+					s.writeHandlerError(w, err)
+					return
+				}
+			}
+			if !addressed || belongsTo != covers {
+				writeOutsideTheBrokerProject(w, covers, belongsTo)
+				return
+			}
+		}
+		handler(w, r.WithContext(withReader(r.Context(), reader)))
+	}
+}
 
-// projectResolverFor is the resolver a route's address calls for, read from the shape of its
-// pattern, and whether the pattern names an object at all. Every row the table classes
-// scopeProject has one; undecidableWrites holds the table to that and register refuses to
-// mount a table that breaks it, so a mounted scopeProject row always resolves.
+// resolvedCredential is the credential of the caller withCallerResolved kept in ctx, and nil for a
+// context that holds none or a caller that did not resolve.
+func resolvedCredential(ctx context.Context) *model.Credential {
+	resolved, ok := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
+	if !ok || resolved.err != nil {
+		return nil
+	}
+	return resolved.actor.Credential
+}
+
+// withCallerResolved is r with its caller resolved once (optionalActor) and kept in its context,
+// where every later layer and the handler read it rather than resolving it again. That keeps the
+// access-log line naming the caller the handler names last (accesslog.Note: the last resolution
+// wins), such as the session a shared-token write names in its body, rather than a layer's second
+// resolution after the handler's.
+func (s *server) withCallerResolved(r *http.Request) *http.Request {
+	if _, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
+		return r
+	}
+	actor, human, err := s.optionalActor(r)
+	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
+}
+
+// refuseDeploymentWrite names the row and why the caller may not write it: a restricted member
+// is 403 RESTRICTED_MEMBER, the refusal every write of the deployment a restricted member makes
+// answers (creating a project or a group among them) but the revokes of their own grants and
+// sign-ins (personsOwnAtTheBroker), and a credential whose writes a list holds, held, is 403
+// PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own, in the words a broker
+// token scoped to one project was answered before projects could be private (R9).
+func refuseDeploymentWrite(w http.ResponseWriter, route apiRoute, restricted bool, held []string) {
+	if restricted {
+		writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
+			"a restricted member cannot write %s %s, which belongs to the deployment rather than to a project", route.Method, route.Pattern))
+		return
+	}
+	writeError(w, codeProjectScopeDeployment, http.StatusForbidden, fmt.Sprintf(
+		"this request's credential may write %s and nothing else; %s %s belongs to the deployment rather than to a project",
+		projectsNamed(held), route.Method, route.Pattern))
+}
+
+// projectsNamed is a credential's list as a refusal names it.
+func projectsNamed(projects []string) string {
+	if len(projects) == 1 {
+		return "project " + projects[0]
+	}
+	return "projects " + strings.Join(projects, ", ")
+}
+
+// writeOutsideTheBrokerProject is the refusal of a write by a full member's broker token scoped to
+// project covers (namedProjectOf), to an object that belongs to project belongsTo, or that resolved
+// to no project (""): an object of none, a row that is not there, an object of a project the token
+// does not see, or an id Postgres will not read. It names covers and the project the write belongs
+// to where one resolved, in the words such a token was answered before projects could be private,
+// and names no project for a write that resolved to none, since an invented one would say
+// something about what exists.
+func writeOutsideTheBrokerProject(w http.ResponseWriter, covers, belongsTo string) {
+	if belongsTo == "" {
+		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
+			"this request's credential may write project %s; this write resolves to no project of that credential's",
+			covers))
+		return
+	}
+	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
+		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
+}
+
+// projectResolver answers the project a request's addressed object belongs to, as the reader
+// whose visibility argument is viewer sees it. An empty project with no error means the address
+// resolved to no project: an object that belongs to none, an object of a project the reader does
+// not see, a target that does not exist, or an id Postgres will not read as a uuid.
+type projectResolver func(ctx context.Context, q queryer, r *http.Request, viewer any) (string, error)
+
+// projectResolverFor is the resolver a project's row calls for its object, read from the shape of
+// its pattern, and whether the pattern names an object it knows: the read a full member's broker
+// token scoped to one project has its write checked by (writeOutsideTheBrokerProject). A row it
+// knows no object of is refused to that token, so a row added later fails closed. Each resolver
+// sends Postgres the value the prefix layer resolved, the one the handler behind it addresses its
+// row by (resolveIDPrefixes, which register wraps outside this check), so the two cannot disagree
+// about which object a path names. Each binds the project clause (access.ProjectClause) over the
+// object's project, so an object of a project the reader does not see is a row it does not find,
+// read by the very statement an id nobody holds is: the refusal says nothing of it.
 func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 	switch {
 	case addresses(pattern, "/api/v1/issues/{key}"):
-		return s.projectOfIssue, true
+		return projectOfRow(`select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"), "key"), true
 	case addresses(pattern, "/api/v1/projects/{key}"):
-		return s.projectOfProject, true
+		return projectOfRow(`select key from projects where key = $1 and `+access.ProjectClause("key", "$2"), "key"), true
 	case addresses(pattern, "/api/v1/artifacts/{id}"):
-		return s.projectOfArtifact, true
+		return projectOfRow(`select coalesce(project_key, '') from artifacts where id = $1 and `+access.ProjectClause("project_key", "$2"), "id"), true
 	case addresses(pattern, "/api/v1/asks/{id}"):
-		return s.projectOfAsk, true
+		return projectOfRow(`
+			select coalesce(i.project_key, ar.project_key, '')
+			from asks a
+			left join issues i on i.key = a.issue_key
+			left join artifacts ar on ar.id = a.artifact_id
+			where a.id = $1 and `+access.ProjectClause("coalesce(i.project_key, ar.project_key)", "$2"), "id"), true
 	case addresses(pattern, "/api/v1/comments/{id}"):
-		return s.projectOfComment, true
+		return projectOfRow(`
+			select coalesce(i.project_key, ar.project_key, '')
+			from comments c
+			left join issues i on i.key = c.issue_key
+			left join artifacts ar on ar.id = c.artifact_id
+			where c.id = $1 and `+access.ProjectClause("coalesce(i.project_key, ar.project_key)", "$2"), "id"), true
 	case addresses(pattern, "/api/v1/messages/{id}"):
-		return s.projectOfMessage, true
+		return projectOfRow(`
+			select coalesce(i.project_key, '')
+			from messages m
+			left join issues i on i.key = m.issue_key
+			where m.id = $1 and `+access.ProjectClause("i.project_key", "$2"), "id"), true
 	case addresses(pattern, "/api/v1/results/{id}"):
-		return s.projectOfCheckResult, true
+		return projectOfRow(`
+			select coalesce(i.project_key, '')
+			from check_results c
+			left join issues i on i.key = c.issue_key
+			where c.id = $1 and `+access.ProjectClause("i.project_key", "$2"), "id"), true
 	}
 	return nil, false
 }
@@ -164,187 +351,68 @@ func addresses(pattern, prefix string) bool {
 	return pattern == prefix || strings.HasPrefix(pattern, prefix+"/")
 }
 
-// projectOfIssue reads the project column of the issue the path names, the same one-row read
-// every handler that needs an issue's project makes (issue_patch.go, issue_parent.go).
-func (s *server) projectOfIssue(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, r.PathValue("key")))
-}
-
-// projectOfProject is the one-row read the other resolvers make, against the projects table
-// itself: a project's own key is the project it belongs to, and a key no project has resolves
-// to none. It reads the key alone rather than going through loadProject, whose 404 this would
-// only have to undo.
-func (s *server) projectOfProject(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `select key from projects where key = $1`, r.PathValue("key")))
-}
-
-// projectOfArtifact reads the project_key every artifact carries (artifactColumns), which is
-// its issue's for an issue document and its own for a project document. An agent conversation's
-// artifact carries none, so it resolves to no project and a project-scoped caller is refused
-// it.
-func (s *server) projectOfArtifact(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(project_key, '') from artifacts where id = $1
-	`, r.PathValue("id")))
-}
-
-// projectOfAsk resolves an ask through the join askSnoozeEvent already makes: an ask hangs from
-// an issue or from a document, and takes that owner's project.
-func (s *server) projectOfAsk(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key, '')
-		from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		where a.id = $1
-	`, r.PathValue("id")))
-}
-
-// projectOfComment is one hop to the comment's issue or document, since the comments table holds
-// no project of its own (store/migrations/0001_init.up.sql, 0009_project_artifacts.up.sql).
-func (s *server) projectOfComment(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key, '')
-		from comments c
-		left join issues i on i.key = c.issue_key
-		left join artifacts ar on ar.id = c.artifact_id
-		where c.id = $1
-	`, r.PathValue("id")))
-}
-
-// projectOfMessage is the same one hop for a message, which hangs from an issue or from nothing
-// at all: a direct message between a person and a session belongs to no project, so it resolves
-// to none here, and the two routes a session answers its own delivery on are classed
-// scopeSession rather than this.
-func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, '')
-		from messages m
-		left join issues i on i.key = m.issue_key
-		where m.id = $1
-	`, r.PathValue("id")))
-}
-
-// projectOfCheckResult is one hop to the project of the issue the result was recorded on,
-// since the check_results table holds no project of its own
-// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
-// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
-// and both issues are of one project anyway, since an issue's parent is of its own project.
-func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
-	return scanProjectKey(q.QueryRow(ctx, `
-		select coalesce(i.project_key, '')
-		from check_results c
-		left join issues i on i.key = c.issue_key
-		where c.id = $1
-	`, r.PathValue("id")))
-}
-
-// scanProjectKey reads a resolver's one column, answering no project for a target that does not
-// resolve rather than an error: no such row, or a path value Postgres will not read as a uuid
-// (SQLSTATE 22P02, which it reports as it binds the parameter). Those are the ids a handler
-// answers 404 or 400 for, and withinProjectScope refuses them to a project-scoped caller
-// rather than letting that answer out.
-func scanProjectKey(row pgx.Row) (string, error) {
-	var project string
-	if err := row.Scan(&project); err != nil {
-		if unaddressed(err) {
-			return "", nil
+// projectOfRow is the resolver that reads one column, the object's project, by the path value
+// named parameter and the reader's visibility argument at $2, answering no project for a target
+// that does not resolve rather than an error: no such row, a row the reader does not see, or a path
+// value Postgres will not read as a uuid (SQLSTATE 22P02, which it reports as it binds the
+// parameter).
+func projectOfRow(sql, parameter string) projectResolver {
+	return func(ctx context.Context, q queryer, r *http.Request, viewer any) (string, error) {
+		var project string
+		if err := q.QueryRow(ctx, sql, r.PathValue(parameter), viewer).Scan(&project); err != nil {
+			var malformed *pgconn.PgError
+			if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &malformed) && malformed.Code == "22P02") {
+				return "", nil
+			}
+			return "", err
 		}
-		return "", err
+		return project, nil
 	}
-	return project, nil
 }
 
-// unaddressed answers whether err means the target resolves to no row at all, which is the
-// handler's answer to make for an unscoped caller and a refusal for a scoped one. Every
-// resolver reads its one column itself, so what reaches this is Postgres's own answer and never
-// a refusal some loader already wrote a status onto.
-func unaddressed(err error) bool {
-	if errors.Is(err, pgx.ErrNoRows) {
+// refuseOutsideCallerProjects refuses a write whose body names project, which the request's
+// credential may not write, and answers whether it did. A full member's broker token scoped to
+// one project may write that project alone (namedProjectOf), and is refused any other, an empty
+// project, a write over every project, included, in the words it was answered before projects
+// could be private. Any other credential that lists projects is refused a project its list does
+// not cover (access.CredentialCovers), a project its reader does not see read as a private one, so
+// a project a hidden project's key names and one no project holds are refused alike; an empty
+// project is a write of no one project, which only a restricted member's list does not cover. A
+// credential that lists none is refused nothing here, and a project it does not see is the
+// handler's missing project. The refusal names the list or the one project, which is the caller's
+// own, and the project the body named, which the caller wrote, so it says nothing of whether that
+// project exists.
+func (s *server) refuseOutsideCallerProjects(w http.ResponseWriter, r *http.Request, project string) bool {
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		return false
+	}
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		return false
+	}
+	if covers, named := namedProjectOf(reader.Viewer, actor.Credential); named {
+		if project == covers {
+			return false
+		}
+		writeOutsideTheBrokerProject(w, covers, project)
 		return true
 	}
-	var malformed *pgconn.PgError
-	return errors.As(err, &malformed) && malformed.Code == "22P02"
-}
-
-// withinProjectScope runs the project check in front of one mutating route's handler. The row's
-// class is decided once here, at mount, as withinSessionScope decides its own: a class this
-// check does not cover returns the handler unchanged, so no route it leaves alone pays for it.
-//
-// For a caller whose credential names no project — every caller that exists today — a covered
-// route costs one header read and calls the handler. For one that names a project it fails
-// closed: only a target this check resolved to that same project reaches the handler.
-func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	switch route.Scope {
-	case scopeProject:
-		resolve, addressed := s.projectResolverFor(route.Pattern)
-		if !addressed {
-			// Nothing mounts such a row: undecidableWrites names it and register refuses the
-			// table holding it. A project-scoped caller is refused it here all the same, so
-			// what stands between that caller and a write nothing judged is this check rather
-			// than a panic somewhere else.
-			return func(w http.ResponseWriter, r *http.Request) {
-				covers, scoped := s.callerProject(r)
-				if !scoped {
-					handler(w, r)
-					return
-				}
-				refuseWriteOutsideProjectScope(w, covers, "")
-			}
-		}
-		return func(w http.ResponseWriter, r *http.Request) {
-			covers, scoped := s.callerProject(r)
-			if !scoped {
-				handler(w, r)
-				return
-			}
-			belongsTo, err := resolve(r.Context(), s.deps.Store.Pool, r)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if belongsTo != covers {
-				// Including a target that resolved to no project at all: an object belonging
-				// to none, a row that is not there, and an id Postgres will not read.
-				// Refusing those too is what makes the check fail closed — not what hides
-				// which ids exist, which this does not claim to do (the file comment).
-				refuseWriteOutsideProjectScope(w, covers, belongsTo)
-				return
-			}
-			handler(w, r)
-		}
-	case scopeDeployment:
-		return func(w http.ResponseWriter, r *http.Request) {
-			covers, scoped := s.callerProject(r)
-			if !scoped {
-				handler(w, r)
-				return
-			}
-			writeError(w, codeProjectScopeDeployment, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential may write project %s and nothing else; %s %s belongs to the deployment rather than to a project",
-				covers, route.Method, route.Pattern))
-		}
-	default:
-		// A write that belongs to the calling session (scopeSession, held to its own session by
-		// withinSessionScope), the issue create, whose project its handler reads from the body
-		// (scopeProjectInBody), and a row that writes nothing at all (scopeNoWrite).
-		return handler
+	cred := listOf(reader, actor.Credential)
+	if len(cred.Listed) == 0 {
+		return false
 	}
-}
-
-// refuseWriteOutsideProjectScope names the project the caller's credential covers and the
-// project the write belongs to where one resolved, and nothing of the credential itself. It
-// names no project at all for a write that resolved to none, since there is none to name and
-// an invented one would say something about what exists.
-func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo string) {
-	if belongsTo == "" {
-		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-			"this request's credential may write project %s; this write resolves to no project of that credential's",
-			covers))
-		return
+	private := project != "" && reader.Viewer != nil && reader.Viewer.AnyPrivate && !slices.Contains(reader.Viewer.Sees, project)
+	if access.CredentialCovers(cred, project, private) {
+		return false
+	}
+	belongsTo := "belongs to project " + project
+	if project == "" {
+		belongsTo = "is over every project"
 	}
 	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
+		"this request's credential may write %s; this write %s", projectsNamed(cred.Listed), belongsTo))
+	return true
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row
@@ -365,6 +433,13 @@ func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo str
 // declares any, the caller holds them. A row that declares none is open to every authenticated
 // caller, and this check refuses a session other than the one it proved as it always did.
 //
+// The session itself is read as the caller sees it (access.SessionClause, sessionHiddenFrom): a
+// caller that is not open - a restricted member - is answered
+// 404 SESSION_NOT_FOUND for a session that is neither its own nor has acted in a project it sees,
+// and an open viewer for a session that has acted in a project it does not see, exactly as for a
+// session nobody holds. An open viewer of a deployment that holds no private project is answered
+// as before and costs no read.
+//
 // Every other row returns the handler unchanged, so no route it does not cover pays for it.
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
@@ -372,19 +447,62 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
-		proved, provedOne := s.callerSession(r)
-		if !provedOne {
-			handler(w, r)
-			return
-		}
-		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
+		r = s.withCallerResolved(r)
+		addressed := r.PathValue("session_id")
+		if proved, provedOne := s.callerSession(r); provedOne && addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
 				"this request's credential acts for session %s; %s %s writes into session %s",
 				proved, route.Method, route.Pattern, addressed))
 			return
 		}
+		reader, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(withReader(r.Context(), reader))
+		hidden, err := s.sessionHiddenFromReader(r.Context(), addressed)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if hidden {
+			writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+addressed)
+			return
+		}
 		handler(w, r)
 	}
+}
+
+// sessionHiddenFromReader reports whether the request's reader - the one a check put in ctx
+// (withReader) - may not see session id (sessionHiddenFrom, access.SessionClause): a session that
+// is not its own and has acted in a project it does not see, or, for a restricted member's
+// reader, in none it sees. A context with no reader is answered hidden,
+// failing closed: every request's check puts its reader in ctx, and the server's own work names
+// the server's reader (everyReader) where it reads every session, as the delivery's resolve of a
+// session route does (resolveDeliveryTarget).
+func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok {
+		return true, nil
+	}
+	return s.sessionHiddenFrom(ctx, reader, id)
+}
+
+// personHiddenFromReader reports, through q, whether the request's reader may not see the person
+// login names (access.PersonClause), as sessionHiddenFromReader does for a session: a context with
+// no reader is answered hidden, and a reader with no viewer reads as the closed viewer it binds
+// (refs.VisibilityArg). An open reader sees every person and costs no read.
+func personHiddenFromReader(ctx context.Context, q queryer, login string) (bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok {
+		return true, nil
+	}
+	if reader.Viewer != nil && reader.Viewer.Open {
+		return false, nil
+	}
+	var sees bool
+	err := q.QueryRow(ctx, `select `+access.PersonClause("$1::text", "$2"), model.CanonicalLogin(login), refs.VisibilityArg(reader)).Scan(&sees)
+	return !sees, err
 }
 
 // addressesOneSession answers whether route is a write to the rows of the one session its path
@@ -429,11 +547,12 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 	}
 }
 
-// undecidableWrites names every mutating row the project check cannot decide: one writeClasses
-// gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
-// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
-// nothing at all.
+// undecidableWrites names every mutating row that nothing decides: one writeClasses gives no
+// class, and one classed scopeProject whose address names no object writeProbes probes, which
+// TestNoWriteReachesAHiddenObject therefore cannot hold to answering a hidden object as missing.
+// Every other class is decided: scopeDeployment by the open viewer it needs, scopeProjectInBody
+// by its handler's check of the body's project, scopeSession by withinSessionScope and the
+// handlers behind it, and scopeNoWrite by writing nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
 // table it names anything in, so a row added later cannot be left undecided. The other direction,
 // a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
@@ -448,8 +567,8 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 		switch route.Scope {
 		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
-			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
-				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
+			if _, probed := writeProbes[name]; !probed {
+				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object writeProbes probes")
 			}
 		default:
 			undecidable = append(undecidable, name+": no write class (writeClasses)")

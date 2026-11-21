@@ -2,11 +2,12 @@ import { canonicalRepo } from "@legion/contracts/repo";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isCredentialFeatureOff } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderDefault,
   dangerHoverText,
@@ -19,6 +20,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
+import { credentialGrantsQuery } from "../credentials/grants";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
@@ -77,8 +79,27 @@ export function SettingsPage(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
   const projects = useQuery(projectsQuery());
-  // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
-  const credentialsAvailable = useQuery(credentialPendingQuery());
+  // A restricted member reads none of the deployment's own rows (`useRestrictedMember`): no
+  // group list, no delivery settings, no credential list and no Legion daemon setting, so their
+  // Settings draws no Groups, no Delivery timeline and no Legion. Their own grants and sign-ins
+  // are theirs to read and to revoke, which Dispatch takes to the secrets broker as it does a full
+  // member's.
+  const restricted = useRestrictedMember();
+  // Whether this Dispatch has a secrets broker, without which Live grants and Sign-ins have
+  // nothing to list: the credential list answers `null` where it has none. A restricted member
+  // may not read that list, so their page asks the grants list instead, which they may read and
+  // which answers 404 FEATURE_OFF where there is no broker. The server reads its broker setting
+  // once, at boot, so neither answer of no broker is asked again until the event feed starts after
+  // a gap (`reaskHeldCredentialList`): the credential list's own gate holds a `null`, and the
+  // grants list's gate here holds a FEATURE_OFF.
+  const credentialsAvailable = useQuery(credentialPendingQuery(restricted));
+  const grants = useQuery({
+    ...credentialGrantsQuery(),
+    enabled: restricted ? (query) => !isCredentialFeatureOff(query.state.error) : false,
+  });
+  const brokered = restricted
+    ? !grants.isPending && !isCredentialFeatureOff(grants.error)
+    : !credentialsAvailable.isPending && credentialsAvailable.data !== null;
   // Both mapping writes show their refusal on the row they changed. Neither holds back the reads
   // of the mappings while it is out (`holds`): a read asked then can answer a default another
   // browser set after Dispatch took this write, which an event brings here, and the page shows it
@@ -212,14 +233,14 @@ export function SettingsPage(): ReactNode {
       </header>
       <div className={settingsSectionGap}>
         <ProjectsSection />
-        <GroupsSection />
+        {restricted ? null : <GroupsSection />}
         <AgentTokensSection />
-        {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
+        {brokered ? (
           <>
             <GrantsSection />
             <SignInsSection />
           </>
-        )}
+        ) : null}
         <section aria-labelledby="repository-projects-heading">
           <h2
             className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
@@ -291,32 +312,44 @@ export function SettingsPage(): ReactNode {
                             {mapping.project}
                           </td>
                           <td className="px-4 py-3">
-                            <input
-                              aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
-                              checked={mapping.default}
-                              className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              name={`default-repository-${mapping.project}`}
-                              onChange={() =>
-                                putMapping.mutate({
-                                  default: true,
-                                  project: mapping.project,
-                                  repo: mapping.repo,
-                                })
-                              }
-                              type="radio"
-                            />
+                            {/* A mapping belongs to the deployment, whose writes Dispatch refuses
+                                a restricted member (403 RESTRICTED_MEMBER): their row says which
+                                mapping is the default and offers no control to change or delete
+                                it, and their page no form to add one. */}
+                            {restricted ? (
+                              mapping.default ? (
+                                <span className={textSecondaryOnSurface}>Default</span>
+                              ) : null
+                            ) : (
+                              <input
+                                aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
+                                checked={mapping.default}
+                                className="size-4 cursor-pointer disabled:cursor-not-allowed"
+                                disabled={deleteMapping.isPending || putMapping.isPending}
+                                name={`default-repository-${mapping.project}`}
+                                onChange={() =>
+                                  putMapping.mutate({
+                                    default: true,
+                                    project: mapping.project,
+                                    repo: mapping.repo,
+                                  })
+                                }
+                                type="radio"
+                              />
+                            )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button
-                              aria-label={`Delete mapping for ${mapping.repo}`}
-                              className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              onClick={() => deleteMapping.mutate(mapping.repo)}
-                              type="button"
-                            >
-                              Delete
-                            </button>
+                            {restricted ? null : (
+                              <button
+                                aria-label={`Delete mapping for ${mapping.repo}`}
+                                className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                                disabled={deleteMapping.isPending || putMapping.isPending}
+                                onClick={() => deleteMapping.mutate(mapping.repo)}
+                                type="button"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -325,39 +358,41 @@ export function SettingsPage(): ReactNode {
                 </table>
               </div>
 
-              <form
-                className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
-                onSubmit={submit}
-              >
-                <label className={settingsFieldLabel} htmlFor="repository">
-                  Repository
-                  <input
-                    className={settingsMonoInput}
-                    id="repository"
-                    onChange={(event) => setRepository(event.target.value)}
-                    pattern={ownerRepoPattern}
-                    placeholder="owner/repo"
-                    required
-                    value={repository}
-                  />
-                </label>
-                <label className={settingsFieldLabel} htmlFor="project">
-                  Project
-                  <ProjectSelect
-                    id="project"
-                    onChange={setProject}
-                    projects={projects.data}
-                    value={project}
-                  />
-                </label>
-                <button
-                  className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
-                  type="submit"
+              {restricted ? null : (
+                <form
+                  className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
+                  onSubmit={submit}
                 >
-                  Add mapping
-                </button>
-              </form>
+                  <label className={settingsFieldLabel} htmlFor="repository">
+                    Repository
+                    <input
+                      className={settingsMonoInput}
+                      id="repository"
+                      onChange={(event) => setRepository(event.target.value)}
+                      pattern={ownerRepoPattern}
+                      placeholder="owner/repo"
+                      required
+                      value={repository}
+                    />
+                  </label>
+                  <label className={settingsFieldLabel} htmlFor="project">
+                    Project
+                    <ProjectSelect
+                      id="project"
+                      onChange={setProject}
+                      projects={projects.data}
+                      value={project}
+                    />
+                  </label>
+                  <button
+                    className={settingsSubmitButton}
+                    disabled={putMapping.isPending || deleteMapping.isPending}
+                    type="submit"
+                  >
+                    Add mapping
+                  </button>
+                </form>
+              )}
               {failedAction !== undefined ? (
                 <div className="mt-4">
                   <QueryError
@@ -371,21 +406,23 @@ export function SettingsPage(): ReactNode {
           ) : null}
         </section>
         <ArchitectureSourcesSection />
-        <section aria-labelledby="delivery-timeline-heading">
-          <h2
-            className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-            id="delivery-timeline-heading"
-          >
-            Delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Which repository deploys, and whose merged pull requests the Delivery page counts.
-            Saving verifies the Dispatch GitHub App can read the deploy repository.
-          </p>
-          <DeliverySettingsForm />
-        </section>
+        {restricted ? null : (
+          <section aria-labelledby="delivery-timeline-heading">
+            <h2
+              className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
+              id="delivery-timeline-heading"
+            >
+              Delivery timeline
+            </h2>
+            <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
+              Which repository deploys, and whose merged pull requests the Delivery page counts.
+              Saving verifies the Dispatch GitHub App can read the deploy repository.
+            </p>
+            <DeliverySettingsForm />
+          </section>
+        )}
         <IssuePagePreference />
-        <LegionDaemonsSection />
+        {restricted ? null : <LegionDaemonsSection />}
       </div>
     </section>
   );

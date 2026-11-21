@@ -63,8 +63,14 @@ type privateNodeFixture struct {
 
 // author and reader are the two people of this test: the one who owns the private node and one
 // who owns none of it and acts for every read below.
-func privateNodeAuthor() model.Actor { return model.Actor{Kind: "user", ID: "alice"} }
-func privateNodeReader() model.Actor { return model.Actor{Kind: "user", ID: "bob"} }
+// Both read with a viewer that sees every project (model.ServerViewer), so the author rule alone
+// decides what each reads.
+func privateNodeAuthor() model.Actor {
+	return model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
+}
+func privateNodeReader() model.Actor {
+	return model.Actor{Kind: "user", ID: "bob", Viewer: model.ServerViewer}
+}
 
 // privateBlockID is the private block's own id inside its document, which a search hit names as
 // the block it matched (model.SearchResult.BlockID).
@@ -584,6 +590,10 @@ var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|gr
 //     the markers against the rules a statement states would pass such a statement at 0 == 0;
 //   - every visibility rule a statement states is one the registry rendered
 //     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule.
+//
+// The statement that resolves the request's viewer (viewerResolution, which the read check makes
+// before every handler) reads projects and access lists and no node; the projects' own
+// visibility column it reads is no node's visibility rule, so it is left out of the count.
 func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 	t.Helper()
 	if len(reads) == 0 {
@@ -596,6 +606,9 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 		}
 		bound := 0
 		for _, statement := range read.statements {
+			if strings.Contains(statement.SQL, viewerResolution) {
+				continue
+			}
 			markers := strings.Count(statement.SQL, refs.VisibilityMarker)
 			if markers > 0 {
 				bound++
@@ -604,7 +617,14 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 				t.Errorf("%s reads the store's tables in a statement that binds no predicate of the registry's:\n%s",
 					read.name, statement.SQL)
 			}
-			if rules := strings.Count(statement.SQL, ".visibility"); markers != rules {
+			// A project's own visibility (`<project>.visibility = 'public'`, the public arm of
+			// the access rule a viewer is resolved by and a person's scope binds, or
+			// `<project>.visibility = 'private'`, the SessionClause and RoleClause gates that
+			// keep a session or role of an unseen private project hidden) is a test of a project
+			// and not of a node, and is no rule of the statement's own.
+			rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, ".visibility = 'public'") -
+				strings.Count(statement.SQL, ".visibility = 'private'")
+			if markers != rules {
 				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
 					read.name, rules, markers, statement.SQL)
 			}
@@ -673,8 +693,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if !bearer.SameCredential(model.Actor{}) {
 		t.Error("two holders of the shared bearer are two credentials, and the refusal below has no reason")
 	}
-	if refs.VisibilityArg(bearer) != nil {
+	if graphstore.ActingCredential(bearer) != nil {
 		t.Error("a credential that proves no author binds a name an author-private read could match")
+	}
+	if !strings.Contains(string(refs.VisibilityArg(bearer).([]byte)), `"author":null`) {
+		t.Errorf("the visibility argument of a credential that proves no author = %s, want its author null", refs.VisibilityArg(bearer))
 	}
 	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(bearer))
 	if !errors.Is(err, graphstoretest.ErrAuthorNamesNobody) {
@@ -948,12 +971,16 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		t.Fatalf("begin the private nodes' write: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	// Each node names the project of the document and the issue it sits in, as the block index
+	// and the comment writer write theirs: a reader whose credential lists that project reads a
+	// node of it, and a node of no project is no node of a listed one.
+	project := strings.SplitN(fixture.issue, "-", 2)[0]
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
-		Kind: "block", ID: fixture.private, Supertag: "block",
+		Kind: "block", ID: fixture.private, Supertag: "block", Project: project,
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}, {
-		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment,
+		Kind: graphstore.KindComment, ID: fixture.privateComment, Supertag: graphstore.KindComment, Project: project,
 		Visibility: visibility, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}}, nil); err != nil {

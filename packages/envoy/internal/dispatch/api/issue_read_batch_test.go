@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -140,19 +141,20 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	served := directServer(deps)
 	ctx := context.Background()
 	pool := deps.Store.Pool
-	issue, progress, err := served.loadIssueWithProgress(ctx, pool, key)
+	viewer := refs.VisibilityArg(everyReader)
+	issue, progress, err := served.loadIssueWithProgress(ctx, pool, everyReader, key)
 	if err != nil {
 		t.Fatalf("load the issue: %v", err)
 	}
-	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
+	artifacts, err := served.loadArtifacts(ctx, pool, everyReader, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
-	asks, replies, err := served.queryOwnerAsks(ctx, pool, model.Actor{}, issueOwner(issue.Key), "open")
+	asks, replies, err := served.queryOwnerAsks(ctx, pool, everyReader, issueOwner(issue.Key), "open")
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}
-	rows, err := pool.Query(ctx, issueChildrenStatement, issue.Key)
+	rows, err := pool.Query(ctx, issueChildrenStatement, issue.Key, viewer)
 	if err != nil {
 		t.Fatalf("query the children: %v", err)
 	}
@@ -161,7 +163,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the children: %v", err)
 	}
-	gateRows, err := pool.Query(ctx, issueDesignGatesStatement, issue.Key, model.GatedStepsKnown)
+	gateRows, err := pool.Query(ctx, issueDesignGatesStatement, issue.Key, model.GatedStepsKnown, viewer)
 	if err != nil {
 		t.Fatalf("query the design gates: %v", err)
 	}
@@ -170,7 +172,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.ServerReader, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
@@ -315,8 +317,35 @@ func (r *roundTrips) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQ
 
 func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
+// viewerResolution opens the one statement that resolves a request's viewer (access.Resolve).
+const viewerResolution = access.Marker + "VisibleProjectsSQL"
+
+// readsOwnStatements answers a counted GET read's statements past the one that resolves its
+// caller's viewer, which the read check makes once a request before the handler runs
+// (withinReadScope), as the sign-in lookup is made: the cost a test pins is the read's own. It
+// fails the test unless the read resolved its viewer exactly once, first.
+func readsOwnStatements(t *testing.T, statements []string) []string {
+	t.Helper()
+	var own []string
+	resolutions := 0
+	for _, statement := range statements {
+		if strings.Contains(statement, viewerResolution) {
+			resolutions++
+			continue
+		}
+		own = append(own, statement)
+	}
+	if resolutions != 1 || !strings.Contains(statements[0], viewerResolution) {
+		t.Fatalf("the read resolved its viewer %d times, want once and first: %v", resolutions, statements)
+	}
+	return own
+}
+
 // The issue read costs two round trips, and one for an issue with nothing the second batch is
-// for, where the sequential loaders spent a statement on each part of the answer.
+// for, where the sequential loaders spent a statement on each part of the answer. The request
+// makes one more before the read, every read request's own: it resolves its caller's viewer
+// once (readerOf, access.Resolve), which every statement of the read then binds; that round trip
+// is held to being exactly that one statement, and the read to its two.
 func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -335,7 +364,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	fixture := buildFullIssueRead(t, handler)
 
 	response := countedIssueRead(t, handler, fixture.key)
-	batched := counter.take()
+	batched := readsOwnStatements(t, counter.take())
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the issue: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -367,7 +396,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 		}
 	}
 	bareRead := countedIssueRead(t, handler, bareKey)
-	bareTrips := counter.take()
+	bareTrips := readsOwnStatements(t, counter.take())
 	if bareRead.Code != http.StatusOK {
 		t.Fatalf("read the bare issue: status=%d body=%s", bareRead.Code, bareRead.Body.String())
 	}
@@ -406,7 +435,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 	served := directServer(deps)
 	ctx := context.Background()
 
-	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, everyReader, fixture.key, false); err != nil {
 		t.Fatalf("read the issue: %v", err)
 	}
 	prepared := preparedStatementNames(t, deps.Store)
@@ -414,7 +443,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 		t.Fatal("the read prepared no statement, so a deallocation would not show here")
 	}
 
-	if _, err := served.readIssue(ctx, model.Actor{}, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := served.readIssue(ctx, everyReader, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read a missing issue: %v, want pgx.ErrNoRows", err)
 	}
 	after := preparedStatementNames(t, deps.Store)
@@ -423,7 +452,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 			t.Fatalf("the missing key's read left %s deallocated: %v are prepared, %v were", name, after, prepared)
 		}
 	}
-	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, everyReader, fixture.key, false); err != nil {
 		t.Fatalf("read the issue after the missing key: %v", err)
 	}
 	if again := preparedStatementNames(t, deps.Store); len(again) != len(after) {

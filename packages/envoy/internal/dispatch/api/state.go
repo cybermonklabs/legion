@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -12,7 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -24,7 +25,9 @@ type userIssueState struct {
 }
 
 // userState is the body GET /api/v1/me/state answers: the caller's state for each issue it
-// holds one for, by issue key.
+// holds one for, by issue key. An issue of a project the caller does not see is left out, as an
+// issue no row holds would be: a state kept from before its project was hidden stays, read by
+// nothing.
 type userState map[string]userIssueState
 
 func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
@@ -32,10 +35,16 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select issue_key, pinned, last_read_seq, dismissed, seq
-		from user_issue_state where login = $1 order by issue_key
-	`, actor.ID)
+		select state.issue_key, state.pinned, state.last_read_seq, state.dismissed, state.seq
+		from user_issue_state state join issues on issues.key = state.issue_key
+		where state.login = $1 and `+access.ProjectClause("issues.project_key", "$2")+`
+		order by state.issue_key
+	`, actor.ID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -107,6 +116,10 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_STATE", http.StatusBadRequest, "last_read_seq must be non-negative")
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -115,17 +128,15 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	// The read phase holds no transaction id (INFRA-636). The issue's project is read first and
-	// plainly: it names the owner whose lock the event's append would otherwise be the first to
-	// take (projectOwner, events' lockEventOwner), and a route that waited for that lock holding
-	// an id - which the row's `select ... for update` assigned before anything was judged - holds
-	// back every reader's snapshot for as long as it waits. A key no issue row holds is the error
-	// the insert's foreign key raised when that insert came first, and is answered as it was.
+	// plainly, as the caller reads it: it names the owner whose lock the event's append would
+	// otherwise be the first to take (projectOwner, events' lockEventOwner), and a route that
+	// waited for that lock holding an id - which the row's `select ... for update` assigned before
+	// anything was judged - holds back every reader's snapshot for as long as it waits. An issue of
+	// a project the caller does not see answers 404 exactly as a key no issue holds, and stores
+	// nothing, so no state of it is kept and no event of its project is appended.
 	var project string
-	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, fmt.Errorf("user state names %s, which no issue row holds", key))
-			return
-		}
+	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -253,10 +264,30 @@ const agentStateCutoffSkew = time.Minute
 // unread reply is named by `pinned` alone, which is why the join is three ways and not two.
 // Parameters are the fragment's own (unreadDirectRepliesArgs): the pin
 // is keyed on the canonical login, $1, as the read mark is.
-const userAgentStatesQuery = `
+//
+// It is the statement of a reader that sees every object (seesEveryObject), the one every reader
+// made before a project could be private (R9). Every other reader reads userAgentStatesSeenQuery.
+var userAgentStatesQuery = userAgentStatesSQL("", "")
+
+// userAgentStatesSeenQuery is userAgentStatesQuery for a reader that may not see every object,
+// whose viewer it binds at $4: an unread reply counts only under a root whose conversation the
+// reader may read, by the rule the Inbox's Agent rows hold each root to (agentConversationSeen),
+// so the badge counts what the Inbox and the session's conversation window show; and the answer
+// names only a session the reader may see (access.SessionClause, the parties rule of the caller's
+// own conversation with it), so a session it may not see has no Clear, read mark, pin or count
+// here, as a session nobody holds has none.
+var userAgentStatesSeenQuery = userAgentStatesSQL(`
+		where `+agentConversationSeen("unread_direct_replies.root_id::text", "unread_direct_replies.session_id", "$4")+`
+		`, `
+	where `+access.SessionClause("coalesce(direct_marks.session_id, unread.session_id, pinned.session_id)", "$4"))
+
+// userAgentStatesSQL is the state read with unreadSeen narrowing the unread replies it counts and
+// rowSeen the sessions it answers, each "" for none.
+func userAgentStatesSQL(unreadSeen, rowSeen string) string {
+	return `
 	with recursive` + unreadDirectRepliesCTE + `,
 	unread as (
-		select session_id, count(*)::int as unread from unread_direct_replies group by session_id
+		select session_id, count(*)::int as unread from unread_direct_replies` + unreadSeen + ` group by session_id
 	),
 	pinned as (
 		select session_id, pinned_at from user_agent_pin
@@ -267,16 +298,21 @@ const userAgentStatesQuery = `
 	       coalesce(unread.unread, 0), pinned.pinned_at
 	from direct_marks
 	full join unread on unread.session_id = direct_marks.session_id
-	full join pinned on pinned.session_id = coalesce(direct_marks.session_id, unread.session_id)
+	full join pinned on pinned.session_id = coalesce(direct_marks.session_id, unread.session_id)` + rowSeen + `
 	order by 1
 `
+}
 
-// loadUserAgentStates runs userAgentStatesQuery for login, narrowed to sessionID when it is
-// not nil. The read mark, the pin and the viewer's own direct messages are matched on the
+// loadUserAgentStates runs the state read for login as who reads it, narrowed to sessionID when
+// it is not nil. The read mark, the pin and the viewer's own direct messages are matched on the
 // canonical login, so one person is one viewer however their identity source spells them; the
 // Clear (user_agent_state, migration 0033) is keyed on the raw actor id.
-func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (userAgentStates, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)...)
+func (s *server) loadUserAgentStates(ctx context.Context, who model.Actor, login string, sessionID *string) (userAgentStates, error) {
+	query, args := userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)
+	if !seesEveryObject(who) {
+		query, args = userAgentStatesSeenQuery, append(args, refs.VisibilityArg(who))
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +338,11 @@ func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	states, err := s.loadUserAgentStates(r.Context(), actor.ID, nil)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -354,9 +394,15 @@ func userAgentStateEvent(actor model.Actor, sessionID string) model.Event {
 // nothing it did not show), and/or the pin that puts the session in the sidebar's Agents list
 // (pinned), announces the write to the viewer's other tabs unless it was only replies already
 // read by id or passed by the read mark (one the Clear hides is neither), and answers with the
-// session's whole state.
+// session's whole state, as GET /api/v1/me/agents/state reads it for the same reader. A session
+// the reader may not see is refused in front of this handler as a session nobody holds is
+// (withinSessionScope), whose check put the reader in the request's context.
 func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -547,7 +593,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 		s.publish(r.Context(), event)
 	}
-	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
+	states, err := s.loadUserAgentStates(r.Context(), who, actor.ID, &sessionID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

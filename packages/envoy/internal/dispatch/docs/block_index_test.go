@@ -71,7 +71,7 @@ func createOwedDocument(t *testing.T, database *store.Store, service *Service, i
 	}
 	seedServiceText(t, service, id, markdown)
 	if stored == "" {
-		live, _, err := service.TextWithBlocks(ctx, id)
+		live, _, err := service.TextWithBlocks(ctx, serverReader, id)
 		if err != nil {
 			t.Fatalf("read document %s: %v", slug, err)
 		}
@@ -120,7 +120,7 @@ func reconcileBlockIndex(t *testing.T, service *Service, cursor string) BlockInd
 // holderOf is the id of the innermost block of the document's live text holding reference.
 func holderOf(t *testing.T, service *Service, artifactID, reference string) string {
 	t.Helper()
-	markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
+	markdown, blocks, err := service.TextWithBlocks(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read %s: %v", artifactID, err)
 	}
@@ -209,7 +209,7 @@ func TestBlockIndexIndexesAnOwedDocument(t *testing.T) {
 	`, spec, written); err != nil {
 		t.Fatalf("write the document's reference: %v", err)
 	}
-	markdown, blocks, err := service.TextWithBlocks(ctx, spec)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestAClosedIssuesDocumentIsLeftOwedLikeAnOpenOneUntilItSettles(t *testing.T
 	}
 	for _, document := range twins {
 		closeDocumentRoom(t, service, document.id)
-		live, _, err := service.TextWithBlocks(ctx, document.id)
+		live, _, err := service.TextWithBlocks(ctx, serverReader, document.id)
 		if err != nil {
 			t.Fatalf("read the live document of %s: %v", document.issue, err)
 		}
@@ -468,7 +468,7 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	}
 	live := func(id string) string {
 		t.Helper()
-		markdown, _, err := service.TextWithBlocks(ctx, id)
+		markdown, _, err := service.TextWithBlocks(ctx, serverReader, id)
 		if err != nil {
 			t.Fatalf("read %s: %v", id, err)
 		}
@@ -566,7 +566,7 @@ func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, 
 		t.Fatalf("no text of %s holds %q", artifactID, from)
 	}
 	waitForLandedAppends(t, service, artifactID)
-	live, _, err := service.TextWithBlocks(ctx, artifactID)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil || !strings.Contains(live, to) {
 		t.Fatalf("live text after the edit = %q (%v), want it to hold %q", live, err, to)
 	}
@@ -657,7 +657,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.ServerReader, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -665,7 +665,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.ServerReader, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1209,7 +1209,7 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 		model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("edit the document past its latest version: %v", err)
 	}
-	live, _, err := service.TextWithBlocks(ctx, document)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read the live text of the document: %v", err)
 	}

@@ -1,5 +1,5 @@
 kind: Added
-body: '`project.access_changed` carries `slack_channels_changed_at`, when the project''s Slack channels last changed, null until the first write that changes them; the generated types carry it on `ProjectAccess` and `AccessAnswer`, and add `GET /api/v1/access/private-projects` with `PrivateProjectsAnswer` and `PrivateProjectChannels`.'
+body: '`ProjectAccess` and `AccessAnswer` carry `slack_channels_changed_at`, when the project''s Slack channels last changed, null until the first write that changes them, and the generated types add `GET /api/v1/access/private-projects` with `PrivateProjectsAnswer` and `PrivateProjectChannels`.'
 time: 2026-11-18T18:56:34.329472332Z
 custom:
     Issue: pr4439

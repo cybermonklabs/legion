@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
@@ -314,22 +315,24 @@ type DispatchArgs struct {
 	// on, so it is refused without oidcAudience, as oidcIssuer is.
 	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
 	// AccessAccounts is DISPATCH_ACCESS_ACCOUNTS, comma-joined: the service-account subjects that
-	// may read Dispatch's membership answer (GET /api/v1/access/projects/{key}, GET
-	// /api/v1/access/person and GET /api/v1/access/private-projects), the secrets broker's
-	// system:serviceaccount:dispatch:envoy-broker in production. Where oidcAccounts is set,
-	// Dispatch refuses to boot with an access account it leaves out; with oidcAccounts unset, every
-	// account is admitted and any may be an access account. Unset or empty renders nothing, and no
-	// account reads the answer. It is refused without oidcAudience, as oidcIssuer is.
+	// may read the routes of Dispatch's read class accessAccount (cmd/dispatch's README lists
+	// them), the secrets broker's system:serviceaccount:dispatch:envoy-broker in production. Where
+	// oidcAccounts is set, Dispatch refuses to boot with an access account it leaves out; with
+	// oidcAccounts unset, every account is admitted and any may be an access account. Unset or
+	// empty renders nothing, and no account reads those routes. It is refused without
+	// oidcAudience, as oidcIssuer is.
 	AccessAccounts []string `pulumi:"accessAccounts,optional"`
 
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
 	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
 	// one. Unset renders nothing.
 	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
-	// PrivateProjects true renders DISPATCH_PRIVATE_PROJECTS=1; false or unset renders nothing.
-	// No envoy-dispatch reads the setting yet, so true makes no project private, while the stack
-	// would say it had: leave it unset.
-	PrivateProjects *bool `pulumi:"privateProjects,optional"`
+	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
+	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); only these can be
+	// made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each key once; empty or unset
+	// renders nothing. An entry that is not a project key is ignored, with a warning at preview naming
+	// it, as Dispatch's boot ignores and logs one.
+	PrivateProjects []string `pulumi:"privateProjects,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -748,7 +751,7 @@ type Dispatch struct {
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
-// projectOwnerFallback "" and privateProjects false render nothing. existingCluster is the input of
+// projectOwnerFallback "" and an empty privateProjects render nothing. existingCluster is the input of
 // that name, its name and location checked (resolveDispatchExistingCluster), which NewDispatch
 // looks the cluster up by and runs Dispatch in, and nil without that input, where the component
 // makes a cluster of its own.
@@ -774,7 +777,7 @@ type dispatchSettings struct {
 	oidcAudience, oidcIssuer                    string
 	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
-	privateProjects                             bool
+	privateProjects, privateProjectsIgnored     []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1123,7 +1126,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"oidcAccounts", len(args.OidcAccounts) > 0},
 		{"accessAccounts", len(args.AccessAccounts) > 0},
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
-		{"privateProjects", args.PrivateProjects != nil},
+		{"privateProjects", len(args.PrivateProjects) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1512,7 +1515,7 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 	if len(args.OidcAccounts) > 0 {
 		for i, account := range args.AccessAccounts {
 			if !slices.Contains(args.OidcAccounts, account) {
-				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an account that reads the membership answer must be one the deployment admits", i, account)
+				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an access account must be one the deployment admits", i, account)
 			}
 		}
 	}
@@ -1828,11 +1831,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 	// The service-account verifier is one required input, one override and two allow-lists, not
 	// a group: the audience turns it on, the issuer defaults to the cluster's own, and the two
-	// lists narrow which accounts it admits and which of them read the membership answer, so any
-	// of the three sent without an audience would configure nothing and is refused rather than
-	// dropped. Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which
-	// is why the component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not
-	// at all. The refusal names oidcAudience, the input the operator has to set.
+	// lists narrow which accounts it admits and which of them are access accounts, so any of the
+	// three sent without an audience would configure nothing and is refused rather than dropped.
+	// Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which is why the
+	// component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
+	// The refusal names oidcAudience, the input the operator has to set.
 	if args.OidcAudience == "" {
 		if err := refuseDispatchInputsWithout("oidcAudience", "the audience turns on Dispatch's service-account verifier, which oidcIssuer, oidcAccounts and accessAccounts only configure", []dispatchInput{
 			{"oidcIssuer", args.OidcIssuer != ""},
@@ -1930,7 +1933,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.oidcAccounts = args.OidcAccounts
 	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
-	s.privateProjects = args.PrivateProjects != nil && *args.PrivateProjects
+	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -2025,6 +2028,32 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	return s, nil
+}
+
+// dispatchPrivateProjects is privateProjects as DISPATCH_PRIVATE_PROJECTS renders it: sorted and
+// each key once. An entry that is not a project key is never rendered: it is answered in ignored,
+// in the order given, and NewDispatch prints it at preview (privateProjectsIgnoredMessage), as
+// Dispatch's boot ignores and logs one. Ignoring it fails closed, since the project it meant is
+// never provisioned: its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED while another
+// entry is a key, and 409 PRIVATE_PROJECTS_OFF where none is.
+func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
+	for _, entry := range entries {
+		if !contracts.ValidProjectKey(entry) {
+			ignored = append(ignored, entry)
+			continue
+		}
+		keys = append(keys, entry)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys), ignored
+}
+
+// privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of
+// privateProjects that is not a project key. It is a warning, not an error: the Pulumi SDK reads an
+// error as a fatal condition (pulumi.Context.Log.Error), and the entry is ignored, not refused.
+func privateProjectsIgnoredMessage(entry string) string {
+	return fmt.Sprintf("privateProjects: %q is not a project key (%s), so it is ignored: no project is provisioned by it, and Dispatch logs the same ERROR at boot",
+		entry, contracts.ProjectKeyRule)
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.
@@ -2405,6 +2434,11 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	s, err := newDispatchSettings(args)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	for _, entry := range s.privateProjectsIgnored {
+		if err := ctx.Log.Warn(privateProjectsIgnoredMessage(entry), nil); err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
 	}
 	if err := providers.Require(ctx.Context(), dispatchType, "gcp", opts...); err != nil {
 		return nil, err

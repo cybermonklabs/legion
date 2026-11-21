@@ -1,16 +1,18 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pagedGroups } from "../../__tests__/paged-groups";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
@@ -52,16 +54,23 @@ function renderPanel({
   answer = access(),
   groups = [crew, ops],
   login = "alice",
+  memberKind,
 }: {
   answer?: ProjectAccess;
   groups?: AccessGroup[];
   login?: string;
+  memberKind?: "restricted";
 } = {}) {
   let stored = answer;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login,
+    ...(memberKind === undefined ? {} : { member_kind: memberKind }),
+  });
   const spies = {
     getProjectAccess: spyOn(api, "getProjectAccess").mockImplementation(async () => stored),
     listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue(groups),
@@ -100,6 +109,55 @@ function renderPanel({
   };
 }
 
+// The group list is the whole deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED): their Access tab never asks for it. The groups it would offer are the
+// owner's to add, and an owner is a full member, so a restricted member loses nothing. A full
+// member who is not the owner reads the list as always.
+test("a restricted member's Access tab never reads the deployment's groups", async () => {
+  const restricted = renderPanel({ login: "bob@outside.example", memberKind: "restricted" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    await settle();
+    expect(restricted.listAccessGroups).not.toHaveBeenCalled();
+    expect(screen.queryByText("Couldn't load the groups.")).not.toBeInTheDocument();
+  } finally {
+    restricted.restore();
+  }
+
+  const full = renderPanel({ login: "carol@example.com" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    await waitFor(() => expect(full.listAccessGroups).toHaveBeenCalled());
+  } finally {
+    full.restore();
+  }
+});
+
+// A restricted member's Settings draws no Groups (`SettingsPage`), so their Access tab sends them
+// to none: it says what a group admits, with no link to a section they do not have. A full member
+// who is not the owner is sent to it as always.
+test("a restricted member's Access tab links to no Groups section of Settings", async () => {
+  const restricted = renderPanel({ login: "bob@outside.example", memberKind: "restricted" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    expect(screen.getByText(/A group admits only its full members\./)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Settings → Groups" })).not.toBeInTheDocument();
+  } finally {
+    restricted.restore();
+  }
+
+  const full = renderPanel({ login: "carol@example.com" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    expect(screen.getByRole("link", { name: "Settings → Groups" })).toHaveAttribute(
+      "href",
+      "/settings#groups"
+    );
+  } finally {
+    full.restore();
+  }
+});
+
 /** What a list names, one entry per row: each row's first child is its name, and its Remove
  *  button repeats the name for a screen reader only. */
 function named(list: string): (string | null | undefined)[] {
@@ -113,9 +171,12 @@ test("shows the owner, the visibility, and the people and groups the access list
   try {
     expect(await screen.findByRole("heading", { name: "Owner" })).toBeInTheDocument();
     expect(screen.getByTestId("access-owner")).toHaveTextContent("alice (you)");
-    // Visibility is read-only in this release: it says what it is and offers no switch.
+    // The switch reads the visibility the answer holds.
     expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
-    expect(screen.queryByRole("button", { name: /private/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+      "aria-checked",
+      "false"
+    );
     expect(named("People")).toEqual(["carol@example.com"]);
     expect(named("Groups")).toEqual(["crew"]);
     // The picker offers the groups the list does not name already.
@@ -123,6 +184,37 @@ test("shows the owner, the visibility, and the people and groups the access list
     expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "ops"]);
   } finally {
     panel.restore();
+  }
+});
+
+// The group list answers a page at a time, and the picker offers the groups of every page.
+test("the group picker offers the groups of every page the group list answers", async () => {
+  const pages = pagedGroups([[crew], [ops]]);
+  const read = spyOn(api, "getProjectAccess").mockResolvedValue(access({ groups: [] }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ProjectAccessPanel project="CORE" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const picker = await screen.findByLabelText<HTMLSelectElement>("Add a group");
+    await waitFor(() =>
+      expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "crew", "ops"])
+    );
+    expect(pages.mock.calls).toEqual([[undefined], ["crew"]]);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    pages.mockRestore();
+    read.mockRestore();
   }
 });
 
@@ -567,5 +659,243 @@ test("a person nobody has signed in as yet is shown as not signed in yet", async
     expect(rows[0]).not.toHaveTextContent("not signed in yet");
   } finally {
     panel.restore();
+  }
+});
+
+// The owner sets the project private with the switch, and the switch and the label beside it
+// follow Dispatch's answer rather than the press.
+test("the owner makes the project private with the switch, and the switch reads the answer", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockImplementation(
+    panel.lands(access({ visibility: "private" }))
+  );
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("CORE", { visibility: "private" }, keyedAttempt)
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "true"
+      )
+    );
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Private");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// A switch to public shows the project and everything in it to every full member, so it is sent
+// only once the owner confirms it, as giving the project away is: a declined confirmation sends
+// nothing and the switch stays private. The switch to private shows nobody more and asks nothing.
+test("the owner makes a private project public only once they confirm it", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: access({ visibility: "private" }) });
+  const confirm = spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  const patch = spyOn(api, "patchProjectAccess")
+    .mockImplementationOnce(panel.lands(access({ visibility: "public" })))
+    .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Declined: nothing is sent, and the project stays private.
+    await user.click(toggle);
+    expect(confirm).toHaveBeenCalledWith(
+      "Make CORE public? Every full member can then see it and everything in it."
+    );
+    await settle();
+    expect(patch).not.toHaveBeenCalled();
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Private");
+
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("CORE", { visibility: "public" }, keyedAttempt)
+    );
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+
+    // Back to private: no confirmation is asked.
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt)
+    );
+    expect(confirm).toHaveBeenCalledTimes(2);
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+    patch.mockRestore();
+  }
+});
+
+/** Whether `text` is drawn anywhere on the page: in its text, or in an attribute a reader meets,
+ *  such as a title's tooltip or an accessible name. */
+function drawn(text: string): boolean {
+  if (document.body.textContent?.includes(text)) {
+    return true;
+  }
+  return Array.from(document.body.querySelectorAll("*")).some((element) =>
+    Array.from(element.attributes).some((attribute) => attribute.value.includes(text))
+  );
+}
+
+// Every refusal the switch's route answers, with the body Dispatch answers it with. Dispatch's
+// words are written for the deployment's operator: a table, an envoy-dispatch command, a setting,
+// the hub's bucket. They stay in the server's log and record. The owner who pressed the switch
+// reads one sentence of the dashboard's per code instead, which says what they can do, and none
+// of Dispatch's text is drawn anywhere on the page. None offers Retry: every answer stays the same
+// until someone changes the deployment, the store or the project. That holds for
+// PRIVATE_PROJECTS_UNAVAILABLE too, which this release answers every switch to private that passes
+// the other checks, since it has no writer of the hub's private-projects record. A code the
+// dashboard does not know gets a sentence that names nothing of Dispatch's. The switch stays
+// public through each.
+for (const { code, status, server, shown } of [
+  {
+    code: "PRIVATE_PROJECTS_OFF",
+    status: 409,
+    server: "this deployment cannot make a project private yet: nothing was changed",
+    shown:
+      "This deployment cannot make a project private yet: ask its operator to set up private projects.",
+  },
+  {
+    code: "PRIVATE_PROJECT_NOT_PROVISIONED",
+    status: 409,
+    server:
+      "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())",
+    shown: "This deployment has not set up CORE to be private: ask its operator to set it up.",
+  },
+  {
+    code: "PRIVATE_PROJECTS_INCOMPLETE",
+    status: 409,
+    server:
+      "the project stays public until the store can hold it private: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events",
+    shown:
+      "This deployment is not ready to keep CORE private yet: ask its operator to finish setting up private projects.",
+  },
+  {
+    code: "PRIVATE_PROJECTS_UNAVAILABLE",
+    status: 409,
+    server:
+      "the project stays public: every listener holds a private project's messages back by its key in the hub's envoy_private_projects bucket, and that key could not be written: this deployment has no bus to write it to",
+    shown:
+      "This deployment cannot keep CORE's messages from other people yet, so CORE stays public: ask its operator to set up private projects.",
+  },
+  {
+    code: "PROJECT_OWNER_REQUIRED",
+    status: 403,
+    server: "only the project's owner changes who may see it: ask its owner, bob",
+    shown: "Only CORE's owner can change who may see it.",
+  },
+  {
+    code: "PROJECT_NOT_FOUND",
+    status: 404,
+    server: "no project has this key: CORE",
+    shown: "You can no longer see CORE, so you cannot change who may see it.",
+  },
+  {
+    code: "PROJECT_ACCESS_INPUT",
+    status: 400,
+    server: 'a project is public or private, not "secret"',
+    shown: "Dispatch did not take this change: reload the page and press the switch again.",
+  },
+  {
+    code: "A_REFUSAL_THIS_DASHBOARD_DOES_NOT_KNOW",
+    status: 409,
+    server: "the owner lock dispatch-owner:project:CORE was not taken within 60s",
+    shown:
+      "Dispatch did not make CORE private: if this keeps happening, ask the deployment's operator.",
+  },
+] as const) {
+  test(`a switch refused ${code} tells the owner what to do, offers no Retry, draws none of Dispatch's words, and stays public`, async () => {
+    const user = userEvent.setup();
+    const panel = renderPanel();
+    const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
+      new ApiError(status, { code, error: server })
+    );
+    try {
+      await user.click(await screen.findByRole("switch", { name: "Private" }));
+      const alert = await within(screen.getByRole("region", { name: "Visibility" })).findByRole(
+        "alert"
+      );
+      expect(within(alert).getByText(shown)).toBeInTheDocument();
+      expect(drawn(server)).toBe(false);
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "false"
+      );
+      expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(patch).toHaveBeenCalledTimes(1);
+    } finally {
+      panel.restore();
+      patch.mockRestore();
+    }
+  });
+}
+
+// A keyboard reader who presses the switch keeps their place through its write and the refusal
+// that answers it, so their next key reaches the switch rather than the page's body. While the
+// write is out the switch says it cannot be pressed, and a press of it sends nothing.
+test("a keyboard press of the switch keeps the focus through its write and refusal, and Enter then presses it again", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const refused = Promise.withResolvers<ProjectAccess>();
+  const patch = spyOn(api, "patchProjectAccess")
+    .mockReturnValueOnce(refused.promise)
+    .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    act(() => toggle.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    // The write is out: the switch says it cannot be pressed, either way a control can say so,
+    // and keeps the focus.
+    await waitFor(() => expect(toggle.matches(":disabled, [aria-disabled='true']")).toBe(true));
+    expect(toggle).toHaveFocus();
+    // A press now is swallowed, not queued behind the write that is out: once that write is
+    // answered, it is still the only one sent.
+    await user.keyboard(" ");
+
+    refused.reject(
+      new ApiError(409, {
+        code: "PRIVATE_PROJECTS_OFF",
+        error: "this deployment cannot make a project private yet: nothing was changed",
+      })
+    );
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(patch).toHaveBeenCalledTimes(1);
+    await within(screen.getByRole("region", { name: "Visibility" })).findByRole("alert");
+    expect(toggle).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  } finally {
+    stopFocusFixup();
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+test("a person who is not the owner cannot press the switch", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ login: "bob" });
+  const patch = spyOn(api, "patchProjectAccess");
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", notOwner);
+    await user.click(toggle);
+    expect(patch).not.toHaveBeenCalled();
+  } finally {
+    panel.restore();
+    patch.mockRestore();
   }
 });

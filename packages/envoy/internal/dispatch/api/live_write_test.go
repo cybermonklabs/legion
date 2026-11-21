@@ -380,7 +380,7 @@ func (f *heldWriteFixture) expectFailedResponse(t *testing.T, responses <-chan *
 
 func (f *heldWriteFixture) liveText(t *testing.T) string {
 	t.Helper()
-	text, err := f.docs.Text(context.Background(), f.issue.PrimaryArtifactID)
+	text, err := f.docs.Text(context.Background(), everyReader, f.issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read live document: %v", err)
 	}
@@ -411,7 +411,7 @@ func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, wa
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		text, err := documentService.Text(context.Background(), artifactID)
+		text, err := documentService.Text(context.Background(), everyReader, artifactID)
 		if err != nil {
 			t.Fatalf("read live document: %v", err)
 		}

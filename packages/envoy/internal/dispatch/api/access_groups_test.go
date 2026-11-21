@@ -12,7 +12,8 @@ import (
 )
 
 // TestAGroupOnlyItsOwnerEdits: the first write of a group makes it and its writer owns it; after
-// that only the owner writes it, gives it to another full member, or deletes it.
+// that only the owner writes it, gives it to another full member, or deletes it. A restricted
+// member makes none: 403 RESTRICTED_MEMBER, the refusal of a deployment write (withinProjectScope).
 func TestAGroupOnlyItsOwnerEdits(t *testing.T) {
 	handler, database := newAccessServer(t)
 	made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice")
@@ -39,7 +40,7 @@ func TestAGroupOnlyItsOwnerEdits(t *testing.T) {
 	wantRefusal(t, dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{}}, "alice"),
 		http.StatusForbidden, "GROUP_OWNER_REQUIRED", "alice", "PUT crew after giving it away")
 	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/access-groups", nil, "bob")
-	if groups := decodeBody[[]model.AccessGroup](t, listed); listed.Code != http.StatusOK || len(groups) != 1 || groups[0].Name != "crew" {
+	if page := decodeBody[model.AccessGroupPage](t, listed); listed.Code != http.StatusOK || len(page.Groups) != 1 || page.Groups[0].Name != "crew" || page.Next != "" {
 		t.Fatalf("GET /api/v1/access-groups = %d %s, want crew", listed.Code, listed.Body.String())
 	}
 	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/access-groups/crew", nil, accessDave); deleted.Code != http.StatusNoContent {

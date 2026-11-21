@@ -25,6 +25,7 @@ import {
 import { userAgentStateQuery } from "../../api/queries";
 import type {
   Agent,
+  AuthenticatedUser,
   BroadcastCreated,
   CreateBroadcastInput,
   InboxRow,
@@ -47,6 +48,7 @@ import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
@@ -214,6 +216,7 @@ function renderAgents({
   listedAgents = agents,
   issues = [],
   messages = [],
+  user = { event_head: "0", kind: "user", login: "alice" },
 }: {
   agentState?: UserAgentStates;
   inboxRows?: InboxRow[];
@@ -221,12 +224,9 @@ function renderAgents({
   listedAgents?: Agent[];
   issues?: IssueSummary[];
   messages?: MessageRead[];
+  user?: AuthenticatedUser;
 } = {}) {
-  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(user);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(listedAgents);
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
@@ -474,6 +474,80 @@ test("Agents lists live session activity and capability-aware actions", async ()
   } finally {
     page.view.unmount();
     page.restore();
+  }
+});
+
+// The broadcasts are the deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED), and their pages answer them Page not found: a restricted member's
+// Agents page links to no Broadcasts. A full member's page keeps the link.
+test("a restricted member's Agents page links to no Broadcasts", async () => {
+  const restricted = renderAgents({
+    user: {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    },
+  });
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("link", { name: "Machines" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Broadcasts" })).toBeNull();
+  } finally {
+    restricted.view.unmount();
+    restricted.restore();
+  }
+
+  const full = renderAgents();
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("link", { name: "Broadcasts" })).toHaveAttribute(
+      "href",
+      "/agents/broadcasts"
+    );
+  } finally {
+    full.view.unmount();
+    full.restore();
+  }
+});
+
+// A broadcast is the deployment's write, which Dispatch refuses a restricted member (403
+// RESTRICTED_MEMBER), so their Agents page offers no way to compose one: no row's select box, no
+// select-all, and so no composer. The rest of each row stays theirs. A full member's page offers
+// the select boxes, and ticking one opens the composer.
+test("a restricted member's Agents page offers no broadcast composer", async () => {
+  const user = userEvent.setup();
+  const restricted = renderAgents({
+    user: {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    },
+  });
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    const pageRegion = screen.getByRole("region", { name: "Agents" });
+    expect(
+      within(card(pageRegion, "Planner")).getByRole("button", { name: "Planner" })
+    ).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Select Planner for broadcast" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Select all matching agents" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Broadcast" })).toBeNull();
+  } finally {
+    restricted.view.unmount();
+    restricted.restore();
+  }
+
+  const full = renderAgents();
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("checkbox", { name: "Select all matching agents" })).toBeTruthy();
+    await user.click(screen.getByRole("checkbox", { name: "Select Planner for broadcast" }));
+    expect(await screen.findByRole("region", { name: "Broadcast" })).toBeTruthy();
+  } finally {
+    full.view.unmount();
+    full.restore();
   }
 });
 
@@ -4182,10 +4256,15 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
-    // The composer holds its draft through its control fieldset.
-    const held = () => field().closest("fieldset")?.disabled;
+    // The composer holds its draft through its control fieldset: `aria-disabled`, and a key in
+    // the held box writes nothing.
+    const held = () => field().closest("fieldset")?.getAttribute("aria-disabled") === "true";
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
+    expect(field().value).toBe("Status please");
+    // The focus runs the composer's own focus handler, a state update, so it is given inside act.
+    act(() => field().focus());
+    await user.keyboard("x");
     expect(field().value).toBe("Status please");
 
     await act(async () => {
@@ -4196,6 +4275,41 @@ test("a row back after its session left mid-send holds the send it left until it
     expect(held()).toBe(false);
     expect(field().value).toBe("");
   } finally {
+    sent.resolve(message("Status please"));
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reader who sends from an Agents row's Send is still writing to that agent: once the send
+// lands, the focus is in the row's box, ready for the next message.
+test("a send from an Agents row's Send gives the focus to the row's box once it lands", async () => {
+  const user = userEvent.setup();
+  const sent = Promise.withResolvers<Message>();
+  const page = renderAgents({ issues: [coreIssue] });
+  page.createAgentMessage.mockImplementationOnce(() => sent.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = () =>
+      within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
+    await type(user, comment(), "Status please");
+    const send = within(planner).getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      sent.resolve(message("Status please"));
+      await sent.promise;
+    });
+    await waitFor(() => expect(comment().value).toBe(""));
+    expect(comment()).toHaveFocus();
+  } finally {
+    stopFocusFixup();
     sent.resolve(message("Status please"));
     page.view.unmount();
     page.restore();
@@ -4581,7 +4695,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
-    expect(field.closest("fieldset")?.disabled).toBe(false);
+    expect(field.closest("fieldset")?.getAttribute("aria-disabled")).toBeNull();
 
     for (const wait of [2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);

@@ -2,6 +2,7 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import type { DeliveryTimelineWithMeasures } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderStrong,
   inputClasses,
@@ -99,7 +100,9 @@ function Facet({
  *  facet per list (repository, parent agent, session, Dispatch issue, priority, component,
  *  author), each counted by the server with every other facet applied and its own ignored. All
  *  combinable; the caller keeps them in the URL. Under Parent agent, **Edit groups** opens the
- *  session-groups editor. */
+ *  session-groups editor. The groups are the deployment's to write (`scopeDeployment`), which
+ *  Dispatch refuses a restricted member (`useRestrictedMember`): their panel offers no editor,
+ *  and the groups the timeline answers them still name the Parent agent values they count. */
 export function FacetPanel({
   data,
   filters,
@@ -119,6 +122,7 @@ export function FacetPanel({
 }): ReactNode {
   const [openFacet, setOpenFacet] = useState<FacetKey | undefined>(undefined);
   const [editingGroups, setEditingGroups] = useState(false);
+  const restricted = useRestrictedMember();
   const countsOf = (key: FacetKey) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
   const byCount = (key: FacetKey) => {
     const counts = countsOf(key);
@@ -204,7 +208,7 @@ export function FacetPanel({
             values={byCount(key)}
           />
         );
-        if (key !== "parentAgent") return facet;
+        if (key !== "parentAgent" || restricted) return facet;
         return (
           <div key={key}>
             {facet}
@@ -218,7 +222,7 @@ export function FacetPanel({
           </div>
         );
       })}
-      {editingGroups ? (
+      {editingGroups && !restricted ? (
         <SessionGroupsEditor
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}

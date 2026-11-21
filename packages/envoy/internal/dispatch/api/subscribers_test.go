@@ -256,7 +256,8 @@ func TestListIssueSubscribersFiltersEnrichesAndSortsByLastSeen(t *testing.T) {
 // A subscriber whose session is no longer live is shown with the last heartbeat the listener still
 // knows for it, which is later than its interest row's updated_at, and with that updated_at when
 // the listener sends none. A live subscriber keeps its session's own last_seen. The list is read
-// straight from the listener, so this asks the handler body with no database behind it.
+// straight from the listener, so this asks the handler body directly, read as the server's own
+// viewer, which sees every subscriber.
 func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 	const topic = "notifications.dispatch.issue.TEST-1.>"
 	envoyURL, listener := newFakeListener(t, map[string][]string{
@@ -270,7 +271,8 @@ func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 	s := &server{deps: Deps{Envoy: envoy.New(envoyURL)}}
 
 	response := httptest.NewRecorder()
-	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil), issueSubscriberBase("TEST-1"))
+	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil),
+		everyReader, issueSubscriberBase("TEST-1"), false)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

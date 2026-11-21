@@ -17,8 +17,6 @@ const (
 	keptPrefix      = "notifications.envoy.kept."
 )
 
-var projectKey = regexp.MustCompile(ProjectKeyPattern)
-
 // isLiteral reports whether token names one value: it is neither empty nor a wildcard.
 func isLiteral(token string) bool {
 	return token != "" && token != "*" && token != ">"

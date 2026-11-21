@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -349,7 +350,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, everyReader, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -1089,14 +1090,6 @@ func scanCommentDelivery(row pgx.Row, extra ...any) (model.CommentDelivery, erro
 	return attempt, nil
 }
 
-func loadCommentDelivery(ctx context.Context, q queryer, commentID, target string, attemptNumber int) (model.CommentDelivery, error) {
-	return scanCommentDelivery(q.QueryRow(ctx, `
-		select `+commentDeliveryColumns+`
-		from comment_deliveries
-		where comment_id = $1 and target = $2 and attempt = $3
-	`, commentID, target, attemptNumber))
-}
-
 // createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
@@ -1125,7 +1118,11 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
@@ -1229,7 +1226,9 @@ type commentReplyPlan struct {
 // every row lock: the thread climb, the block the reply names with the index its comment owes,
 // the reply's own index and references, and what it is in the node and tuple store, for an id
 // and a created_at reserved here. Nothing it reads is read again below, and nothing it plans is
-// written here. who is the session replying, which a block it may not see is refused to.
+// written here. actor is the session replying, which the reply's node records as its author, and
+// reader that writer as a read binds it (readerOf): a block reader may not see is refused
+// (planReplyBlock).
 //
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
 // document its `#id`s resolve against, named by the fields that row will hold (planPendingItem,
@@ -1238,7 +1237,7 @@ type commentReplyPlan struct {
 // read that gives a stored reply its block would find no row yet, and addressing a document's
 // comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock *string,
+	ctx context.Context, tx pgx.Tx, actor, reader model.Actor, comment model.Comment, body string, replyToBlock *string,
 ) (commentReplyPlan, error) {
 	var plan commentReplyPlan
 	var err error
@@ -1248,7 +1247,7 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	if replyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
+		repair, block, err := s.planReplyBlock(ctx, tx, reader, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1269,10 +1268,10 @@ func (s *server) planCommentReply(
 	if err != nil {
 		return plan, err
 	}
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
+	if plan.stored, err = commentStored(ctx, tx, plan.id, actor, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
 		return plan, err
 	}
-	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
+	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, reader, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.createdAt, true)
 	return plan, err
@@ -1311,21 +1310,31 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	// The writer's reader, resolved before the transaction holds a connection
+	// (lockedCommentForDelivery), and read by the role read below.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
 	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500.
+	// comment the writer does not see is one no row holds (access.ItemOwnerClause), so the read
+	// finds nothing and asks nothing for it, as for a missing one. A read that finds nothing asks
+	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
+	// read that fails is the route's 500.
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
+		join comments c on c.id = m.comment_id
 		where m.comment_id = $1 and m.target = coalesce($2, m.target)
+		  and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$4")+`
 		order by m.target
 		limit 1
-	`, input.Target, input.Attempt)
+	`, input.Target, input.Attempt, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1337,7 +1346,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -1355,7 +1364,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// route moves; every statement it plans is written with the reply's own writes.
 	var plan commentReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock); err != nil {
+		if plan, err = s.planCommentReply(r.Context(), tx, actor, who, comment, *input.Body, input.ReplyToBlock); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1428,12 +1437,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
 	// newest, which a replayed reply need no longer be.
 	if attempt.ReplyID != nil {
-		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
+		reply, err := s.loadComment(r.Context(), tx, who, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
+		if err := hydrateCommentReplyBlocks(r.Context(), tx, who, &reply); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

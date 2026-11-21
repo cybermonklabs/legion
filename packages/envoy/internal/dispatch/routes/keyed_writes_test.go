@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
@@ -22,28 +21,10 @@ var browserWrites = map[string]string{
 	"/":                 "the dashboard's files are read and never written",
 }
 
-// recordingMux is the ServeMux the census hands the real mounting code (mount), keeping the
-// pattern of each route mounted on it.
-type recordingMux struct {
-	http.ServeMux
-	patterns []string
-}
-
-var _ api.RouteMux = (*recordingMux)(nil)
-
-func (m *recordingMux) Handle(pattern string, handler http.Handler) {
-	m.ServeMux.Handle(pattern, handler)
-	m.patterns = append(m.patterns, pattern)
-}
-
-func (m *recordingMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
-	m.Handle(pattern, http.HandlerFunc(handler))
-}
-
-// mounted is a recordingMux the server's own mounting code (mount) filled.
-func mounted(t *testing.T) *recordingMux {
+// mounted is a ServeMux the server's own mounting code (mount) filled.
+func mounted(t *testing.T) *http.ServeMux {
 	t.Helper()
-	mux := &recordingMux{}
+	mux := http.NewServeMux()
 	mount(newKeyedCensusContext(t), mux)
 	return mux
 }
@@ -99,9 +80,10 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 	return ctx
 }
 
-// writesBesideTheTable is every pattern of mux that serves a write and is no row of the API's
+// writesBesideTheTable is every pattern mux serves (servedPatterns, read from the mux itself, so
+// a pattern mounted on it by any means is read) that serves a write and is no row of the API's
 // table, which GET /api/v1 lists, sorted.
-func writesBesideTheTable(t *testing.T, mux *recordingMux) []string {
+func writesBesideTheTable(t *testing.T, mux *http.ServeMux) []string {
 	t.Helper()
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil))
@@ -119,7 +101,7 @@ func writesBesideTheTable(t *testing.T, mux *recordingMux) []string {
 		table[route.Method+" "+route.Path] = true
 	}
 	var outside []string
-	for _, pattern := range mux.patterns {
+	for _, pattern := range servedPatterns(t, mux) {
 		method, _, named := strings.Cut(pattern, " ")
 		if (!named || method == http.MethodPost || method == http.MethodPatch) && !table[pattern] {
 			outside = append(outside, pattern)

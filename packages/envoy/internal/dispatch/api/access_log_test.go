@@ -145,7 +145,7 @@ func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
 	logged := captureLog(t)
 	served := directServer(deps)
-	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, func(w http.ResponseWriter, r *http.Request) {
+	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, true, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
 		time.Sleep(100 * time.Millisecond) // ten heartbeats

@@ -169,6 +169,20 @@ An issue created through the default also gets a `repo:owner/name` label.
 
 Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
 
+`DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (the infrastructure repository's `privateprojects.Projects()`).
+Only these projects can be made private.
+An entry that is not a project key, the old value `1` included, is ignored with one ERROR line at boot naming it, and the keys beside it still count: ignoring it fails closed, since the project it meant is never provisioned and its switch to private stays `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+Unset or empty, no project can be made private, as before the setting existed.
+An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming each such row with the cure the project census prints for it, or the command not run, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private through the server until a build carries the writer.
+A switch to public is never refused by any of them.
+Nothing here stops the boot, because a boot that exits would stop every project:
+a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
+with a list, a store that cannot hold a private project yet, for any of the reasons a switch is `409 PRIVATE_PROJECTS_INCOMPLETE` for or for a node no row stands behind, is one ERROR line as each process starts and then one an hour per process, naming why: each row and node with the cure the project census prints for it (the backfill, the erase that removes an orphaned node, or none for a node that names another project), or the command not run.
+
+Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
+The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -191,10 +205,17 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`) and the repository answer (`GET /api/v1/access/projects/{key}/repositories`), the secrets broker's own account in production;
 a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+
+The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
+issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
+An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -207,8 +228,8 @@ A revoked token therefore stops resolving within five seconds of the introspecti
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
-A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
-a token scoped to its person names no single project and carries none.
+A token scoped to one project lists that project, set from the token and never from the body, and writes that project alone (below);
+a token scoped to its person lists the projects its trade asked for, or none.
 A read-only token names no project either.
 Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
 a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
@@ -219,7 +240,8 @@ it names no session, it names neither a person nor a service, it was issued to a
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and closes (1008) once the caller no longer resolves, or once a personal token's projects or scopes are other than when it opened, so a token narrowed to fewer projects reads nothing more of the ones it lost on a socket it already held.
+For a broker-issued credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
@@ -243,34 +265,73 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
-A credential that names one project may write that project and nothing else.
+A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`; `access.CredentialCovers` is the same list rule in Go).
+A personal token's list is its row's `projects`, which Settings, `POST /api/v1/me/agent-tokens` and `PATCH /api/v1/me/agent-tokens/{id}` write:
+at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list; every other credential lists none.
+A full member's list decides only which private projects the credential reads and writes: it reads and writes every public project its person sees, whatever it lists, and a private project only when it lists it and its person sees it.
+A restricted member's list narrows what that person sees to the projects it lists, whatever the deployment holds.
+A broker token an operator's entry scoped to one project keeps the write scope such a token has always had, whatever the deployment holds: it writes that project alone (below).
+
+- A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
+
+- A full member's credential sees the public projects its person sees, and the private projects its list names that its person sees.
+
+- A restricted member's credential that lists projects sees those of them its person sees, and nothing of any other project; one that lists none sees the public projects its person sees.
+
+- A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects and the private projects its list names.
+
+A caller is an open viewer when its person is not a restricted member, whatever its credential lists.
+An open viewer reads every person and every row of the whole deployment, and every session and role but those below (`access.SessionClause`, `access.RoleClause`).
+Apart from a session's own credential, which always reads its session, no caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
+A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): a session the listener sends no projects for is read by no caller but itself, and an open viewer reads one whose list names only projects it sees, an empty list included.
+While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
+Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
+every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
+The live agent view on `/ws/live` relays a session's whole transcript, which holds whatever the session read, so it is narrower than the agents list (`access.SessionContentClause`): a caller that is not open watches only a session that its own person's broker-issued token proved (`session_owners`) and whose listener list names only projects it sees; while a project is private, an open viewer watches a session that wrote in no project it does not see when its listener list names only projects it sees, or, with no list, when a proved write tied the session to somebody and every private project each such person sees is one it sees too.
+While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
+A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects.
+While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
+A project the caller does not see, and every object in it, answers exactly as one no row holds.
+With no private project in the deployment, a full member's credential sees every project its person sees, whatever it lists.
+A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other private project the daemon runs, minted by a person who sees them:
+the shared token, and a token that does not list the project, read a private project as missing.
+
+A credential writes the projects it sees, and nothing else: a full member's credential every public project its person sees and the private projects its list names, and a restricted member's the projects its list and its person both name.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
-a `GET` row declares nothing), in four classes:
+a `GET` row declares what it reads instead, `readClasses` in `internal/dispatch/api/read_classes.go`), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
-*a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
+*a project the body names* — the issue create and the going request, whose project their address does not name;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
-`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
+`Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler.
 
-The project check resolves the project the addressed object belongs to
-— an issue key, a project key, an artifact id, an ask id, a comment id or a message id, each by one read
-— and lets through only a target that resolves to the caller's own project.
-It fails closed, so a target that resolves to another project, to no project at all (an object belonging to none), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to.
-Nothing is read out that way: no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
-Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
-— Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
-a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
-— before the ref is resolved to an issue already imported, and before anything is written.
+The first resolves the caller's viewer once for the write and hands it to the handler, and every read the write makes binds it.
+An object of a project the caller does not see is a row that read does not find, so the write answers it exactly as an object nobody holds
+— the same status and the same bytes, and nothing written — whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent).
+A private project a credential's list does not name is one it does not see, so this is what holds a full member's credential to its list for private projects, and a restricted member's for every project.
+`TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
+A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
+a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
+an open viewer sees every person, and every session `access.SessionClause` passes it, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+A credential's writes are held to a list when it lists a project, whatever its person: a list decides which private projects a full member's credential reads, and a write of the whole deployment stays a person's or an unlisted credential's.
+A full member's broker token acting as its person is held so only while a project is private, since its trade list held none of its writes before projects could be private.
+A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose writes are held to a list (`this request's credential may write <list> and nothing else; <METHOD> <PATTERN> belongs to the deployment rather than to a project`, the words a broker token scoped to one project has always been refused in) and `403 RESTRICTED_MEMBER` to a restricted member:
+what it writes belongs to no project such a viewer could be held to.
+A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential whose writes are held to a list is refused those two.
+`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so before anything is read a credential that lists projects is refused a project its list does not cover (a private project it does not list, and, for a restricted member's credential, any project it does not list), and a broker token scoped to one project any other, `403 PROJECT_SCOPE`, naming its list and the project the body named.
+A private project the caller does not see is refused in the words a project nobody holds is.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
 addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
+The session addressed is also read as the caller sees it (`access.SessionClause`): to a restricted member, or to a credential acting for one, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
+to an open viewer, so is a session that has acted in a private project the viewer does not see, whether or not anything else it did is public, and, while a project is private, a session that has acted in no project and that the listener does not list, or lists with a project the viewer does not see.
+A deployment that holds no private project answers every open viewer as before, at the cost of no read.
 
 The sign-in check refuses every write by a credential that names a service and no person
 — an access token the broker issued to a machine nobody has signed in on
@@ -280,10 +341,9 @@ Its reads are untouched: the machine reads everything its session may read, and 
 A broker token that does name a person, and every other credential, reaches the handler as before.
 A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
-The project and session checks are a no-op for a credential that carries no project and proves no session
-— a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
-That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
-A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
+An open viewer whose credential proves no session — a full member's browser cookie or personal agent token, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing, and, where its credential lists a project, a write of the whole deployment.
+With no private project in the deployment, such a caller sees every project, so the checks refuse it only that write of the whole deployment.
+A read-only token lists no project, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -770,7 +830,7 @@ and the subjects a measurement binds — the largest project, the heavily linked
 
 Measurements are taken with durability on and memory pinned, and every number is recorded beside those settings:
 `fsync=on`, `synchronous_commit=on`, `full_page_writes=on`, and a `shared_buffers`, `maintenance_work_mem` and `effective_cache_size` the run names.
-A cluster with the write settings off leaves no page all-visible, and a small `shared_buffers` decides a share-of-plan reading on its own.
+A cluster with `synchronous_commit` off can leave a vacuum that runs before the seed's commit is flushed to the write-ahead log with no page all-visible, since a row is marked committed only after that flush, so an index-only plan reads as costly as a bitmap one; and a small `shared_buffers` decides a share-of-plan reading on its own.
 A full run at `--scale 1` takes about an hour and twenty minutes and leaves a database of about 14 GB.
 
 **What the seeded documents do not carry.**
@@ -1607,6 +1667,7 @@ A process that finds it held tries again
 - The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
+  Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -2880,7 +2941,7 @@ An operator gives any project to another full member with the database credentia
 envoy-dispatch project-owner <KEY> <email>
 ```
 
-It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` naming the new owner, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
 Who owned the project before, and whether that person is still a member, makes no difference.
 It exits 0 once the change commits;
 2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
@@ -2902,25 +2963,73 @@ where not exists (select 1 from people where email = p.default_assignee);
 
 When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
 
+### Making a project public without the server
+
+A project the database holds private that `DISPATCH_PRIVATE_PROJECTS` no longer names stays private, and only its owner's switch to public changes its visibility, so nothing of it reaches anyone who could not see it before.
+Its owner decides the repair: put the key back on the infrastructure repository's private project list (`shared/legion/privateprojects/lists.go`), or make the project public.
+The owner makes it public from the Access tab; an operator makes it public with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-visibility <KEY> public
+```
+
+It reads `DATABASE_URL` and makes the change in one transaction that appends `project.access_changed`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-visibility"}` (`access.SetVisibility`).
+It makes a project public only, so it makes no bus call, and this build has no writer of the hub's private-projects record (`envoy_private_projects`), so no key of the project was written there for anything to remove.
+It exits 0 once the change commits;
+2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
+and 1 when the database cannot be opened or written.
+
+To take a key off `DISPATCH_PRIVATE_PROJECTS` on purpose, make its project public first, by either way above, and only then remove the key: a key removed first leaves its project private and reported, at boot, at every maintenance pass and in `/healthz`, until one of the two repairs.
+
 ### Filling the sessions' projects
 
 `session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
-From migration `20261116015736_project_access` on, every event append records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.QueueAppend`);
+It records only a session the event's credential proved: an actor of kind `session` whose `act` names that same session and no personal token, which a broker-issued token's write carries (`events.provedSession`, `api.bearerSessionActor`).
+A credential that proves no session, the shared token or a personal token, names one in the request body, and its write records nothing, so no holder of a project's token can make another session look like one of that project's agents.
+From migration `20261116015736_project_access` on, every event append of such a session records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.QueueAppend`);
 the table has no unique key, on purpose, as the migration's header says.
 The events written before that are covered once, by:
 
 ```sh
-envoy-dispatch backfill-session-projects
+envoy-dispatch backfill-session-projects [--reset]
 ```
 
 Run it after the deploy that carries the live insert, so every event is covered by the one or the other.
 It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement each, and records the pair the live insert would have recorded:
-for an event whose actor is a session (`actor->>'kind'` is `session` and `actor->>'id'` is not empty; a personal token's actor has an empty one), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
-A person's event, and an event of no project, records nothing.
+for an event whose stored actor is a proven session (`actor->>'kind'` is `session`, `actor->'act'->>'session'` is `actor->>'id'`, and `actor->'act'->>'token_id'` is empty or absent), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
+A person's event, a session a request body named, and an event of no project record nothing.
 The project is the one the issue or document is in when the fill reads it.
 A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
 Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
-It exits 0 then, and 1 when the database cannot be opened or written.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
+
+The same statement records, in `session_owners`, the person each proven session's `owner` names, canonical by `model.CanonicalLogin`'s rule, as every live append of a proven session does: the live agent view reads it (`access.SessionContentClause`).
+`--reset` does not empty it, since no build recorded it under another rule.
+
+Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
+Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
+Under `Recreate` the build before has stopped when the migration runs.
+A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
+The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
+
+### Scrubbing the access events
+
+`project.access_changed` names its project and its change and nothing else (`model.ProjectAccessEventPayload`), since every reader of the project's events reads it, credentials without the person scope included.
+Who a change named, and the owner and visibility it left, are the server's own record of the event, `project_access_changes`, written in the event's transaction (`access.recordProjectChanges`) and read only by a live resume, to tell whether a change in its gap moved what its caller sees; no route serves it.
+The release of migration `20261116015736_project_access` stored the project's whole access on the payload, its people's emails included, and `GET /api/v1/events/log` serves a stored payload as it was stored.
+After the deploy, run:
+
+```sh
+envoy-dispatch scrub-access-events
+```
+
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement and transaction each, beside the running server, and rewrites each `project.access_changed` whose payload holds anything else to `jsonb_build_object('project', payload->'project', 'change', payload->'change')`, first copying the payload's `principal`, `owner` and `visibility` into `project_access_changes` where no row holds that event.
+It is a command and not a migration because no index of `events` leads with `type`, so a migration would read the whole table in one transaction at boot.
+Once it has read every event it writes the one `access_events_scrubbed` row (migration `20261116085957_project_access_changes`, which creates both tables), none when a run before it did, and prints `scrub-access-events: events=<read> rewritten=<written> scrubbed`; a second run rewrites nothing.
+It exits 0 then, 1 when the database cannot be opened or written, and 2 for any argument.
+Until that row exists no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`, naming the command).
+A deployment that rolls runs it once the last old pod is gone, since an old build appends the old shape until then.
+Copies the outbox already published stay on the bus until its retention ends; they were published while every project was public, and only that project's tokens read them.
 
 ### Pre-deploy census
 
@@ -4279,6 +4388,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/whoami` (GET; cookie or trusted header)
 
   Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
+  It is the highest id of an event the person can see, so no event of a project they do not see moves it; an open person of a deployment that holds no private project reads the log's head itself.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
@@ -4303,6 +4413,14 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
+  A person reads a repository when an issue of a project the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the person does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
+  A repository mapping and a recorded rename give no project a repository.
+  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
+  A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
+  A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
+  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+  With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
@@ -4324,6 +4442,11 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+
+  - `degraded` is `["private_project_unprovisioned"]` while the database holds a private project that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found it, and is absent when there is none;
+    it is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the ERROR line the boot and every maintenance pass log.
+    It never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
+
   `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
   a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
   It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
@@ -4331,15 +4454,17 @@ Each item below names a path with its method and identity, then its purpose.
   - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
     all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
     `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
-    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    `cause` is the class of the attempt's first failure (`gitHubReadCauseClass`): `status <n>` for the first HTTP status that failure names, which is the status GitHub answered, since the client words an answer it notes as a failure with its status ahead of any body, and `no status` for a failure that names none (a request GitHub never answered, or a failure of the read's own);
     it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+    The failure's own text, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut, is `github_read_attempts.cause`.
 
   - The probe sends the database nothing for `github` and waits on nothing:
     it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
     So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
     During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
 
-  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+  - `/healthz` never answers a failure's text: the route takes no credential, whoever reaches the port reads it, from outside too where the deployment has an outside origin, and a GitHub error carries the URL it asked, which names the repository the read read, one a private project maps or one GitHub keeps private.
+    So in every deployment, with a private project or none, it answers the class alone, which names no repository, and the operator reads the text in `github_read_attempts` (`TestHealthzNamesNoPrivateProjectToACallerWithNoCredential`).
 
   - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
     they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
@@ -4493,16 +4618,27 @@ Each item below names a path with its method and identity, then its purpose.
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
+  An events subscription sends only the events its caller may read, by the rule `GET /api/v1/events/log` reads by, for what the caller sees as resolved from the credential the upgrade proved: resolved when the subscription starts, and again at each `project.access_changed`, `access_group.changed` and `project.created`.
+  When the caller's projects moved, other than by a project just made, the subscription ends as `behind`.
   An events subscription resumes after a decimal event id;
-  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
+  its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, across a `project.access_changed` or `access_group.changed`, or above the head (a log that was reset).
+  Its `since` is the resume as the page sent it, and otherwise the newest event the caller can see, as `event_head` is.
+  A delivery view's `seq` and `changed_at` are the newest change of a repository the caller sees, so a change of a repository it does not see moves neither.
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
-  past them, or once the log is reset, it ends as `behind` and the page subscribes again.
+  past them, across an access change, or once the log is reset, it ends as `behind` and the page subscribes again.
   An agent view holds at most 8 MiB of queued frames and ends as `behind` past that.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
   A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
+
+- `/ws/doc/{room}` (GET; the browser identity the deployment configures: the sign-in cookie, or the IAP assertion under `DISPATCH_IDENTITY=iap`)
+
+  A person's document socket.
+  A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
+  Once an owner, a visibility, an access list or a group changes, every process closes each document socket whose person no longer reads its room, and each socket of a person whose access that re-check cannot read, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and the reconnect's admission reads the person again; a person who no longer reads the room gets that refusal (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`, after each LISTEN, and on every socket heartbeat, `StreamHeartbeat`'s 15 s, which `api.Register` runs it on, `docs.Service.RunAccessRecheck`: a change made by SQL alone announces nothing, and that pass closes its sockets within a heartbeat).
+  A socket still being admitted when its person loses the room is refused before its upgrade with that same `404`, never upgraded onto the room.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -4570,6 +4706,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
+  Only the sessions the caller may see are listed: those `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4586,11 +4723,11 @@ Each item below names a path with its method and identity, then its purpose.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
-  Not an authorization boundary: direct-message text already reaches every caller through `GET /api/v1/events`, and a person may read any session's list.
+  A caller reads the list of a session it may see (`access.SessionClause`), and only the answers of projects it sees and of its own direct conversations.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  List the projects the caller sees (`key`, `name`, `open_asks`, `gated_steps`, `created_at`, and `visibility: "private"` on a private project, absent on a public one), ordered by key.
   A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
@@ -4616,8 +4753,10 @@ Each item below names a path with its method and identity, then its purpose.
   A mapping stored under `acme/..` is removed only by a request that sends the dots percent-encoded and keeps them, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E` from curl with `--path-as-is` or from a client that builds the path itself: a browser resolves `..` and `%2E%2E` as dot segments, so the dashboard's delete of such a mapping does not reach it; a `/` in a name is written `%2F`.
   The CI reconcile's warning about such a mapping names the request that removes it (`removed_by`), the path that spells the mapping's own name, split at the first `/` that leaves neither half empty nor a lone `/`, with a `/` inside a half written `%2F` (`DELETE /api/v1/settings/repo-projects/%2Fa/b` removes a mapping direct SQL stored as `/a/b`); for a mapping no path spells — a name with no `/`, one whose only `/` begins or ends it (`/acme`, or `acme/`, which a PUT of `acme/.git` stored before the rule above), or one each of whose `/` leaves nothing or a lone `/` on one side (`acme//`) — it names no request and says the mapping is removed by SQL.
   A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it, and where that mapping's own name is one the PUT refuses or reads as another mapping's, it names that mapping's removal in the PUT's place (`removed_by`).
+  A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 
@@ -4641,7 +4780,9 @@ Each item below names a path with its method and identity, then its purpose.
   `200 {installed}`, `false` when GitHub answers 404.
   A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  The Legion daemon asks it for every repository it serves, for `legion state`.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
+  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
 
@@ -4689,26 +4830,35 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/agent-tokens` (GET, POST; cookie, trusted header, or bearer; GET needs the `person` scope, POST `person` and `approve`)
 
-  List personal-token metadata, each row with the `scopes` its token holds, or mint a personal agent token `{name, scopes?}`.
+  List personal-token metadata, each row with the `scopes` its token holds and the `projects` it lists, absent when it lists none, or mint a personal agent token `{name, scopes?, projects?}`.
   `scopes` defaults to the set the caller's own credential holds;
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
+  `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
+  it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+  A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
+  at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
 
 - `/api/v1/me/agent-tokens/{id}` (PATCH, DELETE; cookie, trusted header, or bearer; needs the `person` and `approve` scopes)
 
-  PATCH sets the token's scopes `{scopes}` — the whole set it is to hold, refused as the mint's are — and answers the token; DELETE revokes it.
+  PATCH sets the token's scopes and projects `{scopes, projects?}` — the whole set and list it is to hold, refused as the mint's are, and a `projects` left out keeps the list — and answers the token as the list does; DELETE revokes it.
   Another person's token, or none, is `404 NOT_FOUND`.
 
 - `/api/v1/users` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
+  A restricted member, and a credential acting for one, read only their own person and the people of the projects they see (`access.PersonClause`).
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, private_projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none).
+  `projects` is the projects the credential lists, sorted, and absent when it lists none, and for a full member's broker-issued token while no project is private, as before lists existed (a full member's list decides only which private projects it reads, and it reads every public project whatever it lists; a restricted member's list decides every project it reads);
+  `private_projects` is those of `projects` the caller must treat as private, sorted, and absent when there is none: a private project's key, a key the credential no longer sees whatever its project's visibility, and a key that names no project, so a key is public exactly when it is in `projects` and not here, and the field tells nothing of a project the caller cannot see;
+  `project` is deprecated: the one project the credential's writes are held to, where they are held to one (a credential whose list holds its writes and names one key, or a broker-issued token an operator's entry scoped to one project), and null for every other credential).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
+  Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
+  a member kind that cannot be read is `503 IDENTITY_UNAVAILABLE`.
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 
@@ -4896,6 +5046,8 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  A restricted member, or a credential acting for one, names no `repo`: a create that names it, a string or `null`, is `403 RESTRICTED_MEMBER` (`a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository`) before the body's project, parent or external ref is read and before anything is written, so their issue takes the repository it resolves to, its nearest parent's or its project's default.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the body's project is read as the caller reads it, so a hidden project still answers `404`; `null` is never refused.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -4910,6 +5062,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  A restricted member, or a credential acting for one, sets, changes and clears no issue's `repo`: a patch that names it, a string or `null`, is `403 RESTRICTED_MEMBER` in the create's words, before the issue is read and before anything is written, so it answers alike for an issue the caller does not see and for one nobody holds.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the issue is read as the caller reads it, so a hidden issue still answers `404`; `null` is never refused.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:

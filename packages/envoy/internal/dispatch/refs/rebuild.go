@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -248,14 +249,23 @@ func sourceRead(kind, id string) (string, error) {
 // sourceText reads one reference source's text, and the time it was written, with sourceRead's
 // statement, whose author it skips. found is false when no such source exists: a deleted row, a
 // document with no markdown version, a direct message, which nothing indexes.
-func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.Time, bool, error) {
+//
+// who is the reader of a document's text, which is read only while who may see the document (its
+// artifact predicate), as a document no row holds; nil is the server's own read, the re-index's
+// and a drain's, which answers no reader.
+func sourceText(ctx context.Context, q Queryer, who *model.Actor, kind, id string) (string, time.Time, bool, error) {
 	read, err := sourceRead(kind, id)
 	if err != nil {
 		return "", time.Time{}, false, err
 	}
+	args := queryArgs{values: []any{id}}
+	if kind == "artifact" && who != nil {
+		read = `select latest.* from (` + read + `) latest where ` +
+			args.visible(who, "artifact", artifactRefKeyOf(`$1::uuid`))
+	}
 	var body string
 	var writtenAt time.Time
-	switch err := q.QueryRow(ctx, read, id).Scan(&body, nil, &writtenAt); {
+	switch err := q.QueryRow(ctx, read, args.values...).Scan(&body, nil, &writtenAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", time.Time{}, false, nil
 	case err != nil:
@@ -676,7 +686,7 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 // lock: what a drain reads to decide whether that text has anything a re-index would move. found
 // is false for a source that is gone, a document with no markdown version and a direct message.
 func SourceText(ctx context.Context, q Queryer, kind, id string) (body string, writtenAt time.Time, found bool, err error) {
-	return sourceText(ctx, q, kind, id)
+	return sourceText(ctx, q, nil, kind, id)
 }
 
 // HoldsQuestionCandidate reports whether body writes a `#id` the whole grammar would resolve

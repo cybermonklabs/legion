@@ -5,6 +5,7 @@ PUT /api/v1/access-groups/{name} any
 GET /api/v1/access/person any
 GET /api/v1/access/private-projects any
 GET /api/v1/access/projects/{key} any
+GET /api/v1/access/projects/{key}/repositories any
 GET /api/v1/agents any
 GET /api/v1/agents/{session_id}/answers any
 POST /api/v1/agents/{session_id}/artifacts any

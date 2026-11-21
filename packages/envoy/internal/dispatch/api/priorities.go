@@ -4,14 +4,17 @@
 // file is the HTTP shape of those calls and the refusals they map to.
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment
-// (writeClasses, routes_table.go): a credential scoped to one project is refused
+// (writeClasses, routes_table.go): a viewer that is not open, a restricted member, and a credential
+// whose writes a list holds (writesHeldTo), whatever its person, are refused
 // PROJECT_SCOPE_DEPLOYMENT, and a broker token naming a service and no person is refused by
-// writeNeedsASignedInPerson, as it is refused every write. No guard of this file's own stands
-// between an agent and a priority: a person signed in, a personal token, the shared token every
-// pod carries and a broker token naming a person each write one.
+// writeNeedsASignedInPerson, as it is refused
+// every write. No guard of this file's own stands between an agent and a priority: a person signed
+// in, a personal token that lists no project, the shared token every pod carries and a broker token
+// naming a person and no project each write one.
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -134,11 +138,16 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 // project and is dropped rather than refused, as it narrows nothing. ?summary=true answers the
 // two fault counts alone, which is what the navigation rail reads.
 //
+// The counts and the two fault lists are of the projects the caller sees (readPriorities binds
+// access.ProjectClause on every issue they count); the list of priorities stays whole. A fault
+// row names no session or person the caller may not see (leaveOutHiddenPriorityReferences).
+//
 // A store holding no live priority is answered 200 with the empty list and the sentence saying
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
 // and nothing has gone wrong.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -148,12 +157,62 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 			projects = append(projects, named)
 		}
 	}
-	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
+	body, err := s.readPriorities(r.Context(), refs.VisibilityArg(reader), projects, query.Get("summary") == "true")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := leaveOutHiddenPriorityReferences(r.Context(), s.deps.Store.Pool, reader, &body); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, body)
+}
+
+// leaveOutHiddenPriorityReferences writes the two fault lists' rows as who reads them (the rule of
+// references, references_seen.go), in one read, as the issue's own read and the listing answer
+// them: an assignee who does not see is null, and so is a claim whose holder, and the actor who
+// moved the issue into backlog or icebox, who does not see. The read is made whatever the rows name
+// (seenReferences), so a row claimed or moved by a hidden holder costs what one nobody claimed
+// costs. A reader that sees every object, and lists with no row, cost no read.
+func leaveOutHiddenPriorityReferences(ctx context.Context, q queryer, who model.Actor, body *model.Priorities) error {
+	if seesEveryObject(who) || len(body.WorkUnderNoPriority.Issues)+len(body.PriorityWorkParked.Issues) == 0 {
+		return nil
+	}
+	rows := [][]model.PriorityIssue{body.WorkUnderNoPriority.Issues, body.PriorityWorkParked.Issues}
+	named := references{}
+	for _, issues := range rows {
+		for _, issue := range issues {
+			if issue.Assignee != nil {
+				named.name(personReference, *issue.Assignee)
+			}
+			if issue.Claim != nil {
+				named.nameActor(issue.Claim.Actor)
+			}
+			if issue.MovedBy != nil {
+				named.nameActor(*issue.MovedBy)
+			}
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for _, issues := range rows {
+		for index := range issues {
+			issue := &issues[index]
+			if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+				issue.Assignee = nil
+			}
+			if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+				issue.Claim = nil
+			}
+			if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
+				issue.MovedBy = nil
+			}
+		}
+	}
+	return nil
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.
@@ -431,15 +490,18 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 // each attribute the priority was written with and each `advances` relation an issue asserted or
 // retracted on it, with its writer and its moment — and no act of any other node.
 //
-// It is a read, so no write class stands on it (writeClasses, routes_table.go) and every
-// authenticated caller makes it, as the listing is read: a priority belongs to no project, so a
-// credential held to one reads this as it reads the listing.
+// It is a read, so no write class stands on it (writeClasses, routes_table.go): a priority belongs
+// to no project, so it is read as the listing is, by every caller its read class admits. An
+// `advances` act names the issue that states it, which is a project's: it is answered only to a
+// caller who sees that issue (the rule of references, references_seen.go), so the history reads,
+// to one who does not, as it read before that issue advanced the priority.
 //
 // An id no priority row carries is 404 PRIORITY_NOT_FOUND, in the wording the two writes of an
 // id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the
 // row is there, and the delete is the last act of it.
 func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -452,7 +514,7 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
-	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
+	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

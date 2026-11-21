@@ -88,7 +88,7 @@ func TestAnApprovalRequestLeavesItsAskToTheWindowArm(t *testing.T) {
 			askID, windows, current)
 	}
 
-	states, err := refs.BlockEmbeddingStates(ctx, database.Pool, refs.ItemAsk.WindowKind(), ownerKey)
+	states, err := refs.BlockEmbeddingStates(ctx, database.Pool, everyReader, refs.ItemAsk.WindowKind(), ownerKey)
 	if err != nil {
 		t.Fatalf("read where meaning search stands on the parts of ask %s: %v", askID, err)
 	}

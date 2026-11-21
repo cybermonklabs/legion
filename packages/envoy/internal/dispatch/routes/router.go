@@ -47,6 +47,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -82,11 +84,12 @@ type AppContext struct {
 	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
 	// turn the route on without the origin check.
 	devSignInHost string
-	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
-	// router reads it through the API server it registers (api.Background's EventHead, an id at or
-	// below which every event is final), and, for a context with no Store, nothing, since it has no
-	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
-	eventHead func(context.Context) (int64, error)
+	// eventHead reads the event_head GET /auth/whoami answers a person: nil for a context with a
+	// Store, whose router reads it through the API server it registers (api.Background's EventHead,
+	// an id at or below which every event is final, read as the highest id of an event the person
+	// can see), and, for a context with no Store, nothing, since it has no event log to read (whoami
+	// then answers 503). A test sets it to answer a head of its own.
+	eventHead func(ctx context.Context, person string) (int64, error)
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -141,15 +144,20 @@ type AppContextOptions struct {
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
 	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
-	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
-	// See api.DepsInput.
+	// read the routes of the read class accessAccount (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS,
+	// DISPATCH_ACCESS_ACCOUNTS). See api.DepsInput.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *ciphertoken.Verifier
-	AgentStream  agentstream.Source
+	// PrivateProjects are the keys of the projects the deployment has provisioned as private
+	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
+	// record. See api.DepsInput.
+	PrivateProjects []string
+	BusProjects     api.BusProjects
+	AgentStream     agentstream.Source
 	// AgentPublisher queues a person's targeted message on its session's own subject when no store
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
 	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
@@ -240,6 +248,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
 		BrokerTokens:           opts.BrokerTokens,
+		PrivateProjects:        opts.PrivateProjects,
+		BusProjects:            opts.BusProjects,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
@@ -261,9 +271,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	// A context with a Store reads its head through the API server New registers (api.Background's
 	// EventHead), which holds the event horizon it is read from.
-	var eventHead func(context.Context) (int64, error)
+	var eventHead func(context.Context, string) (int64, error)
 	if apiDeps.Store == nil {
-		eventHead = func(context.Context) (int64, error) { return 0, errNoEventLog }
+		eventHead = func(context.Context, string) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
 		SigningKey:     opts.SigningKey,
@@ -314,9 +324,10 @@ type router struct {
 	// assets keeps what the asset store answered, for every request of the process
 	// (serveRetainedAsset).
 	assets *assetCache
-	// eventHead is what GET /auth/whoami answers as event_head: the context's own (AppContext's
-	// eventHead) when it names one, else the registered API server's (api.Background's EventHead).
-	eventHead func(context.Context) (int64, error)
+	// eventHead is what GET /auth/whoami answers a person as event_head: the context's own
+	// (AppContext's eventHead) when it names one, else the registered API server's
+	// (api.Background's EventHead).
+	eventHead func(ctx context.Context, person string) (int64, error)
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -334,30 +345,36 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
 }
 
-// mount builds New's router and mounts every route the server serves on mux, the API's table
-// among them (api.Register), so a mux that keeps what is mounted on it reads the server's routes
-// from the mounting itself (TestAKeyedWriteNeverRunsUnkeyed).
-func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
+// mount builds New's router, mounts every route the server serves on mux, the API's table among
+// them (api.Register), and answers the API server's background work. Each pattern beside the API
+// route table is mounted through readclass.Handle with what it reads; api.Register mounts the
+// table and the two sockets. A test reads the server's routes from this mounting itself
+// (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
+func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
+	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
-	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
-	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	// The signed-in person's own login, member kind and the event log's head, which names no row.
+	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
+	// A repository's GitHub state, shown by the issues that resolve to the repository
+	// (apiGithubRest, refs.RepositoryClause).
+	readclass.Handle(mux, []readclass.Class{readclass.Project}, githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
-	mux.HandleFunc("/", r.staticHandler)
+	readclass.Handle(mux, none, "/", http.HandlerFunc(r.staticHandler))
 	if ctx.devSignInHost != "" {
-		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
+		readclass.Handle(mux, none, "GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
 	return r, background
 }
@@ -540,8 +557,8 @@ type whoamiAnswer struct {
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
-// event is final (api.Background's EventHead), read after the sign-in check and before the answer
-// is written. The page starts every read
+// event is final, read as the highest id of an event that person can see (api.Background's
+// EventHead), after the sign-in check and before the answer is written. The page starts every read
 // the event feed keeps current only once whoami has answered, and resumes its first events
 // subscription from event_head, so a change committed while it loads is replayed rather than
 // missed. A head it cannot answer is a 503, never a whoami without it: a page that took a missing
@@ -559,7 +576,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	head, err := r.eventHead(req.Context())
+	head, err := r.eventHead(req.Context(), email)
 	if err != nil {
 		// A read the page's own leaving cut short says nothing of the database.
 		if req.Context().Err() == nil {
@@ -591,13 +608,50 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	api.WriteJSON(w, http.StatusOK, answer)
 }
 
-// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
+// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
+// that person may see (repositoryHidden): any other repository answers as one the App is not
+// installed on, and while a project is private a read is held to its repository
+// (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
-	if _, ok := r.login(w, req); !ok {
+	login, ok := r.login(w, req)
+	if !ok {
 		return
 	}
-	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub)
+	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string) (githubapi.Gate, error) {
+		return r.repositoryHidden(req.Context(), login, owner+"/"+repo)
+	})
 }
+
+// repositoryHidden is the GitHub proxy's gate for the person login and repository
+// (githubapi.Gate). Hidden is whether the cookie's viewer (access.Resolve of model.BrowserActor)
+// fails refs.RepositoryClause: a repository is shown when an issue of a project the person sees
+// resolves to it, and otherwise only to an open viewer, when no private project the person does
+// not see owns it (refs.ProjectRepositoriesSQL: the issues that resolve to it, whether open or
+// done). Held is the viewer's private flag, the one the clause's R9 arm reads: while the deployment
+// holds a private project the proxy follows no redirect off the repository, and with none it
+// follows GitHub's redirects as it always did (R9). It is one statement and asks GitHub nothing. A
+// router with no Store, a test's, has no viewer to resolve, so it reads the person as the closed
+// viewer, which sees no repository and reads as though a project were private: every repository is
+// hidden there.
+func (r *router) repositoryHidden(ctx context.Context, login, repository string) (githubapi.Gate, error) {
+	if r.ctx.Store == nil {
+		return githubapi.Gate{Hidden: true, Held: true}, nil
+	}
+	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, model.BrowserActor(login))
+	if err != nil {
+		return githubapi.Gate{}, err
+	}
+	var visible bool
+	if err := r.ctx.Store.Pool.QueryRow(ctx, repositoryVisibleQuery,
+		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
+		return githubapi.Gate{}, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
+	}
+	return githubapi.Gate{Hidden: !visible, Held: viewer.AnyPrivate}, nil
+}
+
+// repositoryVisibleQuery is refs.RepositoryClause over the repository bound at $2 for the viewer
+// bound at $1. No placeholder differs between requests, so the text is built once.
+var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2::text", "$1")
 
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.

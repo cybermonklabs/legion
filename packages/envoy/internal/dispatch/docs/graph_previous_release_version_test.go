@@ -851,7 +851,7 @@ func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Se
 	ctx := context.Background()
 	document := createOwedDocument(t, database, service, "CORE-1", "", slug, nestedSpec(slug), "")
 	settle(t, database, document)
-	markdown, blocks, err := service.TextWithBlocks(ctx, document)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read the created document %s: %v", slug, err)
 	}
@@ -913,7 +913,7 @@ func createIssueAsThePreviousRelease(t *testing.T, database *store.Store, servic
 		t.Fatalf("make the spec of %s its primary document: %v", key, err)
 	}
 	settle(t, database, document)
-	markdown, blocks, err := service.TextWithBlocks(ctx, document)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read the spec of %s: %v", key, err)
 	}

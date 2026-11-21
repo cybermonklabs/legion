@@ -222,7 +222,7 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 	ctx := context.Background()
 	editLiveTree(t, service, artifactID, edit)
 	waitForLandedAppends(t, service, artifactID)
-	markdown, blocks, err := service.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the edited document: %v", err)
 	}

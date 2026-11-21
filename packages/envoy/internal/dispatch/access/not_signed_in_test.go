@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestTheReadsNameWhoHasNotSignedInYet: a list and a group may name a person nobody has signed in
@@ -19,19 +21,20 @@ func TestTheReadsNameWhoHasNotSignedInYet(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("name a person nobody has signed in as: %v", err)
 	}
-	project, err := ReadProject(ctx, database.Pool, "PRIV")
+	server := viewerArg(t, *model.ServerViewer)
+	project, err := ReadProject(ctx, database.Pool, "PRIV", server)
 	if err != nil || !slices.Equal(project.NotSignedIn, []string{"newcomer@example.com"}) {
 		t.Fatalf("PRIV's not_signed_in = %v, %v, want newcomer@example.com alone", project.NotSignedIn, err)
 	}
-	if other, err := ReadProject(ctx, database.Pool, "PUB"); err != nil || other.NotSignedIn == nil || len(other.NotSignedIn) != 0 {
+	if other, err := ReadProject(ctx, database.Pool, "PUB", server); err != nil || other.NotSignedIn == nil || len(other.NotSignedIn) != 0 {
 		t.Fatalf("PUB's not_signed_in = %#v, %v, want the empty list", other.NotSignedIn, err)
 	}
 	group, err := ReadGroup(ctx, database.Pool, "crew")
 	if err != nil || !slices.Equal(group.NotSignedIn, []string{"newcomer@example.com"}) {
 		t.Fatalf("crew's not_signed_in = %v, %v, want newcomer@example.com alone", group.NotSignedIn, err)
 	}
-	groups, err := ListGroups(ctx, database.Pool)
-	if err != nil || len(groups) != 1 || !slices.Equal(groups[0].NotSignedIn, []string{"newcomer@example.com"}) {
-		t.Fatalf("ListGroups = %+v, %v, want crew naming newcomer@example.com as not signed in", groups, err)
+	page, err := ListGroups(ctx, database.Pool, "", model.MaxGroupsPerOwner)
+	if err != nil || len(page.Groups) != 1 || !slices.Equal(page.Groups[0].NotSignedIn, []string{"newcomer@example.com"}) {
+		t.Fatalf("ListGroups = %+v, %v, want crew naming newcomer@example.com as not signed in", page, err)
 	}
 }

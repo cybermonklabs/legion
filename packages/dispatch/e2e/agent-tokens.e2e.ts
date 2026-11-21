@@ -27,7 +27,7 @@ test("a personal agent token attributes its ask, remains private, and is revoked
   try {
     await alicePage.goto("/settings");
     await alicePage.getByLabel("Token label").fill("Architect");
-    await alicePage.getByRole("button", { name: "New token" }).click();
+    await alicePage.getByRole("button", { exact: true, name: "New token" }).click();
     // textContent waits for the code element to attach, and an element's text is never null,
     // so the check below only narrows the type.
     const token = await alicePage.getByRole("status").locator("code").first().textContent();
@@ -71,5 +71,47 @@ test("a personal agent token attributes its ask, remains private, and is revoked
   } finally {
     await alice.close();
     await bob.close();
+  }
+});
+
+// A personal token names the projects it may use at the mint, and its row changes them. The full
+// lane runs it: the pull-request lane's real-stack rows are at their budget of 150
+// (e2e/__tests__/pull-request-lane.test.ts).
+test("a personal agent token names the projects it may use, at the mint and from its row", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "SIDE", name: "Side work" });
+  const alice = await asUser(browser, "alice");
+  const page = await alice.newPage();
+
+  try {
+    await page.goto("/settings");
+    // A token names no project, and so uses the public projects only, until the reader picks.
+    const newPicker = page.getByRole("button", { name: "Projects (new token)" });
+    await expect(newPicker).toHaveText("Public projects only");
+    await newPicker.click();
+    await page.getByRole("option", { name: "CORE, Core" }).click();
+    await page.keyboard.press("Escape");
+    await expect(newPicker).toHaveText("CORE");
+    await page.getByLabel("Token label").fill("Scoped");
+    await page.getByRole("button", { exact: true, name: "New token" }).click();
+    await expect(page.getByRole("status").locator("code").first()).toHaveText(
+      /^dsp_[A-Za-z0-9_-]{43}$/
+    );
+    await expect(newPicker).toHaveText("Public projects only");
+
+    // The row reads the list Dispatch stored, and its picker writes the list back whole.
+    const rowPicker = page.getByRole("button", { name: "Projects (Scoped)" });
+    await expect(rowPicker).toHaveText("CORE");
+    await rowPicker.click();
+    await page.getByRole("option", { name: "SIDE, Side work" }).click();
+    await page.getByRole("option", { name: "CORE, Core" }).click();
+    await page.keyboard.press("Escape");
+    await expect(rowPicker).toHaveText("SIDE");
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Projects (Scoped)" })).toHaveText("SIDE");
+  } finally {
+    await alice.close();
   }
 });

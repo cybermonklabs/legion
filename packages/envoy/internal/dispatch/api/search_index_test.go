@@ -89,7 +89,7 @@ func meaningPlanOf(
 	t.Helper()
 	const q = "index test"
 	return planTreeOf(t, database, statement, searchMeaningQueryArguments(
-		searchParameters{text: q, project: project, limit: searchDefaultLimit},
+		searchParameters{text: q, project: project, limit: searchDefaultLimit, who: everyReader},
 		queryVector(), embedder.Identity()), settings...)
 }
 
@@ -171,10 +171,12 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 		t.Fatalf("the answered question %s of XPLOT holds no embedded window, so the statement has nothing to plan for", offered)
 	}
 
-	// The five parameters relatedOtherProjects binds, in its own order: the question's vector,
-	// the project that asks, the embedder's identity, the floor and the depth.
+	// The six parameters relatedOtherProjects binds, in its own order: the question's vector,
+	// the project that asks, the embedder's identity, the floor, the depth and the writer's
+	// visibility argument, here the server's own viewer, which sees every project.
 	root, planJSON := planTreeOf(t, database, relatedOtherProjectsSQL, []any{
 		embed.Literal(queryVector()), "XPLAN", embedder.Identity(), searchMeaningFloor, contracts.SearchKindDepth,
+		relatedViewer(everyReader),
 	}, "set local enable_seqscan = off", "set local enable_sort = off")
 
 	if scan := root.find(func(node planNode) bool { return node.NodeType == "Seq Scan" }); scan != nil {
@@ -449,7 +451,7 @@ func TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "The astrolabe measures altitude.\n")
 
-	parameters := searchParameters{text: "astrolabe", limit: searchDefaultLimit}
+	parameters := searchParameters{text: "astrolabe", limit: searchDefaultLimit, who: everyReader}
 	plan := planWithoutSeqScans(t, database, searchQuery, searchQueryArguments(parameters)...)
 
 	matched := false

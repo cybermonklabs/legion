@@ -148,8 +148,9 @@ any unknown member, is an `INVALID_FRAME` error.
 
 Dispatch answers a delivery view with:
 
-- a `snapshot`: the matching GET route's body for the window resolved now, the change it reflects
-  (`seq`), when that change was recorded (`changed_at`), and a revision for every key it holds;
+- a `snapshot`: the matching GET route's body for the window resolved now, the newest change it
+  reflects of a repository the caller sees (`seq`), when that change was recorded (`changed_at`),
+  and a revision for every key it holds;
 - then only `delta` frames: the pull requests, runs and session groups that changed (`items`,
   each list's `upsert` and the ids it `remove`s), the map entries and counts that changed (`maps`
   and `counts`, null for a key that left), and the fields replaced whole (`set`, which carries
@@ -166,7 +167,9 @@ Dispatch answers a delivery view with:
 
 An events subscription first receives `events_start` with the decimal id it starts after and
 `replay_complete`, then `event` frames with their id and event. A page that has no cursor adopts
-`events_start.since`, so the next subscription resumes without a gap. `replay_complete` is true
+`events_start.since`, so the next subscription resumes without a gap. With no resume, that id is
+the newest event the caller can see, so it does not move with a project the caller cannot see, as
+`GET /auth/whoami`'s `event_head` does not. `replay_complete` is true
 when the subscription resumed from an id at or below the log's head: Dispatch replays every event
 after it, so the page refreshes only what those events change. It is false with no resume, and for
 a resume above the head (a log that was reset), whose replay cannot cover the gap: then the page
@@ -188,9 +191,11 @@ chooses an age in [30, 60) minutes, and the page reconnects at once without refr
 closes every socket with code 1012 when it restarts, and the page reconnects after a random wait of
 under two seconds, so the pages one restart closed do not all reach the next server at the same
 moment, and resumes; the `events_start` that follows decides what the page refreshes, as above. A
-1008 close means the caller no longer resolves; re-check sign-in before retrying. A 1013 full-queue
-close, 1009 oversized frame, 1011 internal error, or an ordinary connection loss backs off and
-resumes. The page may close a silent socket with 4000 before it opens its replacement.
+1008 close means the caller no longer resolves as it did when the socket opened: it signed out, its
+token was revoked, or the token's projects or scopes changed; re-check sign-in before retrying, and
+a socket opened again reads under what the token holds now. A 1013 full-queue close, 1009 oversized
+frame, 1011 internal error, or an ordinary connection loss backs off and resumes. The page may close
+a silent socket with 4000 before it opens its replacement.
 
 `packages/dispatch/e2e/delivery-live-probe.ts` is the way to watch one delivery subscription from
 a checkout:

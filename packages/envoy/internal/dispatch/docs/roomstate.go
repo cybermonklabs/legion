@@ -12,8 +12,10 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // roomState is what the service keeps for one document while ygo holds a room for it or something
@@ -702,14 +704,35 @@ type issueRead struct {
 	at   time.Time
 }
 
-// readIssue reads whether room's issue is open (issueOpen) on q, stamped with when the read began:
-// the stamp is taken before the query, so the read is never taken for fresher than it is.
-func (s *Service) readIssue(ctx context.Context, q Queryer, room string) (issueRead, error) {
+// readIssue reads whether room's issue is open on q, true for a document of no issue (as issueOpen
+// has it), stamped with when the read began: the stamp is taken before the query, so the read is
+// never taken for fresher than it is. It reads for who: a room who may not read - a document of a
+// project who does not see, or of an agent's conversation who is no party to
+// (access.DocumentClause) - is a room no document holds, and the read finds no row. A room's own
+// load reads for every reader its sockets' admissions read for (model.ServerReader), whose viewer
+// passes the clause at its `all` flag, so that read binds the statement without it.
+func (s *Service) readIssue(ctx context.Context, q Queryer, room string, who model.Actor) (issueRead, error) {
 	read := issueRead{at: time.Now()}
-	var err error
-	read.open, err = s.issueOpen(ctx, q, room)
-	return read, err
+	statement, args := issueOpenStatement, []any{room}
+	if who.Viewer == nil || !who.Viewer.All {
+		statement, args = readIssueStatement, []any{room, refs.VisibilityArg(who)}
+	}
+	if err := q.QueryRow(ctx, statement, args...).Scan(&read.open); err != nil {
+		return read, fmt.Errorf("check document issue: %w", err)
+	}
+	return read, nil
 }
+
+// issueOpenStatement reads whether the issue of the document $1 is open, true for a document of
+// no issue, for no reader in particular (issueOpen).
+const issueOpenStatement = `
+	select coalesce(i.closed_at is null, true)
+	from artifacts a left join issues i on i.key = a.issue_key
+	where a.id = $1 and a.kind = 'doc'`
+
+// readIssueStatement is issueOpenStatement where the reader bound at $2 (refs.VisibilityArg) may
+// read that document.
+var readIssueStatement = issueOpenStatement + ` and ` + access.DocumentClause("a", "$2")
 
 // recordIssueLocked records read on state unless state holds a record made later (closedRead):
 // an older read never replaces a newer one, nor a close or reopen recorded after it began. Its

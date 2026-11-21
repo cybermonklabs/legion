@@ -196,7 +196,7 @@ func deferAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 			slug, holder, middle)
 	}
 	var err error
-	if deferred.markdown, deferred.blocks, err = service.TextWithBlocks(ctx, document); err != nil {
+	if deferred.markdown, deferred.blocks, err = service.TextWithBlocks(ctx, serverReader, document); err != nil {
 		t.Fatalf("read the edited document %s: %v", slug, err)
 	}
 	tx, err := database.Pool.Begin(ctx)

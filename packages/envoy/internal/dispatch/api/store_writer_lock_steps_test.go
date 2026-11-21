@@ -343,7 +343,7 @@ func (r *storeWriterRig) commentDeliverySettle() storeWriter {
 			`, r.mentioned, session).Scan(&claimed, &mode); err != nil {
 				t.Fatalf("leave the mention's attempt pending at session %s: %v", session, err)
 			}
-			comment, err := r.direct.loadComment(ctx, r.database.Pool, r.mentioned)
+			comment, err := r.direct.loadComment(ctx, r.database.Pool, everyReader, r.mentioned)
 			if err != nil {
 				t.Fatalf("load the mentioned comment: %v", err)
 			}

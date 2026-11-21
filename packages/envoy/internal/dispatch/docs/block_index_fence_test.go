@@ -516,7 +516,7 @@ func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing
 		if err := database.Pool.QueryRow(ctx, markVersionedDocuments, []string{document}, v).Scan(&marked); err != nil || marked != 1 {
 			t.Fatalf("the marking of rule %d marked %d document(s) (%v), want %s", v, marked, err, document)
 		}
-		markdown, blocks, err := lower.TextWithBlocks(ctx, document)
+		markdown, blocks, err := lower.TextWithBlocks(ctx, serverReader, document)
 		if err != nil {
 			t.Fatalf("read %s: %v", document, err)
 		}

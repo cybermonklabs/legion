@@ -60,7 +60,7 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // refuse a whole batch: the page reads its batches together, so one refusal would blank the
 // name of every reference in the batch.
 //
-// It answers for the acting reader (actingReader), as every read of the graph does: a target the
+// It answers for the caller's reader (readerOf), as every read of the graph does: a target the
 // reader may not see is answered gone, as a target nothing addresses is (refs.TargetNames), and a
 // short id is resolved among the items the reader may see alone (refs.ResolvePrefixes), so an
 // item the reader may not see makes no short id ambiguous and names none.
@@ -69,7 +69,7 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

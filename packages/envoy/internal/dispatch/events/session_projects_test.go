@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,6 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// provenSession is the actor of session id's write under a credential that proved the session, a
+// broker-issued token: its act names that same session and no personal token
+// (api.bearerSessionActor).
+func provenSession(id string) model.Actor {
+	return model.Actor{Kind: "session", ID: id, Owner: new("carol@example.com"), Act: &model.ActorAct{Session: id}}
+}
 
 // appendAll appends events in tx as one write phase, as a write with several events does. Append
 // writes one event a phase, and TestASessionsEventRecordsItsProject needs several in one: a later
@@ -28,48 +36,27 @@ func appendAll(ctx context.Context, tx pgx.Tx, broker *Broker, events []model.Ev
 	return appended, err
 }
 
-// TestASessionsEventRecordsItsProject: every event a session appends on an owner of a project
-// records that the session acted in the project (session_projects), once however many events it
-// appends there, whatever owner kind it appends on. An event a person appends records nothing,
-// and neither does one of a credential that names no session (a personal token's actor, whose
-// id is empty) or an ownerless event, which belongs to no project.
-func TestASessionsEventRecordsItsProject(t *testing.T) {
+// appendCommitted appends events in one transaction of their own and commits it.
+func appendCommitted(t *testing.T, database *store.Store, broker *Broker, events ...model.Event) {
+	t.Helper()
 	ctx := context.Background()
-	database := storetest.Open(t)
-	artifactID := seedEventOwners(t, database)
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('QQ', 'Other', 'alice')`); err != nil {
-		t.Fatalf("seed a second project: %v", err)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
 	}
-	broker := NewBroker()
-	session := model.Actor{Kind: "session", ID: "ses_writer"}
-	tokenOwner := "carol@example.com"
-	write := func(events ...model.Event) {
-		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		if _, err := appendAll(ctx, tx, broker, events); err != nil {
-			t.Fatalf("append %d events: %v", len(events), err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit: %v", err)
-		}
+	defer tx.Rollback(ctx)
+	if _, err := appendAll(ctx, tx, broker, events); err != nil {
+		t.Fatalf("append %d events: %v", len(events), err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
 
-	issueEvent := func(key string, actor model.Actor) model.Event {
-		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: actor, Payload: map[string]any{}}
-	}
-	write(issueEvent("PP-1", session), issueEvent("PP-2", session))
-	write(issueEvent("PP-1", session))
-	write(model.Event{ArtifactID: new(artifactID), Type: "artifact.version", Actor: model.Actor{Kind: "session", ID: "ses_documents"}, Payload: map[string]any{}})
-	write(model.Event{ProjectKey: new("QQ"), Type: "project.created", Actor: session, Payload: map[string]any{}})
-	write(issueEvent("PP-1", model.Actor{Kind: "user", ID: "alice"}))
-	write(issueEvent("PP-1", model.Actor{Kind: "session", Owner: &tokenOwner}))
-	write(model.Event{Type: "access_group.changed", Actor: session, Payload: model.AccessGroupEventPayload{Name: "reviewers", Change: model.AccessGroupCreated}})
-
-	rows, err := database.Pool.Query(ctx, `select session_id, project_key from session_projects order by session_id, project_key`)
+// sessionProjectPairs is every row of session_projects as "<session> <project>", sorted.
+func sessionProjectPairs(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select session_id, project_key from session_projects order by session_id, project_key`)
 	if err != nil {
 		t.Fatalf("read session_projects: %v", err)
 	}
@@ -85,14 +72,65 @@ func TestASessionsEventRecordsItsProject(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read session_projects: %v", err)
 	}
-	want := []string{"ses_documents PP", "ses_writer PP", "ses_writer QQ"}
-	if len(got) != len(want) {
+	return got
+}
+
+// TestASessionsEventRecordsItsProject: every event a proven session appends on an owner of a
+// project records that the session acted in the project (session_projects), once however many
+// events it appends there, whatever owner kind it appends on. An event a person appends records
+// nothing, and neither does one of a credential that names no session (a personal token's actor,
+// whose id is empty) or an ownerless event, which belongs to no project.
+func TestASessionsEventRecordsItsProject(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := seedEventOwners(t, database)
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('QQ', 'Other', 'alice')`); err != nil {
+		t.Fatalf("seed a second project: %v", err)
+	}
+	broker := NewBroker()
+	session := provenSession("ses_writer")
+	tokenOwner := "carol@example.com"
+	write := func(events ...model.Event) {
+		t.Helper()
+		appendCommitted(t, database, broker, events...)
+	}
+
+	issueEvent := func(key string, actor model.Actor) model.Event {
+		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: actor, Payload: map[string]any{}}
+	}
+	write(issueEvent("PP-1", session), issueEvent("PP-2", session))
+	write(issueEvent("PP-1", session))
+	write(model.Event{ArtifactID: new(artifactID), Type: "artifact.version", Actor: provenSession("ses_documents"), Payload: map[string]any{}})
+	write(model.Event{ProjectKey: new("QQ"), Type: "project.created", Actor: session, Payload: map[string]any{}})
+	write(issueEvent("PP-1", model.Actor{Kind: "user", ID: "alice"}))
+	write(issueEvent("PP-1", model.Actor{Kind: "session", Owner: &tokenOwner}))
+	write(model.Event{Type: "access_group.changed", Actor: session, Payload: model.AccessGroupEventPayload{Name: "reviewers", Change: model.AccessGroupCreated}})
+
+	got := sessionProjectPairs(t, database)
+	if want := []string{"ses_documents PP", "ses_writer PP", "ses_writer QQ"}; !slices.Equal(got, want) {
 		t.Fatalf("session_projects = %v, want %v", got, want)
 	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("session_projects = %v, want %v", got, want)
-		}
+}
+
+// TestOnlyAProvenSessionRecordsItsProject: an event records its session's project only when the
+// credential behind it proved that session: its act names the actor's own session and no personal
+// token. A credential that proves no session names the session in the request body
+// (api.bearerSessionActor), so the shared token naming T, whose actor carries no act, and a
+// personal token naming U, whose act carries its token id, each record nothing: neither may make
+// another session look like one of a project's agents (access.SessionClause).
+func TestOnlyAProvenSessionRecordsItsProject(t *testing.T) {
+	database := storetest.Open(t)
+	seedEventOwners(t, database)
+	broker := NewBroker()
+	for _, actor := range []model.Actor{
+		{Kind: "session", ID: "ses_s", Act: &model.ActorAct{Session: "ses_s"}},
+		{Kind: "session", ID: "ses_t"},
+		{Kind: "session", ID: "ses_u", Owner: new("carol@example.com"), Act: &model.ActorAct{Session: "ses_u", TokenID: "t1"}},
+	} {
+		appendCommitted(t, database, broker, model.Event{IssueKey: new("PP-1"), Type: "issue.updated", Actor: actor, Payload: map[string]any{}})
+	}
+	if got, want := sessionProjectPairs(t, database), []string{"ses_s PP"}; !slices.Equal(got, want) {
+		t.Fatalf("session_projects = %v, want %v: only the session its credential proved records its project", got, want)
 	}
 }
 
@@ -107,7 +145,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 	database := storetest.Open(t)
 	seedEventOwners(t, database)
 	broker := NewBroker()
-	session := model.Actor{Kind: "session", ID: "ses_crossed"}
+	session := provenSession("ses_crossed")
 	issueEvent := func(key string) model.Event {
 		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}

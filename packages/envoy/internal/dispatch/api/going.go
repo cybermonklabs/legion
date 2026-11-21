@@ -11,7 +11,9 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -81,15 +83,16 @@ type goingRunState struct {
 }
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
-// empty string for every project, as search reads its own filter) and the words of the question,
-// and answers the stored row. ends_at is created_at plus contracts.GoingRunWindow: both come
-// from one now(), the transaction's own, so the window is exactly that long.
+// empty string for every project, as search reads its own filter), the words of the question,
+// and unseen, that the asker did not see that project when it asked, and answers the stored row.
+// ends_at is created_at plus contracts.GoingRunWindow: both come from one now(), the
+// transaction's own, so the window is exactly that long.
 //
 // The insert is made in a transaction of the shared pool rather than as a bare statement, because
 // the POST that calls it is a keyed write: the commit step marks the request's Idempotency-Key
 // committed with the write itself, which is what answers a repeat after a crash KEY_COMMITTED
 // rather than recording the question a second time (keyed_write_guard_test.go).
-func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, project, words string) (goingRequest, error) {
+func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, project, words string, unseen bool) (goingRequest, error) {
 	stored, err := json.Marshal(author)
 	if err != nil {
 		return goingRequest{}, err
@@ -100,9 +103,9 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	}
 	defer tx.Rollback(ctx)
 	request, err := scanGoingRequest(tx.QueryRow(ctx, `
-		insert into going_requests (author, project, words, ends_at)
-		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4))
-		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds()))
+		insert into going_requests (author, project, words, ends_at, asked_unseen)
+		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4), $5)
+		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds(), unseen))
 	if err != nil {
 		return goingRequest{}, err
 	}
@@ -112,14 +115,29 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	return request, nil
 }
 
-// readGoingRequest is one run by id, pgx.ErrNoRows when the record holds none: a run that was
-// never asked, or one the sweep has deleted past contracts.GoingRequestTTL. What a run the
-// caller does not own answers is the caller's to decide, which is why the row carries its
-// Author: model.Actor.SameCredential compares it with the reader's.
-func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest, error) {
+// readGoingRequest is one run by id as who reads it, pgx.ErrNoRows when the record holds none: a
+// run that was never asked, one the sweep has deleted past contracts.GoingRequestTTL, or one
+// asked of a project its asker saw and who does not see now (access.ProjectClause), whose frames
+// hold that project's hits and so answer as a run nobody asked. A run asked of every project
+// (""), of a key no project holds, or of a project its asker could not see when it asked
+// (asked_unseen), holds no project's content, since its search read as the asker; it is read by
+// its author whatever it sees, so a run asked of a hidden project answers as one asked of a key no
+// project holds. What a run the caller does not own answers is the caller's to decide, which is
+// why the row carries its Author: model.Actor.SameCredential compares it with the reader's.
+func (s *server) readGoingRequest(ctx context.Context, who model.Actor, id string) (goingRequest, error) {
 	return scanGoingRequest(s.deps.Store.Pool.QueryRow(ctx, `
-		select `+goingRequestColumns+` from going_requests where id = $1::uuid
-	`, id))
+		select `+goingRequestColumns+` from going_requests r
+		where r.id = $1::uuid and `+goingRunSeen("r", "$2")+`
+	`, id, refs.VisibilityArg(who)))
+}
+
+// goingRunSeen is the rule of which runs the viewer bound at viewerParam reads, over the
+// going_requests row alias names (readGoingRequest says why): a run asked of every project, or
+// of a project its asker could not see, or of a key no project holds, and a run of a project the
+// viewer sees. Every read of a run and of its frames binds it in its own statement.
+func goingRunSeen(alias, viewerParam string) string {
+	return `(` + alias + `.project = '' or ` + alias + `.asked_unseen or ` + access.ProjectClause(alias+".project", viewerParam) + `
+			or not exists (select 1 from projects asked where asked.key = ` + alias + `.project offset 0))`
 }
 
 // appendGoingEvent stores event as the run's next frame and answers the sequence it took. The
@@ -220,30 +238,34 @@ func (s *server) readGoingTerminalEvent(ctx context.Context, requestID string) (
 }
 
 // goingEventsAfter is every frame of one run past a sequence, in stream order: $1 the run, $2
-// that sequence; scanGoingEvent decodes each row. It is named rather than written inline
-// because readGoingStream queues it in a batch beside the state read.
-const goingEventsAfter = `
+// that sequence, $3 the reader's viewer, which the run is held to (goingRunSeen); scanGoingEvent
+// decodes each row. It is named rather than written inline because readGoingStream queues it in a
+// batch beside the state read.
+var goingEventsAfter = `
 	select ` + goingEventColumns + `
 	from going_events
 	where request_id = $1::uuid and sequence > $2
+		and exists (select 1 from going_requests r where r.id = going_events.request_id and ` + goingRunSeen("r", "$3") + `)
 	order by sequence`
 
-// goingRunStateOf reads one run's state, $1 the run and $2 the terminal frame names: the
-// sequence of its terminal frame, 0 while it has stored none, and whether now is past its
-// ends_at. Queued beside goingEventsAfter, for the reason it is named.
-const goingRunStateOf = `
+// goingRunStateOf reads one run's state, $1 the run, $2 the terminal frame names and $3 the
+// reader's viewer, which the run is held to (goingRunSeen): the sequence of its terminal frame, 0
+// while it has stored none, and whether now is past its ends_at. Queued beside goingEventsAfter,
+// for the reason it is named.
+var goingRunStateOf = `
 	select coalesce(
 	         (select e.sequence from going_events e where e.request_id = r.id and e.name = any($2::text[])),
 	         0
 	       ),
 	       now() >= r.ends_at
 	from going_requests r
-	where r.id = $1::uuid`
+	where r.id = $1::uuid and ` + goingRunSeen("r", "$3")
 
-// readGoingStream is what one poll of an open stream reads: the frames past after, and the run's
-// state, in one round trip (store.Pool.SendBatch), where a poll of a stream costs two. Either
-// statement failing is the whole read's failure, which ends the stream, and pgx.ErrNoRows is the
-// sweep having deleted the run under its reader.
+// readGoingStream is what one poll of an open stream reads, as who reads the run: the frames past
+// after, and the run's state, in one round trip (store.Pool.SendBatch), where a poll of a stream
+// costs two. Either statement failing is the whole read's failure, which ends the stream, and
+// pgx.ErrNoRows is the sweep having deleted the run under its reader, or the run having become one
+// who may not read since the stream's own read of it (goingRunSeen, in both statements).
 //
 // The two statements take their own snapshots, each at its own moment, so a frame committed
 // between them is in one answer and not the other. Which order they run in therefore settles
@@ -251,18 +273,19 @@ const goingRunStateOf = `
 // written, and a terminal sequence in the state ends it only once the reader has reached that
 // sequence (streamGoingAnswer), so neither order can close a stream that never carried its
 // ending.
-func (s *server) readGoingStream(ctx context.Context, requestID string, after int) ([]goingEvent, goingRunState, error) {
+func (s *server) readGoingStream(ctx context.Context, who model.Actor, requestID string, after int) ([]goingEvent, goingRunState, error) {
 	var frames []goingEvent
 	var state goingRunState
+	viewer := refs.VisibilityArg(who)
 	batch := &pgx.Batch{}
-	batch.Queue(goingEventsAfter, requestID, after).Query(func(rows pgx.Rows) error {
+	batch.Queue(goingEventsAfter, requestID, after, viewer).Query(func(rows pgx.Rows) error {
 		collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (goingEvent, error) {
 			return scanGoingEvent(row)
 		})
 		frames = collected
 		return err
 	})
-	batch.Queue(goingRunStateOf, requestID, goingTerminalNames).QueryRow(func(row pgx.Row) error {
+	batch.Queue(goingRunStateOf, requestID, goingTerminalNames, viewer).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&state.Terminal, &state.PastDeadline)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {

@@ -33,9 +33,11 @@ func inTx(t *testing.T, database *store.Store, write func(tx pgx.Tx) error) erro
 }
 
 // TestEveryAccessWriteAppendsItsEvent: each write of a project's owner, visibility or access list
-// appends one project.access_changed on that project, naming the change and carrying the access
-// as the write left it; each write of a group appends one access_group.changed, and a group's
-// delete also takes it off every list that named it, with that list's own event.
+// appends one project.access_changed on that project, carrying the project and the change alone,
+// with the server's own record of the event (project_access_changes) naming the person or group the
+// change named - for an owner change, the person the project was taken from - and the owner and
+// visibility as the write left them; each write of a group appends one access_group.changed, and a
+// group's delete also takes it off every list that named it, with that list's own event.
 func TestEveryAccessWriteAppendsItsEvent(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -55,17 +57,27 @@ func TestEveryAccessWriteAppendsItsEvent(t *testing.T) {
 			}
 			event := appended[0]
 			payload, ok := event.Payload.(model.ProjectAccessEventPayload)
-			if event.Type != "project.access_changed" || event.ProjectKey == nil || *event.ProjectKey != project || !ok ||
-				payload.Change != change || payload.Principal != principal || !holds(payload.ProjectAccess) {
-				t.Fatalf("appended %s on %v payload %+v, want project.access_changed on %s with change %s naming %q", event.Type, event.ProjectKey, event.Payload, project, change, principal)
+			want := model.ProjectAccessEventPayload{Project: project, Change: change}
+			if event.Type != "project.access_changed" || event.ProjectKey == nil || *event.ProjectKey != project || !ok || payload != want {
+				t.Fatalf("appended %s on %v payload %+v, want project.access_changed on %s carrying %+v alone", event.Type, event.ProjectKey, event.Payload, project, want)
+			}
+			access, err := ReadProject(ctx, database.Pool, project, viewerArg(t, *model.ServerViewer))
+			if err != nil || !holds(access) {
+				t.Fatalf("%s's access after the write = %+v, %v", project, access, err)
+			}
+			var named, owner, visibility string
+			if err := database.Pool.QueryRow(ctx, `select principal, owner, visibility from project_access_changes where event_id = $1`, event.ID).
+				Scan(&named, &owner, &visibility); err != nil || named != principal || owner != access.Owner || visibility != access.Visibility {
+				t.Fatalf("event %d's record = %q, %q, %q, %v, want %q and the owner and visibility the write left, %q, %q",
+					event.ID, named, owner, visibility, err, principal, access.Owner, access.Visibility)
 			}
 		}
 	}
 	for _, step := range []written{
-		{"the owner gives PUB to carol", func(tx pgx.Tx) ([]model.Event, error) {
+		{"the owner gives PUB to carol, and the event names olga, whom PUB was taken from", func(tx pgx.Tx) ([]model.Event, error) {
 			_, event, err := SetOwner(ctx, tx, broker, "PUB", carol, olgaActor)
 			return []model.Event{event}, err
-		}, projectChange("PUB", model.AccessOwnerChanged, "", func(a model.ProjectAccess) bool { return a.Owner == carol })},
+		}, projectChange("PUB", model.AccessOwnerChanged, olga, func(a model.ProjectAccess) bool { return a.Owner == carol })},
 		{"PUB is made private", func(tx pgx.Tx) ([]model.Event, error) {
 			_, event, err := SetVisibility(ctx, tx, broker, "PUB", model.ProjectPrivate, olgaActor)
 			return []model.Event{event}, err

@@ -6,6 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -42,18 +44,25 @@ type projectDefaultAssigneeUpdated struct {
 	ThreadLogins []string `json:"thread_logins"`
 }
 
-// listProjectDefaultAssignees answers every project with the person it defaults to, by project
-// key: the Settings page's one read. Every project is listed, because every project names a
-// default, and no project at all is an empty list, never null.
+// listProjectDefaultAssignees answers every project the caller sees with the person it defaults
+// to, by project key: the Settings page's one read. Every such project is listed, because every
+// project names a default, and no project at all is an empty list, never null. A default the
+// caller does not see is a person, named only to a caller who sees them (the rule of references,
+// references_seen.go): it reads as the empty string, as a project naming nobody would.
 func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select key, default_assignee
+		select key, case when `+access.PersonClause("default_assignee", "$1")+` then default_assignee else '' end
 		from projects
+		where `+access.ProjectClause("key", "$1")+`
 		order by key
-	`)
+	`, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -113,6 +122,10 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -126,12 +139,15 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	// (store.LockOwnerAndRead), in the transaction that replaces it: every writer of the default
 	// takes this lock first, so two of these at once name the pair each really moved, and no row
 	// lock is taken for it - the lock assigns no transaction id, and the update below is the
-	// first statement that writes. An unknown project is 404 NOT_FOUND here (pgx.ErrNoRows,
-	// writeHandlerError), before anything is written.
+	// first statement that writes. An unknown project, and one the caller does not see, is 404
+	// NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything is written: the read is
+	// as who reads it (access.ProjectClause), and it runs once before the lock is asked for
+	// (lockOwnerOnceFound), so a hidden project is refused without waiting behind its writers, as
+	// an unknown key is.
 	var previous string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(key), `
-		select default_assignee from projects where key = $1
-	`, []any{key}, &previous); err != nil {
+	if err := lockOwnerOnceFound(r.Context(), tx, store.ProjectOwner(key), `
+		select default_assignee from projects where key = $1 and `+access.ProjectClause("key", "$2")+`
+	`, []any{key, refs.VisibilityArg(who)}, &previous); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

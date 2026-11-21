@@ -79,10 +79,15 @@ type testServerOptions struct {
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
 	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
-	// service-account subjects the deployment admits, and those that read the membership answer.
-	// Nil is the deployment that names none.
+	// service-account subjects the deployment admits, and those that read the routes of the read
+	// class accessAccount. Nil is the deployment that names none.
 	oidcAccounts   []string
 	accessAccounts []string
+	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
+	// the deployment has provisioned as private, and the private-projects record's writer. Nil
+	// and nil are the deployment that names no private project.
+	privateProjects []string
+	busProjects     BusProjects
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -103,6 +108,9 @@ type testServerOptions struct {
 	// envoyTimeout shortens that client's window, so a test can exercise a receipt timeout
 	// without holding a stand-in listener for the production five seconds.
 	envoyTimeout time.Duration
+	// rosterUncached is Deps.ListenerRosterUncached: every read of the listener's session list asks
+	// the listener, as an end-to-end test process does (DISPATCH_TEST_ROSTER_UNCACHED).
+	rosterUncached bool
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
@@ -323,6 +331,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
+		ListenerRosterUncached: options.rosterUncached,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
@@ -331,6 +340,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDC:                  options.oidc,
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
+		PrivateProjects:       options.privateProjects,
+		BusProjects:           options.busProjects,
 		BrokerTokens:          brokerTokens,
 		AgentSecretsURL:       options.agentSecretsURL,
 		AgentSecretsTokenFile: agentSecretsTokenFile,
@@ -548,7 +559,10 @@ func assertUnchanged(t *testing.T, request string, before, after map[string]stri
 // awaitBackgroundWrites waits for every write srv's earlier requests left running past their
 // answers: the term-statistics refresh a related-item check starts for a project with no statistics
 // yet (ensureSearchTermStats), which commits search_term_stats and search_term_totals rows when it
-// finishes, and every detached run (srv.detached), such as a related_checks record's retry.
+// finishes; every detached run (srv.detached), such as a related_checks record's retry; and every
+// comment mention the mention sender holds (mentionSender.held), whose send writes the comment's
+// deliveries, watermarks and events. A comment enqueues its mentions before it answers
+// (createComment), so once the request has answered, an empty held set is a settled sender.
 func awaitBackgroundWrites(t *testing.T, srv *server) {
 	t.Helper()
 	rows, err := srv.deps.Store.Pool.Query(context.Background(), `select key from projects`)
@@ -571,6 +585,21 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 	case <-idle:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server's detached work did not end")
+	}
+	// A server built without its background work (directServer) has no mention sender, and so
+	// holds no send.
+	held := func() int {
+		if srv.mentions == nil {
+			return 0
+		}
+		srv.mentions.mu.Lock()
+		defer srv.mentions.mu.Unlock()
+		return len(srv.mentions.held)
+	}
+	for deadline := time.Now().Add(30 * time.Second); held() > 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the mention sender still holds %d sends after 30s", held())
+		}
 	}
 }
 
@@ -850,7 +879,7 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
+func (failingLoadStore) DocumentStamp(context.Context, string, any) (docs.DocumentStamp, error) {
 	return docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 

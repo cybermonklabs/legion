@@ -37,6 +37,7 @@ import {
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_TOKEN_PROJECTS,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -367,6 +368,11 @@ const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// MaxTokenProjects is the most projects one personal agent token lists. Generated from
+// MAX_TOKEN_PROJECTS in packages/contracts so the server's limit and the dashboard's
+// cannot drift apart.
+const MaxTokenProjects = ${MAX_TOKEN_PROJECTS}
 
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's

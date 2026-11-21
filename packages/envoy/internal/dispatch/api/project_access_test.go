@@ -69,7 +69,7 @@ func wantRefusal(t *testing.T, response *httptest.ResponseRecorder, status int, 
 
 // TestOnlyTheOwnerChangesTheAccessList: the owner names people and groups on the list and takes
 // them off; anyone else is 403 PROJECT_OWNER_REQUIRED and nothing is written; a project cannot be
-// made private in this release.
+// made private where the deployment does not let one be.
 func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
 	handler, database := newAccessServer(t)
 	if got := readAccess(t, handler, "bob"); got.Owner != "alice" || got.Visibility != model.ProjectPublic || len(got.People) != 0 || got.People == nil || got.Groups == nil {
@@ -120,6 +120,30 @@ func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
 	// The shared token holds no person scope, so it reads no project's access at all.
 	wantRefusal(t, agentRequest(t, handler, http.MethodGet, "/api/v1/projects/ACC/access", nil, "agent-token"),
 		http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", "the shared token", "GET ACC's access")
+}
+
+// TestAHiddenProjectsAccessListAnswersAsAnUnknownKey: GET /api/v1/projects/{key}/access answers a
+// project the caller does not see exactly as a key no project holds, the same status and the same
+// bytes, for alice, alice's token that lists PRIV and carol's token that lists none; bob and carol,
+// who see PRIV, read its list. The control is the read made without the caller's viewer: alice then
+// reads PRIV's list, and the test fails naming her.
+func TestAHiddenProjectsAccessListAnswersAsAnUnknownKey(t *testing.T) {
+	seed := seedPrivateProject(t)
+	for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken} {
+		hidden := seed.request(t, caller, http.MethodGet, "/api/v1/projects/"+seedPrivate+"/access", nil)
+		missing := seed.request(t, caller, http.MethodGet, "/api/v1/projects/NOPE/access", nil)
+		if want := strings.ReplaceAll(missing.Body.String(), "NOPE", seedPrivate); hidden.Code != missing.Code ||
+			hidden.Body.String() != want || missing.Code != http.StatusNotFound {
+			t.Errorf("%s: GET PRIV's access = %d %s, and a key no project holds %d %s, want both 404 PROJECT_NOT_FOUND alike",
+				caller, hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarol} {
+		read := seed.request(t, caller, http.MethodGet, "/api/v1/projects/"+seedPrivate+"/access", nil)
+		if read.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, read).Owner != seedCarol {
+			t.Errorf("%s: GET PRIV's access = %d %s, want 200 and carol its owner", caller, read.Code, read.Body.String())
+		}
+	}
 }
 
 // TestTheOwnerGivesTheProjectToAFullMember: the owner gives the project to another full member at
@@ -205,9 +229,9 @@ func wantApproveRefusal(t *testing.T, response *httptest.ResponseRecorder, call 
 }
 
 // TestARestrictedMemberCannotCreateAProject: a restricted member's create is 403 RESTRICTED_MEMBER
-// before anything is written. A full member's create answers as it always did, and the creator
-// owns the project; a create by a credential that acts for nobody gives the project its default
-// assignee as owner.
+// before anything is written, the refusal of a deployment write (withinProjectScope). A full
+// member's create answers as it always did, and the creator owns the project; a create by a
+// credential that acts for nobody gives the project its default assignee as owner.
 func TestARestrictedMemberCannotCreateAProject(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessErin, accessCarol)

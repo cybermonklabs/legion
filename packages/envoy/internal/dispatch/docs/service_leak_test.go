@@ -21,7 +21,23 @@ import (
 // collected. A service is unreachable the moment its test returns, but it is only reported as
 // collected once a GC has cleared its weak pointer, and its shutdown's goroutines may still be
 // unwinding when the last test returns.
-const leakWaitBudget = 30 * time.Second
+//
+// It outlasts pgxDialBound, because a pool connection dialled for one of the service's requests
+// keeps the service reachable that long after the dial, through no reference of the service's own.
+// pgxpool dials under the acquiring request's context, for its values (puddle's valueCancelCtx), and
+// pgconn bounds the dial with context.WithTimeout over that context (connectPreferred). The dial
+// stops that timer as it returns, but the runtime keeps a stopped timer in its P's timer heap, its
+// closure with it, until the heap is next cleaned, which on a busy machine can be when the timer
+// would have fired. The closure holds the request's context, which holds the http.Server
+// (http.ServerContextKey), whose Handler is the service's ServeHTTP. A heap dump of a run where a
+// service outlived the old 30-second budget found that path from the runtime's timers to the
+// service, and no other.
+const leakWaitBudget = pgxDialBound + 30*time.Second
+
+// pgxDialBound is how long pgconn bounds a dial: pgxpool's ConnectTimeout whenever the config leaves
+// it at zero (pgxpool/pool.go, "Ensure that a connect won't hang forever"), as the test databases'
+// configs do.
+const pgxDialBound = 2 * time.Minute
 
 // leakWaitStep is how long the report sleeps between the pairs of collections it forces.
 const leakWaitStep = 250 * time.Millisecond

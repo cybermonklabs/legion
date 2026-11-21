@@ -45,19 +45,19 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 		read func(ctx context.Context, service *Service, artifactID, headingID string) error
 	}{
 		{"GET text", func(ctx context.Context, service *Service, artifactID, _ string) error {
-			_, _, err := service.TextWithToken(ctx, artifactID)
+			_, _, err := service.TextWithToken(ctx, serverReader, artifactID)
 			return err
 		}},
 		{"GET blocks", func(ctx context.Context, service *Service, artifactID, _ string) error {
-			_, err := service.Blocks(ctx, artifactID)
+			_, err := service.Blocks(ctx, serverReader, artifactID)
 			return err
 		}},
 		{"GET block path", func(ctx context.Context, service *Service, artifactID, headingID string) error {
-			_, err := service.BlockPath(ctx, artifactID, headingID)
+			_, err := service.BlockPath(ctx, serverReader, artifactID, headingID)
 			return err
 		}},
 		{"rendered text", func(ctx context.Context, service *Service, artifactID, _ string) error {
-			_, err := service.Text(ctx, artifactID)
+			_, err := service.Text(ctx, serverReader, artifactID)
 			return err
 		}},
 		{"quote's block", func(ctx context.Context, service *Service, artifactID, _ string) error {
@@ -285,12 +285,12 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 			readers.Add(1)
 			go func() {
 				defer readers.Done()
-				markdown, _, err := reader.TextWithToken(context.Background(), artifactID)
+				markdown, _, err := reader.TextWithToken(context.Background(), serverReader, artifactID)
 				if err == nil && !strings.HasPrefix(markdown, "# Heading\n\nwrite ") {
 					err = fmt.Errorf("text = %q, want one complete written state", markdown)
 				}
 				if err == nil {
-					blocks, blockErr := reader.Blocks(context.Background(), artifactID)
+					blocks, blockErr := reader.Blocks(context.Background(), serverReader, artifactID)
 					if blockErr != nil {
 						err = blockErr
 					} else if len(blocks) == 0 || blocks[0].ID != headingID {
@@ -298,11 +298,11 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 					} else {
 						// The slice a reader owns must not race another reader's cached entry.
 						blocks[0].References.Comments++
-						_, err = reader.BlockPath(context.Background(), artifactID, headingID)
+						_, err = reader.BlockPath(context.Background(), serverReader, artifactID, headingID)
 					}
 				}
 				if err == nil {
-					_, err = reader.Text(context.Background(), artifactID)
+					_, err = reader.Text(context.Background(), serverReader, artifactID)
 				}
 				if err != nil {
 					errs <- err
@@ -328,7 +328,7 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 		t.Fatal("cold readers loaded the document room")
 	}
 	want := fmt.Sprintf("# Heading\n\nwrite %d\n", writes)
-	if text, err := reader.Text(context.Background(), artifactID); err != nil || text != want {
+	if text, err := reader.Text(context.Background(), serverReader, artifactID); err != nil || text != want {
 		t.Fatalf("final cold read = %q (%v), want %q", text, err, want)
 	}
 }
@@ -394,7 +394,7 @@ func newPeeredService(t *testing.T, markdown string) (*Service, string, string) 
 
 func firstBlockID(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
-	blocks, err := service.Blocks(context.Background(), artifactID)
+	blocks, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil || len(blocks) == 0 {
 		t.Fatalf("blocks = %v, %v; want the seeded heading", blocks, err)
 	}

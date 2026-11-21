@@ -230,6 +230,7 @@ timeout_hook=report_drain
 until_true $((reconcile_seconds * 2)) "$target_key to be referenced by both comments the base build wrote" \
   references_hold "dispatch://$target_key" "$spec_edge" \
   "dispatch://$host_key/comment/$written" "dispatch://$host_key/comment/$second"
+# shellcheck disable=SC2034 # read by lib/rig.sh's until_true, so a later wait runs no drain report
 timeout_hook=''
 note "$target_key is referenced by $written and $second, with no command run"
 pass

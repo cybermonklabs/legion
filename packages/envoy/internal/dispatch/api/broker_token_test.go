@@ -215,7 +215,15 @@ func newBrokerTokenRig(t *testing.T, options ...func(*ciphertoken.Options)) *bro
 func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...func(*ciphertoken.Options)) *brokerTokenRig {
 	t.Helper()
 	broker := ciphertokentest.NewStubBroker(t)
-	serving.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
+	serving.brokerTokens = stubBrokerTokens(t, broker, options...)
+	handler, database, deps, served := newRegisteredTestServer(t, serving)
+	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
+}
+
+// stubBrokerTokens is the broker-token check a test server builds on its database, asking broker
+// whether a token is live, with each option applied to the verifier's options before it is built.
+func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options ...func(*ciphertoken.Options)) func(*store.Store) *ciphertoken.Verifier {
+	return func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
@@ -237,8 +245,6 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 		}
 		return verifier
 	}
-	handler, database, deps, served := newRegisteredTestServer(t, serving)
-	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
 }
 
 // serve carries one request through the server under test.
@@ -316,8 +322,10 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 // TestABrokerTokenWritesAsTheSessionItProves: the body's actor does not decide the session, which
 // the token carries. An absent one and a matching one are both taken, a matching one's origin is
 // kept because nothing else carries it, and the write is recorded as the token's session with the
-// person and project the token named. The project the writes go into is made by a person: a
-// token scoped to one project may not create another (project_scope.go).
+// person the token named. The project the token is held to is its credential's list
+// (model.Credential.Projects), a fact of the request that no record carries, so the recorded actor
+// names no project. The project the writes go into is made by a person: a token scoped to one
+// project may not create another (project_scope.go).
 func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -362,11 +370,10 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	log := decodeBody[[]struct {
 		Type  string `json:"type"`
 		Actor struct {
-			Kind    string  `json:"kind"`
-			ID      string  `json:"id"`
-			Owner   *string `json:"owner"`
-			Project *string `json:"project"`
-			Origin  *struct {
+			Kind   string  `json:"kind"`
+			ID     string  `json:"id"`
+			Owner  *string `json:"owner"`
+			Origin *struct {
 				Cwd  string `json:"cwd"`
 				Host string `json:"host"`
 				Pane string `json:"pane"`
@@ -383,8 +390,10 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	if actor.Owner == nil || *actor.Owner != brokerTestPerson {
 		t.Fatalf("the write's owner = %v, want %q", actor.Owner, brokerTestPerson)
 	}
-	if actor.Project == nil || *actor.Project != brokerTestProject {
-		t.Fatalf("the write's project = %v, want %q", actor.Project, brokerTestProject)
+	if project, recorded := decodeBody[[]struct {
+		Actor map[string]json.RawMessage `json:"actor"`
+	}](t, listed)[0].Actor["project"]; recorded {
+		t.Fatalf("the write's actor records project %s, want none: the token's list is its credential's, not the record's", project)
 	}
 	if actor.Origin == nil || actor.Origin.Cwd != "/workspace" || actor.Origin.Host != "example-host-one" || actor.Origin.Pane != "%7" {
 		t.Fatalf("the write's origin = %+v, want the body's cwd, host and pane kept", actor.Origin)
@@ -951,7 +960,7 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	// Two heartbeats of the socket that proof opened. Both carry it, and neither is refused:
 	// the re-resolution never looks at it.
 	for beat := range 2 {
-		if err := served.callerStillResolves(admitted); err != nil {
+		if _, broker, err := served.callerStillResolves(admitted); err != nil || !broker {
 			t.Fatalf("heartbeat %d: %v, want the caller to keep resolving", beat, err)
 		}
 	}
@@ -960,7 +969,7 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	// closes. The affirmative answer is remembered for a few seconds, so this reads past it.
 	rig.broker.Says(token, ciphertoken.Introspection{Active: false})
 	time.Sleep(ciphertoken.AffirmativeCacheTTL + 50*time.Millisecond)
-	if err := served.callerStillResolves(admitted); err == nil {
+	if _, _, err := served.callerStillResolves(admitted); err == nil {
 		t.Fatal("a revoked token kept resolving on an open connection")
 	}
 }

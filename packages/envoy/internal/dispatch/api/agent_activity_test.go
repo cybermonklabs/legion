@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -56,10 +57,11 @@ func newAgentActivityFixture(t *testing.T) *store.Store {
 }
 
 // agentActivityRows is one string per row of statement, sorted. Neither statement orders its
-// rows and the caller reads the answer as a map, so the comparison is of the set of rows.
-func agentActivityRows(t *testing.T, database *store.Store, statement string) []string {
+// rows and the caller reads the answer as a map, so the comparison is of the set of rows. The
+// sessions are its first argument and args the rest.
+func agentActivityRows(t *testing.T, database *store.Store, statement string, args ...any) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, agentActivitySessions)
+	rows, err := database.Pool.Query(context.Background(), statement, append([]any{agentActivitySessions}, args...)...)
 	if err != nil {
 		t.Fatalf("run the agent activity statement: %v", err)
 	}
@@ -81,14 +83,15 @@ func agentActivityRows(t *testing.T, database *store.Store, statement string) []
 
 // The lateral read answers exactly what main's grouped read answered: the newest event of each
 // session, no row for a session whose only events carry another actor kind, and no row for a
-// session the events table has never heard of.
+// session the events table has never heard of. It is read for the server's own viewer, which
+// sees every event.
 func TestTheAgentsLastActivityAnswersWhatMainsStatementDid(t *testing.T) {
 	database := newAgentActivityFixture(t)
 	want := agentActivityRows(t, database, mainAgentLastActivityQuery)
 	if len(want) != 2 {
 		t.Fatalf("main's last activity answered %v; want the two sessions with events of their own", want)
 	}
-	if got := agentActivityRows(t, database, agentLastActivityQuery); !slices.Equal(got, want) {
+	if got := agentActivityRows(t, database, agentLastActivityQuery, refs.VisibilityArg(everyReader)); !slices.Equal(got, want) {
 		t.Fatalf("the last activity answered\n%v\nwant main's rows\n%v", got, want)
 	}
 }
@@ -102,7 +105,7 @@ func TestTheAgentsLastActivityAnswersWhatMainsStatementDid(t *testing.T) {
 // events.
 func TestTheAgentsLastActivityReadsEventsThroughTheSessionActorIndex(t *testing.T) {
 	database := newAgentActivityFixture(t)
-	plan := planWithoutSeqScans(t, database, agentLastActivityQuery, agentActivitySessions)
+	plan := planWithoutSeqScans(t, database, agentLastActivityQuery, agentActivitySessions, refs.VisibilityArg(everyReader))
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 		t.Errorf("the last activity reads %v, which no index serves:\n%s", unkeyed, plan)
 	}
@@ -112,7 +115,7 @@ func TestTheAgentsLastActivityReadsEventsThroughTheSessionActorIndex(t *testing.
 	// `Actual Rows` is the average over the loops, so a read that stops at one row answers at
 	// most one however many of the sessions have an event; main's one grouped read answers
 	// every event it read.
-	root, raw := analyzePlan(t, database, agentLastActivityQuery, agentActivitySessions)
+	root, raw := analyzePlan(t, database, agentLastActivityQuery, agentActivitySessions, refs.VisibilityArg(everyReader))
 	read := 0
 	for _, node := range root.everyNode() {
 		if node.IndexName != index {

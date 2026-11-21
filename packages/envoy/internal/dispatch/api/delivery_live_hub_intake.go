@@ -17,11 +17,11 @@ import (
 // ready closes once the change log's cursor is read. The relay subscription the events arrive on
 // waits for a safe horizon (firstRelayCursor), which a transaction holding an id anywhere on the
 // Postgres instance holds back for as long as it stays open, and neither the worker's answers nor
-// the change log depend on it, so it is taken on a goroutine of its own (seedEvents) and handed to
-// this one (applyFeed). Until it is, the hub acts on no event; the subscription's head, read
-// before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
-// head was committed and is final before the reads that follow it (those P0 issues, each view's
-// recompute) run, and every event above it arrives on the feed. The listener's connection
+// the change log depend on it, so it is taken on a goroutine of its own (seedEventsLocked) and
+// handed to this one (applyFeed). Until it is, the hub acts on no event; the subscription's head,
+// read before the open P0 issues it arrives with, is what leaves no gap: every event at or below
+// the head was committed and is final before the reads that follow it (those P0 issues, each
+// view's recompute) run, and every event above it arrives on the feed. The listener's connection
 // (onConnected) catches the change log up after its LISTEN for the same reason.
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
@@ -69,7 +69,9 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 				// events changed (applyFeed).
 				open = false
 				h.note(deliveryHubNote{what: "feed closed"})
-				h.seedEvents(g)
+				h.mu.Lock()
+				h.seedEventsLocked(g)
+				h.mu.Unlock()
 				continue
 			}
 			h.receive(g, relayed.Event)
@@ -77,16 +79,17 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 	}
 }
 
-// hubEventFeed is a relay subscription seedEvents took for the intake, with the open P0 issues as
-// they stood once it had.
+// hubEventFeed is a relay subscription seedEventsLocked took for the intake, with the open P0
+// issues as they stood once it had.
 type hubEventFeed struct {
 	feed relaySubscription
 	p0   map[string]struct{}
 }
 
-// seedEvents subscribes g to the relay's feed on a goroutine of its own, run on g's context, and
-// hands it to the intake on g.feeds; until the intake takes it the hub acts on no event. It is
-// the generation's first subscription and the one after a feed closed.
+// seedEventsLocked subscribes g to the relay's feed on a goroutine of the hub's (goLocked), run on
+// g's context, and hands it to the intake on g.feeds; until the intake takes it the hub acts on no
+// event. It is the generation's first subscription and the one after a feed closed. mu is held, so
+// once the hub is closed none starts.
 //
 // The subscribe waits for the relay's first cursor when it starts a generation, which an open
 // write anywhere on the instance can hold back, which is why it does not run on the intake's
@@ -99,10 +102,8 @@ type hubEventFeed struct {
 // cancelling the feed, so a feed the intake will never take leaves no goroutine behind for running
 // to wait on, and no subscription the relay would keep its generation running for. The "feed
 // ready" note is made as the hand-over begins.
-func (h *deliveryHub) seedEvents(g *hubGeneration) {
-	h.running.Add(1)
-	go func() {
-		defer h.running.Done()
+func (h *deliveryHub) seedEventsLocked(g *hubGeneration) {
+	h.goLocked(func() {
 		for attempt := 1; ; attempt++ {
 			feed, err := h.server.eventRelay.subscribe(g.readContext(), deliveryHubFeedBuffer)
 			var p0 map[string]struct{}
@@ -128,12 +129,13 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 				return
 			}
 		}
-	}()
+	})
 }
 
-// applyFeed takes the feed seedEvents stood up, with the open P0 issues read with it, and marks
-// every view dirty: a view computed before it read the database at a moment the hub cannot place
-// against the feed's head, so it may have missed an event at or below it, which no feed will carry.
+// applyFeed takes the feed seedEventsLocked stood up, with the open P0 issues read with it, and
+// marks every view dirty: a view computed before it read the database at a moment the hub cannot
+// place against the feed's head, so it may have missed an event at or below it, which no feed will
+// carry.
 func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -237,6 +239,14 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	h.applyEventLocked(g, event, now)
+	if movesSight(event.Type) {
+		// What a sub's caller sees may have moved, so the worker resolves each sub's reader again
+		// before its next recompute (recheckStaleReaders), as it does for an access change announced
+		// on access.ChangedChannel. A project.created is announced nowhere else; an access change is
+		// announced there too, and the one pass reads both.
+		g.readersStale.Store(true)
+		signal(g.wakeWork)
+	}
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "event", eventID: event.ID})
 }
@@ -383,8 +393,10 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
 // table). The view's window is the one its last answer resolved, a preset's end the present; a
 // change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
-// is taken as touching timeline and measures views. Pipeline lead times read only merged pull
-// requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
+// is taken as touching timeline, measures and Pipeline views. The Pipeline page's lead times read
+// only merged pull requests (ListPullRequestsInWindow), but a PR-checks run is shown by its pull
+// request's row, merged or not (prChecksShown), so a change to a pull request that never merged
+// can move a Pipeline view too: its issue decides whether the view shows that run.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	if view.spec.classes().reads != viewReadsDelivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
@@ -411,7 +423,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		case deliveryLiveMeasures:
 			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
-			return some(atOrAfterFrom)
+			return len(times) == 0 || some(atOrAfterFrom)
 		}
 	case "run", "run_job":
 		switch change.RunKind {

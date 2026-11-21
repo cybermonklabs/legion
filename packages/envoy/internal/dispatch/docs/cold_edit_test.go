@@ -73,7 +73,7 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 			if lost, verdict := ledger.LostOps(artifactID); !verdict || len(lost) != 0 {
 				t.Fatalf("the write's lost operations = %v (verdict %t), want none, judged on the store", lost, verdict)
 			}
-			got, err := service.Text(context.Background(), artifactID)
+			got, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read the document: %v", err)
 			}

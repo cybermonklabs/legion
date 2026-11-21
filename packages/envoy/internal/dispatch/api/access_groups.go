@@ -26,9 +26,29 @@ type accessGroupInput struct {
 	Owner *string `json:"owner,omitempty"`
 }
 
-// listAccessGroups answers every group, by name.
+// maxAccessGroupPage is the most groups one page of GET /api/v1/access-groups holds, and the page a
+// request that names no limit reads.
+const maxAccessGroupPage = 100
+
+// listAccessGroups answers one page of the groups, by name: at most ?limit= (1-100, default 100)
+// after the name ?after=, with next naming where the next page starts. A limit that is not one
+// integer in that range, or an after that is no group name, is 400 INVALID_QUERY naming it.
 func (s *server) listAccessGroups(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	query := r.URL.Query()
+	limit := maxAccessGroupPage
+	if value, present, valid := parseQueryInt(query, "limit", 1, maxAccessGroupPage); present {
+		if !valid {
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("limit must be one integer from 1 to %d", maxAccessGroupPage))
+			return
+		}
+		limit = value
+	}
+	after := query.Get("after")
+	if query.Has("after") && !access.ValidGroupName(after) {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("after must be a group name, not %q", after))
 		return
 	}
 	pool, err := s.readyPool()
@@ -36,15 +56,18 @@ func (s *server) listAccessGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	groups, err := access.ListGroups(r.Context(), pool)
+	page, err := access.ListGroups(r.Context(), pool, after, limit)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, groups)
+	WriteJSON(w, http.StatusOK, page)
 }
 
-// putAccessGroup makes group {name}, or writes it again for its owner.
+// putAccessGroup makes group {name}, or writes it again for its owner. A restricted member makes
+// none: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
+// RESTRICTED_MEMBER, before this handler runs.
 func (s *server) putAccessGroup(w http.ResponseWriter, r *http.Request) {
 	var input accessGroupInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -60,15 +83,6 @@ func (s *server) putAccessGroup(w http.ResponseWriter, r *http.Request) {
 		newOwner := by.ID
 		switch {
 		case owner == nil:
-			kind, err := access.MemberKind(ctx, tx, by.ID)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return nil, nil, 0, false
-			}
-			if kind == model.MemberRestricted {
-				writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot make a group")
-				return nil, nil, 0, false
-			}
 			if input.Owner != nil && model.CanonicalLogin(*input.Owner) != by.ID {
 				writeError(w, "PROJECT_ACCESS_INPUT", http.StatusBadRequest,
 					"a new group's owner is the person who makes it; give it to another owner once it exists")

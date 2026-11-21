@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -10,14 +11,15 @@ import (
 )
 
 // The membership answer (K3) is what the secrets broker reads to decide a project's secrets and a
-// token's list: one project's owner, visibility and Slack channels, and whether one person sees it,
-// one person's member kind, and every private project's Slack channels. It names no repositories. It
-// is plain data read outside any transaction. Only a Kubernetes service account the deployment names
-// in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before anything is read, a
-// caller with no credential, or one whose credential does not verify, is refused as every route
-// refuses it (401 NO_IDENTITY for none: optionalActor's error, writeAuthenticationError), and
-// every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED. A deployment that names
-// no such account answers every caller so.
+// token's list: one project's owner, visibility and Slack channels, and whether one person sees
+// it, one person's member kind, and every private project's Slack channels. It names no
+// repositories. It is plain data read outside any transaction. Only a Kubernetes service account
+// the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before
+// anything is read, a caller with no credential, or one whose credential does not verify, is
+// refused as every route refuses it (401 NO_IDENTITY for none: optionalActor's error,
+// writeAuthenticationError), and every other caller, a person included, is 403
+// ACCESS_ACCOUNT_REQUIRED (the read class accessAccount, which withinReadScope holds its routes
+// to). A deployment that names no such account answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
@@ -30,8 +32,10 @@ func accessAccountOf(actor model.Actor) (string, bool) {
 	return *actor.Service, true
 }
 
-// requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names.
-func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bool {
+// requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names:
+// withinReadScope's check of every row of the read class accessAccount. Its refusal names the row,
+// method and pattern, as deploymentReadRefusal's does.
+func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request, method, pattern string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -40,17 +44,14 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 	if subject, ok := accessAccountOf(actor); ok && slices.Contains(s.deps.AccessAccounts, subject) {
 		return true
 	}
-	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden,
-		"the membership answer is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS")
+	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden, fmt.Sprintf(
+		"%s %s is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS", method, pattern))
 	return false
 }
 
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
 // to read the project alone (member_kind none, and visible whether the project is public).
 func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAccessAccount(w, r) {
-		return
-	}
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -66,9 +67,6 @@ func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 
 // getAccessPerson answers ?person='s member kind.
 func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAccessAccount(w, r) {
-		return
-	}
 	person := strings.TrimSpace(r.URL.Query().Get("person"))
 	if person == "" {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "person is required: the email whose member kind to read")
@@ -94,11 +92,9 @@ type privateProjectsAnswer struct {
 }
 
 // getAccessPrivateProjects answers every private project's Slack channels and when each list last
-// changed, by key, read live on each request.
+// changed, by key, read live on each request. Its read class, accessAccount, has withinReadScope
+// check the caller before it runs (requireAccessAccount), once, as for the two other answers.
 func (s *server) getAccessPrivateProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAccessAccount(w, r) {
-		return
-	}
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)

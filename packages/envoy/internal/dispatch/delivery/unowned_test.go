@@ -52,7 +52,7 @@ func TestListUnownedP0(t *testing.T) {
 		{key: "ACMEB-1", number: 1, title: "another project's unowned P0", status: "todo", priority: &p0},
 	})
 
-	unowned, err := ListUnownedP0(ctx, pool)
+	unowned, err := ListUnownedP0(ctx, pool, everyViewer)
 	if err != nil {
 		t.Fatalf("ListUnownedP0: %v", err)
 	}

@@ -64,6 +64,14 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // The projects the credential lists, which only the agent shape carries (a browser's cookie
+  // lists none). A full member's list decides only which private projects it reads, so it uses
+  // every public project too; a restricted member's decides every project. A Dispatch that
+  // predates the list leaves it out, as it does for a credential that lists none and for a broker
+  // token while no project is private; project is then the one it names, if any.
+  const projects =
+    identity.kind === "agent" && identity.projects?.length ? identity.projects : null;
+  const restricted = identity.kind === "agent" && identity.member_kind === "restricted";
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -89,10 +97,21 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  const projectsNamed =
+    projects === null
+      ? ""
+      : `${projects.length === 1 ? "project" : "projects"} ${projects.join(", ")}`;
+  const writable =
+    projects !== null
+      ? restricted
+        ? ` It may use ${projectsNamed} and no other.`
+        : ` It may use ${projectsNamed}, every public project, and no other private project.`
+      : project !== null
+        ? ` It may write project ${project} and no other.`
+        : "";
   return {
     text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    details: { session, owner, service, project, ...(projects !== null ? { projects } : {}) },
   };
 }
 
@@ -272,6 +291,19 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
   return undefined;
 }
 
+/** A side read refused with 403 DEPLOYMENT_READ_REFUSED, settled as the null a Dispatch with no
+ *  secrets broker answers: the caller's credential may not read the whole deployment's rows, so
+ *  it has none of them to list. Any other failure is left for `sideRead` to warn on. */
+function withoutDeploymentRefusal<T>(
+  settled: SettledSideRead<T | null>
+): SettledSideRead<T | null> {
+  return "error" in settled &&
+    dispatchAnswered(settled.error, 403) &&
+    settled.error.code === "DEPLOYMENT_READ_REFUSED"
+    ? { answer: null }
+    : settled;
+}
+
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The rows within a
@@ -346,9 +378,13 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
-  // no credential requests, so it lists and counts none.
+  // no credential requests, so it lists and counts none. The list is a read of the whole
+  // deployment, which Dispatch refuses a restricted member and a credential that lists projects
+  // with 403 DEPLOYMENT_READ_REFUSED: such a caller has no credential list to read, as the web
+  // Inbox never asks them for it, so it is listed and counted as none and warns nothing.
   const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
+    sideRead(withoutDeploymentRefusal(await pending), "credential requests", warnings)?.pending ??
+    [];
   const threads: readonly MyReplyRow[] =
     sideRead(await unread, "unread threads", warnings)?.rows ?? [];
   return {

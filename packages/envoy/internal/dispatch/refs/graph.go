@@ -293,7 +293,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
-// over the same ends (BacklinkCounts).
+// over the same ends (BacklinkCounts). The node read is held to who by the same registry
+// (queriedNodeSeen), so the read holds on its own: a node who may not see has no edge here,
+// whatever the caller's own read of the node answered before.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
 // the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
@@ -392,7 +394,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	}
 	var sql strings.Builder
 	sql.WriteString(`select kind, other_kind, other_id, created_at, source_seq, at_block from (` + arms + `)
-		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where true`)
+		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where ` + queriedNodeSeen(query, seen))
 	if len(query.Kinds) > 0 {
 		args = append(args, query.Kinds)
 		sql.WriteString(" and kind = any($" + strconv.Itoa(len(args)) + ")")
@@ -441,6 +443,19 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		return nil, fmt.Errorf("iterate graph edges: %w", err)
 	}
 	return edges, nil
+}
+
+// queriedNodeSeen is the registry's predicate over the node a read of edges is of, bound at $1 in
+// the spelling its direction keys it by: the store's own id for an inbound read, and for an
+// outbound read the from side's, which the kind's rewrite translates (an artifact's uuid to its
+// ref_key), as VisibleEnd translates it. It names only parameters, so Postgres tests it once for
+// the whole statement.
+func queriedNodeSeen(query Query, seen string) string {
+	address := "$1"
+	if rewrite := nodeRegistry[query.Kind].visibility.fromAddress; query.Direction == "out" && rewrite != nil {
+		address = rewrite(address)
+	}
+	return VisibleKind(query.Kind, address, seen)
 }
 
 func foldsAnswers(query Query) bool {
@@ -524,14 +539,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load := nodeRegistry[kind]
-		if load == nil {
+		entry, known := nodeRegistry[kind]
+		if !known || entry.load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
 			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}
@@ -763,7 +778,10 @@ func anchorVersion(alias string) string {
 // An artifact_id that casts to no uuid names no document, so such an anchor falls through to the
 // branch below - the ask's block document, at that branch's version - exactly as an anchor
 // carrying no artifact_id at all does, and as both search arms link the same ask. The version and
-// the document therefore always come from one branch.
+// the document therefore always come from one branch. The document is joined only where the
+// reader sees its node (VisibleKind), as loadArtifactNodes reads it: a stored anchor or approval
+// naming a document the reader may not see names no parent document, as one naming a uuid no
+// document holds does.
 //
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
@@ -785,7 +803,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		  when k.block_artifact_id is not null then k.block_artifact_id
 		  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
 		  else k.artifact_id
-		end
+		end and `+VisibleKind("artifact", "doc.ref_key", "$2")+`
 		left join lateral (
 			select e.payload->'edited_by' as edited_by from events e
 			where e.type in ('ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited') and e.type = 'ask.edited'
@@ -830,7 +848,9 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // written on: the one its anchor names, at the anchored version, else the document that owns it,
 // at the version current when it was written (written_version). A comment written on no document
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
-// reference of the block it names, are written under.
+// reference of the block it names, are written under. The document is joined only where the
+// reader sees its node (VisibleKind), as loadAskNodes joins an ask's: an anchor naming a document
+// the reader may not see names no parent, as one naming a uuid no document holds does.
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
@@ -840,6 +860,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		left join artifacts doc on doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+		  and `+VisibleKind("artifact", "doc.ref_key", "$2")+`
 		where c.id::text = any($1) and `+VisibleKind("comment", "c.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load comment nodes: %w", err)

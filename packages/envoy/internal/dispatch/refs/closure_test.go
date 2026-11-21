@@ -154,7 +154,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if len(want) < 9 {
 		t.Fatalf("main's closure answered %d rows, too few for the comparison to decide anything: %v", len(want), want)
 	}
-	if got := closureStatementRows(t, fixture.database, closureQuery(), "CORE-1", VisibilityArg(model.Actor{})); !reflect.DeepEqual(got, want) {
+	if got := closureStatementRows(t, fixture.database, closureQuery(), "CORE-1", VisibilityArg(serverReader)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the closure answered\n%v\nwant main's rows\n%v", got, want)
 	}
 
@@ -178,7 +178,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if !wantTruncated {
 		t.Fatal("main's closure reached no ninth hop, so the fixture decides nothing about truncation")
 	}
-	members, truncated, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	members, truncated, err := Closure(context.Background(), fixture.database.Pool, serverReader, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -198,38 +198,41 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
 // keyed one. Every read of refs is keyed too, which is why the predicate names the target kinds
 // of its own: with the block test moved above a join, that is the only clause the planner can
-// restrict the scan with.
+// restrict the scan with. The plan is read for each of planReaders: the server's own viewer folds
+// every project and party arm away, so a plan read for it alone never shows a member's.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
-	tx, err := fixture.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	// A fixture this small is read fastest whole, so sequential scans are off: what is left is
-	// the index each read is written for, and a read no index serves still shows as a scan
-	// carrying no index condition.
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("set local enable_seqscan = off: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
-		t.Fatalf("explain the closure: %v", err)
-	}
-	plan := explaintest.OnePlan(t, raw)
-
-	if explaintest.SeqScansRelation(t, plan, "document_blocks") {
-		t.Errorf("the closure reads document_blocks whole:\n%s", plan)
-	}
-	explaintest.NewIndexKeys(fixture.database.Pool).RequireIndexKeyed(t, plan,
-		"document_blocks_node_id", "the closure", explaintest.CondRequired)
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if scan.Relation == "refs" && scan.Cond == "" {
-			t.Errorf("the closure reads %s with no index condition, so it reads every refs row:\n%s", scan, plan)
+	for _, reader := range planReaders("CORE") {
+		tx, err := fixture.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the plan's transaction: %v", err)
 		}
-	}
-	if explaintest.SeqScansRelation(t, plan, "refs") {
-		t.Errorf("the closure reads refs whole:\n%s", plan)
+		// A fixture this small is read fastest whole, so sequential scans are off: what is left is
+		// the index each read is written for, and a read no index serves still shows as a scan
+		// carrying no index condition.
+		if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+			t.Fatalf("set local enable_seqscan = off: %v", err)
+		}
+		var raw []byte
+		if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery(), "CORE-1", VisibilityArg(reader.reader)).Scan(&raw); err != nil {
+			t.Fatalf("explain the closure read by %s: %v", reader.name, err)
+		}
+		_ = tx.Rollback(ctx)
+		plan := explaintest.OnePlan(t, raw)
+
+		if explaintest.SeqScansRelation(t, plan, "document_blocks") {
+			t.Errorf("the closure read by %s reads document_blocks whole:\n%s", reader.name, plan)
+		}
+		explaintest.NewIndexKeys(fixture.database.Pool).RequireIndexKeyed(t, plan,
+			"document_blocks_node_id", "the closure read by "+reader.name, explaintest.CondRequired)
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if scan.Relation == "refs" && scan.Cond == "" {
+				t.Errorf("the closure read by %s reads %s with no index condition, so it reads every refs row:\n%s", reader.name, scan, plan)
+			}
+		}
+		if explaintest.SeqScansRelation(t, plan, "refs") {
+			t.Errorf("the closure read by %s reads refs whole:\n%s", reader.name, plan)
+		}
 	}
 }

@@ -492,7 +492,7 @@ func TestStoredOrderHeldBrowserEditInAParagraphTheAgentDeletes(t *testing.T) {
 // room and renders his edit at the write's own update, before his append.
 func TestStoredOrderEditAfterTheForkReadIsNotInTheWritesVersion(t *testing.T) {
 	service, artifactID := storedOrderService(t)
-	_, token, err := service.TextWithToken(context.Background(), artifactID)
+	_, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the document token: %v", err)
 	}

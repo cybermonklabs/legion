@@ -27,9 +27,10 @@ func TestAPairRecordedTwiceReadsAsOnce(t *testing.T) {
 	}
 
 	// The crossed writes: the first holds PRIV-1 and its record; the second writes PRIV-2 and
-	// commits; the first then takes PRIV-2 and commits.
+	// commits; the first then takes PRIV-2 and commits. The session is one its credential proved,
+	// the only kind the live insert records.
 	broker := events.NewBroker()
-	session := model.Actor{Kind: "session", ID: "ses_twice"}
+	session := model.Actor{Kind: "session", ID: "ses_twice", Act: &model.ActorAct{Session: "ses_twice"}}
 	issueEvent := func(key string) model.Event {
 		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}

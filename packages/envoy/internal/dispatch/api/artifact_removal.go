@@ -80,7 +80,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, artifact, _, ok := s.beginArtifactWrite(w, r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	tx, artifact, _, ok := s.beginArtifactWrite(w, r, who)
 	if !ok {
 		return
 	}

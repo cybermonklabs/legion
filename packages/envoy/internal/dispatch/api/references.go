@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -80,12 +81,15 @@ const referencesSinceWait = time.Second
 // prefix names a row only within some set, and the set the reference itself names is the one
 // its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -122,7 +126,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if query.Direction == "out" && ref.Kind == "artifact" {
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
+			// A document its reader may not read is a ref_key no row holds (access.DocumentClause),
+			// so it answers exactly as a missing one: the same refusal, naming the reference the
+			// caller wrote rather than the id the row holds, and the same one statement.
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1 and `+
+				access.DocumentClause("artifacts", "$2"), query.ID, refs.VisibilityArg(who)).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
 					return
@@ -246,12 +254,15 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
@@ -597,7 +608,7 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
 // the full answer. A repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -617,7 +628,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -706,11 +717,11 @@ func closureBoundHit(err error) bool {
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

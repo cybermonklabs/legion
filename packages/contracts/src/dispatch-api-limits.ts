@@ -116,6 +116,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most projects one personal agent token lists (`projects` on `POST /api/v1/me/agent-tokens`
+ * and `PATCH /api/v1/me/agent-tokens/{id}`, and `agent_tokens.projects`' own check; `400
+ * TOKEN_PROJECTS_INPUT` over it). Generated into Go as `contracts.MaxTokenProjects`, which the
+ * server enforces, and the dashboard's project picker takes no project past it, so the two
+ * refusals are one number.
+ */
+export const MAX_TOKEN_PROJECTS = 16;
+
+/**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
  * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
  * 247 distinct references, measured on 2026-11-05 on the issue the new issue page was designed

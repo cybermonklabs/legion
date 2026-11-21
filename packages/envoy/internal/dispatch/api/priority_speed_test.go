@@ -39,6 +39,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // speedRuns is how many times each operation is run and timed, beside the warm-up run that is
@@ -210,13 +211,13 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", speedCorpusPage)
 
 // speedPageArguments are the arguments one page of the open listing takes, in the order
-// listIssues builds them: no filter but `open`, and the page's limit and offset last. Both
-// statement texts take the same list, which is what lets one measurement stand against the
-// other (issueSummaryQuery).
+// listIssues builds them: no filter but `open`, the server's own viewer, and the page's limit and
+// offset last. Both statement texts take the same list, which is what lets one measurement stand
+// against the other (issueSummaryQuery).
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, refs.VisibilityArg(everyReader), limit, offset,
 	}
 }
 

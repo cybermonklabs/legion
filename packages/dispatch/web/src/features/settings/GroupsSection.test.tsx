@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pagedGroups } from "../../__tests__/paged-groups";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -32,22 +33,15 @@ const ops: AccessGroup = {
 function renderSection({
   groups = [crew, ops],
   login = "alice",
-  restricted = false,
 }: {
   groups?: AccessGroup[];
   login?: string;
-  restricted?: boolean;
 } = {}) {
   let stored = groups;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
-    event_head: "0",
-    kind: "user",
-    login,
-    ...(restricted ? { member_kind: "restricted" as const } : {}),
-  });
+  queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login });
   const spies = {
     deleteAccessGroup: spyOn(api, "deleteAccessGroup").mockImplementation(async (name) => {
       stored = stored.filter((group) => group.name !== name);
@@ -112,6 +106,31 @@ test("lists every group with its owner and its members, and says so when there i
     expect(await screen.findByText("No groups yet.")).toBeInTheDocument();
   } finally {
     empty.restore();
+  }
+});
+
+// The group list answers a page at a time, and the section lists every group of every page.
+test("lists the groups of every page the group list answers", async () => {
+  const pages = pagedGroups([[crew], [ops]]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <GroupsSection />
+    </QueryClientProvider>
+  );
+  try {
+    expect(await screen.findByRole("cell", { name: "ops" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "crew" })).toBeInTheDocument();
+    expect(pages.mock.calls).toEqual([[undefined], ["crew"]]);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    pages.mockRestore();
   }
 });
 
@@ -319,21 +338,6 @@ test("a name the list holds already is refused before anything is sent", async (
       "A group named crew exists already. Its owner edits it in its row."
     );
     expect(section.putAccessGroup).not.toHaveBeenCalled();
-  } finally {
-    section.restore();
-  }
-});
-
-test("a restricted member finds the form disabled, with the reason on the page and as its title", async () => {
-  const section = renderSection({ login: "ivan@outside.example", restricted: true });
-  try {
-    await screen.findByRole("cell", { name: "crew" });
-    const reason = "A restricted member cannot make a group.";
-    expect(screen.getByRole("note")).toHaveTextContent(reason);
-    expect(screen.getByLabelText("Group name")).not.toBeEnabled();
-    expect(screen.getByLabelText("Group name")).toHaveAttribute("title", reason);
-    expect(screen.getByLabelText("Members")).not.toBeEnabled();
-    expect(screen.getByRole("button", { name: "New group" })).toHaveAttribute("title", reason);
   } finally {
     section.restore();
   }

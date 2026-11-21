@@ -3,13 +3,13 @@ package refs
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestStatementTimings measures this package's changed statements on the seeded measurement
@@ -36,17 +36,26 @@ import (
 //     The before side is read with ask_followers_session_id present, the index migration
 //     20261101182419 adds for the followed_by arm, which only helps it, so each pair is the
 //     conservative reading of the head text's own gain.
+//
+// Each head text is read for every one of planReaders, seeing the subject issue's project: the
+// server's own viewer passes every visibility arm at its `all` flag, so a pair bound to it alone
+// measures none of what the project and party rules cost an open member or a token that lists
+// projects.
 func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
+	project, _, _ := strings.Cut(subjects.Issue, "-")
+	readers := planReaders(project)
 
 	// mainClosureQuery is the before text, the text the release before this change ran, held in
 	// closure_test.go as the equality oracle. It is read from there rather than copied again:
 	// two copies of one statement drift apart, and the oracle is already what a comparison of
 	// this package is held to.
-	runner.Pair(t, "refs.Closure",
-		benchtime.Statement{SQL: mainClosureQuery, Args: []any{subjects.Issue}},
-		benchtime.Statement{SQL: closureQuery(), Args: []any{subjects.Issue, VisibilityArg(model.Actor{})}})
+	for _, reader := range readers {
+		runner.Pair(t, "refs.Closure, read by "+reader.name,
+			benchtime.Statement{SQL: mainClosureQuery, Args: []any{subjects.Issue}},
+			benchtime.Statement{SQL: closureQuery(), Args: []any{subjects.Issue, VisibilityArg(reader.reader)}})
+	}
 
 	// The issue read's count: one issue's inbound edges, the number its page carries.
 	issueCount, ok := backlinkCountSQL("issue", nil, false)
@@ -54,36 +63,40 @@ func TestStatementTimings(t *testing.T) {
 		t.Fatal("backlinkArms declares no arm for an issue, so the issue read's count has no statement")
 	}
 	issueIDs := []string{subjects.Issue}
-	runner.Pair(t, "refs.BacklinkCounts over an issue",
-		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
-		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
+	for _, reader := range readers {
+		runner.Pair(t, "refs.BacklinkCounts over an issue, read by "+reader.name,
+			benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
+			benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(reader.reader)}})
+	}
 
 	// The ask page's count: every ask of one issue at once, each ask's own clarification thread
 	// and its own parts excluded, which is what the page's cards show. Its subject is the issue
 	// carrying the most asks, read from the database rather than taken from subjects.Issue: the
 	// heavily linked issue the other readings bind is linked by children and blockers, and
-	// carries no ask.
-	askIDs := askPageSubject(t, runner)
+	// carries no ask. Its readers see that issue's project.
+	askIDs, askProject := askPageSubject(t, runner)
 	askCount, ok := backlinkCountSQL("ask", AskBacklinkExclusions, false)
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an ask, so the ask page's count has no statement")
 	}
-	runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
-		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
-		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
+	for _, reader := range planReaders(askProject) {
+		runner.Pair(t, "refs.BacklinkCounts over an issue's asks, read by "+reader.name,
+			benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
+			benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(reader.reader), AskBacklinkExclusions}})
+	}
 }
 
 // askPageSubject is every ask of the issue that carries the most, the set the ask page counts
-// backlinks for in one call. The issue is read from the database so the measurement follows a
-// re-seed, and a database with no ask at all fails the run rather than measuring a count over an
-// empty array, which answers no row whatever the statement reads.
-func askPageSubject(t *testing.T, runner *benchtime.Runner) []string {
+// backlinks for in one call, and that issue's project. The issue is read from the database so the
+// measurement follows a re-seed, and a database with no ask at all fails the run rather than
+// measuring a count over an empty array, which answers no row whatever the statement reads.
+func askPageSubject(t *testing.T, runner *benchtime.Runner) ([]string, string) {
 	t.Helper()
-	var issueKey string
+	var issueKey, project string
 	if err := runner.Conn().QueryRow(context.Background(), `
-		select issue_key from asks where issue_key is not null
-		group by issue_key order by count(*) desc, issue_key limit 1
-	`).Scan(&issueKey); err != nil {
+		select a.issue_key, i.project_key from asks a join issues i on i.key = a.issue_key
+		group by a.issue_key, i.project_key order by count(*) desc, a.issue_key limit 1
+	`).Scan(&issueKey, &project); err != nil {
 		t.Fatalf("read the issue carrying the most asks: %v", err)
 	}
 	rows, err := runner.Conn().Query(context.Background(),
@@ -98,5 +111,5 @@ func askPageSubject(t *testing.T, runner *benchtime.Runner) []string {
 	if len(ids) == 0 {
 		t.Fatalf("%s holds no ask, so the ask page's count has no subject", issueKey)
 	}
-	return ids
+	return ids, project
 }

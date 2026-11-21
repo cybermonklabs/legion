@@ -78,10 +78,12 @@ func TestProjectOwnerCommandGivesTheProject(t *testing.T) {
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		t.Fatalf("decode the event's payload %s: %v", payloadJSON, err)
 	}
-	if eventType != "project.access_changed" || actor.Kind != "system" || actor.ID != "envoy-dispatch project-owner" ||
-		payload.Change != model.AccessOwnerChanged || payload.Owner != "carol@example.com" {
-		t.Fatalf("WID's last event = %s by %s, payload %s; want project.access_changed by the system actor envoy-dispatch project-owner, naming carol as owner",
-			eventType, actorJSON, payloadJSON)
+	// The owner itself is projects.owner's, read above; the event names the project and the change
+	// alone, since every reader of the project's events reads it.
+	if want := (model.ProjectAccessEventPayload{Project: "WID", Change: model.AccessOwnerChanged}); eventType != "project.access_changed" ||
+		actor.Kind != "system" || actor.ID != "envoy-dispatch project-owner" || payload != want {
+		t.Fatalf("WID's last event = %s by %s, payload %s; want project.access_changed by the system actor envoy-dispatch project-owner, carrying %+v",
+			eventType, actorJSON, payloadJSON, want)
 	}
 
 	for _, refused := range []struct {

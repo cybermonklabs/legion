@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -734,7 +735,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, refs.VisibilityArg(everyReader)).Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 
@@ -785,17 +786,18 @@ func TestListIssueAsksOpenQueryUsesAsksOpenIndex(t *testing.T) {
 	if _, err := tx.Exec(ctx, "set local plan_cache_mode = force_generic_plan"); err != nil {
 		t.Fatalf("force generic plan mode: %v", err)
 	}
-	if _, err := tx.Exec(ctx, "prepare list_open_asks (text) as "+listIssueAsksQueryOpen); err != nil {
+	if _, err := tx.Exec(ctx, "prepare list_open_asks (text, jsonb) as "+listIssueAsksQueryOpen); err != nil {
 		t.Fatalf("prepare open asks query: %v", err)
 	}
+	execute := "execute list_open_asks('nonexistent-issue', '" + string(planViewer) + "')"
 	for i := range 6 {
-		if _, err := tx.Exec(ctx, "execute list_open_asks('nonexistent-issue')"); err != nil {
+		if _, err := tx.Exec(ctx, execute); err != nil {
 			t.Fatalf("execute open asks query %d: %v", i, err)
 		}
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) execute list_open_asks('nonexistent-issue')").Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+execute).Scan(&planJSON); err != nil {
 		t.Fatalf("explain execute open asks query: %v", err)
 	}
 	var plans []struct {

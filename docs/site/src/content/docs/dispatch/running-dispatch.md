@@ -1,6 +1,6 @@
 ---
 title: Running Dispatch
-description: What the Dispatch server needs, how to run it, its health check, running more than one copy, and its migrations.
+description: What the Dispatch server needs, how to run it, private projects, its health check, running more than one copy, and its migrations.
 sidebar:
   order: 8
 ---
@@ -36,7 +36,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | Need | Setting | Notes |
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
-| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
+| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
@@ -330,8 +330,110 @@ Sign in, then open **Settings**:
   GitHub again, and two re-listings walk those 28 days a day per pass, about 28 passes in all:
   one of each run's branch and event, and one of each deploy run's creation time, which decides
   the deploy a pull request is credited to.
-- **Agent tokens**: make a token for each agent you run.
-  [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
+- **Agent tokens**: make a token for each agent you run, listing under **Projects** the projects
+  it works on. [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the
+  rest.
+
+## Private projects
+
+Every project has one owner and an access list of people and groups, both on the project's
+**Access** tab. A full member sees every public project. A private project is seen only by its
+owner, the people its list names and the full members of the groups it names. A restricted
+member, who signs in from outside the company, sees a project, public or private, only when its
+list names them directly. Every other caller reads a private project, and everything in it, as a
+project that does not exist.
+
+What each credential sees. A credential's list of projects decides only which private projects it
+sees: a private project needs a token that lists it.
+
+- A person at the browser sees every project the rule above lets them see.
+- A full member's agent token, a personal `dsp_` token from Settings or an access token the
+  secrets broker issued, sees every public project its person sees, whatever it lists, and the
+  private projects it lists that its person sees. It reads what belongs to no project as its
+  person does, but for the sessions and roles of private projects it does not see. A token that
+  lists projects is refused a write of the whole deployment, such as a new project, a repository
+  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
+  person is refused it only while some project is private.
+- A restricted member's token that lists projects sees those of them its person sees and nothing
+  else; one that lists none sees the public projects its person sees. Of what belongs to no
+  project it reads only the people and sessions of those projects, its own, and its person's
+  direct conversations with those sessions.
+- A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
+  service-account token, sees the public projects and the private projects its list names.
+
+With no private project in the deployment, a full member's token sees every project its person
+sees, whatever it lists.
+
+A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
+Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
+them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
+no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
+machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
+timeline. The API refuses them, and every token they make, every read of the whole deployment,
+`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
+revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
+broker decides whose each one is.
+
+A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
+a token that does not list it read the private project as missing. A person who sees the project
+makes it in **Settings → Agent tokens**, picking the project under **Projects**, and the daemon
+reads it from the file its `dispatch_token_file` names. The token lists every private project in
+the daemon's `projects`; it sees each public project whatever it lists. Every write of the
+daemon's agents is then attributed to the person who made the token.
+
+A project can be made private only once the deployment has provisioned it.
+`DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
+namespace, stores and grants the deployment has made; on a deployment built by `envoy-infra`'s
+`gcp:Dispatch`, the component's `privateProjects` input, a list of keys, renders it. An entry that
+is not a project key, the old value `1` included, is ignored, and the start logs an ERROR line
+naming it. Unset or empty, no project can be made private.
+
+The owner switches a project private on its Access tab
+(`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in
+this order:
+
+1. With an empty list, every switch to private is `409 PRIVATE_PROJECTS_OFF`, before anything is
+   read.
+2. A caller who does not see the project is `404 PROJECT_NOT_FOUND`, as for a key no project
+   holds, and one who sees it but does not own it is `403 PROJECT_OWNER_REQUIRED`.
+3. A key the list does not name is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+4. A store that cannot hold the project private yet is `409 PRIVATE_PROJECTS_INCOMPLETE`, naming
+   what repairs it: each row of the project that has no node naming its project, with the cure
+   the project census prints for it (`envoy-dispatch backfill-graph-store`, or none for a node
+   that names another project, which a person compares with its row),
+   `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
+   `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
+5. Last, in the same transaction, Dispatch writes the project's key in the hub's
+   `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
+   project's messages back from a token that does not list it. When the hub refuses that write,
+   as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
+   of that bucket, so every switch that passes steps 1 to 4 is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private until a release carries the
+   writer.
+
+Of these, only the owner check of step 2 applies to a switch to public.
+
+A project the database holds private that the list does not name, because its key was taken off
+the list or the list was emptied, stays private. Nothing of it reaches anyone who could not see
+it before, and every change of its visibility but its owner's switch to public is refused.
+Dispatch still starts and serves every other project: it logs an ERROR line naming the project and
+both repairs at start and at every maintenance pass, once a minute, and `/healthz` answers
+`degraded: ["private_project_unprovisioned"]`, naming no project. The owner decides the repair: put the key back on the list, or
+make the project public, from the Access tab or, with the database credential alone and no server
+running if need be, with:
+
+```sh
+envoy-dispatch project-visibility <KEY> public
+```
+
+So to take a key off the list, make the project public first, and only then remove its key. At
+start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
+server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
+private project for one of the reasons of step 4, naming the reason and what repairs it. Every
+response carries `Dispatch-Private-Projects: 1` while the list names a project, the database holds
+a private one, or the server's last read of the database's private projects failed, and
+`Dispatch-Private-Projects: 0` otherwise.
 
 ## Health check
 
@@ -370,6 +472,11 @@ balancer's or Kubernetes' readiness probe at it.
 - `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
   server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
   turned off. It never decides `ok` or the status.
+- `degraded` is `["private_project_unprovisioned"]` while the database holds a private project
+  that `DISPATCH_PRIVATE_PROJECTS` does not name ([Private projects](#private-projects)), as the
+  server's last read found it: it reads every 30 seconds, so a probe adds no read. It names no
+  project and counts none, because the check answers anyone; the project's key is in the ERROR
+  line. It is absent when there is none, and it never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.
@@ -399,17 +506,20 @@ Each entry is `{"state": …, "at": …, "cause": …}`:
     and `webhook_redelivery` and `ci_reconcile` are `off` without NATS too.
 - `at` is when the newest attempt was recorded, as its pass ended, by the database's clock, in
   RFC 3339 UTC. It is `null` unless the state is `succeeded` or `failed`.
-- `cause` is the text of the first failure of that attempt, at most 1,024 bytes. A longer text is
-  cut, and ends with `… (cut from <n> bytes)`. It is `null` unless the state is `failed`.
+- `cause` is the class of the first failure of that attempt: `status <n>`, the HTTP status GitHub
+  answered, or `no status` for a failure that names none: GitHub never answered, or the read
+  itself failed on an answer it got. It is `null` unless the state is `failed`.
 
 `github` never decides `ok` or the status: a server serves everything but these reads while
 GitHub fails. Each server keeps a copy of the record of attempts in memory, reads it again each
 time any server records an attempt, and answers from that copy, so `github` sends the database
 nothing and waits on nothing.
 
-A cause can name a repository, because a GitHub error carries the address it asked. `/healthz`
-needs no credential, so whoever reaches the server's HTTP port can read the cause. Serve Dispatch
-on a private network.
+The failure's own text can name a repository, because a GitHub error carries the address it
+asked, and `/healthz` needs no credential, so whoever reaches the server's HTTP port can read the
+answer. So `/healthz` answers the class alone. Read the text, at most 1,024 bytes, in the
+database's `github_read_attempts` table: `select read, at, cause from github_read_attempts;`. A
+longer text is cut, and ends with `… (cut from <n> bytes)`.
 
 The delivery intakes also read GitHub, for each webhook event, and have no entry of their own.
 They report through `delivery_reconcile`: the reconcile reads the same pull requests and runs with

@@ -845,7 +845,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		t.Fatalf("ask %s has %d ask.resolved events after the settlement, want the repair's one", ask, count)
 	}
 
-	_, blocks, err := f.documents.TextWithBlocks(ctx, issue.PrimaryArtifactID)
+	_, blocks, err := f.documents.TextWithBlocks(ctx, everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read the document's blocks: %v", err)
 	}
@@ -858,7 +858,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}
-		node, found, err := refs.Node(ctx, f.database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
+		node, found, err := refs.Node(ctx, f.database.Pool, model.ServerReader, "block", text.TargetID(ref), true)
 		if err != nil || !found || node.BlockID != block.ID {
 			t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, block.ID)
 		}

@@ -412,7 +412,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
+		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries, nil)
 	}()
 	deadline := time.Now().Add(30 * time.Second)
 	for len(keysOf(sends)) == 0 && time.Now().Before(deadline) {

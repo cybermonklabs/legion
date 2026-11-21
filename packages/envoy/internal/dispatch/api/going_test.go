@@ -36,7 +36,7 @@ var goingAsker = model.Actor{Kind: "user", ID: "alice"}
 // record stores one run, failing the test if it cannot.
 func (rig goingRig) record(t *testing.T, words string) goingRequest {
 	t.Helper()
-	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words)
+	request, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "TEST", words, false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -48,7 +48,7 @@ func (rig goingRig) record(t *testing.T, words string) goingRequest {
 // readGoingStream, so no test here runs a read the server does not.
 func (rig goingRig) frames(t *testing.T, requestID string) []string {
 	t.Helper()
-	stored, _, err := rig.server.readGoingStream(context.Background(), requestID, 0)
+	stored, _, err := rig.server.readGoingStream(context.Background(), everyReader, requestID, 0)
 	if err != nil {
 		t.Fatalf("read the run's frames: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 		t.Fatalf("the run's window is %v (created_at %v, ends_at %v), want %v",
 			window, recorded.CreatedAt, recorded.EndsAt, contracts.GoingRunWindow)
 	}
-	read, err := rig.server.readGoingRequest(context.Background(), recorded.ID)
+	read, err := rig.server.readGoingRequest(context.Background(), everyReader, recorded.ID)
 	if err != nil {
 		t.Fatalf("read the run back: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 	if !read.CreatedAt.Equal(recorded.CreatedAt) || !read.EndsAt.Equal(recorded.EndsAt) || read.ID != recorded.ID {
 		t.Fatalf("read back %+v, want the row the POST stored %+v", read, recorded)
 	}
-	_, err = rig.server.readGoingRequest(context.Background(), "00000000-0000-4000-8000-00000000000a")
+	_, err = rig.server.readGoingRequest(context.Background(), everyReader, "00000000-0000-4000-8000-00000000000a")
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("reading a run nobody asked for: %v, want pgx.ErrNoRows", err)
 	}
@@ -124,7 +124,7 @@ func TestGoingEventsAppendInSequenceAndReadAfterOne(t *testing.T) {
 		t.Fatalf("the end took sequence %d, want 4", ended.Sequence)
 	}
 
-	after, _, err := rig.server.readGoingStream(ctx, run.ID, 2)
+	after, _, err := rig.server.readGoingStream(ctx, everyReader, run.ID, 2)
 	if err != nil {
 		t.Fatalf("read the frames after 2: %v", err)
 	}
@@ -260,14 +260,14 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 		t.Fatalf("a second sweep left %v, want the one ending %v", frames, swept)
 	}
 
-	_, state, err := rig.server.readGoingStream(ctx, abandoned.ID, 0)
+	_, state, err := rig.server.readGoingStream(ctx, everyReader, abandoned.ID, 0)
 	if err != nil {
 		t.Fatalf("read the swept run's state: %v", err)
 	}
 	if state.Terminal != 2 || !state.PastDeadline {
 		t.Fatalf("the swept run reads %+v, want its ending at sequence 2 and past its deadline", state)
 	}
-	if _, state, err := rig.server.readGoingStream(ctx, live.ID, 0); err != nil || state.Terminal != 0 || state.PastDeadline {
+	if _, state, err := rig.server.readGoingStream(ctx, everyReader, live.ID, 0); err != nil || state.Terminal != 0 || state.PastDeadline {
 		t.Fatalf("the live run reads %+v (%v), want no ending stored and not past its deadline", state, err)
 	}
 }
@@ -287,7 +287,7 @@ func TestTheGoingSweepDeletesARunPastItsTTL(t *testing.T) {
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, old.ID); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, old.ID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows", err)
 	}
 	var frames int
@@ -297,7 +297,7 @@ func TestTheGoingSweepDeletesARunPastItsTTL(t *testing.T) {
 	if frames != 0 {
 		t.Fatalf("the deleted run left %d frames, want none: they go with it", frames)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, young.ID); err != nil {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, young.ID); err != nil {
 		t.Fatalf("the run inside its TTL: %v, want it kept", err)
 	}
 }
@@ -310,10 +310,10 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	rig.age(t, abandoned.ID, time.Minute, time.Second)
 	leases := sweepLeases(t, rig.database)
 	runSweep(t, func(ctx context.Context) {
-		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
+		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil, nil)
 	})
 	waitUntil(t, 30*time.Second, "the abandoned run ended by a maintenance pass", func() bool {
-		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
+		_, state, err := rig.server.readGoingStream(context.Background(), everyReader, abandoned.ID, 0)
 		return err == nil && state.Terminal > 0
 	})
 	deadline := fmt.Sprintf(`1 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
@@ -373,7 +373,7 @@ func TestAGoingTerminalWriteForAMissingRunLeavesItsBatchStanding(t *testing.T) {
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if _, err := rig.server.readGoingRequest(ctx, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := rig.server.readGoingRequest(ctx, everyReader, stale.ID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the run past its TTL reads %v, want pgx.ErrNoRows: the pass reached its delete", err)
 	}
 }

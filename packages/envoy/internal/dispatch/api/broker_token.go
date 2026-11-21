@@ -49,25 +49,28 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // callerStillResolves answers whether the caller a live socket was admitted as still resolves,
-// which is what whileCallerResolves asks on that socket's every heartbeat. For every credential
-// but one that is the request's own resolution, unchanged. The document socket asks something
-// narrower, the sign-in cookie alone, which is all it is admitted by (signInStillResolves).
+// which is what whileCallerResolves asks on that socket's every heartbeat, and the caller it
+// resolved. For every credential but one that is the request's own resolution, unchanged. The
+// document socket asks something narrower, the sign-in cookie alone, which is all it is admitted
+// by (signInStillResolves).
 //
 // The exception is a broker-issued token. The heartbeat's copy of the request still carries the
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// ciphertoken.Verifier.Live. Nothing is admitted through this, only kept.
-func (s *server) callerStillResolves(r *http.Request) error {
+// ciphertoken.Verifier.Live, and it answers no caller and broker true, which tells the heartbeat
+// to compare no grant: a broker-issued token names its one project, or none, for its whole life.
+// Nothing is admitted through this, only kept.
+func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
-			return errNoBrokerConfigured()
+			return model.Actor{}, true, errNoBrokerConfigured()
 		}
 		_, err := s.deps.BrokerTokens.Live(r.Context(), r)
-		return err
+		return model.Actor{}, true, err
 	}
-	_, _, err := s.optionalActor(r)
-	return err
+	caller, _, err = s.optionalActor(r)
+	return caller, false, err
 }
 
 // errNoBrokerConfigured is what a DPoP presentation is to a Dispatch with no broker: there is no
@@ -191,18 +194,25 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// Only a token an operator's entry mapped to one project names that project as the one it
-	// may write, which is today's named-scope rule; a named token naming none (the shared
-	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
-	// own rules let it, and ciphertoken refuses a named token naming two.
-	// A token acting as its person carries the list
-	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
-	// dev box session's person writes wherever they may, and the token of a machine naming a
-	// service and no person names no project at all. Nor does a read-only token, whose project
-	// scope none names no project and writes none.
-	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
-		project := caller.Projects[0]
-		actor.Project = &project
+	// A token's list is its credential's, which the one rule of what a caller sees reads
+	// (access.CredentialCovers): for a full member's token it decides only which private projects
+	// the token reaches, so while the deployment holds no private project it changes nothing the
+	// token did before projects could be private (R9); for a restricted member's token it narrows
+	// every project (R3). A token an operator's entry mapped to one project names that project,
+	// today's named-scope rule (ciphertoken refuses a named token naming two), and its writes are
+	// held to that project as they were before, whatever the deployment holds (NamedProject;
+	// namedProjectOf). A token acting as its person carries the list its trade asked for
+	// (ciphertoken.Caller.Projects), which holds no write by name, since a dev box session's person
+	// writes wherever they may. Every other token carries no list: a named token naming none (the
+	// shared public-session account's), which reads and writes as a token naming no project does;
+	// the token of a machine naming a service and no person, which names no project at all; and a
+	// read-only token, whose project scope none names no project and writes none.
+	switch {
+	case caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
+		actor.Credential.Projects = caller.Projects
+		actor.Credential.NamedProject = caller.Projects[0]
+	case caller.ProjectScope == ciphertoken.ProjectScopePerson && len(caller.Projects) > 0:
+		actor.Credential.Projects = caller.Projects
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

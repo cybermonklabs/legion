@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -195,7 +196,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
 // behind a catch-up reading another document's stored history; it reads the rows of this
 // process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
-// while the hub had no connection reached nobody and nothing announces it again.
+// while the hub had no connection reached nobody and nothing announces it again. The access lane
+// closes each socket whose person no longer reads its room on each access change
+// (access.ChangedChannel) and after each LISTEN, for the same reason (Service.recheckAccess).
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -217,6 +220,10 @@ func (r *roomSync) handlers() []roomSyncHandler {
 		{
 			channels:  []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}},
 			connected: r.service.recheckRemovedRooms,
+		},
+		{
+			channels:  []roomSyncChannel{{name: access.ChangedChannel, notified: r.service.accessChanged}},
+			connected: r.service.recheckAccess,
 		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},
 		{channels: []roomSyncChannel{{name: documentAnswerChannel, notified: r.service.roomQueries.answer}}},

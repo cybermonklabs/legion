@@ -198,7 +198,7 @@ func checkReferenceMembersCarryTheirDocumentsOwnCreatorAndVersionAuthors(t *test
 		}
 		delete(wantVersions, id)
 
-		oracle, err := fixture.served.loadArtifact(ctx, fixture.database.Pool, id)
+		oracle, err := fixture.served.loadArtifact(ctx, fixture.database.Pool, everyReader, id)
 		if err != nil {
 			t.Fatalf("load artifact %q: %v", id, err)
 		}

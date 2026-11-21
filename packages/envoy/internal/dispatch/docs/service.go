@@ -142,7 +142,9 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	// DocumentStamp is the room's DocumentStamp for the reader whose viewer viewer is
+	// (refs.VisibilityArg): pgx.ErrNoRows where that reader may not read the document.
+	DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned
@@ -397,6 +399,11 @@ type Service struct {
 	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
 	// count of switches covers (schemaSwitches).
 	afterSocketAdmitted func(room string)
+	// afterSocketRecorded runs in ygo's authorization of a document socket (authorize) once the
+	// socket's admission is recorded where an access re-check walks it (schemaAdmissions.admit) and
+	// authorize has admitted it, and before ygo joins the room and upgrades the socket. Nil outside
+	// tests; tests take the socket's person off the room's list and run a re-check there.
+	afterSocketRecorded func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -3463,11 +3470,7 @@ type Queryer interface {
 // shared pool closes the same cycle the transaction rule closes.
 func (s *Service) issueOpen(ctx context.Context, q Queryer, artifactID string) (bool, error) {
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select coalesce(i.closed_at is null, true)
-		from artifacts a left join issues i on i.key = a.issue_key
-		where a.id = $1 and a.kind = 'doc'
-	`, artifactID).Scan(&open); err != nil {
+	if err := q.QueryRow(ctx, issueOpenStatement, artifactID).Scan(&open); err != nil {
 		return false, fmt.Errorf("check document issue: %w", err)
 	}
 	return open, nil

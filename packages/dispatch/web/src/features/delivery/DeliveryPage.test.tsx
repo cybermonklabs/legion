@@ -12,6 +12,7 @@ import {
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
@@ -133,8 +134,19 @@ function LocationProbe() {
   return <output data-testid="location">{useLocation().search}</output>;
 }
 
-function renderPage(url = DELIVERY_URL) {
+/** The page at `url`, signed in as a restricted member (`member_kind: "restricted"`) when
+ *  `restricted` is set and as a full member otherwise: the shell holds `/auth/whoami`'s answer
+ *  before any page draws, so it is seeded here as the shell would hold it. */
+function renderPage(url = DELIVERY_URL, restricted = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (restricted) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+  }
   render(
     <MemoryRouter initialEntries={[url]}>
       <QueryClientProvider client={queryClient}>
@@ -339,6 +351,30 @@ test("an unconfigured timeline that Dispatch then refuses otherwise shows that f
   expect(
     screen.queryByRole("heading", { name: "Set up the delivery timeline" })
   ).not.toBeInTheDocument();
+});
+
+// The delivery settings are the deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED on GET, `scopeDeployment` on PUT). While the timeline is unconfigured
+// their page says so, and offers no setup form, which would read and write those settings.
+test("a restricted member's unconfigured timeline says Delivery is not set up yet, with no setup form", async () => {
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
+  try {
+    renderPage(DELIVERY_URL, true);
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    serve(socket, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
+
+    expect(await screen.findByText("Delivery is not set up yet.")).toBeDefined();
+    expect(
+      screen.queryByRole("heading", { name: "Set up the delivery timeline" })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Deploy repository")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save delivery settings" })).toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(getDeliverySettings).not.toHaveBeenCalled();
+  } finally {
+    getDeliverySettings.mockRestore();
+  }
 });
 
 test("a configured timeline renders with no setup form, subscribing the window and facets the URL names", async () => {

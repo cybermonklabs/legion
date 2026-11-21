@@ -40,7 +40,9 @@ func NewPgPeopleStore(pool *Pool, keys auth.SigningKeys, revoker RefreshTokenRev
 // Record notes that email has signed in, keeping any membership it already holds.
 func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email); err != nil {
-		return fmt.Errorf("record person %q: %w", email, err)
+		// The error reaches the sign-in callback's log line, so it names no person
+		// (TestARecordFailureNamesNoPerson).
+		return fmt.Errorf("record a person's sign-in: %w", err)
 	}
 	return nil
 }

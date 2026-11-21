@@ -17,13 +17,16 @@
 #   check          the check a failure is reported at
 #   started        $SECONDS when the run began
 # and the caller sets its three ports, base_port, head_port and envoy_port, before it calls
-# anything here.
+# anything here: each a port number, or all three empty, for ports the kernel chooses as each
+# service starts, which no other process can take before it serves (two_builds_fake_envoy and
+# start_server, which then assign the port).
 #
 # What this sets for the caller: base_commit and database_url, work and the pids fake_envoy_pid,
 # base_pid and head_pid (two_builds_setup), base_sha (two_builds_prerequisites), and agent_token,
-# signin_key, base_url and head_url (two_builds_identity). call sends to target_url, which the
-# caller sets to the build it is talking to, and waits call_seconds for an answer, which the
-# caller may set; it is 20 here. sign_in and call_person do the same as a person.
+# signin_key, base_url and head_url (two_builds_identity; the two URLs are empty for an empty
+# port, whose number only start_server learns). call sends to target_url, which the caller sets to
+# the build it is talking to, and waits call_seconds for an answer, which the caller may set; it
+# is 20 here. sign_in and call_person do the same as a person.
 #
 # A proof calls these in the order they stand in below: two_builds_setup once, then
 # two_builds_prerequisites, two_builds_build, two_builds_reset_database, two_builds_fake_envoy
@@ -200,14 +203,17 @@ two_builds_prerequisites() {
     fail "$db_host"
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
     fail "--base-commit '$base_commit' names no commit of this repository"
-  for port in "$base_port" "$head_port" "$envoy_port"; do
-    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
-      fail "'$port' is not a port"
+  # Three empty ports are held as each service starts, so none of them can be checked here.
+  if [ -n "$base_port$head_port$envoy_port" ]; then
+    for port in "$base_port" "$head_port" "$envoy_port"; do
+      if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
+        fail "'$port' is not a port"
+      fi
+      port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
+    done
+    if [ "$base_port" = "$head_port" ] || [ "$base_port" = "$envoy_port" ] || [ "$head_port" = "$envoy_port" ]; then
+      fail "the base, head and fake Envoy ports must differ ($base_port, $head_port, $envoy_port)"
     fi
-    port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
-  done
-  if [ "$base_port" = "$head_port" ] || [ "$base_port" = "$envoy_port" ] || [ "$head_port" = "$envoy_port" ]; then
-    fail "the base, head and fake Envoy ports must differ ($base_port, $head_port, $envoy_port)"
   fi
   # The `vector` extension is the deployment's bootstrap's to install, as a cluster's master role
   # (0072_embeddings_core.up.sql), and the role this run connects as is not one, so a database
@@ -246,24 +252,33 @@ two_builds_reset_database() {
 }
 
 # two_builds_fake_envoy starts the listener both builds are pointed at, which is the Dispatch
-# browser harness's own fake, and waits for it to answer.
+# browser harness's own fake, and waits for it to answer. With envoy_port empty, the fake binds
+# port 0 itself and reports the port it got (lib/rig.sh's report_port), which envoy_port is
+# assigned.
 two_builds_fake_envoy() {
   FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+  if [ -z "$envoy_port" ]; then
+    await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to report its port" \
+      report_port "$evidence/logs/fake_envoy.log" 'fake envoy listener on 127\.0\.0\.1:'
+    envoy_port=$(report_port "$evidence/logs/fake_envoy.log" 'fake envoy listener on 127\.0\.0\.1:')
+  fi
   await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
     curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
   note "fake Envoy listener on http://127.0.0.1:$envoy_port"
 }
 
 # two_builds_identity mints the agent bearer both builds take and the key both sign their cookies
-# with, and names each build's URL.
+# with, and names each build's URL, or leaves it empty for a port start_server is to hold.
 two_builds_identity() {
   agent_token=$(openssl rand -hex 24)
   # Both processes serve one database, so each must sign its cookies with the key the other
   # holds, as e2e/run-server.sh gives two-process mode: a process with a key of its own is
   # refused registration by the one already live.
   signin_key=$(openssl rand -hex 32)
-  base_url=http://127.0.0.1:$base_port
-  head_url=http://127.0.0.1:$head_port
+  # shellcheck disable=SC2034 # read by the caller
+  base_url=${base_port:+http://127.0.0.1:$base_port}
+  # shellcheck disable=SC2034 # read by the caller
+  head_url=${head_port:+http://127.0.0.1:$head_port}
 }
 
 # start_server NAME BINARY PORT [VARIABLE=VALUE...] starts one build with this environment and
@@ -272,11 +287,21 @@ two_builds_identity() {
 # processes share one agent token, so a session's bearer is good against either. Each VARIABLE
 # given is set beside them, which is where the two proofs differ: the search proof passes
 # DISPATCH_DEV_EMBEDDER=1, which embeds in this process and calls no model service, and the
-# reference-grammar proof passes none.
+# reference-grammar proof passes none. An empty PORT is one the kernel chooses: the build serves
+# on a socket held from that choice until it serves on it (lib/rig.sh's start_held, which hands
+# it over as DISPATCH_LISTEN_FD), and NAME_port is assigned that port before this returns.
 start_server() {
   local name=$1 binary=$2 port=$3
+  local -a start=(start_process "$name") listen_fd=()
   shift 3
-  start_process "$name" env -i \
+  if [ -z "$port" ]; then
+    start=(start_held "$name" "${name}_port" DISPATCH_LISTEN_FD --)
+    # env -i clears the variable start_held sets, so it is named again: held-port.py always hands
+    # the socket over as descriptor 3, and writes the port wherever {port} stands.
+    listen_fd=(DISPATCH_LISTEN_FD=3)
+    port='{port}'
+  fi
+  "${start[@]}" env -i \
     PATH="$PATH" \
     TMPDIR="$work" \
     HOME=/nonexistent \
@@ -291,6 +316,7 @@ start_server() {
     DISPATCH_INSECURE_COOKIE=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 \
     DISPATCH_NATS_DISABLED=1 \
+    "${listen_fd[@]}" \
     DISPATCH_PORT="$port" \
     DISPATCH_SERVER_URL="http://127.0.0.1:$port" \
     DISPATCH_WEB_DIST="$work/web-dist" \

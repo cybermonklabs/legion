@@ -57,10 +57,10 @@ const textAreaClass = `min-h-11 rounded-md px-3 py-2 text-sm disabled:cursor-not
  * Settings → Groups: every group a project's access list can name, each with its one owner (the
  * full member who made it or was given it) and its members, and a form that makes one. Only a
  * group's owner edits its members or deletes it, so those controls are disabled on any other
- * group, with the owner named as the reason in their title. A restricted member cannot make a
- * group, which the form says before anyone tries. A make is a PUT, which would write an existing
- * group of that name again, so the form refuses a name the list already holds and points at its
- * row.
+ * group, with the owner named as the reason in their title. The group list is the deployment's,
+ * which Dispatch refuses a restricted member, so Settings draws this section for full members
+ * alone (`SettingsPage`). A make is a PUT, which would write an existing group of that name
+ * again, so the form refuses a name the list already holds and points at its row.
  */
 export function GroupsSection(): ReactNode {
   const queryClient = useQueryClient();
@@ -75,13 +75,10 @@ export function GroupsSection(): ReactNode {
       sectionRef.current?.scrollIntoView({ block: "start" });
     }
   }, [drawn]);
-  const whoami = useQuery(whoAmIQuery()).data;
-  const viewer = whoami?.login;
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   // The form's two fields, kept together so a make that lands lets go of both at once.
   const [form, setForm] = useState({ members: "", name: "" });
   const [listed, setListed] = useState<string | null>(null);
-  const createRefusal =
-    whoami?.member_kind === "restricted" ? "A restricted member cannot make a group." : null;
   const groupsKey = accessGroupsQuery().queryKey;
   const createGroup = useKeyedWrite<AccessGroup, { name: string; members: string[] }>({
     // The form shows a refused make beside what it was refused over.
@@ -101,7 +98,7 @@ export function GroupsSection(): ReactNode {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const named = form.name.trim();
-    if (createRefusal !== null || named === "") return;
+    if (named === "") return;
     if ((groups.data ?? []).some((group) => group.name === named)) {
       setListed(named);
       return;
@@ -169,11 +166,6 @@ export function GroupsSection(): ReactNode {
         </div>
       ) : null}
 
-      {createRefusal === null ? null : (
-        <p className={`mt-6 text-sm ${textSecondaryOnCanvas}`} id="groups-create-note" role="note">
-          {createRefusal}
-        </p>
-      )}
       <form
         className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_auto] sm:items-end ${borderDefault}`}
         onSubmit={submit}
@@ -183,7 +175,7 @@ export function GroupsSection(): ReactNode {
           <input
             autoComplete="off"
             className={`${settingsMonoInput} disabled:cursor-not-allowed disabled:opacity-50`}
-            disabled={createRefusal !== null || createGroup.isPending}
+            disabled={createGroup.isPending}
             id="group-name"
             onChange={(event) => {
               edited();
@@ -192,7 +184,7 @@ export function GroupsSection(): ReactNode {
             pattern={groupNamePattern}
             placeholder="crew"
             required
-            title={createRefusal ?? groupNameFormat}
+            title={groupNameFormat}
             value={form.name}
           />
         </label>
@@ -200,7 +192,7 @@ export function GroupsSection(): ReactNode {
           Members
           <textarea
             className={textAreaClass}
-            disabled={createRefusal !== null || createGroup.isPending}
+            disabled={createGroup.isPending}
             id="group-members"
             onChange={(event) => {
               edited();
@@ -208,15 +200,13 @@ export function GroupsSection(): ReactNode {
             }}
             placeholder="ada@example.com, grace@example.com"
             rows={2}
-            title={createRefusal ?? undefined}
             value={form.members}
           />
         </label>
         <RefusableButton
           busy={createGroup.isPending ? "Making…" : undefined}
           className="min-h-11 md:min-h-9"
-          refusal={createRefusal}
-          refusalShownBy={createRefusal === null ? undefined : "groups-create-note"}
+          refusal={null}
           type="submit"
         >
           New group

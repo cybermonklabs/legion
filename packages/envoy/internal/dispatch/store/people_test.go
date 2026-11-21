@@ -67,6 +67,29 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	}
 }
 
+// TestARecordFailureNamesNoPerson: a sign-in's record that fails names no person in its error,
+// since the error reaches the sign-in callback's log line (the rule of
+// access.TestNoAccessErrorNamesAPerson).
+//
+// Control: the email back in the error's text; the test fails naming it.
+func TestARecordFailureNamesNoPerson(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	database.Pool.Close()
+	const email = "dana@d.example"
+	err := people.Record(ctx, email)
+	if err == nil {
+		t.Fatal("a record on a closed pool answered no error")
+	}
+	if strings.Contains(err.Error(), email) || strings.Contains(err.Error(), "dana") {
+		t.Errorf("the record's error = %q, which names the person", err)
+	}
+}
+
 // confirmedJustNow reports whether membership holds a confirmation the database dates within the
 // last minute: one a write in this test just made.
 func confirmedJustNow(membership auth.PersonMembership) bool {

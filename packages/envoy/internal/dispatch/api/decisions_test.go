@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -506,6 +507,34 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), codeScopeRequired) {
 			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 %s", probe.method, response.Code, response.Body.String(), codeScopeRequired)
 		}
+	}
+}
+
+// A read mark on a file of an agent's conversation, a document no project owns, reads back as it
+// was recorded: the mark is read where its reader may read the document (documentVisible), the
+// rule the document's own read and the mark's write both hold it to, so a party of the
+// conversation who records version 1 reads version 1 back rather than no mark at all.
+func TestAReadMarkOnAnAgentsFileReadsBackAsRecorded(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
+	uploaded := multipartRequest(t, handler, "/api/v1/agents/"+agentSession+"/artifacts", map[string]string{"name": "shot.png"},
+		"shot.png", "image/png", pngBytes("pixels"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	file := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
+	path := "/api/v1/me/documents/" + file.ID + "/read"
+	stored := dispatchRequest(t, handler, http.MethodPut, path, map[string]any{"version": 1}, "alice")
+	if stored.Code != http.StatusOK {
+		t.Fatalf("record the read mark on the agent's file: status=%d body=%s", stored.Code, stored.Body.String())
+	}
+	read := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the read mark on the agent's file: status=%d body=%s", read.Code, read.Body.String())
+	}
+	if mark := decodeBody[model.DocumentRead](t, read); mark.Version == nil || *mark.Version != 1 || mark.ReadAt == nil {
+		t.Fatalf("the stored mark on the agent's file = %#v, want version 1 with its time", mark)
 	}
 }
 

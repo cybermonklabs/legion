@@ -1686,22 +1686,11 @@ test("a priority.updated of a deleted priority refetches no issue read that does
 });
 
 /** One write of CORE's access by alice, as the server appends it: owned by the project, naming no
- *  issue, quiet. */
-function accessWrite(change: string, principal: string): DispatchEvent {
+ *  issue, quiet, and carrying the project and the change alone. */
+function accessWrite(change: string): DispatchEvent {
   return event(
     "project.access_changed",
-    {
-      change,
-      groups: ["crew"],
-      not_signed_in: [],
-      owner: "alice",
-      people: ["carol@example.com"],
-      principal,
-      project: "CORE",
-      slack_channels: [],
-      slack_channels_changed_at: null,
-      visibility: "public",
-    },
+    { change, project: "CORE" },
     { actor: { id: "alice", kind: "user" }, issue_key: null, notify: false }
   );
 }
@@ -1710,15 +1699,27 @@ function accessWrite(change: string, principal: string): DispatchEvent {
 // to another owner - moves its Access tab and nothing else: no list, no issue and no other
 // project's tab carries who may see CORE.
 test.each([
-  ["person_added", "carol@example.com"],
-  ["group_removed", "crew"],
-  ["owner", ""],
-] as const)("a project.access_changed of %s refreshes that project's access alone", (change, principal) => {
-  const incoming = accessWrite(change, principal);
+  "person_added",
+  "group_removed",
+  "owner",
+] as const)("a project.access_changed of %s refreshes that project's access alone", (change) => {
+  const incoming = accessWrite(change);
   expect(eventRefreshTargets(incoming, "alice")).toEqual([
     { queryKey: projectAccessQuery("CORE").queryKey },
   ]);
   expect(refreshedReads(incoming)).toEqual(["projectAccess"]);
+});
+
+// A switch of the project's visibility moves its Access tab and its row of the project list, which
+// carries the visibility: a reader who sees the project either way holds it, and no other list,
+// issue or project's tab carries it.
+test("a project.access_changed of visibility refreshes that project's access and the project list", () => {
+  const incoming = accessWrite("visibility");
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: projectAccessQuery("CORE").queryKey },
+    { queryKey: projectsQuery().queryKey },
+  ]);
+  expect(refreshedReads(incoming).sort()).toEqual(["projectAccess", "projects"]);
 });
 
 // A group belongs to no project, so its make, write or delete names none: it moves the one list
@@ -1812,15 +1813,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   ),
   "project.access_changed": event(
     "project.access_changed",
-    {
-      project: "PROJ",
-      owner: "alice@example.com",
-      visibility: "public",
-      people: ["carol@example.com"],
-      groups: [],
-      change: "person_added",
-      principal: "carol@example.com",
-    },
+    { change: "person_added", project: "PROJ" },
     { issue_key: null, project: "PROJ" }
   ),
   "access_group.changed": event(

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -179,11 +180,12 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		t.Run(listing.name, func(t *testing.T) {
 			// Main's statement carries the eight filters it had, where the listing carries six
 			// more behind them — the closed window's two, the `advances` keys' three and the
-			// move read's gate — named here as the request that asks for none of them: the rows
-			// the two read are then the same rows. Main's status filter is one value and the
-			// listing's a list, so the request naming no status passes each its own empty one.
+			// move read's gate — named here as the request that asks for none of them, and the
+			// viewer, the server's own, which sees every project: the rows the two read are then
+			// the same rows. Main's status filter is one value and the listing's a list, so the
+			// request naming no status passes each its own empty one.
 			oracleArguments := slices.Clone(filters)
-			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false)
+			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false, refs.VisibilityArg(everyReader))
 			arguments[1] = []string{}
 			if listing.pinnedBy != "" {
 				oracleArguments = append(oracleArguments, listing.pinnedBy)
@@ -259,7 +261,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve main's repository for %s: %v", key, err)
 		}
-		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, key)
+		issue, read, err := fixture.server.loadIssueWithProgress(ctx, pool, everyReader, key)
 		if err != nil {
 			t.Fatalf("read %s: %v", key, err)
 		}
@@ -293,7 +295,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read main's tree facts: %v", err)
 	}
-	tree, err := loadTreeIssues(ctx, pool, "LIST")
+	tree, err := loadTreeIssues(ctx, pool, refs.VisibilityArg(everyReader), "LIST")
 	if err != nil {
 		t.Fatalf("read the tree's issues: %v", err)
 	}
@@ -330,7 +332,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read main's delivery facts: %v", err)
 	}
-	facts, err := fixture.server.deliveryIssueFacts(ctx, fixture.keys)
+	facts, err := fixture.server.deliveryIssueFacts(ctx, refs.VisibilityArg(everyReader), fixture.keys)
 	if err != nil {
 		t.Fatalf("read the delivery facts: %v", err)
 	}

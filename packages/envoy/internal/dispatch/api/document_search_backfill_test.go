@@ -138,7 +138,7 @@ func TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes(t *testing.T) {
 				0, contracts.SearchKindDepth, searchFusionK}
 			want := documentSearchRows(t, ctx, database, mainSearchQuery, arguments, nil)
 			got := documentSearchRows(t, ctx, database, searchQuery, searchQueryArguments(
-				searchParameters{text: word, project: "FILL", limit: searchDefaultLimit}), nil)
+				searchParameters{text: word, project: "FILL", limit: searchDefaultLimit, who: everyReader}), nil)
 			if !slices.Equal(got, want) {
 				t.Fatalf("search for %q over the filled table answered\n%v\nwant main's rows\n%v", word, got, want)
 			}

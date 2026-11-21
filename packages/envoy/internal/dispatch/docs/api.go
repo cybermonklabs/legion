@@ -23,12 +23,12 @@ type API interface {
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	InjectUnknownElementForTest(ctx context.Context, artifactID string) error
-	Text(ctx context.Context, artifactID string) (string, error)
-	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
-	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
-	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
-	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
-	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
+	Text(ctx context.Context, who model.Actor, artifactID string) (string, error)
+	TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error)
+	Blocks(ctx context.Context, who model.Actor, artifactID string) ([]model.ArtifactBlock, error)
+	TextWithBlocks(ctx context.Context, who model.Actor, artifactID string) (string, []model.ArtifactBlock, error)
+	TextWithTokenAndBlocks(ctx context.Context, who model.Actor, artifactID string) (string, string, []model.ArtifactBlock, error)
+	BlockPath(ctx context.Context, who model.Actor, artifactID, blockID string) (model.BlockPath, error)
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)

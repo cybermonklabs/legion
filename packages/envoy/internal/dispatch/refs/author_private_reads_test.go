@@ -23,10 +23,11 @@ import (
 // census holds every such read to the registry by its SQL
 // (TestEveryNodeKindAnswersAVisibilityPredicate); these hold each one to what it answers.
 
-// privateAuthor writes the nodes these tests reserve, and privateReader is anybody else.
+// privateAuthor writes the nodes these tests reserve, and privateReader is anybody else. Both read
+// with a viewer that sees every project (model.ServerViewer), so the author rule alone decides.
 var (
-	privateAuthor = model.Actor{Kind: "user", ID: "alice"}
-	privateReader = model.Actor{Kind: "user", ID: "bob"}
+	privateAuthor = model.Actor{Kind: "user", ID: "alice", Viewer: model.ServerViewer}
+	privateReader = model.Actor{Kind: "user", ID: "bob", Viewer: model.ServerViewer}
 )
 
 // reserveForAuthor writes the store's node of kind and id reserved for privateAuthor, through the

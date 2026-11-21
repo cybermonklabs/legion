@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // projectListQuery counts every project's open asks in one grouped read, in place of a subquery
@@ -17,8 +18,14 @@ import (
 // inbox reads it; a project with no open ask has no row of that count, which the coalesce reads
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
-const projectListQuery = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.created_at
+//
+// It lists only the projects the reader whose visibility argument is $1 sees
+// (access.ProjectClause), and reads a project's visibility as "" for a public one, so the list
+// marks a private project alone and a deployment with no private project answers as it did
+// before a project could be private.
+var projectListQuery = `
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.created_at,
+		       case when p.visibility = '` + model.ProjectPrivate + `' then p.visibility else '' end
 		from projects p
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
@@ -29,14 +36,16 @@ const projectListQuery = `
 			  and (i.key is null or i.closed_at is null)
 			group by coalesce(i.project_key, ar.project_key)
 		) open_asks on open_asks.project_key = p.key
+		where ` + access.ProjectClause("p.key", "$1") + `
 		order by p.key
 	`
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -45,7 +54,7 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	projects := []model.Project{}
 	for rows.Next() {
 		var project model.Project
-		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt); err != nil {
+		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt, &project.Visibility); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -90,7 +99,10 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The person the call acts for, if any, owns what it creates, and a restricted member creates
-	// no project: the refusal comes before anything is checked or written.
+	// no project: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+	// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
+	// RESTRICTED_MEMBER, before this handler runs; the check below holds the same rule for a caller
+	// the gate reads as open, before anything is checked or written.
 	creator, acts := actorPerson(actor)
 	// owns says whether the creator owns what they create: an owner is a full member who has
 	// signed in, as access.SetOwner holds every later owner to. A person no people row holds, whom
@@ -109,7 +121,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if kind == model.MemberRestricted {
-			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
+			writeError(w, codeRestrictedMember, http.StatusForbidden, "a restricted member cannot create a project")
 			return
 		}
 		owns = kind == model.MemberFull
@@ -122,7 +134,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
-	if !projectKeyPattern.MatchString(input.Key) {
+	if !contracts.ValidProjectKey(input.Key) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", input.Key))
 		return
 	}

@@ -1066,8 +1066,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "project.access_changed") {
     // A person or a group named or taken off, or the project given to another owner: the
-    // project's Access tab, which is the one read that carries who may see it.
-    return [{ queryKey: projectAccessQuery(event.payload.project).queryKey }];
+    // project's Access tab, which is the one read that carries who may see it. A switch of its
+    // visibility moves its row of the project list too, which carries the visibility, for every
+    // reader who sees the project either way.
+    const access = { queryKey: projectAccessQuery(event.payload.project).queryKey };
+    return event.payload.change === "visibility" ? [access, { queryKey: projectsKey }] : [access];
   }
   if (event.type === "access_group.changed") {
     // A group made, written or deleted, by anybody. It belongs to no project; a delete's removal

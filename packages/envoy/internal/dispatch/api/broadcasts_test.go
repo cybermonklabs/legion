@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -326,6 +329,45 @@ func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T
 	}
 }
 
+// TestABroadcastReplyWithNoNodeReachesAnOpenViewerWhereNoProjectIsPrivate (R9): a recipient's reply
+// whose message node the graph store has not written yet (a row backfill-graph-store has not
+// reached) is read under the one rule of a message on no issue (access.MessageClause): with no
+// private project an open viewer reads it, in the broadcast and in its summary's count, as every
+// reader did before a project could be private.
+//
+// Control: origin/main, where the reply's node is not read, passes; a rule that reads a reply with
+// no node as nobody's fails, naming the planner's answer.
+func TestABroadcastReplyWithNoNodeReachesAnOpenViewerWhereNoProjectIsPrivate(t *testing.T) {
+	listener, _ := newBroadcastListener(t, broadcastSessions)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner"},
+	}, "alice"))
+	plannerMessage := awaitBroadcastDeliveries(t, handler, created.ID).Recipients[0].Message.ID
+	reply := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+plannerMessage+"/reply", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "planner"}, "attempt": 1, "body": "Green.",
+	}))
+	if reply.ID == "" {
+		t.Fatalf("the planner's reply answered no id")
+	}
+	if tag, err := database.Pool.Exec(t.Context(), `delete from graph_nodes where kind = 'message' and id = $1`, reply.ID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("drop the reply's node: %v (%d rows)", err, tag.RowsAffected())
+	}
+
+	stored := decodeBody[broadcastResponse](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+created.ID, nil, "alice"))
+	if len(stored.Recipients) != 1 || len(stored.Recipients[0].Replies) != 1 || stored.Recipients[0].Replies[0].Body != "Green." {
+		t.Errorf("GET /api/v1/broadcasts/{id} as alice = %#v, want the planner's answer, whose node is not written yet", stored.Recipients)
+	}
+	summaries := decodeBody[[]struct {
+		Replies int `json:"replies"`
+	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts", nil, "alice"))
+	if len(summaries) != 1 || summaries[0].Replies != 1 {
+		t.Errorf("GET /api/v1/broadcasts as alice = %#v, want one broadcast counting the planner's answer", summaries)
+	}
+}
+
 // Every message read names the broadcast that sent the message, and says null for a message no
 // broadcast sent, so a session reading a direct message back can tell a person's own message to
 // it from one recipient's copy of a broadcast: the thread read a session confirms a delivery
@@ -413,6 +455,175 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 	}
 	if summaries := decodeBody[[]json.RawMessage](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts", nil, "alice")); len(summaries) != 0 {
 		t.Fatalf("broadcast list = %v, want nothing written", summaries)
+	}
+}
+
+// A broadcast leaves out a session its sender may not see exactly as one nobody holds, and asks the
+// listener nothing about it. alice, an open viewer who does not see PRIV, sends to privateSession,
+// which has acted in PRIV, beside s-pub, which she sees, and then to s-nobody, which nobody holds,
+// beside s-pub: each send reaches s-pub alone and leaves the other out "no live session" with no
+// title, and each reads s-pub's record from the listener and no other. The walk's listener holds
+// privateSession live, so a send that asked it would have reached it.
+func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	type exclusion struct{ SessionID, Title, Reason string }
+	send := func(session string) {
+		t.Helper()
+		answer, _, calls := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+			"body": "To walked sessions.", "delivery": "btw", "session_ids": []string{session, "s-pub"},
+		})
+		if answer.Code != http.StatusCreated {
+			t.Fatalf("alice broadcasts to %s and s-pub: %d %s, want 201", session, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+		sent := decodeBody[broadcastResponse](t, answer)
+		excluded := []exclusion{}
+		for _, left := range sent.Excluded {
+			excluded = append(excluded, exclusion{left.SessionID, left.Title, left.Reason})
+		}
+		if want := []exclusion{{session, "", "no live session"}}; !slices.Equal(excluded, want) || !slices.Equal(sendTargets(sent), []string{"s-pub"}) {
+			t.Errorf("alice's broadcast to %s and s-pub reaches %v and leaves out %+v; want s-pub reached and %+v", session, sendTargets(sent), excluded, want)
+		}
+		// The send's delivery runs behind its answer, so only the record reads it made before the
+		// answer are its own here.
+		reads := slices.DeleteFunc(calls, func(call string) bool { return !strings.HasPrefix(call, "GET /v1/registry/") })
+		slices.Sort(reads)
+		if want := []string{"GET /v1/registry/s-pub?include=unresponsive,stopped"}; !slices.Equal(reads, want) {
+			t.Errorf("alice's broadcast to %s and s-pub read the listener's records %v, want %v", session, reads, want)
+		}
+		awaitBackgroundWrites(t, walk.server)
+	}
+	send(privateSession)
+	send("s-nobody")
+}
+
+// A viewer that is not open - a restricted member, and his token - reads its own direct messages
+// alone (R4), so a broadcast is one to it only when its person sent it. bob, a restricted member
+// PRIV's list names, and bob's token that lists PRIV see session-priv, which has acted in PRIV, and
+// are no party to carol's broadcast to it: the read GET /api/v1/broadcasts/{id} and a repeat of the
+// send make (readBroadcast) finds no broadcast for either, as for an id nobody holds. carol reads
+// it, and so does carol's token that lists PRIV, a full member's credential and so open. Both GET
+// routes refuse a viewer that is not open before they read anything (deploymentReadRefusal), so the
+// rule is read here, beneath that gate.
+func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	sent := keyedRequest(t, seed.handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{sessionOfPrivate},
+	}, seedCarol, uuid.NewString())
+	if sent.Code != http.StatusCreated {
+		t.Fatalf("carol broadcasts to %s: %d %s", sessionOfPrivate, sent.Code, sent.Body.String())
+	}
+	id := decodeBody[broadcastResponse](t, sent).ID
+	for _, test := range []struct {
+		caller privateCaller
+		reads  bool
+	}{
+		{callerBob, false},
+		{callerBobPrivToken, false},
+		{callerCarol, true},
+		{callerCarolPrivToken, true},
+	} {
+		recorder := httptest.NewRecorder()
+		reader, ok := seed.server.readerOf(recorder, seed.readerRequest(t, test.caller))
+		if !ok {
+			t.Fatalf("resolve %s: %d %s", test.caller, recorder.Code, recorder.Body.String())
+		}
+		// What makes the row able to fail: the caller sees every recipient, so only the rule of
+		// direct messages keeps the broadcast from it.
+		if hidden, err := seed.server.sessionHiddenFrom(t.Context(), reader, sessionOfPrivate); err != nil || hidden {
+			t.Fatalf("%s may not see %s (%v): the row holds the broadcast from no caller that sees its recipient", test.caller, sessionOfPrivate, err)
+		}
+		read, err := seed.server.readBroadcast(t.Context(), reader, id, false)
+		switch {
+		case test.reads && (err != nil || read.ID != id || len(read.Recipients) != 1):
+			t.Errorf("%s reads carol's broadcast to %s as %+v, %v; want it, with its one recipient", test.caller, sessionOfPrivate, read, err)
+		case !test.reads && !errors.Is(err, pgx.ErrNoRows):
+			t.Errorf("%s, no party to carol's broadcast to %s, reads it as %+v, %v; want a broadcast nobody sent (pgx.ErrNoRows)", test.caller, sessionOfPrivate, read, err)
+		}
+	}
+}
+
+// A credential sees what its own list lets it see, not all its person sees (R3), so it reads its
+// person's broadcast only where it may see every recipient. carol's token that lists no project sees
+// the public projects alone and not session-priv, which has acted in PRIV: GET /api/v1/broadcasts
+// leaves carol's broadcast to session-priv out, and GET /api/v1/broadcasts/{id} answers it in the
+// bytes an id nobody holds gets. carol, at her browser, sees PRIV and reads it on both routes, and
+// so does her token that lists PRIV, an open viewer that sees PRIV and session-priv with it.
+func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	sent := keyedRequest(t, seed.handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{sessionOfPrivate},
+	}, seedCarol, uuid.NewString())
+	if sent.Code != http.StatusCreated {
+		t.Fatalf("carol broadcasts to %s: %d %s", sessionOfPrivate, sent.Code, sent.Body.String())
+	}
+	id := decodeBody[broadcastResponse](t, sent).ID
+	reader := func(caller privateCaller) model.Actor {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		resolved, ok := seed.server.readerOf(recorder, seed.readerRequest(t, caller))
+		if !ok {
+			t.Fatalf("resolve %s: %d %s", caller, recorder.Code, recorder.Body.String())
+		}
+		return resolved
+	}
+	// What makes the token's rows able to fail: it acts for carol, who sent the broadcast, and
+	// the one recipient is a session it may not see.
+	if hidden, err := seed.server.sessionHiddenFrom(t.Context(), reader(callerCarolToken), sessionOfPrivate); err != nil || !hidden {
+		t.Fatalf("%s sees %s (%v): the row holds the author's broadcast from no credential that may not see its recipient", callerCarolToken, sessionOfPrivate, err)
+	}
+	listed := func(caller privateCaller) bool {
+		t.Helper()
+		return slices.ContainsFunc(decodeBody[[]broadcastSummary](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/broadcasts", nil, http.StatusOK)),
+			func(summary broadcastSummary) bool { return summary.ID == id })
+	}
+	missing := seed.request(t, callerCarolToken, http.MethodGet, "/api/v1/broadcasts/"+uuid.NewString(), nil)
+	if read := seed.request(t, callerCarolToken, http.MethodGet, "/api/v1/broadcasts/"+id, nil); read.Code != missing.Code || read.Body.String() != missing.Body.String() {
+		t.Errorf("%s: GET /api/v1/broadcasts/%s = %d %s, want what an id nobody holds answers: %d %s", callerCarolToken, id,
+			read.Code, strings.TrimSpace(read.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
+	}
+	if listed(callerCarolToken) {
+		t.Errorf("%s: GET /api/v1/broadcasts lists carol's broadcast to %s, which it may not see", callerCarolToken, sessionOfPrivate)
+	}
+	if !listed(callerCarol) {
+		t.Errorf("carol: GET /api/v1/broadcasts leaves out her broadcast to %s", sessionOfPrivate)
+	}
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/broadcasts/"+id, nil, http.StatusOK)
+	if !listed(callerCarolPrivToken) {
+		t.Errorf("%s: GET /api/v1/broadcasts leaves out carol's broadcast to %s, which it sees", callerCarolPrivToken, sessionOfPrivate)
+	}
+	seed.mustRequest(t, callerCarolPrivToken, http.MethodGet, "/api/v1/broadcasts/"+id, nil, http.StatusOK)
+	if read, err := seed.server.readBroadcast(t.Context(), reader(callerCarolPrivToken), id, false); err != nil || read.ID != id {
+		t.Errorf("%s reads carol's broadcast to %s as %+v, %v; want it", callerCarolPrivToken, sessionOfPrivate, read, err)
+	}
+}
+
+// With no private project every full member sees every session, so an author reads her broadcast
+// as she did before a project could be private (R9): with PRIV made public, carol's token that
+// lists no project lists carol's broadcast to session-priv and reads it, as carol does.
+func TestWithNoPrivateProjectAnAuthorReadsHerBroadcastAsToday(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	sent := keyedRequest(t, seed.handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{sessionOfPrivate},
+	}, seedCarol, uuid.NewString())
+	if sent.Code != http.StatusCreated {
+		t.Fatalf("carol broadcasts to %s: %d %s", sessionOfPrivate, sent.Code, sent.Body.String())
+	}
+	id := decodeBody[broadcastResponse](t, sent).ID
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, caller := range []privateCaller{callerCarolToken, callerCarol} {
+		summaries := decodeBody[[]broadcastSummary](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/broadcasts", nil, http.StatusOK))
+		if !slices.ContainsFunc(summaries, func(summary broadcastSummary) bool { return summary.ID == id }) {
+			t.Errorf("PRIV public: %s: GET /api/v1/broadcasts leaves out carol's broadcast to %s", caller, sessionOfPrivate)
+		}
+		if read := decodeBody[broadcastResponse](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/broadcasts/"+id, nil, http.StatusOK)); !slices.Equal(sendTargets(read), []string{sessionOfPrivate}) {
+			t.Errorf("PRIV public: %s reads carol's broadcast as sent to %v, want [%s]", caller, sendTargets(read), sessionOfPrivate)
+		}
 	}
 }
 
@@ -534,8 +745,19 @@ func TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesI
 			"body": "Status?", "delivery": "steer", "session_ids": []string{"planner", "tester"},
 		}, "alice", "budget-ended-before-every-read")
 	}
+	// The send is made on the bare handler, so it carries the reader the route's project check
+	// puts in its context (withinProjectScope): a handler handed no reader reads every session
+	// as hidden (sessionsHiddenFromReader), and its send would be refused for that, never for its
+	// budget.
+	routed := func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := expired.readerOf(w, r)
+		if !ok {
+			return
+		}
+		expired.createBroadcast(w, r.WithContext(withReader(r.Context(), reader)))
+	}
 
-	refused := send(http.HandlerFunc(expired.createBroadcast))
+	refused := send(http.HandlerFunc(routed))
 	if refused.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(refused.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
 		t.Fatalf("a send whose budget ended before every session was read: status=%d body=%s, want 503 ENVOY_UNAVAILABLE",

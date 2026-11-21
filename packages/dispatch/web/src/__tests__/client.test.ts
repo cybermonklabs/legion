@@ -1049,6 +1049,24 @@ test(
   }
 );
 
+test("isRetryableQueryError retries no 403, whatever its code, and still retries a 5xx", () => {
+  // A 403 is Dispatch's permanent answer to this credential: a deployment read refused to a
+  // restricted member, a route for a role the caller does not hold, a write it may not make.
+  // Asking again sends the same credential, so every read leaves it after one try.
+  for (const code of [
+    "DEPLOYMENT_READ_REFUSED",
+    "RESTRICTED_MEMBER",
+    "ACCESS_ACCOUNT_REQUIRED",
+    "FORBIDDEN",
+    undefined,
+  ]) {
+    const refusal = new ApiError(403, { code, error: "refused" });
+    expect({ code, retried: isRetryableQueryError(refusal) }).toEqual({ code, retried: false });
+  }
+  expect(isRetryableQueryError(new ApiError(500, { code: "INTERNAL", error: "boom" }))).toBe(true);
+  expect(isRetryableQueryError(new ApiError(409, { code: "CONFLICT", error: "again" }))).toBe(true);
+});
+
 test("a refusal keeps the server's Retry-After in delta-seconds, and no delay for a date or junk", async () => {
   const refusal = (headers: Record<string, string>) =>
     createApiClient(

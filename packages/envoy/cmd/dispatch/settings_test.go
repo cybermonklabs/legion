@@ -447,7 +447,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		})
 		request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 		response := httptest.NewRecorder()
-		routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+		// A database, as every deployment has: the read check resolves the signed-in caller's
+		// viewer from it before the route reads the broker, and a server with none reads every
+		// caller as the closed viewer, which no deployment-wide read admits.
+		routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/credential-requests: %d %s", response.Code, response.Body.String())
 		}
@@ -1183,6 +1186,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PRIVATE_PROJECTS": func(t *testing.T) {
+			// The list's own reading is TestThePrivateProjectsSettingIsAListOfKeys. Its reader: the
+			// owner's switch of PRIV to private, refused with no list before anything is read, with
+			// a list that names another project for want of PRIV on it, and with PRIV on it only for
+			// want of a bus to hold the private-projects record, which this router is given none of.
+			t.Run("router", func(t *testing.T) {
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice@example.com');
+					insert into session_projects_filled default values;
+					insert into access_events_scrubbed default values;
+				`); err != nil {
+					t.Fatalf("seed alice's project PRIV: %v", err)
+				}
+				for value, want := range map[string]string{"": "PRIVATE_PROJECTS_OFF", "OTHER": "PRIVATE_PROJECT_NOT_PROVISIONED", "PRIV": "PRIVATE_PROJECTS_UNAVAILABLE"} {
+					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Sec-Fetch-Site", "same-origin")
+					response := httptest.NewRecorder()
+					routerFor(t, resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": value}), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					if response.Code != http.StatusConflict || errorCode(response) != want {
+						t.Errorf("DISPATCH_PRIVATE_PROJECTS=%q: PATCH PRIV private answered %d %s, want 409 %s", value, response.Code, response.Body.String(), want)
+					}
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -1662,7 +1691,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
 					t.Errorf("unset: GET /api/v1/credential-requests answered %d %s, want 200 null", response.Code, response.Body.String())
 				}
@@ -1995,14 +2024,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_HOOKS=true: hooks on, want only 1 to mount them")
 			}
 			// The routes the flag mounts: the e2e harness's hooks that close every open live socket, as
-			// a restart (1012) or the socket's age (4001) does.
+			// a restart (1012) or the socket's age (4001) does. They are deployment writes, and a router
+			// with no database reads every caller as the closed viewer, which no deployment write
+			// admits, so the router gets the store a deployment has.
 			t.Run("router", func(t *testing.T) {
 				for _, hook := range []string{"/api/v1/live/_test/disconnect", "/api/v1/live/_test/rotate"} {
 					for value, want := range map[string]int{"1": http.StatusOK, "": http.StatusNotFound} {
 						request := signedIn(t, httptest.NewRequest(http.MethodPost, hook, nil), "alice")
 						request.Header.Set("Sec-Fetch-Site", "same-origin")
 						response := httptest.NewRecorder()
-						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{}).ServeHTTP(response, request)
+						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 						if response.Code != want {
 							t.Errorf("DISPATCH_TEST_HOOKS=%q: POST %s answered %d %s, want %d", value, hook, response.Code, response.Body.String(), want)
 						}
@@ -2500,7 +2531,7 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 			})
 			request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 			response := httptest.NewRecorder()
-			routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+			routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 			if called {
 				t.Fatal("the broker was called with no token Dispatch could read")
 			}
@@ -2514,5 +2545,36 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 				t.Fatalf("GET /api/v1/credential-requests = %d %s: the broker was never called, so the answer must name Dispatch's own unreadable ServiceAccount token, not an unreachable broker", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+// DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects the deployment has
+// provisioned as private: each entry trimmed, empty ones dropped, the list deduplicated and sorted.
+// An entry that is no project key, the old on/off value 1 included, is never read as a key: the
+// boot keeps the keys beside it, ignores that entry and logs one ERROR line naming it, so the
+// project it meant is never provisioned and its switch to private stays 409
+// PRIVATE_PROJECT_NOT_PROVISIONED (it fails closed). Control: a setting that read the entry would
+// put it on the list.
+func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || len(boot.PrivateProjectsIgnored) != 0 {
+		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, ignored %q; want [ALPHA PRIV], none ignored`, boot.PrivateProjects, boot.PrivateProjectsIgnored)
+	}
+	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_PROJECTS": ""}} {
+		if boot := resolveWith(t, overrides); len(boot.PrivateProjects) != 0 || len(boot.PrivateProjectsIgnored) != 0 {
+			t.Errorf("%s: PrivateProjects = %q, ignored %q; want no project and nothing ignored", name, boot.PrivateProjects, boot.PrivateProjectsIgnored)
+		}
+	}
+	for _, entry := range []string{"1", "priv"} {
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "ALPHA," + entry + ",PRIV"})
+		if !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{entry}) {
+			t.Errorf("DISPATCH_PRIVATE_PROJECTS=ALPHA,%s,PRIV: PrivateProjects = %q, ignored %q; want [ALPHA PRIV], %q ignored", entry, boot.PrivateProjects, boot.PrivateProjectsIgnored, entry)
+		}
+		var logged cmdtest.LockedBuffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming it and the switch's refusal", entry, logged.String())
+		}
 	}
 }

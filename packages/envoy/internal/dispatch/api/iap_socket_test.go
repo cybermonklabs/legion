@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -318,7 +319,7 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 			_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
 			served := directServer(deps)
 			cause := make(chan error, 1)
-			handler := served.whileCallerResolves(func(*http.Request) error { return tc.err }, func(w http.ResponseWriter, r *http.Request) {
+			handler := served.whileCallerResolves(func(*http.Request) (model.Actor, bool, error) { return model.Actor{}, false, tc.err }, false, func(w http.ResponseWriter, r *http.Request) {
 				<-r.Context().Done()
 				cause <- context.Cause(r.Context())
 			})

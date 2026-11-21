@@ -183,9 +183,10 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // answered ask a check offers carries the display tree of its answer. Each check reads its
 // trees through a reader of its own, resolved on that check's goroutine and before
 // running.Wait answers: the checks run side by side, and one reader is registered with and
-// resolved on one goroutine alone (text_trees.go).
+// resolved on one goroutine alone (text_trees.go). who is the editor as a reader, whose viewer
+// every check binds (relatedInput.who).
 func (s *server) decisionBlockChecks(
-	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor, trees bool,
+	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor, who model.Actor, trees bool,
 ) []decisionBlockCheck {
 	if len(blocks) == 0 {
 		return nil
@@ -203,7 +204,7 @@ func (s *server) decisionBlockChecks(
 			source.artifactID = artifact.ID
 		}
 		input := relatedInput{
-			project: artifact.Project, text: block.Question, title: block.Question,
+			who: who, project: artifact.Project, text: block.Question, title: block.Question,
 			source: source, question: true, record: true,
 		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
@@ -251,6 +252,12 @@ type suggestionSource struct {
 
 // relatedInput is one related-item check's question.
 type relatedInput struct {
+	// who is the reader the check answers: the writer whose write triggered it, or the caller of
+	// the no-write route, with the viewer its request resolved (readerOf). Every search the check
+	// makes binds it (refs.VisibilityArg), so the check offers only what that caller may read and
+	// nothing of a project it does not see. The zero Actor is the closed viewer, which is offered
+	// nothing.
+	who model.Actor
 	// project is the project to search; empty resolves it from source's owner.
 	project string
 	// text is what is checked: a new issue's title and spec, an ask's or decision block's question,
@@ -440,7 +447,7 @@ func (s *server) runRelatedCheck(
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
-		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
+		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, input.who, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
 		switch {
@@ -450,7 +457,7 @@ func (s *server) runRelatedCheck(
 			// keyword matches anything, so there is no query to run.
 			stage.response = model.SearchResponse{Results: []model.SearchResult{}, Limit: suggestionSearchDepth}
 		default:
-			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
+			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, input.who, relatedKeywordStatement, project, pick.terms, excluded)
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
@@ -510,7 +517,7 @@ func (s *server) runRelatedCheck(
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, input.who, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -650,7 +657,7 @@ func (s *server) runRelatedCheck(
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
+	ctx, crossRead context.Context, who model.Actor, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -673,7 +680,7 @@ func (s *server) relatedMeaningStage(
 		cross = make(chan []model.SearchResult, 1)
 		go func() {
 			reader := s.readDisplayTrees(crossRead, trees)
-			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
+			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), who, reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -692,7 +699,7 @@ func (s *server) relatedMeaningStage(
 		// The check answers not made without reading this.
 		return failed(relatedReasonMeaningFailed, nil)
 	}
-	response, err := s.relatedMeaningSearch(ctx, project, pick.terms, vector, excluded)
+	response, err := s.relatedMeaningSearch(ctx, who, project, pick.terms, vector, excluded)
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
@@ -732,7 +739,7 @@ func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []mo
 // server holds on the statement included, which its caller reports as the meaning search not
 // answering (relatedMeaningStage).
 func (s *server) relatedMeaningSearch(
-	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
+	ctx context.Context, who model.Actor, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
@@ -742,7 +749,7 @@ func (s *server) relatedMeaningSearch(
 	// The flag is read only where it can change the statement, as search reads it
 	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
 	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
-	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
+	return s.relatedSearch(ctx, tx, who, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 }
 
@@ -781,8 +788,11 @@ func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
 // is the one whose kinds CTE filters them (relatedStatement.excluding) and they are its last
 // parameter, which is why that filter reads $11 of the keyword statement and $14 of the meaning
 // one; with none, the statement is the one without the filter.
+//
+// who is the check's reader (relatedInput.who), whose viewer the statement binds last
+// (relatedViewer).
 func (s *server) relatedSearch(
-	ctx context.Context, q queryer, statement relatedStatement, project string, picked relatedTerms,
+	ctx context.Context, q queryer, who model.Actor, statement relatedStatement, project string, picked relatedTerms,
 	excluded []string, meaning ...any,
 ) (model.SearchResponse, error) {
 	snippetTerm := ""
@@ -801,12 +811,8 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
-	// The acting credential, last of the parameters each statement declares. The check runs off
-	// the write that triggered it, on a context of its own and with no credential of that
-	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
-	// node reserved for its author is suggested to nobody, which is the answer that can mislead
-	// no reader.
-	args = append(args, refs.VisibilityArg(model.Actor{}))
+	// The visibility argument, last of the parameters each statement declares (relatedViewer).
+	args = append(args, relatedViewer(who))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -816,6 +822,15 @@ func (s *server) relatedSearch(
 	// A write's related-item check shows no snippet tree: nothing reads one, and the trees are
 	// the dashboard's to ask for.
 	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0, false)
+}
+
+// relatedViewer is the visibility argument every search of a check binds: the viewer of who, the
+// writer whose write triggered it (relatedInput.who), so the check offers nothing of a project
+// or a conversation that writer may not read, and no author, so a node reserved for its author
+// is suggested to nobody, which is the answer that can mislead no reader - the check's answer is
+// recorded (write_suggestions) as well as handed to the writer.
+func relatedViewer(who model.Actor) any {
+	return refs.VisibilityArg(model.Actor{Viewer: who.Viewer})
 }
 
 // relatedSearchQuery is Suggestions.SearchQuery: the best relatedSearchQueryTerms chosen terms,
@@ -871,7 +886,13 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates, input.trees); err != nil {
+	// The answers are read as the check's reader (input.who): the writer whose write ran it, with the
+	// viewer its handler resolved from the request's credential (readerOf), so a token's list holds
+	// here as on every read. The writer's recorded actor carries no credential to resolve
+	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
+	who := input.source.actor.Reader()
+	who.Viewer = input.who.Viewer
+	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)

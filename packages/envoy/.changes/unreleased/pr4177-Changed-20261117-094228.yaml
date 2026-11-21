@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    `GET /api/v1/whoami`'s `project` is deprecated in favour of `projects`: it is the one project the credential's writes are held to, where they are held to one, and null for any other credential, so a broker-issued token scoped to one project still reads that project there.
+
+    `PUT /api/v1/issues/{key}/steps/{id}`, `PUT /api/v1/issues/{key}/steps/{id}/rating` and `PUT /api/v1/issues/{key}/plans/{id}` read their issue, as the caller sees it, before they judge the writer: a key no issue holds, or an issue of a project the caller cannot see, is 404 ISSUE_NOT_FOUND whatever session the body names, where a writer other than the project's daemon was 403 STEP_WRITER first, and the rating route refuses a body with no rating after both. `GET /api/v1/issues/{key}/steps` answers such an issue 404 NOT_FOUND before it reads any run, and `GET /api/v1/projects/{key}/plans` answers a project the caller cannot see as a key no project holds.
+
+    The live agent view relays a session's transcript only to a caller who may read all of it. A restricted member watches only a session their own broker-issued token proved and whose listener lists only projects they see; while a project is private, everyone else watches a session whose listener lists only projects they see, or, where the listener lists none, one whose proving people see no private project they do not see. Migration `20261121130000_session_owners` records each proven session's person on every write, and `envoy-dispatch backfill-session-projects` records it for the events before. A result's line, on the record and its dry run, drops every word shaped like an issue key for a reader that does not see every project.
+time: 2026-11-17T09:42:28.109902541Z
+custom:
+    Issue: pr4177

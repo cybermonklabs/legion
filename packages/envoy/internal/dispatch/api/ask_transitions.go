@@ -279,6 +279,12 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		return recordAnswer(ctx, tx, ledger, ask)
 	}
+	// The answerer as a reader, resolved before the answer's transaction opens: the ask is closed
+	// as it reads it, and an approval's document is read as it (transition.After below).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
 	// request to, and the one the human reviewed (revision). A request naming a spec and its
@@ -294,7 +300,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		artifact, err := s.loadArtifact(ctx, tx, ask.Approval.ArtifactID)
+		artifact, err := s.loadArtifact(ctx, tx, who, ask.Approval.ArtifactID)
 		if err != nil {
 			return nil, err
 		}
@@ -304,7 +310,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		return reviewEvents, nil
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, transition)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -361,7 +367,11 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
@@ -444,7 +454,11 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// (docs.settlementRetraction, which reads that prefix on a retraction alone). A decline is
 	// no retraction, so no note written here can be read as settlement's work and nothing of a
 	// person's words is refused for how they open.
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	ask, err := s.closeAsk(r.Context(), who, r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
@@ -470,7 +484,10 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
-func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
+// closeAsk applies a transition to the open ask id, which it reads as who may read it (loadAsk),
+// in a transaction of its own, and publishes what it appended. who is resolved before the
+// transaction holds a connection.
+func (s *server) closeAsk(ctx context.Context, who model.Actor, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Ask{}, err
@@ -478,7 +495,7 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-	ask, events, err := s.closeAskTx(documentCtx, tx, ledger, id, actor, transition)
+	ask, events, err := s.closeAskTx(documentCtx, tx, ledger, who, id, actor, transition)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -500,9 +517,9 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 // publishes the events. Every write is queued on ledger, in the order made, so the copies'
 // pending rows SettleCopiesOf takes come before the parts' index and the event appends, as the
 // copy lock's order requires (docs.lockProjectCopies), and the events are filled in once Commit
-// has run the write phase (appendedEvents).
-func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, actor model.Actor, transition askTransition) (model.Ask, []*model.Event, error) {
-	ask, err := s.transitionAskTx(ctx, tx, ledger, id, transition)
+// has run the write phase (appendedEvents). The ask is read as who may read it (transitionAskTx).
+func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, who model.Actor, id string, actor model.Actor, transition askTransition) (model.Ask, []*model.Event, error) {
+	ask, err := s.transitionAskTx(ctx, tx, ledger, who, id, transition)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -544,16 +561,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 }
 
 // transitionAskTx reads an open ask under its owner's lock and applies a transition inside the
-// caller's transaction; it appends no event.
-func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition) (model.Ask, error) {
-	unlockedAsk, err := s.loadAsk(ctx, tx, id)
+// caller's transaction; it appends no event. An ask who may not read is pgx.ErrNoRows (loadAsk).
+func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, who model.Actor, id string, transition askTransition) (model.Ask, error) {
+	unlockedAsk, err := s.loadAsk(ctx, tx, who, id)
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	if err := s.requireOpenOwner(ctx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, err
 	}
-	ask, err := s.readAskForTransition(ctx, tx, id)
+	ask, err := s.readAskForTransition(ctx, tx, who, id)
 	if err != nil {
 		return model.Ask{}, err
 	}

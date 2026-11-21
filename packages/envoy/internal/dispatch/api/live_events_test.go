@@ -561,6 +561,11 @@ func (stream *gatedStream) SendWait(ctx context.Context, frame any) error {
 
 func (stream *gatedStream) Holds(string) bool { return false }
 
+// Caller is the shared token: it names nobody and holds no list, so its viewer is open and sees
+// every public project, which every project these tests write in is. It carries the token's
+// credential, as a socket's caller does (liveSocket.caller), since access.Resolve reads it.
+func (stream *gatedStream) Caller() model.Actor { return model.Actor{Credential: scopelessCredential} }
+
 // next is the next frame the subscription sent, within eventFeedWait.
 func (stream *gatedStream) next(t *testing.T, what string) any {
 	t.Helper()

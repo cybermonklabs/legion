@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -112,15 +113,15 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	}
 }
 
-// issueChildrenRows runs one children statement and returns the values of the first columns of
-// each row as text, one string per row in the order the statement gave them, which is how the
-// two statements' answers are compared here. The children statement answers three columns
-// main's did not — the child's needs, the array of the keys it waits on, and the two of its
-// claim, claimed_by and claimed_at — so the comparison takes the columns both answer and the
-// test below checks the new ones against the read itself.
-func issueChildrenRows(t *testing.T, database *store.Store, statement, key string, columns int) []string {
+// issueChildrenRows runs one children statement over arguments and returns the values of the
+// first columns of each row as text, one string per row in the order the statement gave them,
+// which is how the two statements' answers are compared here. The children statement answers
+// three columns main's did not — the child's needs, the array of the keys it waits on, and the
+// two of its claim, claimed_by and claimed_at — so the comparison takes the columns both answer
+// and the test below checks the new ones against the read itself.
+func issueChildrenRows(t *testing.T, database *store.Store, statement string, columns int, arguments ...any) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, key)
+	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
 	if err != nil {
 		t.Fatalf("run the children statement: %v", err)
 	}
@@ -151,11 +152,11 @@ func issueChildrenRows(t *testing.T, database *store.Store, statement, key strin
 func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
 	const mainColumns = 7
-	want := issueChildrenRows(t, fixture.database, mainIssueChildrenQuery, fixture.root, mainColumns)
+	want := issueChildrenRows(t, fixture.database, mainIssueChildrenQuery, mainColumns, fixture.root)
 	if len(want) != 2 {
 		t.Fatalf("main's children statement answered %v; want the branch and the leaf", want)
 	}
-	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, fixture.root, mainColumns); !slices.Equal(got, want) {
+	if got := issueChildrenRows(t, fixture.database, issueChildrenStatement, mainColumns, fixture.root, refs.VisibilityArg(everyReader)); !slices.Equal(got, want) {
 		t.Fatalf("the children statement answered\n%v\nwant main's rows\n%v", got, want)
 	}
 }
@@ -169,7 +170,7 @@ func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 // index holds the statement to one read of each issue either way.
 func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
-	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root)
+	plan := planWithoutSeqScans(t, fixture.database, issueChildrenStatement, fixture.root, refs.VisibilityArg(everyReader))
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 		t.Errorf("the children statement reads %v, which no index serves:\n%s", unkeyed, plan)
 	}

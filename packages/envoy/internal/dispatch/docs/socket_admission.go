@@ -14,10 +14,12 @@ import (
 
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -206,11 +208,12 @@ func socketRoom(r *http.Request) string {
 // resolve is refused 401, except a person whose lapsed confirmation the sign-in issuer could not
 // renew (identity.ErrSignInUnavailable), who is still signed in and is refused 503
 // SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError). A socket's admission
-// resolves the caller and reads the document's issue once each, here, and hands both to ygo's
-// authorization of the same request (authorize) on the connection's state; a warm room's schema
-// verdict is the one its update observer recorded (residentVerdict), so admitting a socket to a
-// warm room walks no rooms and renders nothing, and a cold one renders its document once
-// (admitDocument).
+// resolves the caller, what that person sees (access.Resolve) and the document's issue once each,
+// here, and hands the caller and the issue read to ygo's authorization of the same request
+// (authorize) on the connection's state; a room the person may not read is refused exactly as a
+// room no document holds is (readIssue). A warm room's schema verdict is the one its update
+// observer recorded (residentVerdict), so admitting a socket to a warm room walks no rooms and
+// renders nothing, and a cold one renders its document once (admitDocument).
 //
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
@@ -240,9 +243,16 @@ func socketRoom(r *http.Request) string {
 // alone - another transport, or another handler that reaches a room name by a path of its own,
 // opens a room under whatever name it passes, and no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var line []byte
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
-		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
+		line = []byte(ProcessHeader + ": " + s.hostname + "\r\n")
+	}
+	for _, value := range w.Header().Values(access.PrivateProjectsHeader) {
+		line = append(line, access.PrivateProjectsHeader+": "+value+"\r\n"...)
+	}
+	if line != nil {
+		w = &upgradeHeadersWriter{ResponseWriter: w, line: line}
 	}
 	room := socketRoom(r)
 	actor, err := s.requestActor(r)
@@ -263,9 +273,22 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
 		return
 	}
-	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
+	// The count of access re-checks is read before the person's read of the room, so a re-check
+	// that begins before this socket is recorded has the person read again once it is
+	// (schemaAdmissions.admit, recheckAdmission).
+	// The person is a cookie's (requestActor), so what they see is resolved as their browser's;
+	// the actor the room records stays without the credential (model.Actor.Recorded).
+	accessChecks := s.schemaAdmissions.accessCheckCount()
+	viewer, err := access.Resolve(r.Context(), s.queryFrom(r.Context()), model.BrowserActor(actor.ID))
 	if err != nil {
-		http.Error(w, "document not found", http.StatusNotFound)
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	reader := actor
+	reader.Viewer = &viewer
+	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room, reader)
+	if err != nil {
+		refuseHiddenRoom(w)
 		return
 	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
@@ -291,7 +314,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is how a re-check closes the socket (RunSchemaAdmission).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel, person: actor.ID, accessChecks: accessChecks}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
@@ -307,7 +330,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.afterSocketIssueRead(room)
 	}
 	switches := s.schemaSwitches.Load()
-	withdraw, documentSince, err := s.admitDocument(ctx, room)
+	withdraw, documentSince, err := s.admitDocument(ctx, reader, room)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The person may not read the document as the admission's own read of it found
+		// (readStoredHead): it answers as readIssue answers a room it may not read.
+		refuseHiddenRoom(w)
+		return
+	}
 	if errors.Is(err, ErrDocNewerContent) {
 		refuseNewerContent(w, r, room, err)
 		return
@@ -339,27 +368,86 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames (awareness_limit.go), and a socket whose person loses the room before ygo has upgraded
+	// it is refused as a hidden room is (revocableSocketWriter).
+	s.srv.ServeHTTP(&revocableSocketWriter{ResponseWriter: &awarenessLimitWriter{ResponseWriter: w, room: room}, ctx: ctx}, r.WithContext(ctx))
 }
+
+// refuseHiddenRoom answers a document socket whose person may not read its room - a document of a
+// project they do not see, or of a conversation they are no party to - exactly as a room no
+// document holds is answered, so the answer tells them nothing of the room (readIssue).
+func refuseHiddenRoom(w http.ResponseWriter) {
+	http.Error(w, "document not found", http.StatusNotFound)
+}
+
+// revocableSocketWriter is the response writer ygo serves a document socket on, up to its upgrade.
+// Once an access re-check has ended the socket's request context with errAccessRevoked - its person
+// lost the room while the socket was being admitted - whatever ygo would answer is replaced with a
+// hidden room's refusal (refuseHiddenRoom), which is what a person who cannot read the room gets at
+// admission, and ygo's upgrade is refused. ygo's own answer would be its 401, from an authorization
+// that refused the socket (authorize), or its 500 "room unavailable", from a join whose context had
+// ended; an upgrade would join the person to a room they no longer read, and send them its
+// document. A socket revoked after its upgrade is closed with the revocation's close code, as every
+// open socket is (revokeUnless). ygo writes through it from the socket's own request alone, and
+// never once it has hijacked the connection, so it takes no lock.
+type revocableSocketWriter struct {
+	http.ResponseWriter
+	ctx     context.Context
+	refused bool
+}
+
+// hidden reports whether the socket's admission was revoked for access, and the first time it
+// does, answers the request as a hidden room is answered.
+func (w *revocableSocketWriter) hidden() bool {
+	if !w.refused && errors.Is(context.Cause(w.ctx), errAccessRevoked) {
+		w.refused = true
+		refuseHiddenRoom(w.ResponseWriter)
+	}
+	return w.refused
+}
+
+func (w *revocableSocketWriter) WriteHeader(code int) {
+	if !w.hidden() {
+		w.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (w *revocableSocketWriter) Write(body []byte) (int, error) {
+	if w.hidden() {
+		return len(body), nil
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+// Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room.
+func (w *revocableSocketWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w.hidden() {
+		return nil, nil, errAccessRevoked
+	}
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+// Unwrap gives http.ResponseController the writer underneath.
+func (w *revocableSocketWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
 // all, the host name of the process serving it - the pod's name in production - so a check that
 // opens sockets through a load balancer can record which process each one reached (plan D10).
 const ProcessHeader = "X-Dispatch-Process"
 
-// processHeaderWriter puts its line, ProcessHeader's, on a websocket upgrade made through it. The
-// upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes the
-// connection and writes its 101 answer on it in one write, reading no header of the writer's, and
-// ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
-// first write, right after its status line. Every other answer carries the header the ordinary
-// way (ServeHTTP sets it).
-type processHeaderWriter struct {
+// upgradeHeadersWriter puts its line - ProcessHeader's, and the Dispatch-Private-Projects value the
+// process's middleware set (access.PrivateProjectsHeader) - on a websocket upgrade made through it.
+// The upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes
+// the connection and writes its 101 answer on it in one write, reading no header of the writer's,
+// and ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
+// first write, right after its status line. Every other answer carries the headers the ordinary
+// way (ServeHTTP and the middleware set them).
+type upgradeHeadersWriter struct {
 	http.ResponseWriter
 	line []byte
 }
 
-func (w *processHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+func (w *upgradeHeadersWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
@@ -368,21 +456,21 @@ func (w *processHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &processHeaderConn{Conn: conn, line: w.line}, buffered, nil
+	return &upgradeHeadersConn{Conn: conn, line: w.line}, buffered, nil
 }
 
 // Unwrap gives http.ResponseController the writer underneath.
-func (w *processHeaderWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *upgradeHeadersWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// processHeaderConn is a hijacked connection whose first write, the upgrade's answer, gains line
+// upgradeHeadersConn is a hijacked connection whose first write, the upgrade's answer, gains line
 // after its status line. line is cleared by that write, which the upgrade makes before it hands
 // the connection to any other goroutine, so every later write passes straight through.
-type processHeaderConn struct {
+type upgradeHeadersConn struct {
 	net.Conn
 	line []byte
 }
 
-func (c *processHeaderConn) Write(p []byte) (int, error) {
+func (c *upgradeHeadersConn) Write(p []byte) (int, error) {
 	line := c.line
 	if line == nil {
 		return c.Conn.Write(p)
@@ -429,12 +517,12 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 // document and makes no query of the stored history (heldTree). A cold socket offers the state it
 // read, and what it rendered of it, to the room's load (offerPreload), and withdraw is what the
 // socket's end runs to take that offer back.
-func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), documentSince int, err error) {
+func (s *Service) admitDocument(ctx context.Context, reader model.Actor, room string) (withdraw func(), documentSince int, err error) {
 	verdict := s.residentVerdict(room)
 	if verdict == verdictOutsideSchema {
 		return nil, 0, ErrDocOutsideSchema
 	}
-	tree, loaded, err := s.loadTree(ctx, room)
+	tree, loaded, err := s.loadTree(ctx, reader, room)
 	rendered := admissionRendering{tree: tree}
 	if err == nil && tree != nil && verdict != verdictInsideSchema {
 		if s.admissionRendered != nil {
@@ -532,13 +620,24 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
 	admission.page = schemaPageOf(query)
 	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
-	s.schemaAdmissions.admit(admission)
+	if s.schemaAdmissions.admit(admission) {
+		s.recheckAdmission(r.Context(), admission)
+	}
+	// A socket a re-check has revoked by now - its person lost the room while it was admitted - is
+	// refused before ygo joins or loads the room for it, and answered as a hidden room is
+	// (revocableSocketWriter).
+	if errors.Is(context.Cause(r.Context()), errAccessRevoked) {
+		return websocket.ConnectionConfig{}, false
+	}
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
 	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what
 	// lets the answers in (holdsRoomForReaders).
 	if s.srv.GetDoc(room) != nil {
 		s.awarenessRelay.query(room)
+	}
+	if s.afterSocketRecorded != nil {
+		s.afterSocketRecorded(room)
 	}
 	return websocket.ConnectionConfig{ReadOnly: !admission.writable}, true
 }
