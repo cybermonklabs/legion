@@ -12,14 +12,16 @@
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
 # the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
 # strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
-# that wait out a clock, arm one, or wait for a signal or a lock (a futex, an fcntl or an ioctl
-# counted only where it waits, leases or sets a terminal's attributes or a timed break). A
-# `sleep` by any path, a `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive,
-# io_uring, a timerfd, alarm and pause, flock, a lock wait by fcntl, any setsockopt (SO_RCVTIMEO,
-# SO_LINGER and the rest) and a terminal's VTIME set by any of its setters each make one. The
-# waits the comment above TIMED_WAITS names as not seen - a `timeout N cmd` wait, which makes
-# only the calls the drive's own `timeout` bounds make, a blocking call a timer_create timer or a
-# process outside the drive's tree ends, and a busy loop in user space - make none.
+# that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
+# signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a
+# terminal's attributes or a timed break). A `sleep` by any path, a `read -t`, a timed futex or
+# futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause, flock, a lock
+# wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest) and a terminal's VTIME set
+# by any of its setters each make one. The waits the comment above TIMED_WAITS names as not
+# seen - a `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds
+# make, a blocking call a timer_create timer or a process outside the drive's tree ends, a timer
+# the kernel keeps itself (TCP's SYN and retransmission timers), and a busy loop in user space -
+# make none.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
@@ -133,8 +135,8 @@ real_strace=$(type -P strace) ||
     exit 1; }
 # The system calls the control's trace lists. They are the census of the kernel's x86_64, arm64
 # and i386 syscall tables (torvalds/linux master c44104f3642d, read on 2026-11-21) for calls that
-# wait out a clock, arm one, or wait for a signal or a lock, in three groups, with every other
-# such call named below as unlisted and why.
+# wait out a time their caller gives them, arm a clock their caller sets, or wait for a signal or
+# a lock, in three groups, with every other such call named below as unlisted and why.
 #
 # Calls that take a timeout of their own: nanosleep, clock_nanosleep, select (and i386's old
 # select), _newselect (i386), pselect6, poll, ppoll, epoll_wait, epoll_pwait, epoll_pwait2,
@@ -182,8 +184,12 @@ real_strace=$(type -P strace) ||
 # - read, readv, pread64, preadv, preadv2, write and its kin, recvfrom, recvmsg, accept, accept4,
 #   connect, sendto, sendmsg, sendmmsg, sendfile, splice, tee, vmsplice, msgrcv, msgsnd, semop,
 #   getrandom and ptrace: they wait on a pipe, a socket, a device, a queue or another process,
-#   with no clock of their own, and the drive makes reads and writes all the time. A wait made
-#   with them ends when a call listed above, a timer_create signal or another process ends it.
+#   and their caller gives them no time to wait out, and the drive makes reads and writes all the
+#   time. Such a call can still wait out a timer the kernel keeps itself: a blocking connect to a
+#   loopback listener whose accept queue is full waits out TCP's SYN retransmission timeout (1 s
+#   at first), and a send waits out TCP's retransmission timer. Those kernel-internal timers are
+#   a class no list of calls can see. In 3 traced runs on 2026-11-21 the drive made 8 connect
+#   calls per run, all AF_UNIX to the absent nscd socket, non-blocking, none a TCP connect.
 #   Another process in the drive's tree is traced under -f; one outside it, such as a network
 #   peer, is not seen.
 # - close and shutdown: they wait out SO_LINGER's time, and the setsockopt that set it is
@@ -209,8 +215,11 @@ real_strace=$(type -P strace) ||
 #   SQPOLL polled from user space is one, after an io_uring_setup the list counts.
 #
 # A regex, so strace matches only the calls the host's architectures have. What the trace
-# establishes is that the drive made none of these calls, counted as timed_waits counts them, and
-# no more. No check here reads elapsed time to make up for the waits named above as not seen.
+# establishes is that the drive made none of these calls, counted as timed_waits counts them: no
+# wait whose time a call or a signal timer was given by its caller. It establishes no more, and
+# a timer the kernel keeps itself (TCP's SYN and retransmission timers and the like) is a class
+# it cannot see. No check here reads elapsed time to make up for the waits named above as not
+# seen.
 TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?|ioctl)$'
 
 # timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
