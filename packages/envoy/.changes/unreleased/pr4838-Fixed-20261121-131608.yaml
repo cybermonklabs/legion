@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  Identity tokens are checked against an issuer's key set with less waiting and fewer reads. After
+  a failed read of the key set, no other read is made for 5 seconds, whether or not a set was ever
+  read; before, once a set had been read and was older than 15 minutes, a key set that kept failing
+  was read once per request. A key set older than 15 minutes that holds a token's key answers at
+  once and is read again in the background, so a slow key set no longer holds each request. During
+  a key rotation whose read failed, a token naming the new key is looked for again 5 seconds after
+  that failure, rather than a minute. This is in the key-set cache the secrets broker and Dispatch
+  share with the listener, so for them too: a failed read is followed by 5 seconds with no new read;
+  a stale set answers at once; and a key id the cache lacks, while a read runs or for 5 seconds
+  after it failed, is answered as the issuer being unavailable (Dispatch:
+  `503 OIDC_ISSUER_UNAVAILABLE`; IAP sign-in: unavailable) rather than refused.
+time: 2026-11-21T13:16:08Z
+custom:
+    Issue: pr4838
