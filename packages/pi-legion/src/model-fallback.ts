@@ -464,6 +464,17 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     // background job's result (`awaitingAsyncWork`) has settled: the host reaches it only after
     // each of its own retries and continuations has declined the turn (`:6012-6015`), and the
     // job's result starts the next turn on the model this end leaves the session on.
+    //
+    // One window stays open there. The host does not wait for this handler (it fires the
+    // extensions' `agent_end` without awaiting them, `:6560`), and it reads the model of the first
+    // request of a run a job's result starts before any hook of that run, so a result it delivers
+    // before the walk below has set the model sends that request to the model that refused; the
+    // run's next request reads the walked model. Measured on 2026-11-21 at the pinned build with
+    // a job that had already ended when the refused turn ended: the result's first request went
+    // to the next model in 5 of 5 runs, so the walk, which awaits only the model registry and
+    // `setModel`, finished first. A `setModel` that waits on the network (a local backend's model
+    // metadata) can lose that race. What would close it is in the host: awaiting the extensions'
+    // `agent_end` handlers before it starts the run a background job's result asks for.
     if (event.willContinue === true && event.awaitingAsyncWork !== true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;

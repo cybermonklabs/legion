@@ -171,6 +171,34 @@ interface FallbackPane extends LegionPane {
   readonly returnedAt: (since: number) => number | undefined;
   /** The cooldown states the pane recorded in its transcript, in order. */
   readonly cooldowns: () => Promise<FallbackCooldownState[]>;
+  /** Each change of the session's model the transcript records, in order: the model it set
+   * (`standin/...`), and when omp recorded the change. */
+  readonly modelTimeline: () => Promise<Recorded<string>[]>;
+}
+
+/** A value a pane's transcript records, and when omp wrote its entry (epoch ms), by the omp
+ * process's own clock: the clock a cooldown's due time is on, so the two compare whatever the test
+ * process was doing at the time. */
+interface Recorded<T> {
+  readonly value: T;
+  readonly at: number;
+}
+
+/** The entries of `transcript` that `pick` reads a value from, each with its entry's time. */
+function recorded<T>(
+  transcript: readonly unknown[],
+  pick: (entry: object) => T | undefined
+): Recorded<T>[] {
+  return transcript.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const value = pick(entry);
+    if (value === undefined) return [];
+    const at =
+      "timestamp" in entry && typeof entry.timestamp === "string"
+        ? Date.parse(entry.timestamp)
+        : Number.NaN;
+    return [{ value, at }];
+  });
 }
 
 /**
@@ -355,6 +383,15 @@ async function fallbackPane(options: {
       served.find((turn) => turn.at >= since && turn.model === "strong-model")?.at,
     cooldowns: async () =>
       (await pane.transcriptEntries(LEGION_FALLBACK_ENTRY)) as FallbackCooldownState[],
+    modelTimeline: async () =>
+      recorded(await pane.transcript(), (entry) =>
+        "type" in entry &&
+        entry.type === "model_change" &&
+        "model" in entry &&
+        typeof entry.model === "string"
+          ? entry.model
+          : undefined
+      ),
   };
 }
 
@@ -411,8 +448,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    /** When the job's result run must stop pinging the gateway and let the run settle: past the
-     * doubled wait the second refusal bought. */
+    /** When the job's result run stops asking again for a session that has not come back by
+     * then: it bounds only a session that never comes back, which the assertions then fail on. */
     let until = 0;
     const pane = await fallbackPane({
       chains: TWO_STEPS,
@@ -435,7 +472,7 @@ test.skipIf(skip)(
         // waiting on the job's result: the plugin's own walk takes it from the middle model to
         // the weaker one.
         if (nth === 3) {
-          until = Date.now() + 4 * COOLDOWN_MS;
+          until = Date.now() + 2 * COOLDOWN_MS + IDLE_RETURN_MS;
           return refuses("refusal_2", { text: "Looking at it." });
         }
         // The job's result starts a run that asks the gateway every second while the session is
@@ -466,9 +503,15 @@ test.skipIf(skip)(
     const dueAt = armed?.dueAt ?? 0;
     expect(dueAt - refusedAt).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
     // Nothing went back before that wait, and what the session went back to is the stronger
-    // model: no request of this pane ever went to the middle model again.
+    // model: the session's model changes, which omp records on the clock the due time is on, are
+    // its start on the stronger model, the host's walk to the middle one, the plugin's walk to the
+    // weaker one, and the return to the stronger one, no earlier than the due time. No request
+    // served in the wait went to the stronger model, and none of this pane went to the middle
+    // model again.
+    const timeline = await pane.modelTimeline();
+    expect(timeline.map((change) => change.value)).toEqual([STRONG, MIDDLE, WEAK, STRONG]);
+    expect(timeline[3]?.at).toBeGreaterThanOrEqual(dueAt);
     const waiting = pane.served.slice(3).filter((turn) => turn.at < dueAt);
-    expect(waiting.length).toBeGreaterThan(1);
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     expect(pane.returnedAt(dueAt)).toBeDefined();
     expect(pane.models().slice(3)).not.toContain("middle-model");
