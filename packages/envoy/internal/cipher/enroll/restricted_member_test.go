@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -141,7 +142,7 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 		cred := mintCredential(t, refused, str(full), nil, "ines-laptop")
 		err := enrol(t, refused, cred, "ines-laptop-1")
 		var uncheckable *projectaccess.MemberKindUncheckable
-		if !errors.As(err, &uncheckable) || !errors.Is(err, projectaccess.ErrBrokerRefused) || enrolled(t, refused, cred) != 0 ||
+		if !errors.As(err, &uncheckable) || !errors.Is(err, dispatchread.ErrBrokerRefused) || enrolled(t, refused, cred) != 0 ||
 			!strings.HasSuffix(err.Error(), "Dispatch refused the broker's own account") {
 			t.Fatalf("Create on a broker Dispatch refuses = %v with %d enrollments, want MemberKindUncheckable naming the refused account and none", err, enrolled(t, refused, cred))
 		}

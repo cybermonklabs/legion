@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -127,7 +128,7 @@ func TestARestrictedMembersSignInSessionMustNameItsProjects(t *testing.T) {
 		{"Dispatch refuses the broker's account", func(t *testing.T, svc *Service) {
 			dispatch := withProjects(t, svc)
 			svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-		}, projectaccess.ErrBrokerRefused},
+		}, dispatchread.ErrBrokerRefused},
 		{"Dispatch answers a member kind the broker does not know", func(t *testing.T, svc *Service) {
 			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{bobLogin: "guest"})
 			svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
@@ -189,7 +190,7 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		dispatch := withProjects(t, svc)
 		svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
 		_, err := enrolSession(t, svc, aliceLogin, "box-alice-refused")
-		uncheckable(t, err, projectaccess.ErrBrokerRefused, "a session naming no project while Dispatch refuses the broker's account")
+		uncheckable(t, err, dispatchread.ErrBrokerRefused, "a session naming no project while Dispatch refuses the broker's account")
 	})
 	// Base #4119's cfe6a5f216 adds two answers that are neither an outage nor a refusal of the
 	// list: a member kind the broker does not know (projectaccess.ErrUnknownMemberKind), and a
@@ -207,7 +208,7 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		dispatch := withProjects(t, svc)
 		svc.Projects = projectaccess.New(dispatch.URL, ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "missing-token")), nil)
 		_, err := enrolSession(t, svc, aliceLogin, "box-alice-no-token")
-		uncheckable(t, err, projectaccess.ErrBrokerRefused, "a session naming no project while the broker cannot read its token file")
+		uncheckable(t, err, dispatchread.ErrBrokerRefused, "a session naming no project while the broker cannot read its token file")
 		if calls := dispatch.Calls(); calls != 0 {
 			t.Errorf("Dispatch was asked %d times; want none, since there is no token to ask with", calls)
 		}
