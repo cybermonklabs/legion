@@ -540,11 +540,14 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 // push whose own `--config`, written in front of `git push`, sets git's whole table shared a layer
 // with the wrapper's `--config` in front of it, so jj refused the push.
 //
-// And clap keeps a global option's values from the deepest command that has any, so the last
-// layer, written after `git push`, made jj drop every `--config` the caller wrote in front of it: a
-// push whose own `--config` makes its commit private went through the git wrapper, where jj alone
-// refuses it. On a push with no `--config` after the command word, the last layer now goes in front
-// of the command word.
+// And clap keeps each of `--config` and `--config-file` only from the deepest command level that
+// has any, so a last layer written deeper than the caller's own made jj drop them: a push whose own
+// `--config` makes its commit private, in front of `git push`, between `git` and `push`, or in a
+// `--config-file` in front of a `--config` after it, went through the git wrapper, where jj alone
+// refuses it. The last layer now goes at the deepest level that has a caller's own, and the
+// caller's shallower ones of the other option are written there once more. And the read of the
+// git took every `--config`, so it refused a git named in front of `git` that a `--config` between
+// `git` and `push` drops, where jj alone pushes through the git wrapper.
 //
 // Each row pushes a commit from a repository of its own to a bare remote. The git wrapper's real
 // git is a logging stand-in that pushes nothing, so the remote holds the bookmark only when another
@@ -580,6 +583,11 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 	// know in front of the bookmark log, a built-in command's name.
 	unknown := "ui.default-command = [\"git\", \"push\"]\n" +
 		"aliases.p = [\"--config=git.executable-path=\\\"/usr/bin/git\\\"\", \"-b\", \"log\"]\n"
+	// A configuration file that makes the bookmark b's commit private.
+	private := filepath.Join(dir, "private.toml")
+	if err := os.WriteFile(private, []byte("git.private-commits = \"b\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -603,6 +611,10 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 		{name: "an alias that puts an option jj does not know in front of log, where the default command is a push", config: unknown, args: []string{"p"}, bookmark: "log", refused: true},
 		{name: "a push whose own --config, in front of it, sets git's whole table", args: []string{"--config", `git={private-commits="none()"}`, "git", "push", "-b", "b"}, wrapped: true},
 		{name: "a push whose own --config, in front of it, makes its commit private, which jj then refuses to push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b"}},
+		{name: "a push whose own --config, in front of it, makes its commit private, with a --config-file after the push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b", "--config-file=/dev/null"}},
+		{name: "a push whose own --config, between git and push, makes its commit private", args: []string{"git", "--config", `git.private-commits="b"`, "push", "-b", "b"}},
+		{name: "a --config-file in front of the push that makes its commit private, with a --config after the push", args: []string{"--config-file", private, "git", "push", "-b", "b", "--config", "ui.color=never"}},
+		{name: "a --config naming another git in front of git, which a --config between git and push drops", args: []string{"--config", `git.executable-path="/usr/bin/git"`, "git", "--config", "ui.color=never", "push", "-b", "b"}, wrapped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := filepath.Join(t.TempDir(), "repo")
