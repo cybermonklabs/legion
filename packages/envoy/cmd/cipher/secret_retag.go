@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // heldTags is a secret's tags as one read of the store held them: AWS tags or Secret Manager
@@ -300,7 +301,7 @@ func rereadRetag(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 	if !ok {
 		return 1
 	}
-	if r.Told && r.Type != secretType {
+	if r.Told && !r.Type.Equal(secretType) {
 		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag's `broker: serving %s` line says it serves %s as %s\n", form, s.storeName(), s.src.brokerAt(), name, servedTypeName(s, r.Type), typeName(secretType), name, name, name, typeName(secretType))
 		return 1
 	}
@@ -317,10 +318,10 @@ func typeName(secretType string) string {
 
 // servedTypeName is t, the type the broker's reread answer says it serves a secret as, as a line
 // names it: "a stored secret" for none (typeName), and otherwise the broker's text as its address
-// lets its answer print (Settings.words).
-func servedTypeName(s *secretSession, t string) string {
-	if t == "" {
-		return typeName(t)
+// lets its answer print (cipheraddr.Address.WordsOf), with the reread's proof redacted.
+func servedTypeName(s *secretSession, t redact.RemoteText) string {
+	if t.IsEmpty() {
+		return typeName("")
 	}
-	return s.settings.words(t)
+	return s.broker.baseURL.WordsOf(t)
 }

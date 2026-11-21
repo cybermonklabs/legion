@@ -518,7 +518,7 @@ func TestATypedWriteReadsItsTypeTagBackWhenTheBrokerFailsItsReread(t *testing.T)
 			startSecretBroker(t, servedBy(local)).failRereads(http.StatusServiceUnavailable)
 		}, "could not be asked to reread LOGIN_KEY"},
 		{"a reread the broker answers with the secret refused", func(t *testing.T, _ *secrets.Local) {
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonOwnerTagMissing} })
+			startSecretBroker(t, func(name string) rereadReply { return rereadReply{Name: name, Reason: policy.ReasonOwnerTagMissing} })
 		}, "refuses LOGIN_KEY after the write"},
 	} {
 		t.Run(row.name, func(t *testing.T) {

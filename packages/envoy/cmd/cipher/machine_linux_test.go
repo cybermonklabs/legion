@@ -167,7 +167,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	}
 	keyDir := writeKeyDir(t, boxKey, enrolled.EnrollmentID)
 	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, "request", "TEST_AUTO_SECRET", "--json")
-	var granted RequestResult
+	var granted grantedJSON
 	if err := json.Unmarshal([]byte(stdout), &granted); exit != 0 || err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("request TEST_AUTO_SECRET from the box: exit %d, stdout %q, stderr %q; want it granted at once", exit, stdout, stderr)
 	}
@@ -361,13 +361,21 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 	}
 }
 
+// grantedJSON is what the request form's --json prints of a request the broker grants at once:
+// the broker's own body, which the form prints as it came, read by a test as plain data.
+type grantedJSON struct {
+	RequestID string  `json:"request_id"`
+	State     string  `json:"state"`
+	GrantID   *string `json:"grant_id"`
+}
+
 // requestAutoSecret asks for TEST_AUTO_SECRET from inside the session and returns the id of the
 // grant it is given at once (the rig grants the operator's own agent-tier secret with no
 // approval), the grant this session may then end.
 func (s *grantSession) requestAutoSecret() string {
 	s.t.Helper()
 	res := s.run("request", "TEST_AUTO_SECRET", "--json")
-	var granted RequestResult
+	var granted grantedJSON
 	if err := json.Unmarshal([]byte(res.Stdout), &granted); res.Code != 0 || err != nil || granted.State != "granted" || granted.GrantID == nil {
 		s.t.Fatalf("request TEST_AUTO_SECRET inside the session: exit %d, stdout %q, stderr %q; want it granted at once", res.Code, res.Stdout, res.Stderr)
 	}

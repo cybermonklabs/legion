@@ -175,10 +175,10 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 // which cannot make two installations one, since the mint compares the owner without regard to
 // case. A release one of whose keys holds a token form is no release, so the refusal names the
 // secret and never that key, which the refusal of a release of two would otherwise list as an
-// account.
+// account. Each run asked for every name its grant released, so each refusal names them.
 func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	values := map[string]string{"APP": githubTokenReleases["APP"], "PLAIN": githubTokenReleases["PLAIN"]}
-	if err := githubTokensAlone(values); err != nil {
+	if err := githubTokensAlone(values, []string{"APP", "PLAIN"}); err != nil {
 		t.Fatalf("githubTokensAlone of one release beside a password = %v, want it handed over", err)
 	}
 	want := map[string]string{"APP": "ghs_one_installation", "PLAIN": githubTokenReleases["PLAIN"]}
@@ -186,7 +186,7 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 		t.Fatalf("values = %v, want %v", values, want)
 	}
 
-	err := githubTokensAlone(map[string]string{"TWO_APP": githubTokenReleases["TWO_APP"]})
+	err := githubTokensAlone(map[string]string{"TWO_APP": githubTokenReleases["TWO_APP"]}, []string{"TWO_APP"})
 	if err == nil || !strings.Contains(err.Error(), "TWO_APP") || !strings.Contains(err.Error(), "--github-token") ||
 		!strings.Contains(err.Error(), "acme, ada") || strings.Contains(err.Error(), "ghs_") ||
 		!strings.Contains(err.Error(), "a narrowing that leaves one installation") ||
@@ -194,7 +194,7 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 		t.Fatalf("githubTokensAlone of two installations = %v, want a refusal naming TWO_APP, --github-token, both accounts and a remedy the caller can take, and no token", err)
 	}
 
-	err = githubTokensAlone(map[string]string{"PLAIN": githubTokenReleases["PLAIN"], "OTHER": "another-password"})
+	err = githubTokensAlone(map[string]string{"PLAIN": githubTokenReleases["PLAIN"], "OTHER": "another-password"}, []string{"OTHER", "PLAIN"})
 	if err == nil || !strings.Contains(err.Error(), "OTHER, PLAIN") || !strings.Contains(err.Error(), "--github-token") ||
 		strings.Contains(err.Error(), githubTokenReleases["PLAIN"]) {
 		t.Fatalf("githubTokensAlone of no release = %v, want a refusal naming both names and --github-token, and no value", err)
@@ -203,7 +203,7 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	const tokenKey = "ghs_0123456789abcdef"
 	err = githubTokensAlone(map[string]string{"KEYED_APP": `{"installations":{` +
 		`"acme":{"installation_id":7,"token":"ghs_acme","expires_at":"2100-01-01T00:00:00Z"},` +
-		`"` + tokenKey + `":{"installation_id":8,"token":"ghs_ada","expires_at":"2100-01-01T00:00:00Z"}}}`})
+		`"` + tokenKey + `":{"installation_id":8,"token":"ghs_ada","expires_at":"2100-01-01T00:00:00Z"}}}`}, []string{"KEYED_APP"})
 	if err == nil || !strings.Contains(err.Error(), "KEYED_APP") || !strings.Contains(err.Error(), "--github-token") {
 		t.Fatalf("githubTokensAlone of a release keyed by a token form = %v, want a refusal naming KEYED_APP and --github-token", err)
 	}

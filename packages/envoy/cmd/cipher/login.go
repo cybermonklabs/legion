@@ -176,6 +176,12 @@ func (l *launcherKeySigner) Sign(method, url string) (string, error) {
 // For a person, the key enrolled is the box key itself: one key per person per machine, which
 // the broker already knows as the sign-in's, signs that session's proofs too. For a machine, it
 // is the key the process made to prove the trade.
+//
+// The enrollment id is the broker's text, or the text of whatever answers in its place, which can
+// echo the launcher proof the registration carried. It is held as redact.RemoteText with that
+// request's record, and answered only as RemoteText.SendBack answers it: every later call signs
+// with it and a sign-in's record keeps it, so an id the rule does not print as it came is refused
+// here, not printed, and kept nowhere.
 func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -193,12 +199,16 @@ func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ec
 		return "", fmt.Errorf("register %s's session on this machine: %w", who, err)
 	}
 	var answer struct {
-		EnrollmentID string `json:"enrollment_id"`
+		EnrollmentID redact.RemoteText `json:"enrollment_id"`
 	}
-	if err := enrolled.Decode(&answer); err != nil || answer.EnrollmentID == "" {
+	if err := enrolled.Decode(&answer); err != nil || answer.EnrollmentID.IsEmpty() {
 		return "", fmt.Errorf("the broker registered %s's session but named no enrollment", who)
 	}
-	return answer.EnrollmentID, nil
+	enrollmentID, sent := answer.EnrollmentID.SendBack()
+	if !sent {
+		return "", fmt.Errorf("the broker registered %s's session, but its enrollment id is text the rule does not print as it came (not printed), so this machine signs with it nowhere", who)
+	}
+	return enrollmentID, nil
 }
 
 // registerSignInSession registers this person's session on this machine for a record that holds

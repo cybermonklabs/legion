@@ -172,7 +172,7 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 				name = "control: " + row.name + ", beside a clean address"
 			}
 			t.Run(name, func(t *testing.T) {
-				startSecretBrokerWith(t, row.settings, func(string) Reread { return Reread{} })
+				startSecretBrokerWith(t, row.settings, func(string) rereadReply { return rereadReply{} })
 				if !clean {
 					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
 				}
@@ -200,11 +200,11 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 	planted := "hunter2pw-" + "reread-" + "7e5b"
 	for _, row := range []struct {
 		name   string
-		answer func(name string) Reread
+		answer func(name string) rereadReply
 		says   []string
 	}{
-		{"a reason", func(name string) Reread { return Reread{Name: name, Reason: planted} }, []string{"(reason=%s)"}},
-		{"a type", func(name string) Reread { return Reread{Name: name, Served: true, Type: planted} }, []string{"(type %s)", "serves HELD_KEY as %s, not a stored secret"}},
+		{"a reason", func(name string) rereadReply { return rereadReply{Name: name, Reason: planted} }, []string{"(reason=%s)"}},
+		{"a type", func(name string) rereadReply { return rereadReply{Name: name, Served: true, Type: planted} }, []string{"(type %s)", "serves HELD_KEY as %s, not a stored secret"}},
 	} {
 		for _, clean := range []bool{false, true} {
 			name := row.name + ", beside a credentialed address"

@@ -121,6 +121,12 @@ func (s *podLauncherSigner) Sign(method, url string) (string, error) {
 // pod's live enrollment is answered 200 with that enrollment, so re-running enroll on a key dir
 // that already has key.pem gets its own enrollment back; alreadyLive reports that answer, because
 // the broker returns such an enrollment without extending its lease and the caller must renew it.
+//
+// The enrollment id is the broker's text, or the text of whatever answers in its place, which can
+// echo the proof and the pod token the call carried. It is held as redact.RemoteText with that
+// request's record and answered only as RemoteText.SendBack answers it: the enrollment file keeps
+// it, every later call signs with it and stdout prints it for a script, so an id the rule does
+// not print as it came is refused, not printed, and kept nowhere.
 func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string) (enrollmentID string, alreadyLive bool, err error) {
 	body, err := json.Marshal(map[string]string{
 		"kind":       "pod",
@@ -136,15 +142,19 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 		return "", false, err
 	}
 	var result struct {
-		EnrollmentID string `json:"enrollment_id"`
+		EnrollmentID redact.RemoteText `json:"enrollment_id"`
 	}
 	if err := answer.Decode(&result); err != nil {
 		return "", false, fmt.Errorf("decode enrollment response: %w", err)
 	}
-	if result.EnrollmentID == "" {
+	if result.EnrollmentID.IsEmpty() {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
 	}
-	return result.EnrollmentID, status == http.StatusOK, nil
+	enrollmentID, sent := result.EnrollmentID.SendBack()
+	if !sent {
+		return "", false, errors.New("the broker's enrollment answered an enrollment_id the rule does not print as it came (not printed), which this pod keeps nowhere")
+	}
+	return enrollmentID, status == http.StatusOK, nil
 }
 
 // cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]":
@@ -316,7 +326,10 @@ func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Addre
 
 // TokenLogin is POST /v1/launcher-credentials/token, the public route a service logs in at with
 // a token its own issuer signed: no proof, no person. It answers the launcher credential the
-// signed request object's key now holds.
+// signed request object's key now holds. The credential id is the broker's text, which whatever
+// answers in its place can make an echo of the token the call carried: it is held as
+// redact.RemoteText with that request's record, and answered only as RemoteText.SendBack answers
+// it, since the pod's enrollment call names it in its launcher proof.
 func (c *client) TokenLogin(ctx context.Context, token, request string) (string, error) {
 	body, err := json.Marshal(map[string]string{"token": token, "request": request})
 	if err != nil {
@@ -327,15 +340,19 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 		return "", err
 	}
 	var result struct {
-		CredentialID string `json:"credential_id"`
+		CredentialID redact.RemoteText `json:"credential_id"`
 	}
 	if err := answer.Decode(&result); err != nil {
 		return "", fmt.Errorf("decode token login response: %w", err)
 	}
-	if result.CredentialID == "" {
+	if result.CredentialID.IsEmpty() {
 		return "", errors.New("the broker's token login answered no credential_id")
 	}
-	return result.CredentialID, nil
+	credentialID, sent := result.CredentialID.SendBack()
+	if !sent {
+		return "", errors.New("the broker's token login answered a credential_id the rule does not print as it came (not printed), which this pod signs with nowhere")
+	}
+	return credentialID, nil
 }
 
 // enrollSessionKey is the session key in dir: the one already there, so re-running enroll on a dir

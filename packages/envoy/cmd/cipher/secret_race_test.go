@@ -169,7 +169,7 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 			if row.args[1] == "none" {
 				local = secrets.NewLocal(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 			}
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
+			startSecretBroker(t, func(name string) rereadReply { return rereadReply{Name: name, Served: true, Type: row.served} })
 			useAWS(t, local, testAccount, adaSignIn)
 			stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
 			if code != row.code {

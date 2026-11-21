@@ -82,7 +82,7 @@ func TestCreateSignalHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_CREATE_STORE") == "aws" {
 		local := secrets.NewLocal()
 		served := servedBy(local)
-		startSecretBroker(t, func(name string) Reread {
+		startSecretBroker(t, func(name string) rereadReply {
 			fmt.Println("REREAD", name)
 			return served(name)
 		})
@@ -116,7 +116,7 @@ func TestCreateSignalHelper(t *testing.T) {
 		startFakeSecretManager(t, fake)
 		useGCPIdentity(t, "authorized_user", "ada@example.com")
 		served := gcpServedBy(fake, gcpTestSettings())
-		startSecretBrokerWith(t, gcpTestSettings(), func(name string) Reread {
+		startSecretBrokerWith(t, gcpTestSettings(), func(name string) rereadReply {
 			fmt.Println("REREAD", name)
 			return served(name)
 		})

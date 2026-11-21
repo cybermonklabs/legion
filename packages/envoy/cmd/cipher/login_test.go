@@ -54,10 +54,13 @@ type loginBroker struct {
 	settings    map[string]any
 	// enrollmentID, when set, is the id every registration is answered with.
 	enrollmentID string
+	// echoEnrollment, when set, makes every registration's id of the Proof header it carried, as
+	// whatever answers in the broker's place can echo the request it was sent.
+	echoEnrollment func(proof string) string
 	// refusal, once set (refuseTrades), answers every trade.
 	refusal *loginRefusal
 	// rereadAnswer answers a live session's reread; rereads is each reread's enrollment.
-	rereadAnswer func(name string) Reread
+	rereadAnswer func(name string) rereadReply
 	rereads      []string
 }
 
@@ -101,12 +104,15 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		}
 		writeLoginJSON(w, settings)
 	})
-	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.enrollments++
 		b.live = fmt.Sprintf("enrollment-%d", b.enrollments)
 		if b.enrollmentID != "" {
 			b.live = b.enrollmentID
+		}
+		if b.echoEnrollment != nil {
+			b.live = b.echoEnrollment(r.Header.Get("Proof"))
 		}
 		id := b.live
 		b.mu.Unlock()

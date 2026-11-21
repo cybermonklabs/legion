@@ -23,17 +23,18 @@ func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 	ctx := context.Background()
 
 	refused, _, err := c.CreateRequest(ctx, signer, []string{"DETAIL_DENIED"}, "need it", nil, "", nil)
-	if err != nil || refused.State != "denied" || refused.Detail == nil || *refused.Detail != refusedDetail {
+	if err != nil || !refused.State.Equal("denied") || refused.Detail == nil || !refused.Detail.Equal(refusedDetail) {
 		t.Fatalf("CreateRequest(DETAIL_DENIED) = %+v (detail %v), %v; want it denied with the detail %q",
 			refused, refused.Detail, err, refusedDetail)
 	}
-	read, _, err := c.GetRequest(ctx, signer, refused.RequestID, 0)
-	if err != nil || read.State != "denied" || read.Detail == nil || *read.Detail != refusedDetail {
+	requestID, _ := refused.RequestID.SendBack()
+	read, _, err := c.GetRequest(ctx, signer, requestID, 0)
+	if err != nil || !read.State.Equal("denied") || read.Detail == nil || !read.Detail.Equal(refusedDetail) {
 		t.Fatalf("GetRequest(%s) = %+v (detail %v), %v; want it denied with the detail %q",
 			refused.RequestID, read, read.Detail, err, refusedDetail)
 	}
 	unexplained, _, err := c.CreateRequest(ctx, signer, []string{"DENY_ME"}, "need it", nil, "", nil)
-	if err != nil || unexplained.State != "denied" || unexplained.Detail != nil {
+	if err != nil || !unexplained.State.Equal("denied") || unexplained.Detail != nil {
 		t.Fatalf("CreateRequest(DENY_ME) = %+v (detail %v), %v; want it denied with no detail at all",
 			unexplained, unexplained.Detail, err)
 	}

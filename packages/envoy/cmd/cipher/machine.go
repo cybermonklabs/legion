@@ -248,16 +248,22 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 // machineRow is one machine login's cells, in the table's column order: its credential id, its
 // host, who approved it ("-" for none), when it was issued and expires, and its state. The first
 // three are the broker's, so each prints as the broker's address base lets its answer print
-// (cipheraddr.Address.Words): as it came on one line, Go-quoted where a control character in it,
-// a tab among them, would start a line of its own or split the cell, and not at all beside an
-// address that carries a credential; the credential id, as every id the broker answers prints
-// (idWords), still whole there where it is a UUID the address does not hold.
+// (cipheraddr.Address.WordsOf): as the rule reads it on one line, with the credentials the list's
+// request carried redacted (each is held as redact.RemoteText with the answer's record),
+// Go-quoted where a control character in it, a tab among them, would start a line of its own or
+// split the cell, and not at all beside an address that carries a credential; the credential id,
+// as every id the broker answers prints (idWordsOf), still whole there where it is a UUID the
+// address does not hold.
 func machineRow(base cipheraddr.Address, m OperatorMachine) []string {
 	state := "ok"
 	if m.Expired {
 		state = "expired"
 	}
-	return []string{idWords(base, m.CredentialID), base.Words(m.Host), base.Words(orDash(m.ApprovedBy)),
+	approvedBy := base.Words("-")
+	if !m.ApprovedBy.IsEmpty() {
+		approvedBy = base.WordsOf(m.ApprovedBy)
+	}
+	return []string{idWordsOf(base, m.CredentialID), base.WordsOf(m.Host), approvedBy,
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 

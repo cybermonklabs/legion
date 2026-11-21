@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -703,7 +704,12 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := waitingOn(cipheraddr.New("https://broker.example"), row.approver, "", false); got != row.want {
+			var approver *redact.RemoteText
+			if row.approver != nil {
+				held := redact.NewRemoteText(*row.approver)
+				approver = &held
+			}
+			if got := waitingOn(cipheraddr.New("https://broker.example"), approver, redact.RemoteText{}, false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})
@@ -1150,7 +1156,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got, err := buildChildEnv(row.environ, map[string]string{"GRANT_ME": "released"}, row.release, testAirlockFiles)
+			got, err := buildChildEnv(row.environ, map[string]string{"GRANT_ME": "released"}, row.release, testAirlockFiles, releaseNames(map[string]string{"GRANT_ME": "released"}, row.release))
 			if err != nil {
 				t.Fatalf("buildChildEnv: %v", err)
 			}
@@ -1175,7 +1181,7 @@ func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 		"a lone carriage return": "sk-live-abc\r",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, err := buildChildEnv(nil, map[string]string{"GRANT_ME": value}, nil, airlockFiles{})
+			got, err := buildChildEnv(nil, map[string]string{"GRANT_ME": value}, nil, airlockFiles{}, []string{"GRANT_ME"})
 			if err != nil {
 				t.Fatalf("buildChildEnv: %v", err)
 			}

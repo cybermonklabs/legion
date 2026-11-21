@@ -17,8 +17,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // narrowingRules is each field of a narrowing (policy.NarrowingError's Field) as its refusal says
@@ -62,21 +64,35 @@ func githubNarrowing(owner string, ownerSet bool, repositories []string, readOnl
 // narrowedAsAsked checks that the broker applied asked to the release it answered with applied. A
 // broker from before narrowing ignores the release's body and answers no github_app, having
 // released the owner-wide tokens, which the command must not get in place of the narrowed one.
-// This check stays: a client can meet an older broker on every future independent rollout.
-func narrowedAsAsked(asked, applied *GitHubNarrowing) error {
+// This check stays: a client can meet an older broker on every future independent rollout. The
+// narrowing the broker answered is its text, compared as it came (applies), and the refusal
+// prints it as base lets the broker's words print: beside a clean address each field as the rule
+// reads it, with the credentials the release carried redacted (AppliedNarrowing marshals its
+// boxes so), and beside any other cipheraddr.WordsNotPrinted.
+func narrowedAsAsked(base cipheraddr.Address, asked *GitHubNarrowing, applied *AppliedNarrowing) error {
 	if asked == nil {
 		return nil
 	}
-	if applied != nil && applied.Owner == asked.Owner && slices.Equal(applied.Repositories, asked.Repositories) && applied.ReadOnly == asked.ReadOnly {
+	if applied != nil && applied.applies(asked) {
 		return nil
 	}
 	answered := "no narrowing, as a broker from before narrowing does when it releases the owner-wide token"
 	if applied != nil {
-		encoded, _ := json.Marshal(applied)
-		answered = string(encoded)
+		answered = cipheraddr.WordsNotPrinted
+		if base.Clean() {
+			encoded, _ := json.Marshal(applied)
+			answered = string(encoded)
+		}
 	}
 	encoded, _ := json.Marshal(asked)
 	return fmt.Errorf("the broker did not narrow the GitHub App token to %s: it answered %s", encoded, answered)
+}
+
+// applies reports whether the broker's narrowing is asked: the same owner and repositories, each
+// compared as the broker wrote it (RemoteText.Equal), and the same read-only choice.
+func (n *AppliedNarrowing) applies(asked *GitHubNarrowing) bool {
+	return n.Owner.Equal(asked.Owner) && n.ReadOnly == asked.ReadOnly &&
+		slices.EqualFunc(n.Repositories, asked.Repositories, func(applied redact.RemoteText, repository string) bool { return applied.Equal(repository) })
 }
 
 // githubTokenPattern matches the GitHub token forms (installation, OAuth, user-to-server,
@@ -159,8 +175,10 @@ func githubTokensOf(value string) (tokens map[string]string, ok bool) {
 // for the same run without the flag, whose child reads the token out of the JSON object. A grant
 // with no release at all is a flag that does nothing, and the caller would learn of it only at
 // GitHub's 401. Each refusal names the secret or the names it read, the accounts and the flag,
-// and no part of any token.
-func githubTokensAlone(values map[string]string) error {
+// and no part of any token. A name it prints is one this run asked for (asked), as the person
+// typed it: a released name is a key of the broker's answer, which no record holds, so a name the
+// release holds that this run did not ask for is counted and not printed (releasedName).
+func githubTokensAlone(values map[string]string, asked []string) error {
 	names := slices.Sorted(maps.Keys(values))
 	// The releases are rewritten only once the walk found no reason to refuse, so a refusal
 	// leaves the caller's values as they were rather than half rewritten.
@@ -176,14 +194,14 @@ func githubTokensAlone(values map[string]string) error {
 			if len(accounts) > 0 {
 				held = fmt.Sprintf("%d installations (%s)", len(accounts), strings.Join(accounts, ", "))
 			}
-			return fmt.Errorf("--github-token hands over one installation's token, and the release of %s holds %s: ask again with a narrowing that leaves one installation, or without --github-token, and read the token out of the JSON object the release hands over", name, held)
+			return fmt.Errorf("--github-token hands over one installation's token, and the release of %s holds %s: ask again with a narrowing that leaves one installation, or without --github-token, and read the token out of the JSON object the release hands over", releasedName(name, asked), held)
 		}
 		alone[name] = tokens[accounts[0]]
 	}
 	if len(alone) == 0 {
 		read := "no value at all"
 		if len(names) > 0 {
-			read = strings.Join(names, ", ")
+			read = releasedNames(names, asked)
 		}
 		return fmt.Errorf("--github-token hands over a GitHub App installation token, and the grant released none: it read %s", read)
 	}

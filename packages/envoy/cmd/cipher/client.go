@@ -388,17 +388,25 @@ type SecretDecision struct {
 // "GCLOUD_DEMO: requester-not-listed" — which every line this CLI prints about a refusal carries,
 // so a session reads that asking again will not help; nil when the broker recorded none, and from
 // a broker from before the field.
+//
+// Each member a line prints - the ids, the state, the approver, the page and the detail - is the
+// broker's text, or the text of whatever answers in its place, which can echo the request it was
+// sent: its Proof header, the signed request object. Each is held as redact.RemoteText, which
+// Answer.Decode holds with that request's record, so it prints only as the rule reads it with
+// those credentials redacted, is told apart as it came (Equal), and an id goes back to the broker
+// only as RemoteText.SendBack answers it. Secrets and RecordID print nowhere, and stay as they
+// came.
 type RequestResult struct {
-	RequestID       string           `json:"request_id"`
-	State           string           `json:"state"`
-	Secrets         []SecretDecision `json:"secrets"`
-	GrantID         *string          `json:"grant_id"`
-	RecordID        *string          `json:"record_id"`
-	Approver        *string          `json:"approver"`
-	LifetimeSeconds *int             `json:"lifetime_seconds"`
-	Coalesced       bool             `json:"coalesced,omitempty"`
-	Detail          *string          `json:"detail"`
-	ApproveURL      string           `json:"approve_url"`
+	RequestID       redact.RemoteText  `json:"request_id"`
+	State           redact.RemoteText  `json:"state"`
+	Secrets         []SecretDecision   `json:"secrets"`
+	GrantID         *redact.RemoteText `json:"grant_id"`
+	RecordID        *string            `json:"record_id"`
+	Approver        *redact.RemoteText `json:"approver"`
+	LifetimeSeconds *int               `json:"lifetime_seconds"`
+	Coalesced       bool               `json:"coalesced,omitempty"`
+	Detail          *redact.RemoteText `json:"detail"`
+	ApproveURL      redact.RemoteText  `json:"approve_url"`
 	// JudgeDeciding is true while the model judge holds the request: no person is asked unless
 	// the judge cannot decide it, and the answer then carries ApproveURL. Such a request carries
 	// no page while it is held.
@@ -493,23 +501,27 @@ func (c *client) postRequest(ctx context.Context, signer Signer, build func(rere
 	return result, answer, nil
 }
 
+// requestDecision is who decided a request and when. By is the broker's text, held as
+// RequestResult's members are.
 type requestDecision struct {
-	By string    `json:"by"`
-	At time.Time `json:"at"`
+	By redact.RemoteText `json:"by"`
+	At time.Time         `json:"at"`
 }
 
 // RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
-// and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
+// and so is Detail: the broker's own sentence about the refusal, nil when it recorded none. Each
+// member a line prints is held as RequestResult's are, with the record of the read's request;
+// RecordID prints nowhere.
 type RequestStatus struct {
-	State         string           `json:"state"`
-	GrantID       *string          `json:"grant_id"`
-	RecordID      *string          `json:"record_id"`
-	Approver      *string          `json:"approver"`
-	DecidedAt     *time.Time       `json:"decided_at"`
-	Decision      *requestDecision `json:"decision"`
-	Detail        *string          `json:"detail"`
-	ApproveURL    string           `json:"approve_url"`
-	JudgeDeciding bool             `json:"judge_deciding"`
+	State         redact.RemoteText  `json:"state"`
+	GrantID       *redact.RemoteText `json:"grant_id"`
+	RecordID      *string            `json:"record_id"`
+	Approver      *redact.RemoteText `json:"approver"`
+	DecidedAt     *time.Time         `json:"decided_at"`
+	Decision      *requestDecision   `json:"decision"`
+	Detail        *redact.RemoteText `json:"detail"`
+	ApproveURL    redact.RemoteText  `json:"approve_url"`
+	JudgeDeciding bool               `json:"judge_deciding"`
 }
 
 // refusedBeforeCall is a refusal this client made before it sent anything, so refusalText adds
@@ -565,23 +577,36 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 // --- POST /v1/grants/{id}/values, POST /v1/grants/{id}/revoke ---
 
 // GitHubNarrowing is POST /v1/grants/{id}/values's github_app object: one release's narrowing of
-// its GitHub App tokens, as the request names it and as the answer names what the broker applied.
-// POST /v1/requests takes the same object, where it says which narrowing the release will ask
-// for, so the broker checks it before a person is asked to approve the request.
+// its GitHub App tokens, as the request names it; the answer names what the broker applied as an
+// AppliedNarrowing. POST /v1/requests takes the same object, where it says which narrowing the
+// release will ask for, so the broker checks it before a person is asked to approve the request.
 type GitHubNarrowing struct {
 	Owner        string   `json:"owner"`
 	Repositories []string `json:"repositories,omitempty"`
 	ReadOnly     bool     `json:"read_only,omitempty"`
 }
 
+// AppliedNarrowing is the github_app object of POST /v1/grants/{id}/values's answer: the
+// narrowing the broker applied to the release's GitHub App tokens. Its owner and repositories are
+// the broker's text, or the text of whatever answers in its place, which can echo the release's
+// Proof header: each is held as redact.RemoteText with that request's record, so narrowedAsAsked
+// compares them as they came (applies) and its refusal prints them only as the rule reads them.
+type AppliedNarrowing struct {
+	Owner        redact.RemoteText   `json:"owner"`
+	Repositories []redact.RemoteText `json:"repositories,omitempty"`
+	ReadOnly     bool                `json:"read_only,omitempty"`
+}
+
 // GrantValues is POST /v1/grants/{id}/values's exact response shape. GitHubApp is the narrowing
 // the broker applied: nil when it applied none, and always from a broker from before narrowing.
 // Airlock is how to reach the values this release did not hand over, nil when every granted name
-// was handed over — which is every release of a broker with no rules file.
+// was handed over — which is every release of a broker with no rules file. The keys of Values and
+// of Airlock.Names are the broker's text too, and encoding/json decodes a key into no
+// redact.RemoteText: a line names one only where this run asked for it (releasedName).
 type GrantValues struct {
 	Values    map[string]string `json:"values"`
 	ExpiresAt *time.Time        `json:"expires_at"`
-	GitHubApp *GitHubNarrowing  `json:"github_app"`
+	GitHubApp *AppliedNarrowing `json:"github_app"`
 	Airlock   *AirlockRelease   `json:"airlock"`
 }
 
@@ -693,21 +718,23 @@ func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string)
 
 // --- GET /v1/enrollments/self, POST /v1/enrollments/{id}/renew ---
 
-// Grant mirrors requests.Grant's wire shape.
+// Grant mirrors requests.Grant's wire shape. Its ids print, and are held as RequestResult's
+// members are; Approver prints nowhere.
 type Grant struct {
-	GrantID   string     `json:"grant_id"`
-	RequestID string     `json:"request_id"`
-	Approver  *string    `json:"approver"`
-	ExpiresAt *time.Time `json:"expires_at"`
+	GrantID   redact.RemoteText `json:"grant_id"`
+	RequestID redact.RemoteText `json:"request_id"`
+	Approver  *string           `json:"approver"`
+	ExpiresAt *time.Time        `json:"expires_at"`
 }
 
-// SelfResult is GET /v1/enrollments/self's exact response shape.
+// SelfResult is GET /v1/enrollments/self's exact response shape. Each member self prints is held
+// as RequestResult's members are, with the record of the read's request.
 type SelfResult struct {
-	EnrollmentID   string    `json:"enrollment_id"`
-	Kind           string    `json:"kind"`
-	Operator       *string   `json:"operator"`
-	LeaseExpiresAt time.Time `json:"lease_expires_at"`
-	Grants         []Grant   `json:"grants"`
+	EnrollmentID   redact.RemoteText  `json:"enrollment_id"`
+	Kind           redact.RemoteText  `json:"kind"`
+	Operator       *redact.RemoteText `json:"operator"`
+	LeaseExpiresAt time.Time          `json:"lease_expires_at"`
+	Grants         []Grant            `json:"grants"`
 }
 
 func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, *redact.Answer, error) {
@@ -754,15 +781,16 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // GET /v1/operator/grants, POST /v1/operator/grants/{id}/revoke (launcher proof) ---
 
 // OperatorMachine mirrors one machine login in GET /v1/operator/machines, the broker's
-// launcherCredentialResp.
+// launcherCredentialResp. The members machineRow prints are held as RequestResult's members are,
+// with the record of the list's launcher-proof request; Service prints nowhere.
 type OperatorMachine struct {
-	CredentialID string    `json:"credential_id"`
-	Host         string    `json:"host"`
-	Service      *string   `json:"service"`
-	ApprovedBy   string    `json:"approved_by"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Expired      bool      `json:"expired"`
+	CredentialID redact.RemoteText `json:"credential_id"`
+	Host         redact.RemoteText `json:"host"`
+	Service      *string           `json:"service"`
+	ApprovedBy   redact.RemoteText `json:"approved_by"`
+	IssuedAt     time.Time         `json:"issued_at"`
+	ExpiresAt    time.Time         `json:"expires_at"`
+	Expired      bool              `json:"expired"`
 }
 
 // OperatorMachines is GET /v1/operator/machines's exact response shape.
@@ -796,30 +824,33 @@ func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, 
 	return withoutTypedID(err, "/v1/operator/machines/(the machine id, not printed)/revoke")
 }
 
-// OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp.
+// OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp, each
+// member held as OperatorGrant's are.
 type OperatorGrantEnrollment struct {
-	Kind      string  `json:"kind"`
-	RuntimeID string  `json:"runtime_id"`
-	Operator  string  `json:"operator"`
-	Slot      *string `json:"slot"`
+	Kind      redact.RemoteText  `json:"kind"`
+	RuntimeID redact.RemoteText  `json:"runtime_id"`
+	Operator  redact.RemoteText  `json:"operator"`
+	Slot      *redact.RemoteText `json:"slot"`
 }
 
-// OperatorGrant mirrors one grant in GET /v1/operator/grants, the broker's approverGrantResp.
+// OperatorGrant mirrors one grant in GET /v1/operator/grants, the broker's approverGrantResp. The
+// members grantRow prints are held as RequestResult's members are, with the record of the list's
+// launcher-proof request; RecordID prints nowhere.
 type OperatorGrant struct {
-	GrantID    string                  `json:"grant_id"`
-	Granted    string                  `json:"granted"`
+	GrantID    redact.RemoteText       `json:"grant_id"`
+	Granted    redact.RemoteText       `json:"granted"`
 	RecordID   *string                 `json:"record_id"`
 	Enrollment OperatorGrantEnrollment `json:"enrollment"`
-	Names      []string                `json:"names"`
-	Approver   *string                 `json:"approver"`
+	Names      []redact.RemoteText     `json:"names"`
+	Approver   *redact.RemoteText      `json:"approver"`
 	// DecidedBy is who decided the request this grant rests on: the approving person's own
 	// login, or "judge:<model id>" where the model judge approved it in that person's stead.
 	// Null for an automatic grant, which nobody decided. It differs from Approver for a judged
 	// grant alone, which records the record's own approver — the secret's owner, or anyone —
 	// and that is what makes the two worth printing side by side.
-	DecidedBy *string    `json:"decided_by"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	CreatedAt time.Time  `json:"created_at"`
+	DecidedBy *redact.RemoteText `json:"decided_by"`
+	ExpiresAt *time.Time         `json:"expires_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 // OperatorGrants is GET /v1/operator/grants's exact response shape.
