@@ -209,7 +209,6 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 			t.Fatalf("%s is not on PATH: %v", tool, err)
 		}
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.

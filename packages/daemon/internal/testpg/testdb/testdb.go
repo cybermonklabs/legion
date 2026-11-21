@@ -200,12 +200,11 @@ func RandomName(prefix string) (string, error) {
 
 // DatabaseURL is the URL of database on the server dsn names: dsn with its path replaced, so the
 // URL keeps dsn's query. Every database a test binary of this module names from
-// LEGION_TEST_PG_DSN is named here — create above, internal/testpg's prepare and Clone, and the
-// live proofs' takeOwnDatabase (internal/daemon/live_agent_proof_test.go) — so one place reads
-// each rewrite back, and no caller checks itself. Delayed's proxy URL and PoolBounded's pool size
-// are the other rewrites of a DSN this package makes, and they take the same check (rewriteDSN
-// below). dsn is what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a
-// refusal names it.
+// LEGION_TEST_PG_DSN is named here — create above, and internal/testpg's prepare and Clone — so
+// one place reads each rewrite back, and no caller checks itself. Delayed's proxy URL and
+// PoolBounded's pool size are the other rewrites of a DSN this package makes, and they take the
+// same check (rewriteDSN below). dsn is what LEGION_TEST_PG_DSN holds, which every caller read
+// from that variable, and a refusal names it.
 //
 // A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
 // reads another database from than database. Go's net/url ends the user name at the last `@` and
