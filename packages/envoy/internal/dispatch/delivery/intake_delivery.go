@@ -65,8 +65,10 @@ type intakeDelivery struct {
 	// sealed is set once no hand-back of this delivery may begin any more: at the end of its stop,
 	// and when its hold is lost (seal). A hand-back is admitted and counted in publishing in one step
 	// with reading it (admitHandBack), so every hand-back is either counted before the seal, and the
-	// hold's release waits for it, or never published.
-	sealed bool
+	// hold's release waits for it, or never published. sealedSignal is closed as sealed is set, for
+	// the delivery's loss watcher (heldDurable.watchLoss).
+	sealed       bool
+	sealedSignal chan struct{}
 	// settled is set once the hold is released with every hand-back confirmed (markSettled).
 	settled bool
 
@@ -97,7 +99,7 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 	handling, abandon := context.WithCancel(context.Background())
 	delivery := &intakeDelivery{
 		nats: d.nats, key: d.key, hold: d.hold, subject: deliverSubject,
-		handling: handling, abandon: abandon,
+		handling: handling, abandon: abandon, sealedSignal: make(chan struct{}),
 	}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
 	wanted := d.config()
@@ -472,6 +474,11 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 // recreated. A hold lost meanwhile seals the delivery and severs the connection that carries a
 // hand-back the server may not have yet (heldDurable.severHandBacks), so that none reaches the
 // server after the hold has lapsed.
+//
+// Each hand-back marks the client's connection before its publish (bus.Client.MarkUnconfirmed),
+// until a flush on that same connection confirms it (heldDurable.handBacksSettled): a socket that
+// closes meanwhile -- at shutdown, or given up as stale before a reconnect -- is reset, so bytes of
+// the hand-back still in its kernel send queue are discarded rather than sent after the release.
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()
@@ -480,8 +487,10 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 		slog.Info(handBackSealed, "subject", msg.Subject)
 		return
 	}
+	written := d.nats.MarkUnconfirmed()
 	callNATS("hand a message back for redelivery", func() (struct{}, error) {
 		defer func() {
+			written()
 			d.mu.Lock()
 			d.publishing--
 			if d.publishing == 0 {
@@ -522,7 +531,11 @@ func (d *intakeDelivery) admitHandBack() bool {
 func (d *intakeDelivery) seal() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.sealed {
+		return
+	}
 	d.sealed = true
+	close(d.sealedSignal)
 }
 
 // handBacksLanded is closed once no hand-back publish of this delivery is still waiting for NATS

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 	"weak"
 
 	"github.com/nats-io/nats.go"
@@ -32,6 +33,13 @@ type severableDialer struct {
 	mu      sync.Mutex
 	open    []weak.Pointer[severableConn]
 	severed bool
+	// marks counts the writes callers marked (mark), unwritten those of them not yet handed to
+	// nats.go, and marking is set from a mark until a flush confirms every marked write
+	// (confirmMarks). Every socket the dialer holds or hands out while marking is set is marked
+	// (severableConn.marked), so it is reset rather than closed.
+	marks     uint64
+	unwritten int
+	marking   bool
 }
 
 func newSeverableDialer(dial func(ctx context.Context, network, address string) (net.Conn, error)) *severableDialer {
@@ -57,6 +65,7 @@ func (d *severableDialer) Dial(network, address string) (net.Conn, error) {
 	kept := &severableConn{Conn: conn, socket: socket}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	kept.marked = d.marking
 	if d.severed {
 		reset(socket)
 		return nil, errSevered
@@ -87,17 +96,72 @@ func (d *severableDialer) sever() {
 	}
 }
 
-// severableConn is a net.Conn severableDialer handed nats.go, with the TCP socket under it. A
-// socket whose write failed is reset when it is closed (reset): nats.go gives up a connection whose
-// write failed, and what the kernel still holds of it is part of an operation nats.go will not
-// finish, which a normal close would go on sending once the link moves. A close after writes that
-// succeeded, nats.go's own Close after its final flush among them, is a normal close.
+// mark marks every socket the dialer holds, and every one it hands out until a flush confirms the
+// mark (confirmMarks), as carrying a write the server has not confirmed. written records that the
+// marked write has been handed to nats.go, or has failed.
+func (d *severableDialer) mark() (written func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.marks++
+	d.unwritten++
+	d.marking = true
+	for _, ref := range d.open {
+		if conn := ref.Value(); conn != nil {
+			conn.setMarked(true)
+		}
+	}
+	return sync.OnceFunc(func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.unwritten--
+	})
+}
+
+// markState is what a flush that confirms the marks (confirmMarks) read before it began.
+type markState struct {
+	marks     uint64
+	unwritten int
+}
+
+func (d *severableDialer) markState() markState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return markState{marks: d.marks, unwritten: d.unwritten}
+}
+
+// confirmMarks clears the marks once a flush that began at before has answered, when every marked
+// write had been handed to nats.go by then and no write has been marked since: each was then
+// written ahead of the flush's PING, on the socket the flush answered on or on one closed before
+// it, which its mark reset. A write marked since, or one still to be written, keeps them.
+func (d *severableDialer) confirmMarks(before markState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if before.unwritten != 0 || d.marks != before.marks {
+		return
+	}
+	d.marking = false
+	for _, ref := range d.open {
+		if conn := ref.Value(); conn != nil {
+			conn.setMarked(false)
+		}
+	}
+}
+
+// severableConn is a net.Conn severableDialer handed nats.go, with the TCP socket under it. Its close
+// is a reset (reset) when its write failed or while it is marked as carrying a write the server has
+// not confirmed (severableDialer.mark): what the kernel still holds of it would otherwise go on being
+// sent once the link moves, after nats.go had given the connection up. nats.go gives up a connection
+// whose write failed, and one it declares stale, closing its socket with no failed write
+// (processOpErr), as it closes its socket at Close after its final flush. A close of a socket with
+// no failed write and no mark is a normal close, so every client that marks nothing closes as it
+// always did.
 type severableConn struct {
 	net.Conn
 	socket net.Conn
 
 	mu          sync.Mutex
 	writeFailed bool
+	marked      bool
 }
 
 func (c *severableConn) Write(b []byte) (int, error) {
@@ -110,11 +174,17 @@ func (c *severableConn) Write(b []byte) (int, error) {
 	return n, err
 }
 
+func (c *severableConn) setMarked(marked bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.marked = marked
+}
+
 func (c *severableConn) Close() error {
 	c.mu.Lock()
-	failed := c.writeFailed
+	resetting := c.writeFailed || c.marked
 	c.mu.Unlock()
-	if failed {
+	if resetting {
 		reset(c.socket)
 	}
 	return c.Conn.Close()
@@ -166,4 +236,50 @@ func (c *Client) Sever() {
 		current.dialer.sever()
 	}
 	current.conn.Close()
+}
+
+// MarkUnconfirmed marks the client's connection as about to carry a write whose arrival the caller
+// must know of before it lets another process act, for a caller that calls it before the write and
+// written once nats.go has taken the write or refused it. Until a flush confirms the write
+// (ConfirmMarked), each socket of the connection -- the one it has, and each one nats.go dials to
+// reconnect -- is reset rather than closed (severableConn): at Close, and when nats.go declares the
+// connection stale and reconnects. So the write is either confirmed, or discarded with the socket that
+// still held it in its kernel send queue, and never sent after the caller went on. A client with no
+// connection marks nothing.
+func (c *Client) MarkUnconfirmed() (written func()) {
+	current := c.severable.Load()
+	if current == nil || current.dialer == nil {
+		return func() {}
+	}
+	return current.dialer.mark()
+}
+
+// ConfirmMarked reports whether no write marked on the client's connection (MarkUnconfirmed) and
+// taken by nats.go before the call can reach the server later: the connection is closed, which reset
+// every marked socket, or a flush of it answered within timeout. A flush answers on the socket its
+// PING went out on and on no other, since nats.go fails every flush pending as it gives a socket up
+// (processOpErr), and each marked write went out ahead of that PING on the same socket, or on an
+// older one its mark reset as it closed. So a flush on a newer socket confirms nothing an older one
+// can still send. A flush that answers clears the marks, unless a write was marked since it began or
+// one marked before had not been taken yet (severableDialer.confirmMarks). It reads the connection
+// without the client's lock (severable).
+func (c *Client) ConfirmMarked(timeout time.Duration) bool {
+	current := c.severable.Load()
+	if current == nil {
+		return true
+	}
+	var before markState
+	if current.dialer != nil {
+		before = current.dialer.markState()
+	}
+	if current.conn.IsClosed() {
+		return true
+	}
+	if current.conn.FlushTimeout(timeout) != nil {
+		return false
+	}
+	if current.dialer != nil {
+		current.dialer.confirmMarks(before)
+	}
+	return true
 }
