@@ -221,11 +221,12 @@ func ownAccountServer(t *testing.T, accounts int) *accountServer {
 	return startAccountServer(t, accounts)
 }
 
-// A server whose accounts are all handed out declares twice as many by a reload and hands out the
-// next, and an account a test is still using keeps its connection and its watcher across the
-// reload.
-func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) {
+// A server whose accounts are all handed out is left to the tests that hold them: the next account
+// is on a server started for it, the full server is never reloaded, and an account a test is still
+// using on it keeps its connection and its watcher.
+func TestAServerOutOfAccountsHandsTheNextOutFromAServerOfItsOwn(t *testing.T) {
 	server := ownAccountServer(t, 2)
+	full := server.srv
 	live := Connect(t, server.url(namedTB{t, "live"}))
 	defer live.Close()
 	js, err := live.JetStream()
@@ -247,25 +248,99 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 
 	server.url(namedTB{t, "second"})
 	third := server.url(namedTB{t, "third"})
-	if server.declared != 4 {
-		t.Fatalf("the server declares %d accounts after handing out its third, want 4", server.declared)
+	if server.srv == full {
+		t.Fatal("the third test's account is on the server whose two accounts were handed out")
 	}
-	if want := fmt.Sprintf("nats://t3:t3@%s", server.host); third != want {
-		t.Fatalf("the third test's URL is %q, want %q", third, want)
+	if want := fmt.Sprintf("nats://t1:t1@%s", strings.TrimPrefix(server.srv.URL(), "nats://")); third != want {
+		t.Fatalf("the third test's URL is %q, want %q, the first account of the next server", third, want)
 	}
-	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
-		t.Fatalf("put after the reload: %v", err)
+	if strings.Contains(full.Log(), "Reloaded server configuration") {
+		t.Fatalf("the full server was reloaded:\n%s", full.Log())
+	}
+	if _, err := kv.Put("after-the-next-server", []byte("1")); err != nil {
+		t.Fatalf("put after the next server started: %v", err)
 	}
 	select {
 	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-reload" {
-			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
+		if entry == nil || entry.Key() != "after-the-next-server" {
+			t.Fatalf("the watcher delivered %v after the next server started, want the put", entry)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the reload")
+		t.Fatal("the watcher of an account in use delivered nothing after the next server started")
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
-		t.Fatalf("the connection of an account in use is %v after the reload, want CONNECTED", status)
+		t.Fatalf("the connection of an account in use is %v after the next server started, want CONNECTED", status)
+	}
+}
+
+// A server that hands accounts to many tests refuses a Reload: it fails the test that asked,
+// naming the server, and goes on serving the configuration it had.
+func TestAServerOtherTestsUseRefusesAReload(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	uri := server.url(namedTB{t, "holder"})
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.srv.Reload(refused, accountsConfig(2))
+	}()
+	<-done
+	if want := fmt.Sprintf("a reload of the NATS server at %s, which other tests use", server.srv.URL()); !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+	}
+	if strings.Contains(server.srv.Log(), "Reloaded server configuration") {
+		t.Fatalf("the server reloaded:\n%s", server.srv.Log())
+	}
+	Connect(t, uri).Close()
+}
+
+// A Reload once a client has sent the server a direct get fails the test, naming the count, and
+// leaves the server as it was with its clients let through: nats-server's answer to a direct get
+// races a reload (Server.Reload). A Reload before the first direct get reloads, and so does one of
+// a server a Stop and a Start made anew, which counts afresh.
+func TestAReloadAfterADirectGetFailsNamingIt(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "reloaded"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("k", []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("a reload before any direct get: %v", err)
+	}
+	if _, err := kv.Get("k"); err != nil {
+		t.Fatalf("direct get: %v", err)
+	}
+
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Reload(refused, hostOnlyConfig)
+	}()
+	<-done
+	if want := fmt.Sprintf("a reload of the NATS server at %s, whose clients have sent it direct gets (1)", uri); !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload after a direct get ended with %q, want it to say %q", refused.message, want)
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != 1 {
+		t.Fatalf("the server reloaded %d times, want once, before the direct get", reloads)
+	}
+	if _, err := kv.Get("k"); err != nil {
+		t.Fatalf("a direct get after the refused reload, which must let the clients through: %v", err)
+	}
+
+	server.Stop(t)
+	server.Start(t)
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("a reload of the restarted server, which no client has sent a direct get: %v", err)
 	}
 }
 

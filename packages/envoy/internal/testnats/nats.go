@@ -12,13 +12,15 @@
 // test runs. The relay listens on a loopback address of its own (testport.LoopbackIP), so a client
 // another test left dialing its own server's old address cannot reach it after that test.
 //
-// A package's tests share one server rather than start one each, and each test gets it as the user
+// A package's tests share servers rather than start one each, and each test gets one as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
 // stream another test made. nats-server moves a deleted stream's directory aside and removes it
 // from a background goroutine; a second delete of the same name before that goroutine has run
 // leaves the stream's files where they were while it answers success, and the next create of that
 // name recovers the deleted stream's messages. Every account keeps its streams in a directory of
-// its own, so the names one test uses cannot reach another.
+// its own, so the names one test uses cannot reach another. No test reloads a server another test
+// uses (Server.Reload says why): a shared server that has handed out every account it declares is
+// left to the tests that hold them, and the next test's account is on a server started for it.
 package testnats
 
 import (
@@ -66,14 +68,12 @@ var (
 	sharedCleanup *sharedTB
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
-// one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
-const firstAccounts = 256
+// serverAccounts is how many accounts each server of an account server declares. A server's start
+// time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000),
+// so a package whose tests take more accounts than that gets more servers of this size rather than
+// a larger one: each start costs the same, and one more server costs one more relay port and the
+// server's own two (client and monitoring).
+const serverAccounts = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -115,7 +115,7 @@ func URL(t testing.TB) string {
 	}
 	sharedOnce.Do(func() {
 		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
+		shared = startAccountServer(sharedCleanup, serverAccounts)
 	})
 	if shared == nil {
 		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
@@ -123,8 +123,9 @@ func URL(t testing.TB) string {
 	return shared.url(t)
 }
 
-// sharedTB stands in for the test that first asks for the package's shared server. That server
-// outlives the test, so the cleanup start registers on it runs from Main, after the last test, and
+// sharedTB stands in for a test whose ask starts a server that outlives it: the package's shared
+// server (URL), or the next server of an account server (accountServer.url). The cleanup start
+// registers on it runs later, from Main after the last test or when the account server ends, and
 // what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that has already
 // ended panics.
 type sharedTB struct {
@@ -140,37 +141,59 @@ func (s *sharedTB) Errorf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
-// run runs the cleanups the shared server registered, the most recent first, as testing does.
+// run runs the cleanups the server registered, the most recent first, as testing does.
 func (s *sharedTB) run() {
 	for i := len(s.cleanups) - 1; i >= 0; i-- {
 		s.cleanups[i]()
 	}
 }
 
-// accountServer is a NATS server that hands each test a JetStream account no earlier test used.
+// accountServer hands each test a JetStream account no earlier test used. Its accounts are on
+// servers that each declare accounts accounts, and only the newest of them hands accounts out: once
+// it has handed out every one, the next test's account is on a server the account server starts
+// for that test, and the full one goes on serving the tests that hold its accounts until the
+// account server ends. No server of it is ever reloaded to declare more, since a reload races the
+// direct gets of every test the server serves (Server.Reload).
 type accountServer struct {
-	srv  *Server
-	host string
+	accounts int
 
 	mu sync.Mutex
-	// declared is how many accounts the server's configuration declares, and handedOut how many of
-	// them it has handed to a test. handedOut only grows: an account is never handed out twice.
-	declared  int
+	// srv is the server handing accounts out, host its client address, and handedOut how many of
+	// its accounts it has handed to a test. handedOut only grows while srv is the same server: an
+	// account is never handed out twice.
+	srv       *Server
+	host      string
 	handedOut int
+	// started stands in for each test whose ask started a server after the first. The server
+	// outlives that test, so what start registered on it runs when the account server ends.
+	started []*sharedTB
 	// holders maps each test holding an account to that account's URL.
 	holders map[string]string
 }
 
-// startAccountServer starts a server declaring accounts accounts, removed when t ends.
+// startAccountServer starts an account server whose servers declare accounts accounts each, every
+// one of them shut down and removed when t ends.
 func startAccountServer(t testing.TB, accounts int) *accountServer {
 	t.Helper()
-	srv := start(t, accountsConfig(accounts), []string{"-js"})
-	return &accountServer{
-		srv:      srv,
-		host:     strings.TrimPrefix(srv.URL(), "nats://"),
-		declared: accounts,
-		holders:  map[string]string{},
-	}
+	s := &accountServer{accounts: accounts, holders: map[string]string{}}
+	s.serve(start(t, accountsConfig(accounts), []string{"-js"}))
+	t.Cleanup(func() {
+		for i := len(s.started) - 1; i >= 0; i-- {
+			starter := s.started[i]
+			starter.run()
+			if starter.failed {
+				t.Errorf("the NATS server started for %s did not shut down cleanly: its errors are above", starter.Name())
+			}
+		}
+	})
+	return s
+}
+
+// serve makes srv the server that hands accounts out, none of them handed out yet. srv is shared:
+// it refuses a Reload.
+func (s *accountServer) serve(srv *Server) {
+	srv.shared = true
+	s.srv, s.host, s.handedOut = srv, strings.TrimPrefix(srv.URL(), "nats://"), 0
 }
 
 // url is URL on s.
@@ -181,16 +204,17 @@ func (s *accountServer) url(t testing.TB) string {
 	if uri, ok := s.holders[t.Name()]; ok {
 		return uri
 	}
-	if s.handedOut == s.declared {
-		if err := s.srv.Reload(t, accountsConfig(2*s.declared)); err != nil {
-			t.Fatalf("NATS refused %d accounts: %v", 2*s.declared, err)
-		}
-		s.declared *= 2
+	if s.handedOut == s.accounts {
+		// A start that fails fails t, the test that asked; the account server's cleanup still
+		// removes what the start set up.
+		starter := &sharedTB{TB: t}
+		s.started = append(s.started, starter)
+		s.serve(start(starter, accountsConfig(s.accounts), []string{"-js"}))
 	}
 	s.handedOut++
 	account := s.handedOut
 	uri := fmt.Sprintf("nats://t%d:t%d@%s", account, account, s.host)
-	// Wait for the account to answer, after the start or the reload that declared it.
+	// Wait for the account to answer, after the start that declared it.
 	Connect(t, uri).Close()
 	name := t.Name()
 	s.holders[name] = uri
@@ -255,11 +279,17 @@ type Server struct {
 	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
+	// shared marks a server that hands JetStream accounts to many tests (accountServer): no test
+	// owns it, so none may reload it (Reload).
+	shared bool
 
 	mu        sync.Mutex
 	srv       *natsserver.Server
 	jetStream bool
 	monitor   string
+	// directGetsAtLaunch is the relay's count of direct gets when the running nats-server
+	// started: the ones past it reached this nats-server (Reload).
+	directGetsAtLaunch int64
 }
 
 // URL is the server's client URL, which stays the same across every Stop and Start: it names the
@@ -394,10 +424,27 @@ func (s *Server) Freeze(t testing.TB) func() {
 // relay lets the clients' bytes through. Each client keeps its connection and sees its messages
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
 // own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
+//
+// The hold does not keep a reload clear of the direct gets the server answered before it.
+// nats-server (v2.11.4 through v2.15.3, and its main at a0385c9af342 of 2026-11-20) reads its
+// options' MaxPending without the lock setOpts writes them under, as it answers a direct get
+// (getDirectRequest and getDirectMulti, stream.go:6365 and 6236 in v2.15.1; reported as
+// nats-io/nats-server#8914). The hold orders that read before the reload in time, but not for the
+// race detector, as the importing account's lock orders the read above: -race reported a reload of
+// the shared server, hold and all, against another test's KV get (envoy-go-race at
+// cybermonklabs/legion#3924's 6591974b), and a reload of a test's own server that came after 100
+// KV gets on it. So Reload fails t, and leaves the server as it was, once a client of the running
+// server has sent a direct get (the relay counts them, as its clients publish to
+// $JS.API.DIRECT.GET.>): a test reloads its server before its clients' first direct get. A
+// server that hands JetStream accounts to many tests (accountServer), whose direct gets come from
+// other tests at any time, refuses every reload.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
+	if s.shared {
+		t.Fatalf("testnats: a reload of the NATS server at %s, which other tests use: it races the direct gets the server answers them (Server.Reload); reload a server of the test's own", s.url)
+	}
 	s.mu.Lock()
-	srv, jetStream := s.srv, s.jetStream
+	srv, jetStream, launched := s.srv, s.jetStream, s.directGetsAtLaunch
 	s.mu.Unlock()
 	if srv == nil {
 		t.Fatal("reload the configuration of a NATS server that is not running")
@@ -425,6 +472,11 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	if err != nil {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
+	}
+	// With the clients held, no direct get can reach the server before the reload.
+	if gets := s.relay.directGetsSent() - launched; gets > 0 {
+		release()
+		t.Fatalf("testnats: a reload of the NATS server at %s, whose clients have sent it direct gets (%d): it races them (Server.Reload); reload it before the test's first direct get", s.url, gets)
 	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
@@ -622,6 +674,7 @@ func (s *Server) launch(t testing.TB) {
 	defer s.mu.Unlock()
 	s.srv = srv
 	s.jetStream = opts.JetStream
+	s.directGetsAtLaunch = s.relay.directGetsSent()
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
 	}

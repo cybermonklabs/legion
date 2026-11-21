@@ -41,6 +41,9 @@ type relay struct {
 	moved  *sync.Cond
 	// joins are the connections of a client port's relay that the server has not yet closed.
 	joins map[*joined]struct{}
+	// directGets counts the direct gets the relay's clients have sent the server, over the relay's
+	// whole life and every connection it joined (Server.Reload).
+	directGets int64
 }
 
 // joined is one connection a client port's relay joins to the server: upstream is the relay's own
@@ -306,9 +309,18 @@ func (r *relay) enter(j *joined, data []byte) int {
 // leave ends the write to the server that enter began, which carried written.
 func (r *relay) leave(j *joined, written []byte) {
 	r.mu.Lock()
+	before := j.sent.directGets
 	j.sent.wrote(written)
+	r.directGets += j.sent.directGets - before
 	j.writing = false
 	r.mu.Unlock()
+}
+
+// directGetsSent is how many direct gets the relay's clients have sent the server so far.
+func (r *relay) directGetsSent() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.directGets
 }
 
 // barrier sends the server a PING of the relay's own on each connection whose client has sent its
@@ -400,10 +412,17 @@ type protocolStream struct {
 	payload int
 	// broken is why the stream stopped reading as NATS protocol.
 	broken error
-	// connected says a client's stream has sent its CONNECT, and pings counts its PINGs.
-	connected bool
-	pings     int64
+	// connected says a client's stream has sent its CONNECT, pings counts its PINGs, and
+	// directGets its direct gets: the messages it published to a subject under
+	// directGetPrefix, which a stream that allows direct gets answers.
+	connected  bool
+	pings      int64
+	directGets int64
 }
+
+// directGetPrefix begins the subject of every direct get a client sends nats-server
+// ($JS.API.DIRECT.GET.<stream>, and .<subject> after it for the last message of a subject).
+var directGetPrefix = []byte("$JS.API.DIRECT.GET.")
 
 // atBoundary reports whether the stream so far ends between two operations.
 func (p *protocolStream) atBoundary() bool {
@@ -450,6 +469,10 @@ func (p *protocolStream) wrote(piece []byte) {
 			p.connected = true
 		case "PING":
 			p.pings++
+		case "PUB", "HPUB":
+			if fields := bytes.Fields(p.line); len(fields) > 1 && bytes.HasPrefix(fields[1], directGetPrefix) {
+				p.directGets++
+			}
 		}
 		p.payload, p.broken = payloadAfter(string(p.line), p.fromServer)
 		p.line = p.line[:0]

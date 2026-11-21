@@ -6,8 +6,9 @@ import (
 )
 
 // clientStream is a client's stream to the server with the operations the relay must see in it:
-// its CONNECT, two PINGs, and payloads that hold a whole PUB line, a PING line and a CRLF, which
-// are bytes of a message and none of those operations. It ends at the end of an operation.
+// its CONNECT, two PINGs, two direct gets (a PUB and an hpub), and payloads that hold a whole PUB
+// line, one to a direct-get subject among them, a PING line and a CRLF, which are bytes of a
+// message and none of those operations. It ends at the end of an operation.
 const clientStream = "CONNECT {\"verbose\":false,\"headers\":true}\r\nPING\r\n" +
 	"SUB _INBOX.reply 1\r\n" +
 	"PUB $JS.API.INFO _INBOX.reply.1 0\r\n\r\n" +
@@ -15,22 +16,26 @@ const clientStream = "CONNECT {\"verbose\":false,\"headers\":true}\r\nPING\r\n" 
 	"HPUB notes.headed _INBOX.reply.2 22 27\r\nNATS/1.0\r\nKey: one\r\n\r\nhello\r\n" +
 	"hpub notes.lower 12 12\r\nNATS/1.0\r\n\r\n\r\n" +
 	"pub notes.ping 6\r\nPING\r\n\r\n" +
+	"PUB $JS.API.DIRECT.GET.KV_b.$KV.b.k _INBOX.reply.3 0\r\n\r\n" +
+	"hpub $JS.API.DIRECT.GET.KV_b _INBOX.reply.4 12 21\r\nNATS/1.0\r\n\r\n{\"seq\":1}\r\n" +
+	"PUB notes.decoy 35\r\nPUB $JS.API.DIRECT.GET.KV_b.x 0\r\n\r\n\r\n" +
 	"ping\r\nUNSUB 1\r\nPONG\r\n"
 
-// The relay's record of a client's stream finds its CONNECT and its PINGs, and where each operation
-// ends, however the stream is cut: a hold stops a client only between two operations, and the
-// relay's own PING goes in there, so a boundary inside a payload would put the PING inside a
-// message, and a PING counted from a payload would leave the relay waiting for a PONG the server
-// never sends.
+// The relay's record of a client's stream finds its CONNECT, its PINGs and its direct gets, and
+// where each operation ends, however the stream is cut: a hold stops a client only between two
+// operations, and the relay's own PING goes in there, so a boundary inside a payload would put the
+// PING inside a message, and a PING counted from a payload would leave the relay waiting for a
+// PONG the server never sends. A direct get counted from a payload would refuse a Reload the
+// server is safe to take.
 func TestTheRelaysRecordOfAClientsStreamFindsItsOperationsWhereverTheStreamIsCut(t *testing.T) {
 	for _, cut := range []int{1, 2, 3, 7, 64, len(clientStream)} {
 		var stream protocolStream
 		for start := 0; start < len(clientStream); start += cut {
 			stream.wrote([]byte(clientStream[start:min(start+cut, len(clientStream))]))
 		}
-		if stream.broken != nil || !stream.connected || stream.pings != 2 || !stream.atBoundary() {
-			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, at a boundary %v; want nil, true, 2, true",
-				cut, stream.broken, stream.connected, stream.pings, stream.atBoundary())
+		if stream.broken != nil || !stream.connected || stream.pings != 2 || stream.directGets != 2 || !stream.atBoundary() {
+			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, direct gets %d, at a boundary %v; want nil, true, 2, 2, true",
+				cut, stream.broken, stream.connected, stream.pings, stream.directGets, stream.atBoundary())
 		}
 	}
 	// A message is whole at the LF after its payload, so neither the payload's last byte nor the CR
