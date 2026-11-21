@@ -94,11 +94,10 @@ const COOLDOWN_MS = 4_000;
 const UNREACHED_COOLDOWN_MS = 400_000;
 
 /** The wait the killed-and-resumed case writes into the transcript's arming once the first life
- * is gone, counted from that moment: long enough that the restored arming is still running when
- * the replacement pane is relaunched, short enough for the return to come while the case watches.
- * The relaunch's own boot is not covered by it and is not meant to be - the case measures the
- * return from the resumed life's first served turn, and reads the restored arming from where that
- * turn went (below). */
+ * is gone, counted from that moment: long enough that the restored arming is usually still running
+ * when the replacement pane serves its first turn, short enough for the return to come while the
+ * case watches. The relaunch's own boot is inside it and is not meant to be covered by it: a boot
+ * that outruns it leaves the resumed life no turn before the due time, which the case allows. */
 const RELAUNCH_WAIT_MS = 12_000;
 
 /** How long a case waits for its return past the due time before it gives up on it: an idle
@@ -166,6 +165,11 @@ interface FallbackPane extends LegionPane {
   readonly returnedAt: (since: number) => number | undefined;
   /** The cooldown states the pane recorded in its transcript, in order. */
   readonly cooldowns: () => Promise<FallbackCooldownState[]>;
+  /** The same states, each with when omp recorded it. */
+  readonly cooldownsAt: () => Promise<Recorded<FallbackCooldownState>[]>;
+  /** Each change of the session's model the transcript records, in order: the model it set
+   * (`standin/...`), and when omp recorded the change. */
+  readonly modelTimeline: () => Promise<Recorded<string>[]>;
   /**
    * Each change of the session's model and each run's end that omp printed, in order: a change as
    * `model`, an end as `end <n>`, or `parked <n>` when the host marked the run as waiting on a
@@ -175,9 +179,31 @@ interface FallbackPane extends LegionPane {
    * case on two streams, and a change printed before a request can be read after it.
    */
   readonly frames: readonly string[];
-  /** When each `model_changed` frame reached the case (epoch ms), in order: never before omp
-   * printed it, so a change made at or after a due time reads at or after it here. */
-  readonly changedAt: readonly number[];
+}
+
+/** A value a pane's transcript records, and when omp wrote its entry (epoch ms), by the omp
+ * process's own clock: the clock a cooldown's due time is on, so the two compare whatever the test
+ * process was doing at the time. */
+interface Recorded<T> {
+  readonly value: T;
+  readonly at: number;
+}
+
+/** The entries of `transcript` that `pick` reads a value from, each with its entry's time. */
+function recorded<T>(
+  transcript: readonly unknown[],
+  pick: (entry: object) => T | undefined
+): Recorded<T>[] {
+  return transcript.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const value = pick(entry);
+    if (value === undefined) return [];
+    const at =
+      "timestamp" in entry && typeof entry.timestamp === "string"
+        ? Date.parse(entry.timestamp)
+        : Number.NaN;
+    return [{ value, at }];
+  });
 }
 
 /**
@@ -368,8 +394,22 @@ async function fallbackPane(options: {
       served.find((turn) => turn.at >= since && turn.model === "strong-model")?.at,
     cooldowns: async () =>
       (await pane.transcriptEntries(LEGION_FALLBACK_ENTRY)) as FallbackCooldownState[],
+    cooldownsAt: async () =>
+      recorded(await pane.transcript(), (entry) =>
+        "customType" in entry && entry.customType === LEGION_FALLBACK_ENTRY && "data" in entry
+          ? (entry.data as FallbackCooldownState)
+          : undefined
+      ),
+    modelTimeline: async () =>
+      recorded(await pane.transcript(), (entry) =>
+        "type" in entry &&
+        entry.type === "model_change" &&
+        "model" in entry &&
+        typeof entry.model === "string"
+          ? entry.model
+          : undefined
+      ),
     frames,
-    changedAt: modelChanged,
   };
 }
 
@@ -395,23 +435,18 @@ test.skipIf(skip)(
     let giveUpAt = 0;
     const pane = await fallbackPane({
       // One assignment, one run: the host's replay of the refused turn and every turn after it
-      // ask the gateway again while the session is on the weaker model, so no step of the case
-      // falls between the refusal and the requests that show where the session stood. The
-      // replay's command returns at once, so a second request follows it inside the wait, and
-      // each later turn sleeps a second first. The run ends at its first request to any other
-      // model: it ends on the return, whenever that comes.
+      // ask the gateway again, a second apart, while the session is on the weaker model, so no
+      // step of the case falls between the refusal and the return. The run ends at its first
+      // request to any other model: it ends on the return, whenever that comes.
       prompt: ["Start FALL-1."],
       answer: (model, nth) => {
         if (nth === 1) {
           giveUpAt = Date.now() + COOLDOWN_MS + RETURN_GIVE_UP_MS;
           return refuses("refusal_1");
         }
-        if (model !== "weak-model" || Date.now() >= giveUpAt) {
-          return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
-        }
-        return nth === 2
-          ? replies([call("bash", { command: "echo next" })], `msg_${nth}`)
-          : replies([sleeps(1)], `ping_${nth}`);
+        return model === "weak-model" && Date.now() < giveUpAt
+          ? replies([sleeps(1)], `ping_${nth}`)
+          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
     });
 
@@ -430,12 +465,17 @@ test.skipIf(skip)(
       levels: { [STRONG]: 2 },
     });
     const dueAt = states[0]?.arming?.dueAt ?? 0;
-    const waiting = pane.served.slice(1).filter((turn) => turn.at < dueAt);
     // The defect this case is the proof of: an arming the plugin read as anything but a refusal
     // waits on a suppression the host never applies for a classifier refusal — it pins the
     // fallback instead — so the session went straight back to the model that had just refused
-    // it. Nothing goes back before the wait is over, and several requests fall inside it.
-    expect(waiting.length).toBeGreaterThan(1);
+    // it. Nothing goes back before the wait is over: the session's model changes, which omp
+    // records on the clock the due time is on, are its start on the stronger model, the host's
+    // walk, and the return, no earlier than the due time. No request served in the wait went to
+    // the stronger model.
+    const timeline = await pane.modelTimeline();
+    expect(timeline.map((change) => change.value)).toEqual([STRONG, WEAK, STRONG]);
+    expect(timeline[2]?.at).toBeGreaterThanOrEqual(dueAt);
+    const waiting = pane.served.slice(1).filter((turn) => turn.at < dueAt);
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     // And the session does come back, once the wait is over.
     expect(pane.returnedAt(dueAt)).toBeDefined();
@@ -589,7 +629,12 @@ test.skipIf(skip)(
     expect(doubled?.levels).toEqual({ [STRONG]: 3 });
     const dueAt = doubled?.arming?.dueAt ?? 0;
     expect(dueAt - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
-    expect(dueAt - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS + 2_000);
+    // The length of that wait on omp's own clock, from when omp recorded the arming: more than
+    // the base and no more than twice it, so the doubled wait, whatever the test process was doing.
+    const doubledAt =
+      (await pane.cooldownsAt()).findLast((entry) => entry.value.arming !== undefined)?.at ?? 0;
+    expect(dueAt - doubledAt).toBeGreaterThan(COOLDOWN_MS);
+    expect(dueAt - doubledAt).toBeLessThanOrEqual(2 * COOLDOWN_MS);
     // The return came after the doubled wait, and no request went to the stronger model at the
     // first one.
     const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
@@ -605,9 +650,7 @@ test.skipIf(skip)(
     /** How many turns the stronger model has been sent: the first is refused, the second is the
      * clean turn that puts the wait back, the third is refused again. */
     let onStrong = 0;
-    /** When the last run stops asking again for a session that has not come back by then: it
-     * bounds only a session that never comes back, which the last assertion then fails on. */
-    let giveUpAt = 0;
+    let cameBack = false;
     const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
       answer: (model, nth) => {
@@ -617,42 +660,50 @@ test.skipIf(skip)(
           // The clean turn: it ends the second assignment's run on the stronger model.
           if (onStrong === 2) return replies([{ type: "text", text: "Back on it." }], `msg_${nth}`);
           // The second refusal comes before any output: the host walks its own chain and replays
-          // the turn on the weaker model inside the same run, so no step of the case falls inside
-          // the wait it buys. The run ends at its next request to the stronger model, the return.
-          if (onStrong === 3) {
-            giveUpAt = Date.now() + COOLDOWN_MS + RETURN_GIVE_UP_MS;
-            return refuses("refusal_2");
-          }
+          // the turn on the weaker model, and that replay ends the last run, so the pane is idle
+          // while the wait runs and the runner's own timer makes the return, at the due time.
+          if (onStrong === 3) return refuses("refusal_2");
           return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
         }
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
         if (onStrong < 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
-        // The last run asks the gateway every second while the session is on the weaker model,
-        // so the model of each request says where the session stood at that moment.
-        return Date.now() < giveUpAt
-          ? replies([sleeps(1)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+      },
+      whileUp: async (life) => {
+        // The pane stays up until the return: the host's walk is the first model change after the
+        // second refusal, and the return is the second. The return is the timer's, on omp's own
+        // clock, so how long the case takes to get here decides nothing.
+        const refusedAt = life.served.filter((turn) => turn.model === "strong-model")[2]?.at ?? 0;
+        cameBack = await life.modelChanges(
+          refusedAt,
+          2,
+          refusedAt + COOLDOWN_MS + RETURN_GIVE_UP_MS
+        );
       },
     });
 
     const secondRefusal = pane.served.filter((turn) => turn.model === "strong-model")[2]?.at;
     expect(secondRefusal).toBeDefined();
-    const states = await pane.cooldowns();
-    const armings = states.filter((state) => state.arming !== undefined);
+    expect(cameBack).toBe(true);
+    const states = await pane.cooldownsAt();
+    const armings = states.filter((entry) => entry.value.arming !== undefined);
     // Both refusals of the stronger model armed from level 1 and raised it to 2: the clean turn
     // between them put back what the first one raised, so the second bought the base wait again
     // rather than twice it.
-    expect(armings.map((state) => state.levels[STRONG])).toEqual([2, 2]);
-    const secondArming = states.findLastIndex((state) => state.arming !== undefined);
-    expect(states[secondArming - 1]).toEqual({ levels: { [STRONG]: 1 } });
-    const dueAt = states[secondArming]?.arming?.dueAt ?? 0;
+    expect(armings.map((entry) => entry.value.levels[STRONG])).toEqual([2, 2]);
+    const secondArming = states.findLastIndex((entry) => entry.value.arming !== undefined);
+    expect(states[secondArming - 1]?.value).toEqual({ levels: { [STRONG]: 1 } });
+    const armedAt = states[secondArming]?.at ?? 0;
+    const dueAt = states[secondArming]?.value.arming?.dueAt ?? 0;
     expect(dueAt - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(COOLDOWN_MS);
-    expect(dueAt - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
+    // On omp's own clock, from when omp recorded the arming: no more than the base wait.
+    expect(dueAt - armedAt).toBeLessThanOrEqual(COOLDOWN_MS);
     // And the session came back at that wait, before the doubled one it would have waited had
-    // the clean turn counted for nothing.
-    const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
-    expect(returned).toBeDefined();
-    expect((returned ?? 0) - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
+    // the clean turn counted for nothing: the last model change, on omp's own clock.
+    const timeline = await pane.modelTimeline();
+    expect(timeline.map((change) => change.value)).toEqual([STRONG, WEAK, STRONG, WEAK, STRONG]);
+    expect(timeline[4]?.at).toBeGreaterThanOrEqual(dueAt);
+    expect(timeline[4]?.at).toBeLessThan(armedAt + 2 * COOLDOWN_MS);
   },
   240_000
 );
@@ -715,19 +766,16 @@ test.skipIf(skip)(
     const beforeDue = resumed.filter((turn) => turn.at < dueAt);
     expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
     // And the return did come, which is what says the arming survived at all: a life that had
-    // restored nothing would have stayed on the weaker model for good.
-    //
-    // Measured from this life's own first served turn rather than from the restored due time: a
-    // relaunched pane pays its whole boot before it serves anything - the process start, a NATS
-    // connect, its subscribes, the claim's registration and the consumer answer that registration
-    // waits on - and under parallel load that boot alone can outlast the cooldown, which would
-    // red this row with nothing wrong behind it. What the bound is for is the return itself: once
-    // this life is serving turns, the restored arming must give the stronger model back inside
-    // one cooldown rather than holding the weaker one for good.
-    const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
+    // restored nothing would have stayed on the weaker model for good, and one that had armed its
+    // wait again would wait the 400 s base, past the case's give-up. The return, which omp records
+    // on the clock the due time is on, came no earlier than the due time the case wrote.
     const returned = pane.returnedAt(dueAt);
     expect(returned).toBeDefined();
-    expect((returned ?? 0) - resumedFrom).toBeLessThan(RELAUNCH_WAIT_MS);
+    const timeline = await pane.modelTimeline();
+    const walk = timeline.findIndex((change) => change.value === WEAK);
+    expect(walk).toBeGreaterThan(0);
+    const back = timeline.slice(walk + 1).find((change) => change.value === STRONG);
+    expect(back?.at).toBeGreaterThanOrEqual(dueAt);
   },
   300_000
 );
@@ -900,7 +948,9 @@ test.skipIf(skip)(
       arming: { restoreTo: STRONG, cause: "refusal" },
       levels: { [STRONG]: 2 },
     });
-    expect(pane.changedAt[1]).toBeGreaterThanOrEqual(armed?.arming?.dueAt ?? Infinity);
+    const timeline = await pane.modelTimeline();
+    expect(timeline.map((change) => change.value)).toEqual([STRONG, WEAK, STRONG]);
+    expect(timeline[2]?.at).toBeGreaterThanOrEqual(armed?.arming?.dueAt ?? Infinity);
     // The run is the job's: its first request carries the job's output.
     expect(pane.served[first]?.messages).toContain("released");
   },

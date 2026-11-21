@@ -926,6 +926,10 @@ export interface LegionPane {
   readonly selfChecks: () => Request[];
   /** Every `tool_result` the host sent back to the gateway, in conversation order. */
   readonly toolResults: () => ToolResult[];
+  /** Every entry of the persisted transcript, each life's file in turn, in the order omp wrote
+   * them, each parsed whole: its `type`, its `timestamp` by the omp process's own clock, and the
+   * rest of what omp wrote. */
+  readonly transcript: () => Promise<unknown[]>;
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
   /**
@@ -1169,6 +1173,18 @@ export async function runLegionPane(
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
     );
+  // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
+  // so nothing is still appending and a trailing fragment is a defect that must throw rather
+  // than be withheld (dispatch://INFRA-2188).
+  const transcript = async (): Promise<unknown[]> => {
+    const entries: unknown[] = [];
+    for (const file of await transcripts(sessions)) {
+      for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+        entries.push(JSON.parse(line));
+      }
+    }
+    return entries;
+  };
   return {
     requests,
     turns,
@@ -1190,21 +1206,16 @@ export async function runLegionPane(
       }
       return results;
     },
-    // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
-    // so nothing is still appending and a trailing fragment is a defect that must throw rather
-    // than be withheld (dispatch://INFRA-2188).
-    transcriptEntries: async (customType) => {
-      const entries: unknown[] = [];
-      for (const file of await transcripts(sessions)) {
-        for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
-          const entry: unknown = JSON.parse(line);
-          if (typeof entry !== "object" || entry === null) continue;
-          if (!("customType" in entry) || entry.customType !== customType) continue;
-          entries.push("data" in entry ? entry.data : undefined);
-        }
-      }
-      return entries;
-    },
+    transcript,
+    transcriptEntries: async (customType) =>
+      (await transcript()).flatMap((entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "customType" in entry &&
+        entry.customType === customType
+          ? ["data" in entry ? entry.data : undefined]
+          : []
+      ),
     editTranscriptEntry: async (customType, edit) => {
       for (const file of (await transcripts(sessions)).reverse()) {
         const lines = (await readFile(file, "utf8")).split("\n");
