@@ -340,7 +340,8 @@
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go"
+          "packages/daemon/internal/launcher/metadata_test.go",
+          "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-failed"
       },
@@ -1524,7 +1525,8 @@
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go"
+          "packages/daemon/internal/launcher/metadata_test.go",
+          "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-echo"
       },
