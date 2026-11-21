@@ -42,6 +42,9 @@ const outsider = "outsider@other.example";
 /** A second person from outside PRIV's list names, whose links are the expired and delisted
  *  controls. */
 const later = "later@other.example";
+/** A person from outside whom PRIV's list and a project of another owner both name, so PRIV's
+ *  owner makes them no link. */
+const held = "held@other.example";
 
 /** Records a navigation the host's network change made the driver repeat (e2e/google-sign-in.ts)
  *  on the row's report, so a repeat is seen rather than silent. */
@@ -368,6 +371,38 @@ test.describe("outside passkey sign-in", () => {
           "Dispatch does not know this passkey: it was removed, so it signs in no more. Ask a project's owner for a new link."
         );
         expect((await whoami(outsiderPage)).status, "the outsider's GET /auth/whoami").toBe(401);
+      });
+
+      await test.step("a person another owner's project names has no Invite on PRIV, and the row says why", async () => {
+        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+          key: "HELD",
+          name: "Held elsewhere",
+        });
+        for (const key of ["HELD", "PRIV"]) {
+          await aliceWrites(aliceContext, "PUT", `/api/v1/projects/${key}/access/people/${held}`);
+        }
+        // HELD as if another owner had made it: one owner binds a person from outside.
+        await sql(`update projects set owner = 'bob@example.com' where key = 'HELD'`);
+        await reload(alicePage);
+        const row = personRow(alicePage, held);
+        await expect(row).toHaveCount(1);
+        await expect(row.getByRole("button", { name: `Invite ${held}` })).toHaveCount(0);
+        await expect(
+          row.getByText(
+            "Another project's owner also names this person, so no link can be made here: a passkey would read that project too."
+          )
+        ).toBeVisible();
+        // The control: the outsider, whom no other owner's project names, still gets Invite.
+        await expect(
+          personRow(alicePage, outsider).getByRole("button", { name: `Invite ${outsider}` })
+        ).toHaveCount(1);
+        const path = `/api/v1/projects/PRIV/access/people/${held}/invitations`;
+        const answer = await aliceContext.request.post(`${canonical}${path}`, {
+          headers: { Origin: canonical },
+        });
+        const body = await answer.text();
+        expect(answer.status(), `POST ${path}: ${body}`).toBe(409);
+        expect(JSON.parse(body), `POST ${path}`).toMatchObject({ code: "LISTED_BY_ANOTHER_OWNER" });
       });
 
       await test.step("each origin serves only its own sign-in, and no page of another site may frame the outside origin's", async () => {
