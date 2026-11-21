@@ -9,8 +9,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
-// hostShapeRows are the hosts of the airlock package's own tests of proxyrules.HostShapeOK: every row
-// of TestHostShapeOK (airlock_test.go) and every host of TestModelAgreesOnHostShapes
+// hostShapeRows are the hosts of the proxyrules package's own tests of proxyrules.HostShapeOK:
+// every row of TestHostShapeOK (airlock_test.go) and every host of TestModelAgreesOnHostShapes
 // (airlock_fuzz_test.go), which holds Go's Validate to the Lean model's. They are copied here
 // because a test of another package cannot read them; the two lists overlap, and each host is
 // read once.
@@ -22,7 +22,7 @@ var hostShapeRows = []string{
 	"slack_com", "*.*.com", "sl\u212aack.com",
 }
 
-// TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts: on every host the airlock package
+// TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts: on every host the proxyrules package
 // tests proxyrules.HostShapeOK with, the grammar serves exactly the hosts HostShapeOK accepts. None
 // of them is one the grammar adds a refusal for, so a host the grammar refused there would be a
 // refusal of a host the Lean model serves, and one it served a host the model refuses.
@@ -31,7 +31,7 @@ func TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts(t *testing.T) {
 	for _, host := range hostShapeRows {
 		served, shaped := Refusal(host) == "", proxyrules.HostShapeOK(host)
 		if served != shaped {
-			t.Errorf("Refusal(%q) = %q while airlock.HostShapeOK(%q) = %v; want the grammar to serve exactly what HostShapeOK accepts", host, Refusal(host), host, shaped)
+			t.Errorf("Refusal(%q) = %q while proxyrules.HostShapeOK(%q) = %v; want the grammar to serve exactly what HostShapeOK accepts", host, Refusal(host), host, shaped)
 		}
 		if shaped {
 			accepted++
@@ -39,7 +39,7 @@ func TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts(t *testing.T) {
 	}
 	// The control: the rows hold hosts of both kinds, so the comparison above can fail either way.
 	if accepted == 0 || accepted == len(hostShapeRows) {
-		t.Fatalf("airlock.HostShapeOK accepts %d of the %d rows; want some of each", accepted, len(hostShapeRows))
+		t.Fatalf("proxyrules.HostShapeOK accepts %d of the %d rows; want some of each", accepted, len(hostShapeRows))
 	}
 }
 
@@ -207,7 +207,7 @@ var refusalRows = func() []refusalRow {
 		{"0x alone", "0x", noForm("ends in a number", numbered), ""},
 		{"a wildcard over the last labels of an address", "*.216.34", noForm("wildcard whose last label is a number", "addresses by their text"), "*.216"},
 		{"a wildcard over 0x alone", "*.0x", noForm("wildcard whose last label is a number", "addresses by their text"), "*.0x"},
-		// The hosts of the airlock package's own HostShapeOK rows that no row above already
+		// The hosts of the proxyrules package's own HostShapeOK rows that no row above already
 		// spells, each refused ahead of proxyrules.Validate, whose refusal would quote it.
 		{"a bare wildcard with a trailing dot", "*.", noForm("ends in a dot", "no host name either"), ""},
 		{"a path", "slack.com/x", noForm("holds a character other than a letter, a digit, a hyphen and a dot"), "slack.com/"},
@@ -269,7 +269,7 @@ func TestRefusalRefusesEveryHostTheProxyNeverCompares(t *testing.T) {
 // passes a host for Validate to refuse in words that quote it. It holds by construction: Refusal
 // serves a host only where why does, and why serves one only on its branch for a host HostShapeOK
 // accepts; without that branch's test the grammar's own refusals past it read no character and no
-// empty label, and the seeds below fail. The seeds are the airlock package's own hosts and the
+// empty label, and the seeds below fail. The seeds are the proxyrules package's own hosts and the
 // shapes of this program's host rows; go test runs each seed, and go test -fuzz searches beyond
 // them.
 func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
@@ -286,7 +286,7 @@ func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, host string) {
 		if why := Refusal(host); why == "" && !proxyrules.HostShapeOK(host) {
-			t.Fatalf("Refusal serves %q, which airlock.HostShapeOK refuses", host)
+			t.Fatalf("Refusal serves %q, which proxyrules.HostShapeOK refuses", host)
 		}
 	})
 }

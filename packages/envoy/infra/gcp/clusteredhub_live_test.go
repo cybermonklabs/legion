@@ -191,11 +191,26 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	archive := filepath.Join("testdata", chart.Inputs["chart"].StringValue()+"-"+chart.Inputs["version"].StringValue()+".tgz")
 	require.Equal(t, clusteredHubChartSHA256, fileSHA256(t, archive), "%s is the archive the chart index publishes", archive)
 
+	r := &clusteredHubRender{
+		keys: keys, settings: settings, archive: archive, release: release, namespace: namespace,
+		manifests: helmTemplate(t, archive, release, namespace, chartValues(t, m)),
+	}
+	data := r.one(t, "ConfigMap", release+"-config")["data"].(map[string]any)
+	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
+	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
+		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
+	return r
+}
+
+// helmTemplate is helm template's manifests of the chart archive under release name release in
+// namespace, from values, with helm at helmTool's version installed into a directory of its own.
+func helmTemplate(t *testing.T, archive, release, namespace string, values any) []map[string]any {
+	t.Helper()
 	dir := t.TempDir()
-	values, err := json.Marshal(chartValues(t, m))
+	encoded, err := json.Marshal(values)
 	require.NoError(t, err)
 	valuesFile := filepath.Join(dir, "values.json")
-	require.NoError(t, os.WriteFile(valuesFile, values, 0o600))
+	require.NoError(t, os.WriteFile(valuesFile, encoded, 0o600))
 	helm, err := installTool(dir, helmTool, "helm")
 	require.NoError(t, err)
 	home := filepath.Join(dir, "helm-home")
@@ -205,16 +220,7 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	require.NoError(t, err, "helm template: %s", stderr.String())
-
-	r := &clusteredHubRender{
-		keys: keys, settings: settings, archive: archive, release: release, namespace: namespace,
-		manifests: decodeManifests(t, out),
-	}
-	data := r.one(t, "ConfigMap", release+"-config")["data"].(map[string]any)
-	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
-	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
-		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
-	return r
+	return decodeManifests(t, out)
 }
 
 // clusteredHubAuthConfKey is the ConfigMap key holding the users' authorization, which nats.conf
@@ -493,14 +499,15 @@ func (s *hubServer) commandArgs() []string {
 	)
 }
 
-// routeRemotes is the set of servers the server's /routez names at the other end of its routes.
-func (s *hubServer) routeRemotes() (map[string]bool, error) {
+// routeRemotesAt is the set of servers the /routez of the server whose monitoring port is
+// host:monitor names at the other end of its routes, by the names they chose.
+func routeRemotesAt(host string, monitor int) (map[string]bool, error) {
 	var routez struct {
 		Routes []struct {
 			RemoteName string `json:"remote_name"`
 		} `json:"routes"`
 	}
-	if err := s.monitorJSON("/routez", &routez); err != nil {
+	if err := getJSON("http://"+net.JoinHostPort(host, strconv.Itoa(monitor))+"/routez", &routez); err != nil {
 		return nil, err
 	}
 	remotes := map[string]bool{}
@@ -509,6 +516,9 @@ func (s *hubServer) routeRemotes() (map[string]bool, error) {
 	}
 	return remotes, nil
 }
+
+// routeRemotes is routeRemotesAt at the server's own host, where it listens alone.
+func (s *hubServer) routeRemotes() (map[string]bool, error) { return routeRemotesAt(s.host, s.monitor) }
 
 // start starts the server and waits until it listens on all three of its ports (its last bind is
 // the route port's); the test kills it by its PID when it ends if it is still running. A restart
@@ -1415,7 +1425,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// are candidates in one term, each refuses the other (processVoteRequest), and the group waits
 	// for a second draw: a split vote. Measured: 13 of 12,482 runs of this phase in a scratch
 	// harness took a second round, every one a split vote, one of them at 15.40 s; CI run
-	// 43462859890 failed this wait at 15 s with the same signature (dispatch://INFRA-3529). One
+	// 43462859890 failed this wait at 15 s with the same signature. One
 	// round is at most 9 s plus 0.8 s (maxCampaignTimeoutDefault), the campaign of a survivor that
 	// refused a candidate with a shorter log. Three rounds and the read's 500 ms fit in 30 s, so
 	// the wait fails only when three draws in a row split. The publisher's 30 s per message is the

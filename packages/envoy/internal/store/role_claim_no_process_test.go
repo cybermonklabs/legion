@@ -134,8 +134,9 @@ func raceFirstMarkWith(reg *Registry, wins func()) *racingUpdateKeyValue {
 // it once its renewal is older than the live window, with its session alive to the reaper the
 // whole time. A hand-back that states no process and races the holder's renewal, the adoption
 // of the claim by the first heartbeat, or a fresh grant marks the renewed or adopted claim and
-// leaves the grant standing and unmarked. Control: a claim that names a process is freed by a
-// release that states that process and by nothing another process states.
+// leaves the grant standing and unmarked, a grant stamped in the very millisecond of the claim
+// the hand-back read included. Control: a claim that names a process is freed by a release
+// that states that process and by nothing another process states.
 func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -240,35 +241,46 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 							t.Fatalf("the claim after the hand-back is %+v (revision %d), want the claim adopted by %q marked handed back", stood, stood.Revision, roleClaimInstance)
 						}
 					})
-					for name, instance := range map[string]string{
-						"a fresh grant naming no process leaves the grant standing and unmarked":                      "",
-						"a fresh grant naming a process leaves the grant standing and unmarked":                       roleClaimInstance,
-						"a fresh grant naming a second process of the session leaves the grant standing and unmarked": roleClaimSecondInstance,
+					for _, moment := range []struct {
+						name  string
+						later time.Duration
+					}{
+						// An hour on, so the grant's moment is one the claim the hand-back read
+						// cannot share.
+						{later: time.Hour},
+						// No time on, so the grant is stamped in the very millisecond of the
+						// claim the hand-back read: its ClaimedAt and RenewedAt are that claim's,
+						// and only the grant's own identity tells the two apart.
+						{name: " in the same millisecond"},
 					} {
-						t.Run(name, func(t *testing.T) {
-							reg, advance := claimForRelease(t, path, role, holder, "")
-							seeded := storedRoleClaim(t, reg, role)
-							var granted RoleClaim
-							racing := raceFirstMarkWith(reg, func() {
-								// An hour on, so the grant's moment is one the claim the
-								// hand-back read cannot share.
-								advance(time.Hour)
-								claimRoleAs(t, reg, holder, "example-host", role, instance)
-								granted = storedRoleClaim(t, reg, role)
+						for name, instance := range map[string]string{
+							"naming no process":                      "",
+							"naming a process":                       roleClaimInstance,
+							"naming a second process of the session": roleClaimSecondInstance,
+						} {
+							t.Run("a fresh grant"+moment.name+" "+name+" leaves the grant standing and unmarked", func(t *testing.T) {
+								reg, advance := claimForRelease(t, path, role, holder, "")
+								seeded := storedRoleClaim(t, reg, role)
+								var granted RoleClaim
+								racing := raceFirstMarkWith(reg, func() {
+									advance(moment.later)
+									claimRoleAs(t, reg, holder, "example-host", role, instance)
+									granted = storedRoleClaim(t, reg, role)
+								})
+
+								releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
+
+								if racing.updates == 0 {
+									t.Fatalf("the hand-back sent no write for the grant to race")
+								}
+								if want := seeded.ClaimedAt + moment.later.Milliseconds(); granted.ClaimedAt != want {
+									t.Fatalf("the grant was claimed at %d and the claim the hand-back read at %d, want the grant at %d", granted.ClaimedAt, seeded.ClaimedAt, want)
+								}
+								if stood := storedRoleClaim(t, reg, role); stood != granted {
+									t.Fatalf("the claim after the hand-back is %+v (revision %d), want the grant %+v (revision %d) standing and unmarked", stood, stood.Revision, granted, granted.Revision)
+								}
 							})
-
-							releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{})
-
-							if racing.updates == 0 {
-								t.Fatalf("the hand-back sent no write for the grant to race")
-							}
-							if granted.ClaimedAt <= seeded.ClaimedAt {
-								t.Fatalf("the grant was claimed at %d and the claim the hand-back read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
-							}
-							if stood := storedRoleClaim(t, reg, role); stood != granted {
-								t.Fatalf("the claim after the hand-back is %+v (revision %d), want the grant %+v (revision %d) standing and unmarked", stood, stood.Revision, granted, granted.Revision)
-							}
-						})
+						}
 					}
 				})
 			} else {
