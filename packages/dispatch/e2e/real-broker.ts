@@ -26,7 +26,7 @@ export const bobBrokerLogin = "bob@example.com";
 export const aliceSecret = "ALICE_DEPLOY_KEY";
 
 /** The seeding command run-broker.sh builds beside the broker
- *  (packages/envoy/internal/broker/brokertest/requestseed). */
+ *  (packages/envoy/internal/cipher/ciphertest/requestseed). */
 const requestseed = fileURLToPath(
   new URL("../../envoy/out/dispatch-e2e-broker/requestseed", import.meta.url)
 );

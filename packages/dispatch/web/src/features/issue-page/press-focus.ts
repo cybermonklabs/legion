@@ -35,7 +35,7 @@ export function trackPress({
 }: {
   readonly onEnd: () => void;
   readonly signal: AbortSignal;
-  readonly starts?: readonly ("mousedown" | "pointerdown")[];
+  readonly starts?: readonly "mousedown"[];
 }): Press {
   let pressing = false;
   let ending: number | undefined;

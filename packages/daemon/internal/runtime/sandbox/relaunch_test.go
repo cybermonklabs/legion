@@ -2009,7 +2009,8 @@ func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *te
 // scriptedStartLauncher is a launcher that starts its child at each Start it receives and answers it
 // as answer says: nil withholds the Start result and state until the runtime's cleanup sends Stop.
 // The Stop runs after the Start on the same connection, so the child it reports ended is exactly
-// the Start's generation.
+// the Start's generation. Its hello says of looking a session up by its id what the rig's own fake
+// launchers' do (withResumesBySession).
 type scriptedStartLauncher struct {
 	starts chan shimwire.LauncherStart
 	stops  chan shimwire.LauncherStop
@@ -2027,7 +2028,9 @@ func (g *rig) scriptedStartLauncher(
 	}
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{LauncherID: "scripted-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
+		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
+	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
 		starts: make(chan shimwire.LauncherStart, 2),

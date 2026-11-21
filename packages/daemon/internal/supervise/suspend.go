@@ -49,15 +49,12 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //   - It runs when the turn ends (turnEnded), or at its deadline if the turn has not ended by then
 //     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
 //     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
-//     bounded. The daemon's own suspension (its issue left the workflow, or its tree lingers) has
-//     none unless it names one (RequestSuspend.Deadline), and waits for the turn however long it
-//     takes: what bounds it is what ends the process anyway, the tree's close when its linger expires
-//     or the child's close as done. No close reaches a carried child's role still running in its old
-//     tree, since the child has left that tree, so the daemon names that suspension the deadline the
-//     old tree's close would have had, the old root's linger expiry. Asked again meanwhile, it is the
-//     same hold, under one rule: a request can only move the deadline earlier, and the operator's
-//     also takes the hold over, from then on the operator's. Until the deadline the agent keeps its
-//     process and its capability.
+//     bounded. The daemon's own suspension has none unless it names one
+//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's linger
+//     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
+//     the same hold, under one rule: a request can only move the deadline earlier, and the
+//     operator's also takes the hold over, from then on the operator's. Until the deadline the
+//     agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts

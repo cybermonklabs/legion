@@ -1,0 +1,32 @@
+kind: Fixed
+body: |-
+  The channel server's NATS dial is dialed again after a failure, for the server's life and until
+  it stops, as its wait for a broker token is, while a redial can cure the failure: a hub that
+  closed a dial whose CONNECT came late ended the start, and Claude Code does not start a channel
+  server again. Each redial is warned of with the servers named by their setting, and each dial is
+  bounded at 10 s. An Envoy tool called while the server dials is told the dial's last failure. A
+  session this server process told that it receives nothing is told once it receives again; the
+  outage is told and ended within one process, so a server Claude Code starts again does not tell
+  the end of an outage an earlier one told. When the channel server's NATS
+  connection closes for good while its session runs (nats.js gives up on a repeated authorization
+  refusal under an nkey seed or no credential), the server dials a new one, and dials again at each
+  heartbeat after a dial that fails for good; on the new connection it opens the session's relay
+  and the live view's control subject again, at a new epoch. The session is told once that it
+  receives nothing, naming why, and once that it receives again. Before, nothing opened a new
+  connection, and the session received nothing until Claude Code started the server again. A role
+  whose reassertion another live session refuses no longer leaves its record behind (the record's
+  write and its removal are ordered in the registry chain), and a session that is shutting down no
+  longer tells itself that it receives nothing. A Codex session's NATS connection that closes for
+  good is replaced in the same way. In both, a relay subscription the server ends with an error is
+  told as an outage naming why and taken again at the next heartbeat, at a new epoch; a `/clear` or
+  `/new` made during an outage completes on the new connection; and the live view takes a new id's
+  control subject only once the connection is admitted as that id. The Agents page's live view of a
+  Claude Code session follows a `/clear` the session's mod reported before the view started,
+  including under the session's broker token. A channel server whose NATS connection closes for
+  good after it connects but before its subscriptions reach the server no longer fails its start,
+  which left a Claude Code or Codex session without Envoy for its life: it dials a new connection as
+  it does for a connection lost later, and tells the session once that it receives nothing and once
+  that it receives again; a stop meanwhile still exits as an asked-for stop.
+time: 2026-11-17T21:43:12Z
+custom:
+    Issue: pr4353

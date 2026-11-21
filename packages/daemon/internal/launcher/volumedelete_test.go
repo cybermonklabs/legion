@@ -811,7 +811,7 @@ func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	f := newTrimFixture(t, 4)
-	f.cover = coverUnder(t, namespaceScratch(t))
+	f.cover = coverUnder(t, namespaceScratch(t, ""))
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
 	tr := f.trimmer()

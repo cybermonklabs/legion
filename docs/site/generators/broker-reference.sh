@@ -7,7 +7,7 @@
 # host helper and the agent-secrets CLI answer). broker-refgen, on PATH from
 # docs/site/scripts/build-binaries.sh, reads the source of this checkout and refuses an
 # undocumented route, variable or code, and a refusal of the API or the airlock's proxy port
-# written outside the writers that name its code (packages/envoy/cmd/broker-refgen/main.go).
+# written outside the writers that name its code (packages/envoy/cmd/cipher-refgen/main.go).
 set -euo pipefail
 
 content_dir="${1:?usage: broker-reference.sh <content dir>}"

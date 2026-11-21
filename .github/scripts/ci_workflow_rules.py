@@ -456,7 +456,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     A frozen `bun install` reads every workspace manifest, so bun_job() declares each of
     WORKSPACES as a read of every Bun job, and the engine holds every filter gating such a job to
     all of them. A workspace the table leaves out is therefore a manifest no filter has to select,
-    and a change to that package starts no job at all - which is how packages/broker-client came
+    and a change to that package starts no job at all - which is how packages/cipher-client came
     to have its typecheck and its tests run nowhere. The other way round is a read every Bun job
     declares of a manifest no install reads. The table is an argument because main() holds it
     already, and because nothing here imports ci_job_reads: the engine's names are all this
