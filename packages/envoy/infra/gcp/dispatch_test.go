@@ -2918,16 +2918,81 @@ func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 	}
 }
 
-// The warning preview prints for an ignored entry names the entry and what ignoring it means, so a
-// reader of the preview can fix the stack: the entry, that it is ignored, and that it provisions
-// nothing.
+// The warning preview prints for an ignored entry names the input, the entry and what ignoring it
+// means, so a reader of the preview can fix the stack: the entry, that it is ignored, and what it
+// would have done, for privateProjects and privateBeforeFullSwitch alike, in that order. A list of
+// keys alone prints none.
 func TestDispatchNamesAnIgnoredPrivateProjectsEntry(t *testing.T) {
 	for _, entry := range []string{"1", "priv"} {
-		message := gcp.PrivateProjectsIgnoredMessage(entry)
-		for _, want := range []string{fmt.Sprintf("%q is not a project key", entry), "it is ignored", "no project is provisioned by it"} {
-			require.Contains(t, message, want, "the preview warning for %q", entry)
+		args := dispatchArgs()
+		args.PrivateProjects, args.PrivateBeforeFullSwitch = []string{"ALPHA", entry}, []string{entry, "DAYONE"}
+		warnings, err := gcp.DispatchIgnoredEntryWarnings(args)
+		require.NoError(t, err)
+		require.Len(t, warnings, 2, "one warning for each list's ignored entry %q: %q", entry, warnings)
+		for i, want := range [][]string{
+			{"privateProjects: ", fmt.Sprintf("%q is not a project key", entry), "it is ignored", "no project is provisioned by it"},
+			{"privateBeforeFullSwitch: ", fmt.Sprintf("%q is not a project key", entry), "it is ignored", "no project is made private before its full switch by it"},
+		} {
+			for _, part := range want {
+				require.Contains(t, warnings[i], part, "the preview warning for %q", entry)
+			}
 		}
 	}
+	args := dispatchArgs()
+	args.PrivateProjects, args.PrivateBeforeFullSwitch = []string{"ALPHA"}, []string{"DAYONE"}
+	warnings, err := gcp.DispatchIgnoredEntryWarnings(args)
+	require.NoError(t, err)
+	require.Empty(t, warnings, "lists of keys alone")
+}
+
+// privateBeforeFullSwitch is the keys of the projects the deployment makes private before their
+// full switch (the private-projects spec's "Day one and the full switch"). It renders
+// DISPATCH_PRIVATE_BEFORE_FULL_SWITCH sorted and each key once, right after
+// DISPATCH_PRIVATE_PROJECTS, and nothing at all when it is empty or unset, so a stack that never
+// sets it renders the pod it always had, byte for byte the committed dispatch-pod.golden (R9). An
+// entry that is not a project key is ignored and printed at preview (above): the key beside it
+// still renders, and the program does not fail. Control: a component that rendered the variable for
+// an empty list fails the golden rows.
+func TestDispatchRendersItsProjectsPrivateBeforeTheirFullSwitch(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		value []string
+		want  string
+	}{
+		{name: "unset"},
+		{name: "empty", value: []string{}},
+		{name: "a list", value: []string{"PRIV", "ALPHA", "PRIV"}, want: "ALPHA,PRIV"},
+		{name: "ignores 1", value: []string{"ALPHA", "1"}, want: "ALPHA"},
+		{name: "ignores priv", value: []string{"priv", "ALPHA"}, want: "ALPHA"},
+		{name: "ignores every entry", value: []string{"1"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.PrivateBeforeFullSwitch = row.value
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH", row.want)
+			if row.want == "" {
+				requirePodGolden(t, m, "example-dispatch", "dispatch-pod.golden")
+			}
+		})
+	}
+	// Beside privateProjects it renders right after DISPATCH_PRIVATE_PROJECTS, each list its own.
+	args := dispatchArgs()
+	args.PrivateProjects, args.PrivateBeforeFullSwitch = []string{"FULL"}, []string{"DAYONE"}
+	m, err := runDispatch(t, args, true)
+	require.NoError(t, err)
+	var names []string
+	for _, variable := range podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch")["env"].([]any) {
+		names = append(names, variable.(map[string]any)["name"].(string))
+	}
+	at := slices.Index(names, "DISPATCH_PRIVATE_PROJECTS")
+	require.True(t, at >= 0 && at+1 < len(names) && names[at+1] == "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH",
+		"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH right after DISPATCH_PRIVATE_PROJECTS: %q", names)
+	env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+	requireOptionalEnv(t, env, "DISPATCH_PRIVATE_PROJECTS", "FULL")
+	requireOptionalEnv(t, env, "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH", "DAYONE")
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

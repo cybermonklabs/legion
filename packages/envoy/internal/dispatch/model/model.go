@@ -430,6 +430,12 @@ type ProjectAccess struct {
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
 	NotSignedIn []string `json:"not_signed_in"`
+	// PrivateBeforeFullSwitch is true while the project is private before its full switch: the
+	// deployment names it in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH and not in
+	// DISPATCH_PRIVATE_PROJECTS, so Dispatch hides it as any private project while its namespace,
+	// stores and bus gate come with its full switch. Absent for every other project, so a
+	// deployment that names no such project answers what it always answered.
+	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the

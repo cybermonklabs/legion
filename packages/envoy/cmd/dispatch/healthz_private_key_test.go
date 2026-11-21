@@ -40,7 +40,7 @@ func TestHealthzNamesNoPrivateProjectToACallerWithNoCredential(t *testing.T) {
 					t.Fatalf("seed %s: %v", row.name, err)
 				}
 			}
-			state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+			state, err := startPrivateProjectsState(t.Context(), database.Pool, nil, nil)
 			if err != nil {
 				t.Fatalf("the first read of the private projects: %v", err)
 			}

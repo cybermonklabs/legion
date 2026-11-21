@@ -871,32 +871,26 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 }
 
 // /healthz says that the service is degraded while the database holds a private project that
-// DISPATCH_PRIVATE_PROJECTS does not name, with one fixed reason code and nothing else: no key and
-// no count, since a probe answers a caller with no credential, and a key or a count tells it of a
-// project it cannot see (R2). The keys are the operator's, in the ERROR line the boot and each
-// maintenance pass log. It still answers 200 with ok true, so no probe takes the process out of
-// service for it. With none, the body is byte for byte the one a process with no such read
-// answers (R9).
+// neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names, with one fixed
+// reason code, private_project_unprovisioned, compared as the literal a probe reads, and nothing
+// else: no key and no count, since a probe answers a caller with no credential, and a key or a
+// count tells it of a project it cannot see (R2). The keys are the operator's, in the ERROR line
+// the boot and each maintenance pass log. It still answers 200 with ok true, so no probe takes the
+// process out of service for it. With none, the body is byte for byte the one a process with no
+// such read answers (R9).
 func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
 	database := storetest.Open(t)
-	probe := func(state *privateProjectsState) (int, string) {
-		t.Helper()
-		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
-			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		return response.Code, response.Body.String()
-	}
 	// read is the state as the boot leaves it: read once, before the listener serves.
 	read := func() *privateProjectsState {
 		t.Helper()
-		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil, nil)
 		if err != nil {
 			t.Fatalf("the first read of the private projects: %v", err)
 		}
 		return state
 	}
-	_, without := probe(nil)
-	if code, body := probe(read()); code != http.StatusOK || body != without {
+	_, without := healthzOf(t, database, nil)
+	if code, body := healthzOf(t, database, read()); code != http.StatusOK || body != without {
 		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
 	}
 	for _, key := range []string{"PRIV", "PRIVTWO"} {
@@ -905,30 +899,94 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 			t.Fatalf("seed the private project %s: %v", key, err)
 		}
 	}
-	code, body := probe(read())
-	var health map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(body), &health); err != nil {
+	code, body := healthzOf(t, database, read())
+	if code != http.StatusOK || strings.Contains(body, "PRIV") {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and no private project's key", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned"]`)
+}
+
+// healthzOf is /healthz as a handler built with state answers it: its status and its body. A nil
+// state is a handler with no read of the private projects.
+func healthzOf(t *testing.T, database *store.Store, state *privateProjectsState) (int, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
+		ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	return response.Code, response.Body.String()
+}
+
+// requireOnlyDegraded fails unless body, a /healthz answer, carries degraded as want, compared as
+// the literal a probe reads, and is otherwise without, the body of a handler with no read, field
+// for field: no key and no count beside the fixed reasons, so nothing in it changes with how many
+// projects are private, or which (R2).
+func requireOnlyDegraded(t *testing.T, body, without, want string) {
+	t.Helper()
+	var fields, withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", body, err)
 	}
-	if code != http.StatusOK || string(health["ok"]) != "true" {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
-	}
-	if got := string(health["degraded"]); got != `["`+unprovisionedPrivateProjectReason+`"]` {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want [%q]: %s", got, unprovisionedPrivateProjectReason, body)
-	}
-	if strings.Contains(body, "PRIV") {
-		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
-	}
-	// No count either: the body is the one without the read, field for field, plus degraded alone,
-	// so nothing in it changes with how many projects are unprovisioned.
-	delete(health, "degraded")
-	var withoutFields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", without, err)
 	}
-	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
-		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
+	if got := string(fields["degraded"]); got != want {
+		t.Fatalf("/healthz = %s: degraded %s, want %s", body, got, want)
 	}
+	delete(fields, "degraded")
+	if !maps.EqualFunc(fields, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz = %s, want the body without the read plus degraded alone, %s", body, without)
+	}
+}
+
+// /healthz says that a project is private before its full switch, with the fixed reason code
+// private_before_full_switch, compared as the literal a probe reads, and nothing else: no key and
+// no count, the body being the one a handler with no read answers plus degraded alone, as for an
+// unprovisioned private project (R2), and 200 with ok true, since the operator chose that state.
+// The reason is the project's state, not the list's: a key on DISPATCH_PRIVATE_BEFORE_FULL_SWITCH
+// whose project is public answers no reason, and one DISPATCH_PRIVATE_PROJECTS names too is fully
+// switched and answers none either. A private project neither list names still answers
+// private_project_unprovisioned beside it.
+func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
+	database := storetest.Open(t)
+	probe := func(list, beforeFullSwitch []string) (int, string) {
+		t.Helper()
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, list, beforeFullSwitch)
+		if err != nil {
+			t.Fatalf("the first read of the private projects: %v", err)
+		}
+		return healthzOf(t, database, state)
+	}
+	_, without := healthzOf(t, database, nil)
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ('DAYONE', 'Day one', 'alice@example.com')`); err != nil {
+		t.Fatalf("seed DAYONE: %v", err)
+	}
+	if code, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE listed and public = %d %s, want 200 and the body without the read, %s", code, body, without)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'DAYONE'`); err != nil {
+		t.Fatalf("make DAYONE private: %v", err)
+	}
+	code, body := probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK || strings.Contains(body, "DAYONE") {
+		t.Fatalf("/healthz with DAYONE private before its full switch = %d %s, want 200 and no private project's key", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_before_full_switch"]`)
+	// A key on both settings takes its full switch: the boot leaves it on DISPATCH_PRIVATE_PROJECTS
+	// alone (resolveBootConfig), and the state is built from the lists the boot hands it.
+	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "DAYONE", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "DAYONE"})
+	if code, body := probe(boot.PrivateProjects, boot.PrivateBeforeFullSwitch); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE private and on both settings = %d %s, want 200 and the body without the read: it took its full switch", code, body)
+	}
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee, visibility) values ('OFFL', 'Off both lists', 'alice@example.com', 'private')`); err != nil {
+		t.Fatalf("seed OFFL: %v", err)
+	}
+	code, body = probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK {
+		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned","private_before_full_switch"]`)
 }
 
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read

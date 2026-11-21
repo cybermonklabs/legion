@@ -328,11 +328,21 @@ type DispatchArgs struct {
 	// one. Unset renders nothing.
 	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
 	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
-	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); only these can be
-	// made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each key once; empty or unset
-	// renders nothing. An entry that is not a project key is ignored, with a warning at preview naming
-	// it, as Dispatch's boot ignores and logs one.
+	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); a
+	// switch of one of these to private is its full switch, and PrivateBeforeFullSwitch names the
+	// other projects that can be made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each
+	// key once; empty or unset renders nothing. An entry that is not a project key is ignored, with
+	// a warning at preview naming it, as Dispatch's boot ignores and logs one.
 	PrivateProjects []string `pulumi:"privateProjects,optional"`
+	// PrivateBeforeFullSwitch are the keys of the projects the deployment makes private before
+	// their full switch (the private-projects spec's "Day one and the full switch"): Dispatch hides
+	// such a project in its own reads as any private project, while its namespace, stores and bus
+	// gate come with its full switch, so its switch to private needs no provisioning. Until then,
+	// the project's notifications on the hub reach any agent session that subscribes to them. It
+	// renders DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, sorted and each key once; empty or unset renders
+	// nothing. An entry that is not a project key is ignored, with a warning at preview naming it,
+	// as Dispatch's boot ignores and logs one.
+	PrivateBeforeFullSwitch []string `pulumi:"privateBeforeFullSwitch,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -751,10 +761,10 @@ type Dispatch struct {
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
-// projectOwnerFallback "" and an empty privateProjects render nothing. existingCluster is the input of
-// that name, its name and location checked (resolveDispatchExistingCluster), which NewDispatch
-// looks the cluster up by and runs Dispatch in, and nil without that input, where the component
-// makes a cluster of its own.
+// projectOwnerFallback "" and an empty privateProjects or privateBeforeFullSwitch render nothing.
+// existingCluster is the input of that name, its name and location checked
+// (resolveDispatchExistingCluster), which NewDispatch looks the cluster up by and runs Dispatch
+// in, and nil without that input, where the component makes a cluster of its own.
 // existingDatabaseInstance is true while the input of that name is set, where the component makes
 // no Cloud SQL instance, database or user and the proxy connects to the instance it names; the
 // connection name itself is a Pulumi Input, judged once it resolves, and so no field here.
@@ -778,6 +788,8 @@ type dispatchSettings struct {
 	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
 	privateProjects, privateProjectsIgnored     []string
+	privateBeforeFullSwitch                     []string
+	privateBeforeFullSwitchIgnored              []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1127,6 +1139,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"accessAccounts", len(args.AccessAccounts) > 0},
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"privateProjects", len(args.PrivateProjects) > 0},
+		{"privateBeforeFullSwitch", len(args.PrivateBeforeFullSwitch) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1934,6 +1947,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
+	s.privateBeforeFullSwitch, s.privateBeforeFullSwitchIgnored = dispatchPrivateProjects(args.PrivateBeforeFullSwitch)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -2030,12 +2044,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	return s, nil
 }
 
-// dispatchPrivateProjects is privateProjects as DISPATCH_PRIVATE_PROJECTS renders it: sorted and
-// each key once. An entry that is not a project key is never rendered: it is answered in ignored,
-// in the order given, and NewDispatch prints it at preview (privateProjectsIgnoredMessage), as
-// Dispatch's boot ignores and logs one. Ignoring it fails closed, since the project it meant is
-// never provisioned: its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED while another
-// entry is a key, and 409 PRIVATE_PROJECTS_OFF where none is.
+// dispatchPrivateProjects is privateProjects or privateBeforeFullSwitch as
+// DISPATCH_PRIVATE_PROJECTS or DISPATCH_PRIVATE_BEFORE_FULL_SWITCH renders it: sorted and each key
+// once. An entry that is not a project key is never rendered: it is answered in ignored, in the
+// order given, and NewDispatch prints it at preview (dispatchIgnoredEntryWarnings), as Dispatch's
+// boot ignores and logs one. Ignoring it fails closed: it names no project, so the switch to
+// private of the project it meant is refused while no list names its key.
 func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 	for _, entry := range entries {
 		if !contracts.ValidProjectKey(entry) {
@@ -2048,12 +2062,25 @@ func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 	return slices.Compact(keys), ignored
 }
 
-// privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of
-// privateProjects that is not a project key. It is a warning, not an error: the Pulumi SDK reads an
+// dispatchIgnoredEntryWarnings are the warnings NewDispatch prints at preview, one for each entry
+// of privateProjects and of privateBeforeFullSwitch that is not a project key, in that order, each
+// naming what the entry would have done. Each is a warning, not an error: the Pulumi SDK reads an
 // error as a fatal condition (pulumi.Context.Log.Error), and the entry is ignored, not refused.
-func privateProjectsIgnoredMessage(entry string) string {
-	return fmt.Sprintf("privateProjects: %q is not a project key (%s), so it is ignored: no project is provisioned by it, and Dispatch logs the same ERROR at boot",
-		entry, contracts.ProjectKeyRule)
+func dispatchIgnoredEntryWarnings(s dispatchSettings) []string {
+	var warnings []string
+	for _, list := range []struct {
+		input, named string
+		ignored      []string
+	}{
+		{"privateProjects", "no project is provisioned by it", s.privateProjectsIgnored},
+		{"privateBeforeFullSwitch", "no project is made private before its full switch by it", s.privateBeforeFullSwitchIgnored},
+	} {
+		for _, entry := range list.ignored {
+			warnings = append(warnings, fmt.Sprintf("%s: %q is not a project key (%s), so it is ignored: %s, and Dispatch logs the same ERROR at boot",
+				list.input, entry, contracts.ProjectKeyRule, list.named))
+		}
+	}
+	return warnings
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.
@@ -2435,8 +2462,8 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
 	}
-	for _, entry := range s.privateProjectsIgnored {
-		if err := ctx.Log.Warn(privateProjectsIgnoredMessage(entry), nil); err != nil {
+	for _, warning := range dispatchIgnoredEntryWarnings(s) {
+		if err := ctx.Log.Warn(warning, nil); err != nil {
 			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
 		}
 	}

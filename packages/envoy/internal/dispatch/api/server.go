@@ -144,10 +144,19 @@ type Deps struct {
 	// it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
-	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
-	// private (privateProjectProvisioned). Empty refuses every switch to private 409
-	// PRIVATE_PROJECTS_OFF before anything is read, as every deployment before the setting did.
+	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): their switch to private is
+	// the full switch (privateProjectProvisioned). With PrivateBeforeFullSwitch empty too, every
+	// switch to private is refused 409 PRIVATE_PROJECTS_OFF before anything is read, as every
+	// deployment before the settings did.
 	PrivateProjects []string
+	// PrivateBeforeFullSwitch are the keys of the projects this deployment makes private before
+	// their full switch, sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_BEFORE_FULL_SWITCH).
+	// Such a project's switch to private needs neither the provisioning PrivateProjects names nor
+	// the bus record (BusProjects), and still needs a complete store: Dispatch hides it as any
+	// private project, and its namespace, stores and bus gate come with its full switch. It shares
+	// no key with PrivateProjects: NewDeps refuses lists that do, and cmd/dispatch takes a key both
+	// settings name off this list, since that project takes its full switch.
+	PrivateBeforeFullSwitch []string
 	// BusProjects writes the private-projects record the listeners hold a private project's
 	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
 	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
@@ -289,9 +298,11 @@ type DepsInput struct {
 	// has checked each subject's form and that every access account is also admitted.
 	OIDCAccounts   []string
 	AccessAccounts []string
-	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
-	PrivateProjects []string
-	BusProjects     BusProjects
+	// PrivateProjects, PrivateBeforeFullSwitch and BusProjects are Deps.PrivateProjects,
+	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects.
+	PrivateProjects         []string
+	PrivateBeforeFullSwitch []string
+	BusProjects             BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -352,6 +363,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	for _, key := range input.PrivateBeforeFullSwitch {
+		if _, both := slices.BinarySearch(input.PrivateProjects, key); both {
+			return Deps{}, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS and DISPATCH_PRIVATE_BEFORE_FULL_SWITCH both name %q: "+
+				"a project takes its full switch or is private before it, never both", key)
+		}
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
@@ -396,42 +413,43 @@ func NewDeps(input DepsInput) (Deps, error) {
 		heartbeat = defaultStreamHeartbeat
 	}
 	return Deps{
-		Store:                  input.Store,
-		Identity:               input.Identity,
-		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
-		NewIssueLabel:          newIssue.Label,
-		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
-		Docs:                   input.Docs,
-		Embedder:               input.Embedder,
-		Answerer:               input.Answerer,
-		Envoy:                  envoyClient,
-		Events:                 input.Events,
-		GitHub:                 github,
-		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
-		OIDC:                   input.OIDC,
-		OIDCAccounts:           input.OIDCAccounts,
-		AccessAccounts:         input.AccessAccounts,
-		PrivateProjects:        input.PrivateProjects,
-		BusProjects:            input.BusProjects,
-		BrokerTokens:           input.BrokerTokens,
-		AgentStream:            input.AgentStream,
-		AgentPublisher:         input.AgentPublisher,
-		AgentSecrets:           agentSecretsClient,
-		Files:                  input.Files,
-		TestHooksEnabled:       input.TestHooksEnabled,
-		StreamHeartbeat:        heartbeat,
-		RouteRosterTTL:         input.RouteRosterTTL,
-		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
-		HorizonStallAfter:      input.HorizonStallAfter,
-		HorizonWarnEvery:       input.HorizonWarnEvery,
-		TestHookTimeout:        input.TestHookTimeout,
-		ListenerRosterUncached: input.ListenerRosterUncached,
-		OutboxPublishes:        input.OutboxPublishes,
-		Metrics:                input.Metrics,
-		DashboardEntry:         input.DashboardEntry,
-		BuildCommit:            input.BuildCommit,
+		Store:                   input.Store,
+		Identity:                input.Identity,
+		AgentTokens:             input.AgentTokens,
+		DefaultProject:          defaultProject,
+		NewIssueLabel:           newIssue.Label,
+		NewIssueSession:         newIssue.Session,
+		ServerURL:               strings.TrimSuffix(input.ServerURL, "/"),
+		Docs:                    input.Docs,
+		Embedder:                input.Embedder,
+		Answerer:                input.Answerer,
+		Envoy:                   envoyClient,
+		Events:                  input.Events,
+		GitHub:                  github,
+		Architecture:            architecture.NewImporter(input.Store, github, input.Events),
+		OIDC:                    input.OIDC,
+		OIDCAccounts:            input.OIDCAccounts,
+		AccessAccounts:          input.AccessAccounts,
+		PrivateProjects:         input.PrivateProjects,
+		PrivateBeforeFullSwitch: input.PrivateBeforeFullSwitch,
+		BusProjects:             input.BusProjects,
+		BrokerTokens:            input.BrokerTokens,
+		AgentStream:             input.AgentStream,
+		AgentPublisher:          input.AgentPublisher,
+		AgentSecrets:            agentSecretsClient,
+		Files:                   input.Files,
+		TestHooksEnabled:        input.TestHooksEnabled,
+		StreamHeartbeat:         heartbeat,
+		RouteRosterTTL:          input.RouteRosterTTL,
+		ListenerTakeoverWindow:  input.ListenerTakeoverWindow,
+		HorizonStallAfter:       input.HorizonStallAfter,
+		HorizonWarnEvery:        input.HorizonWarnEvery,
+		TestHookTimeout:         input.TestHookTimeout,
+		ListenerRosterUncached:  input.ListenerRosterUncached,
+		OutboxPublishes:         input.OutboxPublishes,
+		Metrics:                 input.Metrics,
+		DashboardEntry:          input.DashboardEntry,
+		BuildCommit:             input.BuildCommit,
 	}, nil
 }
 

@@ -13,10 +13,10 @@ import (
 )
 
 // envoy-dispatch project-visibility <KEY> public makes a private project public without the
-// server, the repair of a private project the deployment's list no longer names: one transaction
-// that appends project.access_changed as the command, after which no private project is off an
-// empty list. It exits 2, writing nothing, for a key no project holds, for any value but public,
-// and for wrong arguments.
+// server, the repair of a private project neither of the deployment's lists names any longer: one
+// transaction that appends project.access_changed as the command, after which no private project
+// is off an empty list. It exits 2, writing nothing, for a key no project holds, for any value but
+// public, and for wrong arguments.
 func TestProjectVisibilityCommandMakesAProjectPublic(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)

@@ -690,6 +690,38 @@ test("the owner makes the project private with the switch, and the switch reads 
   }
 });
 
+// A project private before its full switch is hidden as any private project, while its own
+// namespace, stores and message gate come only with its full switch, so the panel says so beside
+// its visibility whenever the access answer carries private_before_full_switch, the switch's own
+// answer included. A private project without the flag, which took its full switch, says nothing of
+// it. Control: the note drawn for every private project fails the fully switched row.
+test("a project private before its full switch says so beside its visibility, and a fully switched one does not", async () => {
+  const note = "This project is private before its full switch";
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockImplementation(
+    panel.lands(access({ private_before_full_switch: true, visibility: "private" }))
+  );
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    expect(screen.queryByTestId("access-before-full-switch")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Private" }));
+    expect(await screen.findByTestId("access-before-full-switch")).toHaveTextContent(note);
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Private");
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+  const switched = renderPanel({ answer: access({ visibility: "private" }) });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Private");
+    expect(screen.queryByTestId("access-before-full-switch")).not.toBeInTheDocument();
+    expect(drawn(note)).toBe(false);
+  } finally {
+    switched.restore();
+  }
+});
+
 // A switch to public shows the project and everything in it to every full member, so it is sent
 // only once the owner confirms it, as giving the project away is: a declined confirmation sends
 // nothing and the switch stays private. The switch to private shows nobody more and asks nothing.

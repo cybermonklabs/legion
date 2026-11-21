@@ -170,17 +170,27 @@ An issue created through the default also gets a `repo:owner/name` label.
 Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
 
 `DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (the infrastructure repository's `privateprojects.Projects()`).
-Only these projects can be made private.
-An entry that is not a project key, the old value `1` included, is ignored with one ERROR line at boot naming it, and the keys beside it still count: ignoring it fails closed, since the project it meant is never provisioned and its switch to private stays `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
-Unset or empty, no project can be made private, as before the setting existed.
-An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming each such row with the cure the project census prints for it, or the command not run, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
-This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private through the server until a build carries the writer.
+Only these projects, and those `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names (below), can be made private; the switch of one of these is its full switch.
+An entry that is not a project key, the old value `1` included, is ignored with one ERROR line at boot naming it, and the keys beside it still count: ignoring it fails closed, since it names no project, so the switch to private of the project it meant is refused while neither list names its key.
+Unset or empty, with `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` unset or empty too, no project can be made private, as before the settings existed.
+An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` while neither list names a project, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project neither list names, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming each such row with the cure the project census prints for it, or the command not run, and, for a full switch, `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a full switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project takes its full switch through the server until a build carries the writer.
 A switch to public is never refused by any of them.
 Nothing here stops the boot, because a boot that exits would stop every project:
-a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
-with a list, a store that cannot hold a private project yet, for any of the reasons a switch is `409 PRIVATE_PROJECTS_INCOMPLETE` for or for a node no row stands behind, is one ERROR line as each process starts and then one an hour per process, naming why: each row and node with the cure the project census prints for it (the backfill, the erase that removes an orphaned node, or none for a node that names another project), or the command not run.
+a project the database holds private that neither list names stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
+with either list, a store that cannot hold a private project yet, for any of the reasons a switch is `409 PRIVATE_PROJECTS_INCOMPLETE` for or for a node no row stands behind, is one ERROR line as each process starts and then one an hour per process, naming why: each row and node with the cure the project census prints for it (the backfill, the erase that removes an orphaned node, or none for a node that names another project), or the command not run.
 
-Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
+`DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names, comma-separated and read as `DISPATCH_PRIVATE_PROJECTS` is, the projects this deployment makes private before their full switch.
+Dispatch hides such a project from every person and credential that does not see it in its own reads, as any private project, while its namespace, its stores and its bus gate come with its full switch.
+Until then, the project's notifications on the hub reach any agent session that subscribes to them: this build gives the outbox no hold for a private project (`outbox.Deps.PrivateHubsReady` is unset), and nothing reads the `envoy_private_projects` bucket yet.
+Its owner's switch to private needs no provisioning and no bus record: it is never `409 PRIVATE_PROJECT_NOT_PROVISIONED` or `409 PRIVATE_PROJECTS_UNAVAILABLE`, writes nothing to the `envoy_private_projects` bucket, is still `409 PRIVATE_PROJECTS_INCOMPLETE` while the store cannot hold the project private, and appends `project.access_changed` as any switch does.
+So nobody takes such a project for a fully switched one: its access, the switch's answer included, carries `private_before_full_switch: true` while it is private; the boot logs one INFO line, `dispatch: private before its full switch`, naming each such project, and another naming each key of the list whose project is not private yet; and `/healthz` answers the fixed reason `private_before_full_switch` in `degraded`, naming no project, with `ok` and the status as they are.
+A key both settings name takes its full switch: its next switch to private needs its provisioning and writes its bus record.
+From the apply that adds such a key to `DISPATCH_PRIVATE_PROJECTS`, its access, the boot's lines and `/healthz` no longer name its project private before its full switch, though that switch has not run: in this build it is always `409 PRIVATE_PROJECTS_UNAVAILABLE` (above).
+Making the project public works as for any project.
+An entry that is not a project key is ignored with one ERROR line at boot naming the setting and the entry, and makes no project private: the switch to private of the project it meant is refused while neither setting names its key.
+
+Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` or `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
 The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
 
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
@@ -1659,7 +1669,7 @@ A process that finds it held tries again
 - The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
-  Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
+  Each pass also logs an ERROR line for each project the database holds private that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names, and, with either list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -2957,8 +2967,8 @@ When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
 
 ### Making a project public without the server
 
-A project the database holds private that `DISPATCH_PRIVATE_PROJECTS` no longer names stays private, and only its owner's switch to public changes its visibility, so nothing of it reaches anyone who could not see it before.
-Its owner decides the repair: put the key back on the infrastructure repository's private project list (`shared/legion/privateprojects/lists.go`), or make the project public.
+A project the database holds private that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names any longer stays private, and only its owner's switch to public changes its visibility, so nothing of it reaches anyone who could not see it before.
+Its owner decides the repair: put the key back on the infrastructure repository's private project list (`shared/legion/privateprojects/lists.go`) or on `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH`, or make the project public.
 The owner makes it public from the Access tab; an operator makes it public with the database credential alone, with no server running if need be:
 
 ```sh
@@ -2971,7 +2981,7 @@ It exits 0 once the change commits;
 2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
 and 1 when the database cannot be opened or written.
 
-To take a key off `DISPATCH_PRIVATE_PROJECTS` on purpose, make its project public first, by either way above, and only then remove the key: a key removed first leaves its project private and reported, at boot, at every maintenance pass and in `/healthz`, until one of the two repairs.
+To take a key off `DISPATCH_PRIVATE_PROJECTS` and `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` on purpose, so that neither names it, make its project public first, by either way above, and only then remove the key: a key removed first leaves its project private and reported, at boot, at every maintenance pass and in `/healthz`, until one of the two repairs.
 
 ### Filling the sessions' projects
 
@@ -4432,9 +4442,11 @@ Each item below names a path with its method and identity, then its purpose.
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
 
-  - `degraded` is `["private_project_unprovisioned"]` while the database holds a private project that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found it, and is absent when there is none;
-    it is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the ERROR line the boot and every maintenance pass log.
-    It never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
+  - `degraded` lists fixed reasons and is absent when none holds, as the last of the reads `privateProjectsState` makes every 30 seconds found them:
+    `private_project_unprovisioned` while the database holds a private project that neither `DISPATCH_PRIVATE_PROJECTS` nor `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` names,
+    then `private_before_full_switch` while it holds a project private before its full switch (Required configuration, above).
+    Each is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the line the boot logs, so a project made private after the boot is named at the next boot, and for an unprovisioned one in every maintenance pass's line too.
+    Neither decides `ok` or the status, since such a project stays private and the server serves every other one.
 
   `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
   a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.

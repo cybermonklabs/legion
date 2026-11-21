@@ -43,7 +43,8 @@ func requestOf(pattern string) (method, path string) {
 }
 
 // Every Dispatch HTTP response, errors and /healthz included, carries Dispatch-Private-Projects:
-// 1 when DISPATCH_PRIVATE_PROJECTS is non-empty or the database holds a private project, and 0
+// 1 when DISPATCH_PRIVATE_PROJECTS or DISPATCH_PRIVATE_BEFORE_FULL_SWITCH is non-empty or the
+// database holds a private project, and 0
 // otherwise. The process's handler is built as main builds it - the router, dispatchHandler's
 // mounts, then serveHandler's wrap - and every route the router serves is requested with no
 // credential: each row of the route index, each pattern readclass.Handle mounted in the process,
@@ -60,14 +61,16 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 		t.Fatalf("issue alice's session cookie: %v", err)
 	}
 	for _, state := range []struct {
-		name       string
-		list       []string
-		makePublic bool
-		want       string
+		name             string
+		list             []string
+		beforeFullSwitch []string
+		makePublic       bool
+		want             string
 	}{
-		{"the list [PRIV]", []string{"PRIV"}, true, "1"},
-		{"an empty list and no private project", nil, true, "0"},
-		{"an empty list and PRIV private", nil, false, "1"},
+		{"the list [PRIV]", []string{"PRIV"}, nil, true, "1"},
+		{"the list before the full switch [PRIV]", nil, []string{"PRIV"}, true, "1"},
+		{"an empty list and no private project", nil, nil, true, "0"},
+		{"an empty list and PRIV private", nil, nil, false, "1"},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			visibility := "private"
@@ -77,7 +80,7 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `update projects set visibility = $1 where key = 'PRIV'`, visibility); err != nil {
 				t.Fatalf("make PRIV %s: %v", visibility, err)
 			}
-			privateState, err := startPrivateProjectsState(t.Context(), database.Pool, state.list)
+			privateState, err := startPrivateProjectsState(t.Context(), database.Pool, state.list, state.beforeFullSwitch)
 			if err != nil {
 				t.Fatalf("the first read of the private projects: %v", err)
 			}
@@ -265,7 +268,7 @@ func (failedRow) Scan(...any) error { return errReadFailed }
 // a reader of the header takes as a deployment holding a private project.
 func TestAFailedReadSaysPrivate(t *testing.T) {
 	database := storetest.Open(t)
-	state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+	state, err := startPrivateProjectsState(t.Context(), database.Pool, nil, nil)
 	if err != nil {
 		t.Fatalf("the first read over no private project: %v", err)
 	}
@@ -284,7 +287,7 @@ func TestAFailedReadSaysPrivate(t *testing.T) {
 // the database will not open, and no 30 s loop runs.
 func TestTheFirstPrivateReadFailingStopsTheBoot(t *testing.T) {
 	for _, list := range [][]string{nil, {"PRIV"}} {
-		state, err := startPrivateProjectsState(t.Context(), failingQuerier{}, list)
+		state, err := startPrivateProjectsState(t.Context(), failingQuerier{}, list, nil)
 		if !errors.Is(err, errReadFailed) || state != nil {
 			t.Errorf("the first read with the list %v over a database whose read fails = %v, %v; want the read's error and no state", list, state, err)
 		}

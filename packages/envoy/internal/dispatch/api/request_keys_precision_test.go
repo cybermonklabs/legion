@@ -129,7 +129,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil, nil)
+		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil, nil, nil)
 	}()
 	for deadline := time.Now().Add(30 * time.Second); countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) == 0; {
 		if time.Now().After(deadline) {

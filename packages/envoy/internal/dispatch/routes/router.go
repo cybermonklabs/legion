@@ -153,11 +153,13 @@ type AppContextOptions struct {
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *ciphertoken.Verifier
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
-	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
-	// record. See api.DepsInput.
-	PrivateProjects []string
-	BusProjects     api.BusProjects
-	AgentStream     agentstream.Source
+	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), PrivateBeforeFullSwitch the keys of those it makes
+	// private before their full switch (DISPATCH_PRIVATE_BEFORE_FULL_SWITCH), and BusProjects the
+	// writer of the private-projects record. See api.DepsInput.
+	PrivateProjects         []string
+	PrivateBeforeFullSwitch []string
+	BusProjects             api.BusProjects
+	AgentStream             agentstream.Source
 	// AgentPublisher queues a person's targeted message on its session's own subject when no store
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
 	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
@@ -227,44 +229,45 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		devSignInHost = host
 	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
-		Store:                  opts.Store,
-		Identity:               opts.Identity,
-		AgentTokens:            opts.AgentTokens,
-		DefaultProject:         opts.DefaultProject,
-		NewIssueLabel:          opts.NewIssueLabel,
-		NewIssueSession:        opts.NewIssueSession,
-		ServerURL:              opts.ServerURL,
-		EnvoyURL:               opts.EnvoyURL,
-		EnvoyToken:             opts.EnvoyToken,
-		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
-		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
-		Docs:                   opts.Docs,
-		Embedder:               opts.Embedder,
-		Answerer:               opts.Answerer,
-		Events:                 opts.Events,
-		App:                    opts.App,
-		GitHubAPIBase:          opts.GitHubAPIBase,
-		OIDC:                   opts.OIDC,
-		OIDCAccounts:           opts.OIDCAccounts,
-		AccessAccounts:         opts.AccessAccounts,
-		BrokerTokens:           opts.BrokerTokens,
-		PrivateProjects:        opts.PrivateProjects,
-		BusProjects:            opts.BusProjects,
-		AgentStream:            opts.AgentStream,
-		AgentPublisher:         opts.AgentPublisher,
-		AgentSecretsURL:        opts.AgentSecretsURL,
-		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
-		Files:                  opts.Files,
-		TestHooksEnabled:       opts.TestHooksEnabled,
-		RouteRosterTTL:         opts.RouteRosterTTL,
-		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
-		HorizonStallAfter:      opts.HorizonStallAfter,
-		HorizonWarnEvery:       opts.HorizonWarnEvery,
-		ListenerRosterUncached: opts.ListenerRosterUncached,
-		OutboxPublishes:        opts.OutboxPublishes,
-		Metrics:                opts.Metrics,
-		DashboardEntry:         opts.DashboardEntry,
-		BuildCommit:            opts.BuildCommit,
+		Store:                   opts.Store,
+		Identity:                opts.Identity,
+		AgentTokens:             opts.AgentTokens,
+		DefaultProject:          opts.DefaultProject,
+		NewIssueLabel:           opts.NewIssueLabel,
+		NewIssueSession:         opts.NewIssueSession,
+		ServerURL:               opts.ServerURL,
+		EnvoyURL:                opts.EnvoyURL,
+		EnvoyToken:              opts.EnvoyToken,
+		EnvoyAccountTokenFile:   opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:     opts.EnvoyGoogleAudience,
+		Docs:                    opts.Docs,
+		Embedder:                opts.Embedder,
+		Answerer:                opts.Answerer,
+		Events:                  opts.Events,
+		App:                     opts.App,
+		GitHubAPIBase:           opts.GitHubAPIBase,
+		OIDC:                    opts.OIDC,
+		OIDCAccounts:            opts.OIDCAccounts,
+		AccessAccounts:          opts.AccessAccounts,
+		BrokerTokens:            opts.BrokerTokens,
+		PrivateProjects:         opts.PrivateProjects,
+		PrivateBeforeFullSwitch: opts.PrivateBeforeFullSwitch,
+		BusProjects:             opts.BusProjects,
+		AgentStream:             opts.AgentStream,
+		AgentPublisher:          opts.AgentPublisher,
+		AgentSecretsURL:         opts.AgentSecretsURL,
+		AgentSecretsTokenFile:   opts.AgentSecretsTokenFile,
+		Files:                   opts.Files,
+		TestHooksEnabled:        opts.TestHooksEnabled,
+		RouteRosterTTL:          opts.RouteRosterTTL,
+		ListenerTakeoverWindow:  opts.ListenerTakeoverWindow,
+		HorizonStallAfter:       opts.HorizonStallAfter,
+		HorizonWarnEvery:        opts.HorizonWarnEvery,
+		ListenerRosterUncached:  opts.ListenerRosterUncached,
+		OutboxPublishes:         opts.OutboxPublishes,
+		Metrics:                 opts.Metrics,
+		DashboardEntry:          opts.DashboardEntry,
+		BuildCommit:             opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

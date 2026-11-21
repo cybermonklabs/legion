@@ -310,7 +310,7 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	rig.age(t, abandoned.ID, time.Minute, time.Second)
 	leases := sweepLeases(t, rig.database)
 	runSweep(t, func(ctx context.Context) {
-		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil, nil)
+		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil, nil, nil)
 	})
 	waitUntil(t, 30*time.Second, "the abandoned run ended by a maintenance pass", func() bool {
 		_, state, err := rig.server.readGoingStream(context.Background(), everyReader, abandoned.ID, 0)

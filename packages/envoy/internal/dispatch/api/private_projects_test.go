@@ -121,6 +121,68 @@ func requireRefused(t *testing.T, database *store.Store, response *httptest.Resp
 	}
 }
 
+// requireAnIncompleteStoreRefusesTheSwitch runs, on a deployment under options that lets PRIV be
+// made private, one row for each way the store cannot hold PRIV private yet: each refuses PRIV's
+// switch 409 PRIVATE_PROJECTS_INCOMPLETE, changes nothing and calls no writer. The full switch's
+// deployment (TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows) and the one before the full
+// switch (TestAProjectBecomesPrivateBeforeItsFullSwitch) both run this one table, so a marker
+// privateProjectIncomplete gains is added once and reaches both.
+func requireAnIncompleteStoreRefusesTheSwitch(t *testing.T, options testServerOptions) {
+	t.Helper()
+	private := map[string]string{"visibility": model.ProjectPrivate}
+	// Each marker a backfill writes once it is done: without it the switch is refused, naming the
+	// command that writes it.
+	for _, marker := range []struct{ table, command string }{
+		{"session_projects_filled", "envoy-dispatch backfill-session-projects"},
+		{"access_events_scrubbed", "envoy-dispatch scrub-access-events"},
+	} {
+		t.Run(marker.table+" empty", func(t *testing.T) {
+			bus := &recordingBus{}
+			handler, database := newPrivateProjectsServer(t, options, bus)
+			if _, err := database.Pool.Exec(context.Background(), `delete from `+marker.table); err != nil {
+				t.Fatalf("empty %s: %v", marker.table, err)
+			}
+			before := allEvents(t, database)
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", marker.table, marker.command)
+			if calls := bus.taken(); len(calls) != 0 {
+				t.Fatalf("%s empty: the refused write called the writer: %+v", marker.table, calls)
+			}
+		})
+	}
+
+	// A row of PRIV's whose node names another project, or whose node is gone, is a row a private
+	// project's reads would answer wrongly: the switch is refused, naming it with its own cure
+	// (graphcensus.ProjectCompleteFor), and naming no cure of its own: a node that names another
+	// project is no backfill's to mend.
+	for _, broken := range []struct{ name, sql, line, refuse string }{
+		{"PRIV-1's node names another project", `update graph_nodes set project_key = 'OTHER' where kind = 'issue' and id = 'PRIV-1'`,
+			"issue PRIV-1: differs; no command cures it: compare the row with its node", "backfill-graph-store"},
+		{"PRIV-1's node deleted", `delete from graph_nodes where kind = 'issue' and id = 'PRIV-1'`,
+			"issue PRIV-1: missing; run envoy-dispatch backfill-graph-store", "writes their nodes"},
+	} {
+		t.Run(broken.name, func(t *testing.T) {
+			bus := &recordingBus{}
+			handler, database := newPrivateProjectsServer(t, options, bus)
+			if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "PRIV", "title": "One"}, "alice"); created.Code != http.StatusCreated {
+				t.Fatalf("create PRIV-1: %d %s", created.Code, created.Body.String())
+			}
+			if tag, err := database.Pool.Exec(context.Background(), broken.sql); err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("%s: %v, %d rows", broken.name, err, tag.RowsAffected())
+			}
+			before := allEvents(t, database)
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", broken.line)
+			if body := response.Body.String(); strings.Contains(body, broken.refuse) {
+				t.Fatalf("%s: the refusal %s holds %q, a cure its line does not name", broken.name, body, broken.refuse)
+			}
+			if calls := bus.taken(); len(calls) != 0 {
+				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
+			}
+		})
+	}
+}
+
 // TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows is c-private-needs-callout's Dispatch row
 // (K7). A deployment that names no private project answers a switch to private 409
 // PRIVATE_PROJECTS_OFF with privateOffBody's bytes; one that names others answers 409
@@ -156,57 +218,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 		}
 	})
 
-	// Each marker a backfill writes once it is done: without it the switch is refused, naming the
-	// command that writes it.
-	for _, marker := range []struct{ table, command string }{
-		{"session_projects_filled", "envoy-dispatch backfill-session-projects"},
-		{"access_events_scrubbed", "envoy-dispatch scrub-access-events"},
-	} {
-		t.Run(marker.table+" empty", func(t *testing.T) {
-			bus := &recordingBus{}
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
-			if _, err := database.Pool.Exec(context.Background(), `delete from `+marker.table); err != nil {
-				t.Fatalf("empty %s: %v", marker.table, err)
-			}
-			before := allEvents(t, database)
-			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", marker.table, marker.command)
-			if calls := bus.taken(); len(calls) != 0 {
-				t.Fatalf("%s empty: the refused write called the writer: %+v", marker.table, calls)
-			}
-		})
-	}
-
-	// A row of PRIV's whose node names another project, or whose node is gone, is a row a private
-	// project's reads would answer wrongly: the switch is refused, naming it with its own cure
-	// (graphcensus.ProjectCompleteFor), and naming no cure of its own: a node that names another
-	// project is no backfill's to mend.
-	for _, broken := range []struct{ name, sql, line, refuse string }{
-		{"PRIV-1's node names another project", `update graph_nodes set project_key = 'OTHER' where kind = 'issue' and id = 'PRIV-1'`,
-			"issue PRIV-1: differs; no command cures it: compare the row with its node", "backfill-graph-store"},
-		{"PRIV-1's node deleted", `delete from graph_nodes where kind = 'issue' and id = 'PRIV-1'`,
-			"issue PRIV-1: missing; run envoy-dispatch backfill-graph-store", "writes their nodes"},
-	} {
-		t.Run(broken.name, func(t *testing.T) {
-			bus := &recordingBus{}
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
-			if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "PRIV", "title": "One"}, "alice"); created.Code != http.StatusCreated {
-				t.Fatalf("create PRIV-1: %d %s", created.Code, created.Body.String())
-			}
-			if tag, err := database.Pool.Exec(context.Background(), broken.sql); err != nil || tag.RowsAffected() != 1 {
-				t.Fatalf("%s: %v, %d rows", broken.name, err, tag.RowsAffected())
-			}
-			before := allEvents(t, database)
-			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", broken.line)
-			if body := response.Body.String(); strings.Contains(body, broken.refuse) {
-				t.Fatalf("%s: the refusal %s holds %q, a cure its line does not name", broken.name, body, broken.refuse)
-			}
-			if calls := bus.taken(); len(calls) != 0 {
-				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
-			}
-		})
-	}
+	requireAnIncompleteStoreRefusesTheSwitch(t, testServerOptions{privateProjects: provisioned})
 
 	t.Run("a project the list does not name", func(t *testing.T) {
 		bus := &recordingBus{}
@@ -296,18 +308,19 @@ func requireOnlyTheRecord(t *testing.T, bus *recordingBus, want busCall, row str
 	}
 }
 
-// The maintenance sweep logs, on every pass, an error for each private project the list does not
-// name, and, where the list names any, at its first pass and then once an hour, an error naming
-// any row a project owns whose node does not name its project. With an empty list it reads no row
-// of the census.
+// The maintenance sweep logs, on every pass, an error for each private project neither list
+// names, and, where either list names any, at its first pass and then once an hour, an error
+// naming any row a project owns whose node does not name its project. With both lists empty it
+// reads no row of the census.
 func TestTheMaintenanceSweepNamesARowAPrivateProjectWouldAnswerWrongly(t *testing.T) {
 	for _, row := range []struct {
-		name       string
-		list       []string
-		incomplete int
+		name                   string
+		list, beforeFullSwitch []string
+		incomplete             int
 	}{
-		{"a list", []string{"PRIV"}, 1},
-		{"an empty list", nil, 0},
+		{"a list", []string{"PRIV"}, nil, 1},
+		{"a list before the full switch", nil, []string{"PRIV"}, 1},
+		{"an empty list", nil, nil, 0},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logged := captureLog(t)
@@ -328,7 +341,7 @@ func TestTheMaintenanceSweepNamesARowAPrivateProjectWouldAnswerWrongly(t *testin
 				RunMaintenanceSweep(ctx, database.Pool, maintenanceTestInterval, leases, func(context.Context) error {
 					passes.Add(1)
 					return nil
-				}, row.list)
+				}, row.list, row.beforeFullSwitch)
 			})
 			waitUntil(t, 30*time.Second, "three passes of the sweep", func() bool { return passes.Load() >= 3 })
 			incomplete := logged.Lines("issue PRIV-1: missing")

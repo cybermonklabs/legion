@@ -24,10 +24,12 @@ import (
 // route below needs the person scope, because each names or acts as a person; each write is the
 // owner's alone, checked against projects.owner read in the write's own transaction, and appends
 // project.access_changed, which the route publishes once the transaction commits. A project is
-// made private only where the deployment names it among the projects it has provisioned as
-// private (Deps.PrivateProjects: else 409 PRIVATE_PROJECTS_OFF for a deployment that names none,
-// and 409 PRIVATE_PROJECT_NOT_PROVISIONED for one that names others) and the hub takes its
-// private-projects record (K7, Deps.BusProjects, else 409 PRIVATE_PROJECTS_UNAVAILABLE).
+// made private only where the deployment names it: among the projects it has provisioned as
+// private (Deps.PrivateProjects), whose switch is the full switch, and needs the hub to take its
+// private-projects record (K7, Deps.BusProjects, else 409 PRIVATE_PROJECTS_UNAVAILABLE), or among
+// those it makes private before their full switch (Deps.PrivateBeforeFullSwitch), whose switch
+// needs no record. A deployment that names none answers 409 PRIVATE_PROJECTS_OFF, and one that
+// names others 409 PRIVATE_PROJECT_NOT_PROVISIONED.
 
 // projectAccessInput is the body of PATCH /api/v1/projects/{key}/access.
 type projectAccessInput struct {
@@ -62,10 +64,10 @@ const privateProjectsBucket = "envoy_private_projects"
 var errPrivateProjectsUnavailable = errors.New("the project stays public: every listener holds a private project's messages back by its key in the hub's " +
 	privateProjectsBucket + " bucket, and that key could not be written")
 
-// errPrivateProjectNotProvisioned is a switch to private of a project the deployment does not name
-// among those it has provisioned as private: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the
-// project's key.
-var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())")
+// errPrivateProjectNotProvisioned is a switch to private of a project the deployment names in
+// neither list: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the project's key.
+var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects()), " +
+	"or in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH to make it private before its full switch")
 
 // errPrivateProjectsIncomplete is a switch to private while the store cannot hold the project
 // private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and what repairs it.
@@ -144,10 +146,26 @@ func conversationsNamingNoParty(ctx context.Context, q graphstore.Queryer) ([]st
 }
 
 // privateProjectProvisioned reports whether the deployment names project key among the projects it
-// has provisioned as private, the only ones a switch to private may name.
+// has provisioned as private, whose switch to private is the full switch.
 func (s *server) privateProjectProvisioned(key string) bool {
 	_, found := slices.BinarySearch(s.deps.PrivateProjects, key)
 	return found
+}
+
+// privateBeforeFullSwitch reports whether project key is one the deployment makes private before
+// its full switch: Deps.PrivateBeforeFullSwitch names it, which NewDeps holds apart from
+// Deps.PrivateProjects.
+func (s *server) privateBeforeFullSwitch(key string) bool {
+	_, found := slices.BinarySearch(s.deps.PrivateBeforeFullSwitch, key)
+	return found
+}
+
+// accessAnswer is answer as every route of a project's access answers it: marked
+// private_before_full_switch while the project is private before its full switch, so its people
+// read it as such and not as a fully switched project.
+func (s *server) accessAnswer(answer model.ProjectAccess) model.ProjectAccess {
+	answer.PrivateBeforeFullSwitch = answer.Visibility == model.ProjectPrivate && s.privateBeforeFullSwitch(answer.Project)
+	return answer
 }
 
 // getProjectAccess answers who may see project key and who changes that, as the caller reads it:
@@ -170,19 +188,22 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 		s.writeAccessError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	WriteJSON(w, http.StatusOK, s.accessAnswer(answer))
 }
 
 // patchProjectAccess gives the project to another full member, at any time, sets its visibility,
 // and names its Slack channels. Only its owner calls it; any of the three fields may be left out,
 // and a body naming none is refused. A switch to private is refused before anything is read where the
-// deployment names no private project, with the bytes it always answered; once the owner is
-// known and before anything is written, for a project the deployment does not name (a private one
-// whose key left the list included), and for one whose rows or sessions the store has not filled.
-// Otherwise its private-projects record is written through the transaction as its last step, so a
-// refused record leaves the project as it was. A switch to public is refused by none of them. The
-// route makes no other bus call: deleting the key of a project made public, or of one whose commit
-// failed after its record was written, is the record writer's own pass (K7), not this route's.
+// deployment names no private project in either list, with the bytes it always answered; once the
+// owner is known and before anything is written, for a project the deployment names in neither
+// list (a private one whose key left them included), and for one whose rows or sessions the store
+// has not filled. A project's full switch then writes its private-projects record through the
+// transaction as its last step, so a refused record leaves the project as it was; the switch of a
+// project private before its full switch writes none and asks no writer, since its bus gate comes
+// with its full switch, and answers its access marked private_before_full_switch. A switch to
+// public is refused by none of them. The route makes no other bus call: deleting the key of a
+// project made public, or of one whose commit failed after its record was written, is the record
+// writer's own pass (K7), not this route's.
 func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	var input projectAccessInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -197,7 +218,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	if input.Visibility != nil {
 		visibility = *input.Visibility
 	}
-	if visibility == model.ProjectPrivate && len(s.deps.PrivateProjects) == 0 {
+	if visibility == model.ProjectPrivate && len(s.deps.PrivateProjects) == 0 && len(s.deps.PrivateBeforeFullSwitch) == 0 {
 		writeError(w, "PRIVATE_PROJECTS_OFF", http.StatusConflict,
 			"this deployment cannot make a project private yet: nothing was changed")
 		return
@@ -209,8 +230,9 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
+		fullSwitch := visibility == model.ProjectPrivate && s.privateProjectProvisioned(key)
 		if visibility == model.ProjectPrivate {
-			if !s.privateProjectProvisioned(key) {
+			if !fullSwitch && !s.privateBeforeFullSwitch(key) {
 				return model.ProjectAccess{}, nil, fmt.Errorf("%s %w", key, errPrivateProjectNotProvisioned)
 			}
 			if err := privateProjectIncomplete(ctx, tx, key); err != nil {
@@ -247,7 +269,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			}
 			answer, appended = written, append(appended, event)
 		}
-		if visibility == model.ProjectPrivate {
+		if fullSwitch {
 			if err := ensurePrivate(ctx, tx, s.deps.BusProjects, key); err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -365,7 +387,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	s.publish(r.Context(), appended...)
-	WriteJSON(w, http.StatusOK, answer)
+	WriteJSON(w, http.StatusOK, s.accessAnswer(answer))
 }
 
 // viewerSees reports whether viewer sees project; no viewer is the server's own read.
