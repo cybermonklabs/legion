@@ -317,16 +317,30 @@ func routes() []apiRoute {
 		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request written.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
-		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
+		// seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided
+		// or once N seconds pass. Every other session is 403 NOT_YOURS. Before that, a session other
+		// than the one the request hangs off is answered 404 NOT_FOUND, as for an id no request has,
+		// when the request touches a private Dispatch project the session cannot see (one its own
+		// credential does not name, or whose list no longer holds its person), whoever owns it, and
+		// 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel a pending request the calling session's owner made, by the same rule as the read.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read,
+		// its 404 NOT_FOUND for a request of a private project the session cannot see and its 503
+		// PROJECT_ACCESS_UNAVAILABLE included; neither cancels anything.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
-		// Release a live grant's values to the session that holds it. Where
-		// BROKER_PROJECT_ACCESS_URL is set, a restricted member's session is refused 403
-		// GRANT_NOT_LIVE and the grant ended, and one whose person's kind cannot be read from
-		// Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE with nothing released.
+		// Release a live grant's values to the session that holds it. Every other session is 403
+		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
+		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
+		// while Dispatch cannot say; neither releases anything. Where BROKER_PROJECT_ACCESS_URL is
+		// set, a restricted member's session is refused 403 GRANT_NOT_LIVE and the grant ended, and
+		// one whose person's kind cannot be read from Dispatch is refused 503
+		// MEMBER_KIND_UNCHECKABLE with nothing released.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
-		// End a grant the calling session holds.
+		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
+		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
+		// as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say;
+		// neither revokes anything.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
 		// List the undecided requests and machine logins the named person is asked to decide, each
 		// with its state, pending or expired, and its deadline, and each secret request with the
@@ -343,23 +357,32 @@ func routes() []apiRoute {
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
 		// token whose name carries relaysDecisions. It reads the record only once the caller is
 		// authenticated, so a caller with no token, or one the broker does not accept, is refused
-		// the same whether the id names a record or not. A secret request is decided only on the
-		// broker's own page by a person signed in to the broker, so for one this answers the listed
-		// caller 403 DECIDE_ON_BROKER_PAGE naming that page (or naming none, on a broker that signs
-		// nobody in), or 403 JUDGE_DECIDES while the model judge holds it, writing nothing.
+		// the same whether the id names a record or not, and an id no record has is 404 NOT_FOUND.
+		// A secret request is decided only on the broker's own page by a person signed in to the
+		// broker, so for one this answers the listed caller 403 DECIDE_ON_BROKER_PAGE naming that
+		// page (or naming none, on a broker that signs nobody in), or 403 JUDGE_DECIDES while the
+		// model judge holds it, writing nothing. To a person a private project hides the request
+		// from — the body's approver, or a body naming none — it is the same 404 NOT_FOUND as an id
+		// no record has, and while Dispatch cannot say whether the person may see it, 503
+		// PROJECT_ACCESS_UNAVAILABLE.
 		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuth(relaysDecisions, (*server).approveRecord)},
 		// Deny a pending machine login as the named person, who must type its code, on the
 		// caller's word and behind the same authentication and the same power as approve. A
-		// secret request is refused the same way, writing nothing, with 403
+		// secret request is refused the same way, writing nothing: 404 NOT_FOUND to a person its
+		// private project hides it from, as for an id no record has, 503 PROJECT_ACCESS_UNAVAILABLE
+		// while Dispatch cannot answer for it, and otherwise 403 JUDGE_DECIDES or 403
 		// DECIDE_ON_BROKER_PAGE naming the page where a person signed in to the broker denies it.
 		{http.MethodPost, "/v1/credential-requests/{record}/deny", accountAuth(relaysDecisions, (*server).denyRecord)},
 		// Dismiss an expired credential request, a secret request or a machine login whose deadline
 		// passed before anybody decided it, as the named person, for good: it leaves every list
 		// that asks for expired records, the person's own and, for a shared request, everybody's.
-		// A record that can still be decided is 409 RECORD_PENDING, and one that was decided, or
-		// cancelled before its deadline, is 409 RECORD_TERMINAL. A second dismissal answers the
-		// first one's values and writes nothing. The person is the login the body names, which the
-		// broker takes on the caller's word: a dismissal decides nothing and releases nothing.
+		// An id no record has, and a secret request of a private project the person may not see,
+		// are one 404 NOT_FOUND, and a request Dispatch cannot answer for is 503
+		// PROJECT_ACCESS_UNAVAILABLE, dismissing nothing. A record that can still be decided is 409
+		// RECORD_PENDING, and one that was decided, or cancelled before its deadline, is 409
+		// RECORD_TERMINAL. A second dismissal answers the first one's values and writes nothing.
+		// The person is the login the body names, which the broker takes on the caller's word: a
+		// dismissal decides nothing and releases nothing.
 		{http.MethodPost, "/v1/credential-requests/{record}/dismiss", accountAuth(relaysDecisions, (*server).dismissRecord)},
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
@@ -381,14 +404,29 @@ func routes() []apiRoute {
 		// still maps the account to the person. The revoking person is the login the request names,
 		// which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
-		// List the live grants of the named person's sessions, automatic or approved, and those the
-		// person approved. The person is the one the caller names.
+		// List the live grants the named person's Live grants page shows: those the person
+		// approved, those of their own sessions, those the model judge approved in anyone's stead,
+		// and those a pod that acts for no person took without asking (a service's pod, or a
+		// person's pod BROKER_POD_OPERATORS no longer maps), which nobody may revoke. A grant the
+		// person approved, or whose session acts for them, is listed whatever project it touches;
+		// an unmapped person's pod acts for no one, so its other grants are listed to its former
+		// person naming no operator. Any other grant of a private project the person may not see is
+		// left out, and one Dispatch cannot answer for is left out while it cannot. The person is
+		// the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
-		// End a grant as its approver or as its enrollment's operator. The operator's revoke also
-		// withholds the secrets the grant's request got automatically from that session, even when
-		// the grant had already ended: its other grants that got them automatically end too, and it
-		// asks before it gets them again. The revoking person is the login the request names, which
-		// the broker still takes on the caller's word: a revoke only takes power away.
+		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
+		// pod acts for no one), whatever project it touches and whether or not Dispatch answers,
+		// or, for a grant the model judge approved in anyone's stead, as anyone the grant's private
+		// project, if it has one, lets see it. The operator's
+		// revoke also withholds the secrets the grant's request got automatically from that session,
+		// even when the grant had already ended: its other grants that got them automatically end
+		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
+		// grant a private project hides from the person are one 404 NOT_FOUND, a grant Dispatch
+		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another box each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. Each of these revokes nothing. The revoking person is the login the request
+		// names, which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
@@ -430,7 +468,15 @@ func routes() []apiRoute {
 		// Dispatch's Live grants page lists them.
 		{http.MethodGet, "/v1/operator/grants", launcherAuth((*server).listOperatorGrants)},
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
-		// automatic grant's secrets from its session.
+		// automatic grant's secrets from its session. It answers as the person's own revoke of the
+		// grant does: a grant whose approver is the operator, or whose enrollment acts for the
+		// operator (an unmapped person's pod acts for no one), is ended whatever project it touches
+		// and whether or not Dispatch answers. Of any other grant, an id no grant has and a grant a
+		// private project hides from the operator are one 404 NOT_FOUND, a grant Dispatch cannot
+		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant the operator may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another box each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. Each of these revokes nothing.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is
 		// in, and the Google exchange audience: what the CLI needs so it and the broker never
@@ -459,8 +505,9 @@ func routes() []apiRoute {
 		// decide and one "Approve all N shown". It checks the id's shape, then the session, then
 		// the record: a malformed id is a 400, a request with no live session, or with ?switch=1,
 		// redirects to the sign-in provider and returns here, and only a signed-in person's
-		// unknown record id is a 404. A machine login's record is printed with the note that it
-		// is decided by typing its code on Dispatch's machine-login page, and offers no button.
+		// unknown record id, or a record a private project hides from them, is the one 404. A
+		// machine login's record is printed with the note that it is decided by typing its code
+		// on Dispatch's machine-login page, and offers no button.
 		{http.MethodGet, "/approve/{record}", signInAuth((*approval.Page).ServeRecord)},
 		// Decide records an approval page printed, as the signed-in person: a form from the
 		// broker's own origin only, carrying the page's token, which binds it to the session and to

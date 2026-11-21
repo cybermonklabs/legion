@@ -38,6 +38,7 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	Projects        []string `json:"projects,omitempty"`         // register, enroll-session-key: the Dispatch projects the session names, fixed at its first register
 	// Attach is register only: the caller is `agent-secrets register` run without --exec, whose
 	// own process ends with the command, so the helper never pins it. The caller is answered from
 	// the session it is already in; outside one, the helper pins RootPID, and with no RootPID it

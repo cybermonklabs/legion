@@ -837,10 +837,11 @@ func leaseNamed(role appauth.AppRole, owner, kind string) string {
 // push of the issue's trees refused.
 func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T) {
 	leases := &namedLeases{}
-	served := func() []ghrepo.Repository { return []ghrepo.Repository{servingSmoke} }
+	listed := func() []ghrepo.Repository { return []ghrepo.Repository{servingSmoke} }
+	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-	installs := installedOnMapped{served: served}
+	installs := installedOnServed{repos: listed}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 		o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
@@ -1076,38 +1077,38 @@ func TestTheRefresherRefusesASecretRecordingAnotherIssuesDefault(t *testing.T) {
 	}
 }
 
-// installedOnOwners is a role's App installed on a fixed set of owner accounts, whatever the
-// project's mapping names (appauth.OwnerInstallations): the account that installs an App
-// decides where it is installed, and no mapping edit moves that (INFRA-2543), which is what a
-// test that moves the mapping alone wants.
+// installedOnOwners is a role's App installed on a fixed set of owner accounts, whatever
+// repositories the daemon serves (appauth.OwnerInstallations): the account that installs an App
+// decides where it is installed, and no change of the served names moves that (INFRA-2543), which
+// is what a test that moves the served names alone wants.
 type installedOnOwners []string
 
 func (i installedOnOwners) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return slices.Clone(i), nil
 }
 
-// A mapping edit that starts or stops a configured pair resolving moves the default of every
-// bundle built after it, and a live pod's refresh goes on all the same. A pair resolves only
-// while the project serves its `to` and not its `from` (ghrepo.Renames.Moving), and a bundle's
+// A change of the served names that starts or stops a configured pair resolving moves the default
+// of every bundle built after it, and a live pod's refresh goes on all the same. A pair resolves
+// only while the daemon serves its `to` and not its `from` (ghrepo.Renames.Moving), and a bundle's
 // default is the directory the issue's repository routes to by the pairs that resolve
 // (appauth's bundleDirs). So with the App installed on both owners, the issue recorded on
-// sjawhar/legion-smoke defaults to sjawhar while the mapping serves both names, and to
-// cybermonklabs once the operator removes the old name, the usual step after a transfer.
+// sjawhar/legion-smoke defaults to sjawhar while the daemon serves both names, and to
+// cybermonklabs once it no longer serves the old name.
 //
 // The pod's GH_CONFIG_DIR stays at the directory its launch recorded. The directory set is the
 // same two owners in both states and the pod projects the pairs file, so nothing opens an
 // update round over it (movedGhDirs): a refresh that refused the moved default would stop for
 // the rest of the pod's life, and every token in the pod would expire within the hour. Each
-// tick after an edit, in either direction, therefore writes every role's two directories their
+// tick after a change, in either direction, therefore writes every role's two directories their
 // owners' current leases, rewrites the pairs key (GitHubPairsKey) from the pairs the Secret
 // held to the ones that resolve now, which is what the pod's wrappers route the moved
 // repository by, and leaves the recorded default where the launch fixed it.
-func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testing.T) {
-	// state is one state of the mapping the pair turns on: the repositories it serves, the
+func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *testing.T) {
+	// state is one state of the served names the pair turns on: the repositories served, the
 	// directory a bundle built under it routes sjawhar/legion-smoke to, and the pairs file
 	// such a bundle carries.
 	type state struct {
-		mapped        []ghrepo.Repository
+		repos         []ghrepo.Repository
 		routed, pairs string
 	}
 	// With both names served each is a repository of its own and the pair moves nothing; with
@@ -1116,22 +1117,23 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 	oldNameGone := state{[]ghrepo.Repository{servingSmoke}, "cybermonklabs", ghconfig.RenderPairs([]ghrepo.Rename{smokeRename})}
 	dirs := []string{"cybermonklabs", "sjawhar"}
 	for _, tc := range []struct {
-		name             string
-		launched, edited state
+		name              string
+		launched, changed state
 	}{
-		{"the old name leaves the mapping", bothNames, oldNameGone},
-		{"the old name comes back into the mapping", oldNameGone, bothNames},
+		{"the old name stops being served", bothNames, oldNameGone},
+		{"the old name is served again", oldNameGone, bothNames},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var mapping atomic.Pointer[[]ghrepo.Repository]
-			mapping.Store(&tc.launched.mapped)
-			served := func() []ghrepo.Repository { return *mapping.Load() }
+			var held atomic.Pointer[[]ghrepo.Repository]
+			held.Store(&tc.launched.repos)
+			listed := func() []ghrepo.Repository { return *held.Load() }
+			served := servesOneOf(listed)
 			renames := ghrepo.MustRenames(smokeRename)
 			installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 			leases, installs, logs := &namedLeases{}, installedOnOwners(dirs), &lockedLog{}
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-				o.Mapped = served
+				o.CacheRepositories = listed
 				o.Tokens = servingTokens{served: served, renames: renames}
 				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 				o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
@@ -1149,25 +1151,25 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 			for _, role := range roles {
 				secret := g.secret(roleSecretName(pod, role))
 				if got := string(secret.Data[GitHubDefaultKey]); got != recorded {
-					t.Fatalf("the launch recorded the default %q for %s, want %s, the directory %s routes to under the mapping the pod was launched with",
+					t.Fatalf("the launch recorded the default %q for %s, want %s, the directory %s routes to under the served names the pod was launched with",
 						got, role, recorded, recordedSmoke)
 				}
 				if got := string(secret.Data[GitHubPairsKey]); got != pairs {
-					t.Fatalf("the launch wrote the pairs %q for %s, want %q, the ones that resolve under the mapping the pod was launched with", got, role, pairs)
+					t.Fatalf("the launch wrote the pairs %q for %s, want %q, the ones that resolve under the served names the pod was launched with", got, role, pairs)
 				}
 			}
 
-			// refreshed moves the mapping to next, ages every role's tokens past their hour,
-			// runs one tick, and holds every role's Secret to what a daemon serving next
+			// refreshed moves the served names to next, ages every role's tokens past their
+			// hour, runs one tick, and holds every role's Secret to what a daemon serving next
 			// renders for a pod fixed at the recorded default.
 			refreshed := func(when string, next state) {
 				t.Helper()
-				mapping.Store(&next.mapped)
+				held.Store(&next.repos)
 				if bundle, err := g.r.gitHubCredential(g.ctx, claim.RoleArchitect, recordedSmoke); err != nil || bundle.Default != next.routed {
 					t.Fatalf("%s: a bundle built for %s defaults to %q (%v), want %s", when, recordedSmoke, bundle.Default, err, next.routed)
 				}
 				if next.pairs == pairs {
-					t.Fatalf("%s: the mapping moves between two states that carry the same pairs %q, so no tick can show the key rewritten", when, pairs)
+					t.Fatalf("%s: the served names move between two states that carry the same pairs %q, so no tick can show the key rewritten", when, pairs)
 				}
 				staleGhKeys(g, pod, recorded, dirs...)
 
@@ -1197,8 +1199,8 @@ func TestACredentialRefreshGoesOnAfterAMappingEditMovedTheRoutedDefault(t *testi
 				}
 				pairs = next.pairs
 			}
-			refreshed("after the edit", tc.edited)
-			refreshed("after the edit is undone", tc.launched)
+			refreshed("after the change", tc.changed)
+			refreshed("after the change is undone", tc.launched)
 		})
 	}
 }

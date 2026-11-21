@@ -48,6 +48,9 @@ func TestAccessReadsTheK3Answer(t *testing.T) {
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
 		MemberKind: projectaccess.MemberFull, Visible: true, Repositories: []string{"example/priv", "example/priv-old"},
+		// The stand-in answers as a Dispatch with dispatch://INFRA-3862's #t-a-31 does: the key is
+		// always there, empty for a project naming no channel.
+		SlackChannels: []string{}, SlackChannelsPresent: true,
 	}
 	if !reflect.DeepEqual(got, want) || !got.Private() {
 		t.Fatalf("Access(PRIV, carol) = %+v (private %v), want %+v, private", got, got.Private(), want)
@@ -123,6 +126,39 @@ func TestAccessCachesThirtySeconds(t *testing.T) {
 	server.SetDown(false)
 	if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil {
 		t.Fatalf("Access once Dispatch is back = %v, want the answer: a failure is not remembered", err)
+	}
+}
+
+// TestAFreshQuestionIsAskedOfDispatchWhateverTheCacheHolds: under Fresh, Access and MemberKind ask
+// Dispatch though the cache holds a young answer, and what Dispatch answers replaces it, so a
+// check that must see a change younger than CacheTTL (the model judge's approval) sees it. A
+// question without Fresh still reads the cache, as before.
+func TestAFreshQuestionIsAskedOfDispatchWhateverTheCacheHolds(t *testing.T) {
+	server := standIn(t)
+	client := clientOf(server)
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || got.Private() {
+		t.Fatalf("Access(PUB) = %+v, %v; want the public answer", got, err)
+	}
+	if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted {
+		t.Fatalf("MemberKind(bob) = %q, %v; want restricted", kind, err)
+	}
+	server.SetRow("PUB", projectaccesstest.Row{Visibility: "private", Owner: "carol@example.com"})
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || got.Private() {
+		t.Fatalf("Access(PUB) inside CacheTTL after the change = %+v, %v; want the cached public answer", got, err)
+	}
+	asked := server.Calls()
+	fresh := projectaccess.Fresh(t.Context())
+	if got, err := client.Access(fresh, "PUB", ""); err != nil || !got.Private() {
+		t.Fatalf("Access(Fresh, PUB) = %+v, %v; want Dispatch's private answer, not the cached one", got, err)
+	}
+	if kind, err := client.MemberKind(fresh, "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted {
+		t.Fatalf("MemberKind(Fresh, bob) = %q, %v; want restricted", kind, err)
+	}
+	if calls := server.Calls() - asked; calls != 2 {
+		t.Fatalf("the two fresh questions asked Dispatch %d times, want 2", calls)
+	}
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || !got.Private() {
+		t.Fatalf("Access(PUB) after the fresh question = %+v, %v; want the fresh private answer, which replaced the cached one", got, err)
 	}
 }
 
@@ -295,24 +331,67 @@ func TestRestrictedRefusesAKindItDoesNotKnow(t *testing.T) {
 	}
 }
 
-// TestStatesAnswersOneEntryPerProjectItHolds: States answers each project Dispatch holds, as it
-// is to a caller naming no person, and leaves out the one it does not.
-func TestStatesAnswersOneEntryPerProjectItHolds(t *testing.T) {
+// TestStatesAnswersOneEntryPerProject: States answers each project Dispatch holds, as it is to a
+// caller naming no person, and Missing for the one it does not, asked at a time of its own so a
+// caller can age it as it ages any other answer.
+func TestStatesAnswersOneEntryPerProject(t *testing.T) {
 	client := clientOf(standIn(t))
 	states, err := client.States(t.Context(), []string{"PRIV", "PUB", "NOPE"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(states) != 2 || !states["PRIV"].Private() || states["PUB"].Private() || states["PUB"].Visible != true {
-		t.Fatalf("States(PRIV PUB NOPE) = %+v, want PRIV private and PUB public, and no entry for NOPE", states)
+	if len(states) != 3 || !states["PRIV"].Private() || states["PUB"].Private() || states["PUB"].Visible != true || states["PRIV"].Missing || states["PUB"].Missing {
+		t.Fatalf("States(PRIV PUB NOPE) = %+v, want PRIV private and PUB public, both held, and an entry for NOPE", states)
 	}
-	if _, held := states["NOPE"]; held {
-		t.Fatalf("States answered an entry for NOPE, which Dispatch does not hold: %+v", states["NOPE"])
+	if nope := states["NOPE"]; !nope.Missing || nope.Project != "NOPE" || nope.AskedAt.IsZero() || nope.Visible || nope.Private() {
+		t.Fatalf("States answered %+v for NOPE, which Dispatch does not hold; want Missing, named NOPE, with the time it was asked and nothing else", nope)
 	}
 	down := standIn(t)
 	down.SetDown(true)
 	if _, err := clientOf(down).States(t.Context(), []string{"PRIV"}); err == nil {
 		t.Fatal("States while Dispatch is down answered, want a failure")
+	}
+}
+
+// TestAccessRefusesAVisibilityItDoesNotKnow is the side review's finding 1 on
+// cybermonklabs/legion#4135 (review 5927943331): Dispatch answers a project's visibility as
+// "public" or "private", and a 200 answer with no visibility, an empty one or another word is
+// neither. The broker reads none of them as public: Access answers ErrUnknownVisibility, which is
+// no answer and is never kept, so States and Visible fail with it too and each later question
+// asks Dispatch again, as an answer with an unknown member kind does.
+func TestAccessRefusesAVisibilityItDoesNotKnow(t *testing.T) {
+	for _, c := range []struct{ name, body string }{
+		{"an answer with no visibility field", `{"project":"PRIV","owner":"carol@example.com","member_kind":"full","visible":true}`},
+		{"an empty visibility", `{"project":"PRIV","visibility":"","owner":"carol@example.com","member_kind":"full","visible":true}`},
+		{"a visibility of another word", `{"project":"PRIV","visibility":"internal","owner":"carol@example.com","member_kind":"full","visible":true}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.body))
+			}))
+			t.Cleanup(server.Close)
+			client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+			if answer, err := client.Access(t.Context(), "PRIV", ""); !errors.Is(err, projectaccess.ErrUnknownVisibility) {
+				t.Fatalf("Access of %s = %+v, %v; want ErrUnknownVisibility, never an answer read as public", c.body, answer, err)
+			}
+			if states, err := client.States(t.Context(), []string{"PRIV"}); !errors.Is(err, projectaccess.ErrUnknownVisibility) {
+				t.Fatalf("States of %s = %+v, %v; want ErrUnknownVisibility", c.body, states, err)
+			}
+			if err := projectaccess.Visible(t.Context(), client, "carol@example.com", []string{"PRIV"}); !errors.Is(err, projectaccess.ErrUnknownVisibility) || errors.Is(err, projectaccess.ErrNotVisible) {
+				t.Fatalf("Visible of %s = %v; want ErrUnknownVisibility, a failure to ask and no refusal", c.body, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != 3 {
+				t.Fatalf("Dispatch was asked %d times for three questions; want 3: an answer the broker cannot read is never kept", calls)
+			}
+		})
 	}
 }
 
@@ -418,6 +497,58 @@ func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
 	if got := calls("AGED"); got != 2 {
 		t.Fatalf("AGED was asked %d times, want 2: its answer was %s old when the check began and older than %s by its end, so Visible asks again", got, projectaccess.CacheTTL-5*time.Second, projectaccess.CacheTTL)
 	}
+}
+
+// TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall is the client's half of the High on
+// cybermonklabs/legion#4135 (TNDeep4135 and ReviewPR4135, round 6): States asks one project at a
+// time, so an answer that was young when the call began, TEAM's while it was public, can be older
+// than CacheTTL by its end; States asks again for each such answer, so every answer it returns is
+// younger than CacheTTL as it returns, and one whose answers go on aging out faster than Dispatch
+// answers them fails rather than answering an aged one.
+func TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall(t *testing.T) {
+	t.Run("an answer that aged is asked again", func(t *testing.T) {
+		clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+		server, calls := projectServer(t, func(project string, _ int) bool {
+			if project == "SLOW" {
+				clock.advance(10 * time.Second)
+			}
+			return true
+		})
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		projectaccess.SetClock(client, clock.read)
+		if _, err := client.Access(t.Context(), "AGED", ""); err != nil {
+			t.Fatal(err)
+		}
+		clock.advance(projectaccess.CacheTTL - 5*time.Second)
+		states, err := client.States(t.Context(), []string{"AGED", "SLOW"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := calls("AGED"); got != 2 {
+			t.Fatalf("AGED was asked %d times, want 2: its answer was %s old when States began and older than %s by its end, so States asks again", got, projectaccess.CacheTTL-5*time.Second, projectaccess.CacheTTL)
+		}
+		for project, answer := range states {
+			if age := clock.read().Sub(answer.AskedAt); age >= projectaccess.CacheTTL {
+				t.Errorf("States answered %s asked %s before it returned; want every answer younger than %s", project, age, projectaccess.CacheTTL)
+			}
+		}
+	})
+	t.Run("answers that go on aging out fail the call", func(t *testing.T) {
+		clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+		server, calls := projectServer(t, func(string, int) bool {
+			clock.advance(20 * time.Second)
+			return true
+		})
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		projectaccess.SetClock(client, clock.read)
+		states, err := client.States(t.Context(), []string{"ONE", "TWO"})
+		if err == nil {
+			t.Fatalf("States, each answer taking 20 s, answered %+v; want a failure, since each pass leaves one answer older than %s", states, projectaccess.CacheTTL)
+		}
+		if calls("ONE")+calls("TWO") < 4 {
+			t.Fatalf("States asked Dispatch %d times before it failed; want it to have asked again, more than once", calls("ONE")+calls("TWO"))
+		}
+	})
 }
 
 // TestAnOlderAnswerDoesNotReplaceANewerOne: two questions about one project and person in flight

@@ -9,8 +9,10 @@
 // bound to is answered with a certificate this proxy's own authority signs, so each request on
 // it is read: the decision and the swap are internal/cipher/proxyrules's Decide and Rewrite, which
 // a Lean model is proved against and a differential fuzz test ties to, and nothing here decides
-// or swaps anything itself. A CONNECT to any other host is a plain tunnel: the proxy opens no
-// TLS, reads nothing, and copies bytes.
+// or swaps anything itself, with one check beside them that only refuses: a name whose release
+// is Limited to a private project's Slack channels is carried only on a post to one of those
+// channels (slack.go), checked after Rewrite and outside the model. A CONNECT to any other host
+// is a plain tunnel: the proxy opens no TLS, reads nothing, and copies bytes.
 //
 // What this package adds to those two functions is everything around them: who the connection
 // is (the grant), where it may dial (address.go), what the request looks like as a

@@ -191,6 +191,7 @@ $ agent-secrets self
 enrollment_id: 2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
@@ -233,6 +234,7 @@ $ agent-secrets self
 enrollment_id: 7cf72ec3-d10f-46fd-984f-ddd856b229c2
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-11T01:51:13Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 grant: f81251ab-6552-450c-9eca-12a793a29f4c (request 86237327-1f78-4c79-82a5-4f71174e71c5, expires 2026-10-11T01:38:14Z)
@@ -731,7 +733,7 @@ token endpoint the `azure` kind exchanges at, which also plays the resource host
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its five checks, its one model call and
+address, as it does in production. The judge's own run — its six checks, its one model call and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one

@@ -17,10 +17,11 @@ import (
 // login of a person Dispatch holds no row for, enroll as before (the control). While Dispatch
 // cannot be asked, an operator's login enrolls nothing (*projectaccess.MemberKindUncheckable), and
 // the same login enrolls once Dispatch answers again; a broker whose own account Dispatch refuses
-// enrolls nothing for a person either. A person's sign-in on a machine asks Dispatch nothing, since
-// the broker checked that person's domain itself when it minted the credential. A broker with no
-// client of Dispatch asks nothing and enrolls as before, which is why the check needs
-// BROKER_PROJECT_ACCESS_URL.
+// enrolls nothing for a person either. A person's sign-in on a machine is not held to this check,
+// since the broker checked that person's domain itself when it minted the credential: while
+// Dispatch is down it enrolls a session naming no project as checkProjects does, unchecked. A
+// broker with no client of Dispatch asks nothing and enrolls as before, which is why the check
+// needs BROKER_PROJECT_ACCESS_URL.
 func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 	const (
 		outsider = "outsider@outside.example"
@@ -111,12 +112,8 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 		}
 
 		signIn := personsSignIn(t, svc, unasked)
-		asked := dispatch.Calls()
 		if err := enrol(t, svc, signIn, "uma-shared-box-1"); err != nil || enrolled(t, svc, signIn) != 1 {
-			t.Fatalf("Create under %s's sign-in while Dispatch is down = %v with %d enrollments, want one enrollment", unasked, err, enrolled(t, svc, signIn))
-		}
-		if dispatch.Calls() != asked {
-			t.Fatalf("Create under %s's sign-in asked Dispatch %d times, want none", unasked, dispatch.Calls()-asked)
+			t.Fatalf("Create under %s's sign-in while Dispatch is down = %v with %d enrollments, want one enrollment: checkMember holds no sign-in, and checkProjects enrolls an empty list unchecked", unasked, err, enrolled(t, svc, signIn))
 		}
 
 		// The control: the same login enrolls once Dispatch answers, so the refusal was the
