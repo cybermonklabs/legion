@@ -12,8 +12,8 @@ const EnvConsumerNames = "ENVOY_CONSUMER_NAMES"
 
 // The two consumer-name modes a creator starts on.
 const (
-	ConsumerNamesFixed = "fixed"
-	ConsumerNamesFresh = "fresh"
+	consumerNamesFixed = "fixed"
+	consumerNamesFresh = "fresh"
 )
 
 // CheckConsumerNames refuses a consumer-name setting a creator would refuse at its start, so a
@@ -35,9 +35,9 @@ func CheckConsumerNames(input, value string) error {
 		return InputErrorf(input, "%w", SeedRefusal(input))
 	}
 	switch value {
-	case "", ConsumerNamesFixed, ConsumerNamesFresh:
+	case "", consumerNamesFixed, consumerNamesFresh:
 		return nil
 	}
 	return InputErrorf(input, "%s %q must be %q or %q (%s); leave it unset for %s",
-		input, value, ConsumerNamesFixed, ConsumerNamesFresh, EnvConsumerNames, ConsumerNamesFixed)
+		input, value, consumerNamesFixed, consumerNamesFresh, EnvConsumerNames, consumerNamesFixed)
 }

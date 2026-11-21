@@ -136,10 +136,11 @@ func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 // (clusteredHubListenerStartupProbe) passes only once the listener's /v1 gate is open, and until
 // it has passed the kubelet runs neither readiness nor liveness and the pod is not Ready.
 // So a new pod stays out of its Service until /v1 serves, and the rolling update
-// newClusteredHubListener sets (maxSurge 1, maxUnavailable 0) keeps the old pod serving until the
-// new one is Ready, which the Deployment controller holds. The gate opens without waiting for the
-// durable consumer the old pod holds until it stops (main opens /v1 before bindListenerDurable,
-// packages/envoy/cmd/listener/main.go), so the new pod's gate cannot wait on the old pod.
+// newClusteredHubListener sets outside the writer hold (maxSurge 1, maxUnavailable 0) keeps the
+// old pod serving until the new one is Ready, which the Deployment controller holds. The gate
+// opens without waiting for the durable consumer the old pod holds until it stops (main opens /v1
+// before bindListenerDurable, packages/envoy/cmd/listener/main.go), so the new pod's gate cannot
+// wait on the old pod.
 // Readiness and liveness are answersProbe, curl -sS of /livez, which the listener answers 204
 // without touching NATS: they are status-blind, so a fault of the hub, which every pod shares,
 // neither takes the one pod out of its Service nor restarts it, and a listener whose bus is down
