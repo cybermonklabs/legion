@@ -1106,18 +1106,20 @@ bit, as /tmp has. Its group may write to it only where that group is this user's
 /etc/passwd and /etc/group name this user in it and no other member, as a Legion pod's /legion,
 of group `legion`, is; where either file cannot be read, or /etc/group does not name the group,
 the directory is refused. Each link on the way must be this user's or root's too. The login's own
-directory is held to more: neither its group nor anyone else may write to it. The home directory is
-`os.userInfo().homedir`, which Bun answers from `HOME`. In a user namespace other than the first
-one (a gVisor sandbox, a rootless container), the overflow uid counts as root: root's own files
-show it there, and so does every owner the namespace does not map, so each such owner passes. The
-walk stops at the home directory as OpenSSH's StrictModes check of the path to a key does (OpenSSH
-reads the home directory from the password database), and the owner rule is OpenSSH's too. The
-private-group exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ubuntu
-ship), not upstream OpenSSH, which refuses every directory its group may write to. The rest is
-this command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each
-link on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1
-when the broker refuses the login, the person denies it, its code expires, or the broker answers
-a poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
+directory is held to more: neither its group nor anyone else may write to it. The home directory
+is this user's in /etc/passwd; where /etc/passwd cannot be read, or names no user of this uid
+(a container can run as such a uid), it is `os.userInfo().homedir`, which Bun answers from the
+`HOME` the process started with. In a user namespace other than the first one (a gVisor sandbox,
+a rootless container), the overflow uid counts as root: root's own files show it there, and so
+does every owner the namespace does not map, so each such owner passes. The walk stops at the
+home directory as OpenSSH's StrictModes check of the path to a key does (OpenSSH reads the home
+directory from the password database), and the owner rule is OpenSSH's too. The private-group
+exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ubuntu ship),
+not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
+command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
+on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
+the broker refuses the login, the person denies it, its code expires, or the broker answers a
+poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
 naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
 broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
 and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved

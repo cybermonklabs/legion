@@ -128,40 +128,68 @@ const INITIAL_UID_MAP = "0 0 4294967295";
  *  `/proc/sys/kernel/overflowuid` cannot be read. */
 const DEFAULT_OVERFLOW_UID = 65534;
 
+/** What {@link systemFile} read of each file, with the status the file had then. */
+const systemFiles = new Map<string, { readonly status: string; readonly text: string }>();
+
+/**
+ * The text of `file`, one of the files that say who is who (/etc/passwd, /etc/group,
+ * /proc/self/uid_map, /proc/sys/kernel/overflowuid), or null where it cannot be read. A file is
+ * read once a process for as long as its status (its device, inode, size, and change and
+ * modification times) stays the one it had when it was read, so a look at it costs one `stat`: a
+ * read of the login makes several walks, and a walk looks at these files at each directory its
+ * group may write or the overflow uid owns, as at a Legion pod's /legion. A file edited or
+ * replaced since is read again. The kernel shows the two /proc files with the same status for as
+ * long as a process runs, so each is read once a process: the uid map cannot change for a process,
+ * and an overflow uid a sysctl changes is the next process's.
+ */
+async function systemFile(file: string): Promise<string | null> {
+  let info: Stats;
+  try {
+    info = await stat(file);
+  } catch {
+    return null;
+  }
+  const status = [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(":");
+  const kept = systemFiles.get(file);
+  if (kept?.status === status) return kept.text;
+  const text = await readFile(file, "utf8").catch(() => null);
+  if (text === null) systemFiles.delete(file);
+  else systemFiles.set(file, { status, text });
+  return text;
+}
+
 /**
  * Whether `uid`, the owner of a directory or link on the way, is one taken as safe for `mine`,
  * this user's uid: `mine`, root's (0), and, where this process runs in a user namespace other than
  * the first one (a gVisor sandbox, a rootless container), the overflow uid, which root's own files
  * show there, as does every owner the namespace does not map (`/proc/self/uid_map`,
- * `/proc/sys/kernel/overflowuid`). The two files are read only for an owner neither of the first
- * two is.
+ * `/proc/sys/kernel/overflowuid`, each read by {@link systemFile}). The two files are looked at
+ * only for an owner neither of the first two is.
  */
 async function safeOwner(uid: number, mine: number): Promise<boolean> {
   if (uid === mine || uid === 0) return true;
-  const map = (await readFile("/proc/self/uid_map", "utf8").catch(() => ""))
+  const map = ((await systemFile("/proc/self/uid_map")) ?? "")
     .trim()
     .split("\n")
     .map((line) => line.trim().split(/\s+/).join(" "));
   if (map[0] === "" || (map.length === 1 && map[0] === INITIAL_UID_MAP)) return false;
-  const named = Number.parseInt(
-    await readFile("/proc/sys/kernel/overflowuid", "utf8").catch(() => ""),
-    10
-  );
+  const named = Number.parseInt((await systemFile("/proc/sys/kernel/overflowuid")) ?? "", 10);
   return uid === (Number.isNaN(named) ? DEFAULT_OVERFLOW_UID : named);
 }
 
 /**
- * The records of `file`, a users or groups file in /etc/passwd's form, each split at its `:`, or
- * null where it cannot be read or holds a line this code cannot read: one of fewer than `fields`
- * fields, one whose field at an index of `numbers` is no number, or a NIS `+` or `-` line, which
- * hands the rest to a database this code does not read. Blank lines and `#` lines are skipped.
+ * The records of `file`, a users or groups file in /etc/passwd's form ({@link systemFile}), each
+ * split at its `:`, or null where it cannot be read or holds a line this code cannot read: one of
+ * fewer than `fields` fields, one whose field at an index of `numbers` is no number, or a NIS `+`
+ * or `-` line, which hands the rest to a database this code does not read. Blank lines and `#`
+ * lines are skipped.
  */
 async function records(
   file: string,
   fields: number,
   numbers: readonly number[]
 ): Promise<string[][] | null> {
-  const text = await readFile(file, "utf8").catch(() => null);
+  const text = await systemFile(file);
   if (text === null) return null;
   const read: string[][] = [];
   for (const line of text.split("\n")) {
@@ -330,17 +358,24 @@ async function walkTheWay(path: string, what: string, meet?: OnTheWay): Promise<
 
 /**
  * The home directory, by the path a walk reaches it by ({@link walkTheWay}), or null where it is
- * no absolute path, or none that a walk reaches. It is `os.userInfo().homedir`: Node reads it from
- * the password database, as OpenSSH does; Bun answers the `HOME` this process started with, and
- * the password database's only where that is unset.
+ * no absolute path, or none that a walk reaches. It is the home directory (the sixth field) of the
+ * first user of this uid in /etc/passwd ({@link records}), as OpenSSH reads it from the password
+ * database. Where /etc/passwd cannot be read, or names no user of this uid (a container can run as
+ * a uid its /etc/passwd does not name), it is `os.userInfo().homedir`: Node reads that from the
+ * password database too, but Bun answers the `HOME` this process started with, and the password
+ * database's only where that is unset.
  */
 async function homeReached(): Promise<string | null> {
-  let home: string;
-  try {
-    home = userInfo().homedir;
-  } catch {
-    // Node refuses a user the password database has no home directory for.
-    return null;
+  const uid = process.getuid?.();
+  const passwd = await records("/etc/passwd", 7, [2, 3]);
+  let home = passwd?.find((user) => Number(user[2]) === uid)?.[5];
+  if (home === undefined) {
+    try {
+      home = userInfo().homedir;
+    } catch {
+      // Node refuses a user the password database has no home directory for.
+      return null;
+    }
   }
   if (!isAbsolute(home)) return null;
   return await walkTheWay(home, "the home directory").catch(() => null);
@@ -358,15 +393,15 @@ async function homeReached(): Promise<string | null> {
  * at `dir` refuses.
  *
  * The walk stops at the home directory as OpenSSH's StrictModes check of the path to a key does,
- * and OpenSSH reads that directory from the password database. OpenSSH refuses a directory that
- * neither its user nor root owns too. Upstream OpenSSH refuses every directory its group or others
- * may write to; Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ubuntu ship) takes
- * one whose group is the user's private group, and this code takes that patch's rule
- * ({@link privateGroup}). The rest is this code's own choice: OpenSSH takes the path's `realpath`,
- * checks no link and no directory a link is in, and refuses a sticky directory others may write
- * to; this code checks each link on the way and the directory each is in, takes a sticky
- * directory, and in a user namespace other than the first takes the overflow uid as root's
- * ({@link safeOwner}), so there every owner the namespace does not map passes.
+ * and reads it from /etc/passwd where OpenSSH reads the password database. OpenSSH refuses a
+ * directory that neither its user nor root owns too. Upstream OpenSSH refuses every directory its
+ * group or others may write to; Debian's OpenSSH (its `user-group-modes` patch, which Debian and
+ * Ubuntu ship) takes one whose group is the user's private group, and this code takes that
+ * patch's rule ({@link privateGroup}). The rest is this code's own choice: OpenSSH takes the
+ * path's `realpath`, checks no link and no directory a link is in, and refuses a sticky directory
+ * others may write to; this code checks each link on the way and the directory each is in, takes
+ * a sticky directory, and in a user namespace other than the first takes the overflow uid as
+ * root's ({@link safeOwner}), so there every owner the namespace does not map passes.
  */
 async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
   const home = await homeReached();

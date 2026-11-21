@@ -530,13 +530,17 @@ test("a link on the way whose readlink keeps failing as replaced stops at the bo
 
 /**
  * The users and groups files (`/etc/passwd`, `/etc/group`) of a machine where `gid` is this
- * user's private group: this user, `me`, has it as their primary group, and no one else is in it.
- * Another user, `other`, has a private group of their own. `more` adds lines to each file.
+ * user's private group: this user, `me`, has it as their primary group, and no one else is in it,
+ * and `home`, else `/home/me`, as their home directory. Another user, `other`, has a private group
+ * of their own. `more` adds lines to each file.
  */
-function usersAndGroups(gid: number, more: { passwd?: string; group?: string } = {}) {
+function usersAndGroups(
+  gid: number,
+  more: { passwd?: string; group?: string; home?: string } = {}
+) {
   const me = process.getuid?.() ?? 0;
   return {
-    "/etc/passwd": `me:x:${me}:${gid}::/home/me:/bin/sh\nother:x:${me + 4242}:${gid + 4243}::/home/other:/bin/sh\n${more.passwd ?? ""}`,
+    "/etc/passwd": `me:x:${me}:${gid}::${more.home ?? "/home/me"}:/bin/sh\nother:x:${me + 4242}:${gid + 4243}::/home/other:/bin/sh\n${more.passwd ?? ""}`,
     "/etc/group": `me:x:${gid}:\nother:x:${gid + 4243}:\n${more.group ?? ""}`,
   };
 }
@@ -558,6 +562,51 @@ test("a directory on the way that this user's private group may write, as a Legi
   }
   // Control: the walk read the users and groups to take it.
   expect(files.reads()).toBeGreaterThan(0);
+});
+
+test("the users, the groups and the uid map are read once while they stay as they are, and again once one changes", async () => {
+  // A read makes several walks, and a walk looks at them at each directory its group may write
+  // or the overflow uid owns, as at a pod's /legion: each look after the first costs a stat.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o2775);
+  const { gid } = await stat(shared);
+  const owners = lstatReports({ uid: 65534 }, [await fs.realpath(shared)]);
+  const files = readsSystemFiles({
+    ...usersAndGroups(gid),
+    "/proc/self/uid_map": "         0       1000          1\n",
+    "/proc/sys/kernel/overflowuid": "65534\n",
+  });
+  try {
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+    // Control: the reads looked at each of them, and read each once.
+    for (const at of [
+      "/etc/passwd",
+      "/etc/group",
+      "/proc/self/uid_map",
+      "/proc/sys/kernel/overflowuid",
+    ]) {
+      expect(files.reads(at), at).toBe(1);
+    }
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+    expect(files.reads()).toBe(4);
+    // An /etc/group that now lists another member of the group is read again, and refused.
+    files.change("/etc/group", `me:x:${gid}:other\nother:x:${gid + 4243}:\n`);
+    const refused = await readDeviceLogin(settings[0] ?? "").then(
+      () => null,
+      (error: unknown) => (error as Error).message
+    );
+    expect(refused).toContain(`mode 2775, and its group, gid ${gid}`);
+    expect(files.reads("/etc/group")).toBe(2);
+    expect(files.reads()).toBe(5);
+  } finally {
+    files.restore();
+    owners.restore();
+  }
 });
 
 /**
@@ -763,24 +812,54 @@ function lstatReports(
   return { restore: () => lstats.mockRestore() };
 }
 
-/** Makes this process read each file `files` names as the text it gives, or as refused (`EACCES`)
- *  where it gives null, until `restore`; `reads` answers how many reads of them there were. */
-function readsSystemFiles(files: Readonly<Record<string, string | null>>) {
+/** A number no file's status holds, new for each file {@link readsSystemFiles} stands in for and
+ *  for each change of one, so the file reads as one changed since any status seen before. */
+let systemFileChange = 0;
+
+/**
+ * Makes this process read each file `given` names as the text it gives, or as refused (`EACCES`)
+ * where it gives null, with a status of its own, until `restore`. `change` gives a file new text
+ * and a new status, as an edit of it does. `reads` answers how many reads of those files there
+ * were, or of the file `at` alone.
+ */
+function readsSystemFiles(given: Readonly<Record<string, string | null>>) {
+  const files = new Map(
+    Object.entries(given).map(([at, text]) => [at, { text, change: ++systemFileChange }])
+  );
+  const reads = new Map<string, number>();
+  const refused = () => Object.assign(new Error("refused"), { code: "EACCES" });
   const realReadFile = fs.readFile;
-  let reads = 0;
-  const spy = spyOn(fs, "readFile").mockImplementation((async (
+  const readSpy = spyOn(fs, "readFile").mockImplementation((async (
     ...args: Parameters<typeof fs.readFile>
   ) => {
     const at = String(args[0]);
-    if (!Object.hasOwn(files, at)) return await realReadFile(...args);
-    reads += 1;
-    const text = files[at];
-    if (text === null || text === undefined) {
-      throw Object.assign(new Error("refused"), { code: "EACCES" });
-    }
-    return text;
+    const file = files.get(at);
+    if (file === undefined) return await realReadFile(...args);
+    reads.set(at, (reads.get(at) ?? 0) + 1);
+    if (file.text === null) throw refused();
+    return file.text;
   }) as typeof fs.readFile);
-  return { reads: () => reads, restore: () => spy.mockRestore() };
+  const realStat = fs.stat;
+  const statSpy = spyOn(fs, "stat").mockImplementation((async (
+    ...args: Parameters<typeof fs.stat>
+  ) => {
+    const file = files.get(String(args[0]));
+    if (file === undefined) return await realStat(...args);
+    if (file.text === null) throw refused();
+    const { change } = file;
+    return { dev: -1, ino: change, size: file.text.length, mtimeMs: change, ctimeMs: change };
+  }) as typeof fs.stat);
+  return {
+    change: (at: string, text: string) => files.set(at, { text, change: ++systemFileChange }),
+    reads: (at?: string) =>
+      at === undefined
+        ? [...reads.values()].reduce((sum, count) => sum + count, 0)
+        : (reads.get(at) ?? 0),
+    restore: () => {
+      readSpy.mockRestore();
+      statSpy.mockRestore();
+    },
+  };
 }
 
 /** Makes this process read `uidMap` as its `/proc/self/uid_map`, and 65534 as the overflow uid,
@@ -842,27 +921,29 @@ test("in the first user namespace, a directory on the way the overflow uid owns 
 test("a login under the home directory is read whoever owns the directories above it", async () => {
   // They hold the home directory itself: as OpenSSH does, the walk checks the home directory and
   // what is below it, and nothing above it, which in a container can be any owner's. The home
-  // directory is the user's (`os.userInfo().homedir`), not the HOME the environment names now.
+  // directory is this user's in /etc/passwd, as OpenSSH's is, not the HOME the process started
+  // with, which Bun's `os.userInfo().homedir` answers.
   const stub = broker();
   const base = makeDirectory();
   const home = join(base, "home");
+  const elsewhere = join(base, "elsewhere");
   const path = join(home, ".config", "legion", "device-login.json");
   await writeDeviceLoginFile(path, stub.url);
   const other = (process.getuid?.() ?? 0) + 4242;
+  const gid = process.getgid?.() ?? 0;
   const owners = lstatReports({ uid: other }, [await fs.realpath(base)]);
-  const saved = process.env.HOME;
+  const files = readsSystemFiles(usersAndGroups(gid, { home }));
   try {
-    process.env.HOME = join(base, "elsewhere");
-    const user = homeIs(home);
+    const user = homeIs(elsewhere);
     try {
       expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
     } finally {
       user.restore();
     }
-    // Control: with the user's home directory elsewhere, the same directory is on the way, and
-    // refused, whatever HOME names.
-    process.env.HOME = home;
-    const elsewhere = homeIs(join(base, "elsewhere"));
+    // Control: with this user's home directory elsewhere in /etc/passwd, the same directory is on
+    // the way, and refused, whatever `os.userInfo()` answers.
+    files.change("/etc/passwd", usersAndGroups(gid, { home: elsewhere })["/etc/passwd"]);
+    const atHome = homeIs(home);
     try {
       const refused = await readDeviceLogin(path).then(
         () => null,
@@ -870,12 +951,50 @@ test("a login under the home directory is read whoever owns the directories abov
       );
       expect(refused?.message).toContain(`owned by uid ${other}, neither this user`);
     } finally {
+      atHome.restore();
+    }
+  } finally {
+    files.restore();
+    owners.restore();
+  }
+});
+
+test("where /etc/passwd names no user of this uid, the home directory is the one os.userInfo() answers", async () => {
+  // A container can run as a uid its /etc/passwd does not name.
+  const stub = broker();
+  const base = makeDirectory();
+  const home = join(base, "home");
+  const path = join(home, ".config", "legion", "device-login.json");
+  await writeDeviceLoginFile(path, stub.url);
+  const other = (process.getuid?.() ?? 0) + 4242;
+  const gid = process.getgid?.() ?? 0;
+  const owners = lstatReports({ uid: other }, [await fs.realpath(base)]);
+  const files = readsSystemFiles({
+    "/etc/passwd": `other:x:${other}:${gid + 4243}::/home/other:/bin/sh\n`,
+    "/etc/group": usersAndGroups(gid)["/etc/group"],
+  });
+  try {
+    const user = homeIs(home);
+    try {
+      expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    } finally {
+      user.restore();
+    }
+    // Control: with `os.userInfo()` answering another home directory, the directories above this
+    // one are on the way, and refused.
+    const elsewhere = homeIs(join(base, "elsewhere"));
+    try {
+      const refused = await readDeviceLogin(path).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message).toContain("on the way to");
+    } finally {
       elsewhere.restore();
     }
   } finally {
+    files.restore();
     owners.restore();
-    if (saved === undefined) delete process.env.HOME;
-    else process.env.HOME = saved;
   }
 });
 
@@ -885,7 +1004,7 @@ test("the home directory itself is on the way to a login under it", async () => 
   const home = join(makeDirectory(), "home");
   const path = join(home, ".config", "legion", "device-login.json");
   await writeDeviceLoginFile(path, stub.url);
-  const user = homeIs(await fs.realpath(home));
+  const files = readsSystemFiles(usersAndGroups(process.getgid?.() ?? 0, { home }));
   try {
     await chmod(home, 0o777);
     const refused = await readDeviceLogin(path).then(
@@ -898,7 +1017,7 @@ test("the home directory itself is on the way to a login under it", async () => 
     await chmod(home, 0o755);
     expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
   } finally {
-    user.restore();
+    files.restore();
   }
 });
 
@@ -982,7 +1101,11 @@ for (;;) {
 `;
 
 test("a login read while another process saves it over and over is never refused", async () => {
-  // Each read finds the file before the rename or the one after it, never no file.
+  // Each read finds the file before the rename or the one after it, never no file. The row reads
+  // until it has seen the saver's renames SAVES_SEEN times (a read after which the path is another
+  // file than before it), so it races the same number of saves wherever it runs: where a read
+  // costs more, each read sees a save, and it makes fewer reads. No clock decides how many.
+  const SAVES_SEEN = 500;
   const stub = broker();
   const path = loginPath();
   await writeDeviceLoginFile(path, stub.url);
@@ -992,7 +1115,7 @@ test("a login read while another process saves it over and over is never refused
     stderr: "inherit",
   });
   const refusals: string[] = [];
-  const inodes = new Set<number>();
+  let saves = 0;
   try {
     const said = saver.stdout.getReader();
     let heard = "";
@@ -1001,18 +1124,22 @@ test("a login read while another process saves it over and over is never refused
       if (done) throw new Error(`the saver ended before it saved: ${heard}`);
       heard += new TextDecoder().decode(value);
     }
-    for (let read = 0; read < 5_000; read += 1) {
+    let before = (await stat(path)).ino;
+    while (saves < SAVES_SEEN) {
+      if (saver.exitCode !== null) throw new Error(`the saver ended: exit ${saver.exitCode}`);
       await readDeviceLogin(path).catch((error: unknown) => {
         refusals.push(error instanceof Error ? error.message : String(error));
       });
-      inodes.add((await stat(path)).ino);
+      const after = (await stat(path)).ino;
+      if (after !== before) saves += 1;
+      before = after;
     }
   } finally {
     saver.kill();
     await saver.exited;
   }
-  // Control: the reads saw the saver's renames.
-  expect(inodes.size).toBeGreaterThan(1);
+  // Control: the reads saw the saver's renames, as many times as the row asks.
+  expect(saves).toBe(SAVES_SEEN);
   expect(refusals).toEqual([]);
 }, 120_000);
 
