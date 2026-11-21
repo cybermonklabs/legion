@@ -2827,8 +2827,17 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ended = true
-	if waited := <-done; waited != nil {
+	// gh ends within one tick of its release, and `legion gh` with it; the wait has no fixed span,
+	// and a `legion gh` that never ends fails the row 30 s before the binary's deadline, which the
+	// cleanup's kill then ends.
+	var waited error
+	select {
+	case waited = <-done:
+		ended = true
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
+		t.Fatalf("legion gh did not end after gh was released, to 30 s before the test binary's deadline: %s", readRecord(t, printed.Name()))
+	}
+	if waited != nil {
 		t.Fatalf("legion gh = %v, want gh's own 0: %s", waited, readRecord(t, printed.Name()))
 	}
 	if want := "gh survived the hangup\n"; readRecord(t, ghRecord) != want {
