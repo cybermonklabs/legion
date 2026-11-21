@@ -23,9 +23,11 @@
 # are ported here with the mapping table below, and its 13 argument-handling cases are run too,
 # each one recording what the engine does instead of the frozen script's own path handling, which
 # the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
-# and its term-list cases to a rule with no port (below). Beyond the corpus the five rules are
-# driven over a file's content and over a file's path, the conditional allow-list with each half
-# holding alone, and the frozen script's own selection rules one by one.
+# and so does the third rule's reading of a pull request's own text, which check-pr-text.sh alone
+# turns on (PRIVATE_NAME_BARE_HOSTS); its term-list cases belong to a rule with no port (below).
+# Beyond the corpus the five rules are driven over a file's content and over a file's path, the
+# conditional allow-list with each half holding alone, and the frozen script's own selection rules
+# one by one.
 #
 # A class the mapping table does not hold fails its case rather than passing it silently: a port
 # that grew a sixth class, or renamed one, is a port nobody has compared.
@@ -401,6 +403,11 @@ for index in "${!namespaces[@]}"; do
   compare "namespace-$index" "${namespaces[index]}"
   check "namespace-$index: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
 done
+# A host that ends in `.internal` passes a run over the tree on both sides: only a pull request's
+# own text is read for that ending (check-pr-text.sh), and the engine reads no such text.
+compare bare-host "$(printf 'Point it at %s.%s:4000 now.\nSee https://%s.%s/x for it.\nIt answers at %s.%s' \
+  "$host_label" "$internal" "$host_label" "$internal" "$host_label" "$internal")"
+check "bare-host: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
 # The other half of that case — the vendored NATS client's own property, which the frozen script
 # allows in the one bundle that vendors it — is the conditional allow-list, driven below where
 # both of its halves can be driven.

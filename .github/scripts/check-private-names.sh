@@ -26,7 +26,14 @@
 #      else. A namespace passes too: a name holding a capital letter, then a segment spelled
 #      exactly `Internal`, as a Lean module or function or an OCaml value path has. That is the one
 #      shape a host and a namespace share, so a host written that way passes with it. So does
-#      Lean's own option `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name;
+#      Lean's own option `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name.
+#      A run with PRIVATE_NAME_BARE_HOSTS=yes, which check-pr-text.sh asks for over a pull
+#      request's own text, also refuses a host that ends in `.internal`: one followed by a port, a
+#      path, a blank, a quote, a bracket, a sentence's full stop or the end of the line, as
+#      Dispatch's results line refuses it, since that text is pasted where no reader stands
+#      between. Only the GCE metadata server's and Docker's host name of that shape pass there. A
+#      run over a tree reads no such ending: the tree holds those two names and its tests' own
+#      hosts of that shape, which name no private network;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
@@ -159,6 +166,12 @@ repository_rule="(^|[^[:alnum:]]|$encoded_byte)agent($separator)?c([^[:alnum:]]|
 company_rule="t""rajectory($separator|[.])?labs"
 proper_noun_rule="(^|[^[:alnum:]])(T""rajectory|T""RAJECTORY)([^[:alnum:]]|\$)"
 private_host_rule='[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'
+# The third rule's reading of a pull request's own text (PRIVATE_NAME_BARE_HOSTS=yes): a host that
+# ends in `.internal`, every label before it included, then no letter, digit or further label. Its
+# whole matches that name no private host: the two well-known names, with the one or two trailing
+# characters the rule may have captured.
+bare_host_rule='([[:alnum:]-]+[.])*[[:alnum:]-]+[.]internal([^[:alnum:].]|[.]([^[:alnum:]]|$)|$)'
+allowed_bare_host='(metadata[.]google|host[.]docker)[.]internal([^[:alnum:].]|[.][^[:alnum:]]?)?'
 # Whole matches of the host rule that name no private host: a reserved example host (a trailing
 # full stop is the sentence's), and the NATS client's property in the bundle that vendors it.
 allowed_host='[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*'
@@ -189,6 +202,14 @@ case $rules in
   names | keys) ;;
   *)
     echo "check-private-names: PRIVATE_NAME_RULES must be names or keys" >&2
+    exit 2
+    ;;
+esac
+bare_hosts=${PRIVATE_NAME_BARE_HOSTS:-no}
+case $bare_hosts in
+  yes | no) ;;
+  *)
+    echo "check-private-names: PRIVATE_NAME_BARE_HOSTS must be yes or no" >&2
     exit 2
     ;;
 esac
@@ -481,11 +502,13 @@ run() {
 }
 
 # allowed <file> <match>: whether a committed rule's whole match names no private host: a reserved
-# example host, a host under the reserved example tailnet, the NATS client's property in the
-# bundle that vendors it, or one of the two Lean names, which are read in the match's own case.
+# example host, a host under the reserved example tailnet, one of the two well-known names a
+# pull request's text may hold, the NATS client's property in the bundle that vendors it, or one of
+# the two Lean names, which are read in the match's own case.
 allowed() {
   local match=${2,,}
   [[ $match =~ ^($allowed_host)$ || $match =~ ^($allowed_tailnet_host)$ ]] && return
+  [[ $match =~ ^($allowed_bare_host)$ ]] && return
   [[ $2 =~ ^$namespace_host || $2 =~ ^$lean_option$ ]] && return
   [[ $1 == "$vendored_nats" && $match =~ ^$vendored_property$ ]]
 }
@@ -529,6 +552,9 @@ if [ "$rules" = names ]; then
   search "$company_label" committed -E -i -e "$company_rule"
   search "$company_label" committed -E -e "$proper_noun_rule"
   search "$private_host_label" committed -E -i -e "$private_host_rule"
+  if [ "$bare_hosts" = yes ]; then
+    search "$private_host_label" committed -E -i -e "$bare_host_rule"
+  fi
   search "$tailnet_host_label" committed -E -i -e "$tailnet_host_rule"
   search_paths "$repository_label" -E -i -e "$repository_rule"
   search_paths "$company_label" -E -i -e "$company_rule"

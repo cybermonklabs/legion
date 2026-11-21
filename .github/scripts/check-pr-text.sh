@@ -10,7 +10,9 @@
 # comment is public on the pull request's page from the moment it is posted. A hit is reported as
 # `title:<line>`, `body:<line>`, `branch:<line>`, `commits:<line>`, `comment:<id>:<line>`,
 # `review:<id>:<line>` or `review-comment:<id>:<line>` (the id GitHub gives that issue comment,
-# review or review comment), never its text.
+# review or review comment), never its text. That run reads the third rule's form for a pull
+# request's own text too (PRIVATE_NAME_BARE_HOSTS=yes): a host that ends in `.internal`, which a
+# run over the tree passes (check-private-names.sh's header says why).
 #
 # Then it holds the pull request's new text to check-private-names.sh's rule 6 (an issue key of the
 # deployment's own projects), from a cutoff it derives at each run: the section "THE ISSUE-KEY
@@ -173,7 +175,7 @@ done
 # temporary directory, and an item as <kind>:<id>.
 kind_pattern="($(IFS='|'; echo "${kinds[*]}"))"
 status=0
-"$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
+PRIVATE_NAME_BARE_HOSTS=yes "$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
   "${kinds[@]/#/$text/}" 2>&1 | sed -E -e "s|$text/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
   > "$work/report" || status=$?
 cat "$work/report"
