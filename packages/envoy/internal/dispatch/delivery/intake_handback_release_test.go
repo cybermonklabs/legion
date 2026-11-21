@@ -214,8 +214,8 @@ const stopBudget = 3 * time.Second
 // go test's own timeout, and none of these waits ends at a span a loaded runner can outlast. A
 // deadline that leaves no more than the margin fails the row by name, saying whether the -timeout
 // was too short or what ran before used it up. A run with no deadline (-timeout 0) waits
-// rowWaitUnbounded, which the intake's ack wait (intakeAckWait, four times intakeMessageTimeout)
-// still takes.
+// rowWaitUnbounded, which the intake's ack wait (intakeAckWait: intakeMaxAckPending times
+// intakeMessageTimeout, plus a minute) still takes.
 func untilTheBinaryDeadline(t *testing.T) time.Duration {
 	t.Helper()
 	if _, bounded := t.Deadline(); !bounded {

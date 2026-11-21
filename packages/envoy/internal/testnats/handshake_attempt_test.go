@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -8,16 +9,18 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// heldAttemptConn connects to hold's URL with a client whose handshake attempts last
-// heldAttemptTimeout and come heldAttemptGap apart, as a bus client's do at 5 s and 1 s, and
-// reconnects for as long as the test runs. The hold is released before the client closes, since
-// nats.go's Close waits for the connection lock a held handshake holds.
-func heldAttemptConn(t *testing.T, hold *HandshakeHold) *natsgo.Conn {
+// heldAttemptConn connects to hold's URL with a client whose handshake attempts last timeout and
+// come heldAttemptGap apart, as a bus client's last 5 s and come 1 s apart, and reconnects for as
+// long as the test runs. The hold is released before the client closes, since nats.go's Close waits
+// for the connection lock a held handshake holds.
+func heldAttemptConn(t *testing.T, hold *HandshakeHold, timeout time.Duration) *natsgo.Conn {
 	t.Helper()
 	conn, err := natsgo.Connect(hold.URL(),
-		natsgo.Timeout(heldAttemptTimeout),
+		natsgo.Timeout(timeout),
 		natsgo.ReconnectWait(heldAttemptGap),
 		natsgo.MaxReconnects(-1),
 	)
@@ -30,20 +33,25 @@ func heldAttemptConn(t *testing.T, hold *HandshakeHold) *natsgo.Conn {
 }
 
 const (
-	// heldAttemptTimeout is the client's connect timeout, how long each held attempt keeps nats.go's
-	// connection lock.
+	// heldAttemptTimeout is the child's connect timeout, how long each of its held attempts keeps
+	// nats.go's connection lock: the child's measured call answers once an attempt ends.
 	heldAttemptTimeout = 2 * time.Second
 	// heldAttemptGap is the client's ReconnectWait, how long nats.go waits between two attempts with
 	// its lock free.
 	heldAttemptGap = time.Second
+	// heldAttemptSpare is what the rows below leave of the test binary's deadline for their own
+	// failure and cleanups (testwait.Remaining).
+	heldAttemptSpare = 30 * time.Second
 )
 
 // A call that needs no connection lock answers within the attempt held when it began, and
-// AnswersWithinAttempt passes it: no later attempt reached the hold, nats.go did not let its lock go,
-// and the lock is taken once the call has answered.
+// AnswersWithinAttempt passes it: the lock is taken once the call has answered, nats.go did not let
+// it go, and no later attempt reached the hold. The client's held attempt lasts until the test
+// binary's deadline, less heldAttemptSpare, so no span of the attempt ends the row; the cleanup's
+// Release ends the attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 	hold := StartHandshakeHold(t, URL(t))
-	conn := heldAttemptConn(t, hold)
+	conn := heldAttemptConn(t, hold, testwait.Remaining(t, heldAttemptSpare))
 	hold.HoldReconnect(t, conn)
 	hold.AnswersWithinAttempt(t, conn, "a call that needs no lock", func() error { return nil })
 }
@@ -59,11 +67,17 @@ const attemptHeld = "the child's handshake attempt is held"
 // reads conn's status, which waits for nats.go's connection lock, so it answers only once the held
 // attempt has ended at the client's connect timeout, in the second before the next attempt; the
 // child must fail there by AnswersWithinAttempt's own words. A check that takes the lock to be held
-// whenever a read of the status is slow passes the call when that read is descheduled, and the child
+// whenever a read of the status is slow passes the call when that read is descheduled, and so does
+// one that reads the attempt count before the lock when the check is held up past the gap; the child
 // then passes, which fails this row. The child runs in a binary of its own, so its failure is read
-// rather than taken as this row's.
+// rather than taken as this row's. Its -timeout, and the context that ends it, are what the test
+// binary's deadline leaves less heldAttemptSpare, so a child that hangs is ended, and named, with
+// this row's failure still to come.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout=2m", "-test.v")
+	bound := testwait.Remaining(t, heldAttemptSpare)
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout="+bound.String(), "-test.v")
 	child.Env = append(os.Environ(), attemptChildEnv+"=1")
 	output, err := child.CombinedOutput()
 	text := string(output)
@@ -71,12 +85,14 @@ func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 		t.Fatalf("AnswersWithinAttempt passed a call that waited out the held attempt: the child passed:\n%s", text)
 	}
 	if strings.Contains(text, "panic:") || !strings.Contains(text, attemptHeld) || !strings.Contains(text, "--- FAIL: TestAnswersWithinAttemptChild (") {
-		t.Fatalf("the child did not fail its measurement after its attempt was held:\n%s", text)
+		t.Fatalf("the child did not fail its measurement after its attempt was held (%v):\n%s", err, text)
 	}
 	for _, words := range []string{
-		"a status read that waits for the lock answered only after", // the attempt count, or the lock let go
-		"its connection lock was not held when the calls answered",  // a check of the lock alone
+		"a status read that waits for the lock answered only after", // the counts, or the lock let go
 		"nats.go's connection lock was free once the calls had answered",
+		// main's RequireLockHeld, for the overlay control at main (forced-attempt.sh); no tree with
+		// this file's own helpers prints it.
+		"its connection lock was not held when the calls answered",
 	} {
 		if strings.Contains(text, words) {
 			return
@@ -93,7 +109,7 @@ func TestAnswersWithinAttemptChild(t *testing.T) {
 		t.Skip(attemptChildEnv + " is not set: this test is the child of TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt")
 	}
 	hold := StartHandshakeHold(t, URL(t))
-	conn := heldAttemptConn(t, hold)
+	conn := heldAttemptConn(t, hold, heldAttemptTimeout)
 	hold.HoldReconnect(t, conn)
 	t.Log(attemptHeld)
 	hold.AnswersWithinAttempt(t, conn, "a status read that waits for the lock", func() error {

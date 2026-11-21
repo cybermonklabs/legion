@@ -47,6 +47,9 @@ type HandshakeHold struct {
 	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
 	// attempt whose answer the hold keeps.
 	attempts atomic.Int64
+	// dials counts the connections the hold has accepted while a hold was in force: each is a
+	// handshake attempt that has dialed, its CONNECT counted in attempts or still on its way.
+	dials atomic.Int64
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
@@ -170,8 +173,9 @@ func RequireLockHeld(t testing.TB, conn *natsgo.Conn) {
 
 // lockTaken reports whether lock, a connection's nats.go lock (connLock), is held by a writer or
 // waited for by one now: whether a read of the connection's status would wait. A held handshake and
-// HoldWriteLock each hold it for writing. It reads the lock's own state (TryRLock) and waits for
-// nothing, so a reader descheduled before or after the read cannot change the answer.
+// HoldWriteLock each hold it for writing. It reads the lock's own state (TryRLock) at that instant
+// and waits for nothing; which attempt holds it, it does not say: a check that runs after the held
+// attempt has ended can find the next attempt's write lock taken (AnswersWithinAttempt).
 func lockTaken(lock *sync.RWMutex) bool {
 	if lock.TryRLock() {
 		lock.RUnlock()
@@ -182,9 +186,10 @@ func lockTaken(lock *sync.RWMutex) bool {
 
 // lockLetGo returns a channel closed once nats.go has let conn's connection lock go from now on: a
 // read of conn's status begun now waits while a writer holds the lock, and sync.RWMutex hands a
-// waiting read the lock at the writer's Unlock, ahead of the next writer. So the channel closes when
-// the attempt holding the lock ends, even when the next attempt takes the lock again at once; a read
-// begun with the lock free closes it at once.
+// waiting read the lock at the writer's Unlock, ahead of the next writer; a read begun with the lock
+// free closes it at once. The channel closes only once this goroutine has run on after that read,
+// so a check that finds it open has learned nothing: it is one more way to fail, never a reason to
+// pass.
 func lockLetGo(conn *natsgo.Conn) <-chan struct{} {
 	letGo := make(chan struct{})
 	go func() {
@@ -238,28 +243,37 @@ func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 // hold has kept the answer to.
 func (h *HandshakeHold) Attempts() int64 { return h.attempts.Load() }
 
+// Dials is how many connections the hold has accepted while a hold was in force: nats.go dials for
+// each handshake attempt right after taking its connection lock, before it writes the CONNECT
+// Attempts counts.
+func (h *HandshakeHold) Dials() int64 { return h.dials.Load() }
+
 // AnswersWithinAttempt runs each call at once, each on a goroutine of its own, and returns their
 // answers in order. It fails the test, naming what, unless every call answered within the handshake
-// attempt the hold held when they began: by the time all have answered, no later attempt has reached
-// the hold, nats.go has not let its lock go since they began (lockLetGo), and the lock is taken then
-// (RequireLockHeld). A call that waits for nats.go's lock answers only once that attempt has ended,
-// at the client's connect timeout: in the gap after it, with the lock free, or once the next attempt
-// has begun; nats.go let the lock go either way. The row decides by those events and the lock's own
-// state, and no wall-clock bound but a 30 s guard against a call that never answers.
+// attempt the hold held when they began. Once all have answered it reads, in this order: that the
+// lock is taken (RequireLockHeld), that nats.go has not let it go since they began (lockLetGo), and
+// last that no later attempt has reached the hold, by its dial (Dials) or its CONNECT (Attempts). A
+// call that waits for nats.go's lock answers only once that attempt has ended, at the client's
+// connect timeout. Read in the gap after it, the lock is free. Read later, however long the check
+// was held up and wherever, the lock is the next attempt's, and that attempt dials the hold right
+// after taking it and holds it seconds more: the counts read after the lock have moved. Only a lock
+// read that lands between that attempt's Lock and the hold's accept of its dial, with the counts read
+// before the accept, would miss it. No reading of how long a call takes decides; the one wall-clock
+// bound is a 30 s guard against a call that never answers.
 func (h *HandshakeHold) AnswersWithinAttempt(t testing.TB, conn *natsgo.Conn, what string, calls ...func() error) []error {
 	t.Helper()
-	began := h.Attempts()
+	began, dialed := h.Attempts(), h.Dials()
 	letGo := lockLetGo(conn)
 	answers := AnswersWithin(t, 30*time.Second, what, calls...)
-	if ended := h.Attempts(); ended != began {
-		t.Fatalf("%s answered only after %d more handshake attempt(s) had reached the hold: it waited out the attempt held when it began", what, ended-began)
-	}
+	RequireLockHeld(t, conn)
 	select {
 	case <-letGo:
 		t.Fatalf("%s answered only after nats.go had let its connection lock go: it waited out the attempt held when it began", what)
 	default:
 	}
-	RequireLockHeld(t, conn)
+	if ended, dials := h.Attempts(), h.Dials(); ended != began || dials != dialed {
+		t.Fatalf("%s answered only after %d more handshake attempt(s) had dialed the hold (%d more had reached it with a CONNECT): it waited out the attempt held when it began", what, dials-dialed, ended-began)
+	}
 	return answers
 }
 
@@ -280,14 +294,17 @@ func (h *HandshakeHold) serve() {
 // pieces.
 func (h *HandshakeHold) join(client net.Conn) {
 	defer client.Close()
+	h.mu.Lock()
+	release, held, heldOnce := h.release, h.held, h.heldOnce
+	h.mu.Unlock()
+	if release != nil {
+		h.dials.Add(1)
+	}
 	server, err := net.DialTimeout("tcp", h.target, dialTimeout)
 	if err != nil {
 		return
 	}
 	defer server.Close()
-	h.mu.Lock()
-	release, held, heldOnce := h.release, h.held, h.heldOnce
-	h.mu.Unlock()
 	gone := make(chan struct{})
 	defer close(gone)
 	go func() {
