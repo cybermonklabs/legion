@@ -590,10 +590,11 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // MaySeeAtOnce questions at a time (withAccessMemo). Every project is asked whatever ctx's state,
 // so once ctx has ended a project the list or the client already holds an answer for is still
 // answered, and only a question Dispatch would have to be asked now fails. The answer is
-// deterministic whatever order the questions end in: false when any project hides the row; else
-// ErrProjectAccessUnavailable, with the failure of the first project in sorted order that Dispatch
-// did not answer for, when any did not; else true. So a project Dispatch could not be asked about
-// hides the row it is named by, failing closed, and never shows it.
+// deterministic whatever order the questions end in (maySeeAnswer): false when any project hides
+// the row; else ErrProjectAccessUnavailable, with the failure of the first project in sorted order
+// that Dispatch did not answer for, when any did not, a project no read answered being one; else
+// true. So a project Dispatch could not be asked about hides the row it is named by, failing
+// closed, and never shows it.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
@@ -602,12 +603,7 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 	slices.Sort(asking)
 	asking = slices.Compact(asking)
 	person := record.CanonicalLogin(login)
-	type seen struct {
-		hidden bool
-		asked  time.Time
-		err    error
-	}
-	seens := make([]seen, len(asking))
+	seens := make([]projectSeen, len(asking))
 	ctx, hide := context.WithCancel(ctx)
 	defer hide()
 	var hidden atomic.Bool
@@ -627,28 +623,51 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 			var missing *projectaccess.ProjectNotFoundError
 			switch {
 			case errors.As(err, &missing):
-				seens[i] = seen{asked: missing.AskedAt}
+				seens[i] = projectSeen{answered: true, asked: missing.AskedAt}
 			case errors.Is(err, projectaccess.ErrProjectNotFound):
+				seens[i] = projectSeen{answered: true}
 			case err != nil:
-				seens[i] = seen{err: err}
+				seens[i] = projectSeen{err: err}
 			case !answer.Visible:
-				seens[i] = seen{hidden: true}
+				seens[i] = projectSeen{answered: true, hidden: true}
 				hidden.Store(true)
 				hide()
 			default:
-				seens[i] = seen{asked: answer.AskedAt}
+				seens[i] = projectSeen{answered: true, asked: answer.AskedAt}
 			}
 		}()
 	}
 	wg.Wait()
-	if hidden.Load() {
+	return maySeeAnswer(seens)
+}
+
+// projectSeen is what maySee learned of one of a row's projects. answered is set by a read
+// Dispatch answered: the project shown or hidden, or no such project, whose absence hides nothing;
+// err by a read that failed. The zero projectSeen is a project no read answered, which fails
+// closed (maySeeAnswer): maySee stops asking only once a project hides the row, and a loop that
+// stopped before a project for any other reason can never show the row for want of its answer.
+type projectSeen struct {
+	answered bool
+	hidden   bool
+	asked    time.Time
+	err      error
+}
+
+// maySeeAnswer is maySee's answer over what it learned of each project of the row (seens, in
+// sorted order): false when any project hides the row; else ErrProjectAccessUnavailable, with the
+// first project in that order whose read failed or that no read answered; else true, beside the
+// oldest time an answer it rests on was asked.
+func maySeeAnswer(seens []projectSeen) (bool, time.Time, error) {
+	if slices.ContainsFunc(seens, func(s projectSeen) bool { return s.hidden }) {
 		return false, time.Time{}, nil
 	}
-	// Not hidden, so every project was asked and each seen holds its answer or its failure.
 	var asked time.Time
 	for _, s := range seens {
-		if s.err != nil {
+		switch {
+		case s.err != nil:
 			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, s.err)
+		case !s.answered:
+			return false, time.Time{}, fmt.Errorf("%w: no read answered for one of the row's projects", ErrProjectAccessUnavailable)
 		}
 		asked = projectaccess.Oldest(asked, s.asked)
 	}
