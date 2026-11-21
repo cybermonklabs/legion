@@ -194,7 +194,15 @@ private_state="$work/private.json"
 private_ready="$work/private.status"
 private_log="$work/private.log"
 mkdir "$private"
-if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
+# ended <pid>: true once the process is gone from this script's /proc or is a zombie. The script's
+# own PID namespace has its own /proc, so the pid of a process it started is the one read there.
+ended() {
+  local stat=""
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 0
+  stat=${stat##*) }
+  [ "${stat%% *}" = Z ]
+}
+if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
   # The namespaces live exactly as long as this script holds the pipe below open. Their first
   # process waits on it, and when the first process of a PID namespace exits the kernel kills every
   # other process in it: the sampler with it, and the tmpfs with the mount namespace. Only this
@@ -208,35 +216,54 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'moun
   # once that sample's readings are in, so the write comes after a reading taken before it, and a
   # watch that reads the disk once and repeats that reading fails the fall below whatever the
   # timing. Without the wait, a first reading that came after the write - one held 0.6 s did - let
-  # such a watch pass.
-  exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork sh -c '
+  # such a watch pass. No wait in this case has a clock of its own, since a loaded machine can take
+  # any time to start the sampler or to run it: the inner one ends on the first series line or on
+  # the sampler leaving the process table (status 93; it is an orphan, so its exit code cannot be
+  # read), read in the namespace's own /proc; the outer one ends on the status file or on the
+  # namespace ending; below, the fall is read until it shows or three passes have followed the
+  # write, and the close waits for the namespace to end. Each wait out here has one bound, a hang
+  # guard of 300 s that only a hung mount, start or sampler reaches, and reaching it fails the case
+  # by name.
+  exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c '
     exec >"$7" 2>&1
     mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
     env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || { echo 91 >"$6"; exit; }
-    i=0
+    sp=$(sed -n "s/.*\"sampler_pid\": *\([0-9][0-9]*\).*/\1/p" "$5")
     until [ -s "$5.series" ]; do
-      i=$((i + 1))
-      [ "$i" -le 200 ] || { echo 93 >"$6"; exit; }
+      st=""
+      [ -z "$sp" ] || read -r st 2>/dev/null <"/proc/$sp/stat" || st=""
+      st=${st##*) }
+      case ${st%% *} in "" | Z | X) echo "the sampler (pid ${sp:-unknown}) left before its first sample"; echo 93 >"$6"; exit ;; esac
       sleep 0.05
     done
     dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
     echo 0 >"$6"
     cat >/dev/null
   ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready" "$private_log")
-  for _ in $(seq 100); do
+  private_ns=$!
+  private_guard=""
+  for _ in $(seq 1500); do
     [ -s "$private_ready" ] && break
+    ended "$private_ns" && break
     sleep 0.2
   done
+  [ -s "$private_ready" ] || ended "$private_ns" || private_guard=", none within the 300 s hang guard"
   private_status=$(tr -d '\n' 2>/dev/null <"$private_ready" || true)
   check "start watched a tmpfs only this case writes, and the case wrote 64 MiB on it" \
     "$(is "$private_status" 0)"
   if [ "$private_status" = 0 ]; then
     private_before=$(field "$private_state" before_kb)
+    # The fall is read until it shows, or until three passes of the sampler have appended a line
+    # since the write: each pass reads the machine after the one before it appended, and writes the
+    # state before the next one appends, so by the third line the state holds a reading taken after
+    # the write. A sampler that stops passing meets the 300 s hang guard instead.
+    private_lines=$(grep -c '' "$private_state.series" || true)
     fell=0
-    for _ in $(seq 20); do
+    for _ in $(seq 1500); do
+      grown=$(($(grep -c '' "$private_state.series" || true) - private_lines))
       fell=$((private_before - $(field "$private_state" least_kb)))
-      [ "$fell" -ge 65536 ] && break
-      sleep 0.5
+      if [ "$fell" -ge 65536 ] || [ "$grown" -ge 3 ]; then break; fi
+      sleep 0.2
     done
     check "least_kb fell by at least the 64 MiB written, 65536 kB below before_kb" \
       "$([ "$fell" -ge 65536 ] && echo true || echo false)"
@@ -246,17 +273,19 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'moun
     check "the sampler runs in the namespaces, seen by its command line" \
       "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
   else
-    printf '    setup status %s (90: mount, 91: start, 92: dd, 93: no first sample in 10 s, none: no status in 20 s); its output:\n' \
-      "${private_status:-none}" >&2
+    printf '    setup status %s%s (90: mount, 91: start, 92: dd, 93: the sampler left before its first sample, none: the namespace ended without a status); its output:\n' \
+      "${private_status:-none}" "$private_guard" >&2
     sed 's/^/    /' "$private_log" >&2 || true
   fi
   exec {private_hold}>&-
-  for _ in $(seq 50); do
-    pgrep -f -- "disk_watch.py sample --path $private " >/dev/null || break
-    sleep 0.1
+  # Once its unshare has ended, the namespaces' first process has, and the kernel has taken every
+  # other process in them with it, so the sampler is looked for once, after that.
+  for _ in $(seq 1500); do
+    ended "$private_ns" && break
+    sleep 0.2
   done
   check "closing the pipe ended the namespaces, and the sampler in them" \
-    "$(is "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" "")"
+    "$(ended "$private_ns" && is "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" "" || echo false)"
 elif [ "${GITHUB_ACTIONS:-}" = true ]; then
   check "the kernel granted an unprivileged tmpfs mount, which the job's step before this one allows: ${private_out%%$'\n'*}" false
 else
