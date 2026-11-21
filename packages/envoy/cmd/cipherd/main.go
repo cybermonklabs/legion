@@ -599,6 +599,7 @@ func main() {
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		PendingTTL: machineLoginPendingTTL, CredentialLifetime: credentialLifetime,
 		OAuth: provider, Replay: enr.Replay,
+		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 	// The approval page signs a person in with the broker's own client and returns them to
 	// BROKER_PUBLIC_URL as resolved above. A broker that signs nobody in (BROKER_SIGNIN=off)
@@ -1482,22 +1483,32 @@ func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 
 // personSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's store: the sign-in a
 // person's trade belongs to, written in the exchange's own transaction
-// (store.RecordPersonSignIn), so the sign-in and the access token minted under it land
-// together. A box key that person has revoked is store.ErrSignInRevoked, and one whose sign-in
-// was made on another machine is store.ErrSignInMachineChanged; the exchange answers both
-// invalid_grant naming the sign-in command.
+// (enroll.RecordPersonSignIn, which ends a sign-in recording no account and everything it held
+// before it writes the trade's own), so the sign-in and the access token minted under it land
+// together. An account that no longer holds the person's address is
+// store.ErrSignInSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
+// one whose sign-in was made on another machine or by another account
+// store.ErrSignInMachineChanged or store.ErrSignInSubjectChanged; the exchange answers each
+// invalid_grant saying which.
 func personSignIns() oauth.PersonSignIns {
 	return func(ctx context.Context, in oauth.PersonSignIn) error {
 		tx, ok := oauthstore.TxFrom(ctx)
 		if !ok {
 			return errors.New("broker: a person's sign-in is recorded in the exchange's transaction")
 		}
-		err := store.RecordPersonSignIn(ctx, tx, in.Person, in.Thumbprint, in.Machine)
+		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
+			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
+		})
 		switch {
+		case errors.Is(err, store.ErrSignInSubjectReplaced):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
 		case errors.Is(err, store.ErrSignInRevoked):
 			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
 		case errors.Is(err, store.ErrSignInMachineChanged):
 			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
+		case errors.Is(err, store.ErrSignInSubjectChanged):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
 		}
 		return err
 	}

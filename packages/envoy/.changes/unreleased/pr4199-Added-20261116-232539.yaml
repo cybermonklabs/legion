@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A restricted member whom the hourly confirmation signs out because their address is now on a
+  domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`
+  lists, or a subdomain of one) is told why. Their `401 NO_IDENTITY` carries `reason`
+  `WORKSPACE_ADDRESS`, whatever the access lists say, and the dashboard's sign-in page says that
+  the address signs in only as a Workspace account. Before, such a person whom a list still named
+  was told nothing. A deployment that never set `DISPATCH_SIGNIN_OUTSIDE` answers as before.
+time: 2026-11-16T23:25:39.771885573Z
+custom:
+    Issue: pr4199

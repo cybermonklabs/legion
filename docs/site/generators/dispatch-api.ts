@@ -8,7 +8,6 @@ import { readTable } from "./lib/reference.ts";
 
 /** Who may call a route, by the table's auth value (`routeAuth` in the source). */
 const CALLERS: Record<string, { label: string; meaning: string }> = {
-  public: { label: "Anyone", meaning: "no credential is needed." },
   any: {
     label: "Human or agent",
     meaning: "a signed-in human (browser session) or an agent (bearer token).",
@@ -67,12 +66,25 @@ function scopeNames(scopes: readonly string[]): string {
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
+/** Whether a path is one of the routes under `/api/v1`, the index itself included. */
+function underAPI(path: string): boolean {
+  return path === "/api/v1" || path.startsWith("/api/v1/");
+}
+
 function render(routes: Route[]): string {
   // A route belongs to the resource its path names after /api/v1: /api/v1/issues/{key}/asks is
-  // an issues route, and /api/v1 itself is the index ("").
-  const groups = Map.groupBy(routes, (route) => route.path.split("/")[3] ?? "");
+  // an issues route, and /api/v1 itself is the index (""). A route of the table outside /api/v1
+  // belongs to its own first segment: GET /metrics is a metrics route.
+  const groups = Map.groupBy(routes, (route) =>
+    underAPI(route.path) ? (route.path.split("/")[3] ?? "") : (route.path.split("/")[1] ?? "")
+  );
+  const api = routes.filter((route) => underAPI(route.path));
+  const beside = routes
+    .filter((route) => !underAPI(route.path))
+    .map((route) => `\`${route.method} ${route.path}\``);
+  const besideSentence = beside.length === 0 ? "" : `, and ${beside.join(", ")} beside them`;
   const lines = [
-    `Dispatch serves ${routes.length} routes under \`/api/v1\`. A running server lists the same table at \`GET /api/v1\`, which needs no credential.`,
+    `Dispatch serves ${api.length} routes under \`/api/v1\`${besideSentence}. A running server lists the same table at \`GET /api/v1\` to any signed-in person or agent credential.`,
     "",
     "## Who may call a route",
     "",
@@ -113,7 +125,7 @@ writePage({
   path: "dispatch/reference/api.md",
   title: "HTTP API",
   description:
-    "Every route Dispatch serves under /api/v1: method, path, who may call it, the OAuth scopes it needs, and what it does.",
+    "Every route of Dispatch's route table, under /api/v1 and beside it: method, path, who may call it, the OAuth scopes it needs, and what it does.",
   sources: ["packages/envoy/internal/dispatch/api/routes_table.go"],
   body: () => render(readRoutes()),
 });

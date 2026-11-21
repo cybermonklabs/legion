@@ -931,6 +931,34 @@ RULES = {
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:104-120 walks packages/envoy (infra included, "
                              "node_modules and out passed over) and :114 opens each .md file, and no other")),
+    # Dispatch's runbook is two pages: Running Dispatch, and After a restore, which holds the
+    # recoveries after a database restored or made again alone and the move between the Cognito
+    # pool and a domain. These tests run the pages' blocks, so an edit of either alone must start
+    # the jobs that run them.
+    f"{ENVOY}/internal/dispatch/store/mode_switch_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/store/mode_switch_test.go:28 (sqlBlockAfter) reads it, dispatchRunbook, for "
+         "the record-again blocks broker_revocation_recovery_test.go runs"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/dispatch/store/mode_switch_test.go:28 (sqlBlockAfter) reads it, restoreRunbook, for "
+         "the mode switch's statements and the reset reset_test.go runs")),
+    f"{ENVOY}/internal/dispatch/api/broker_restore_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/api/broker_restore_test.go:115 (runbookLines) reads it, the first of "
+         "runbookPaths, for the broker's libpq URL step every block names"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/dispatch/api/broker_restore_test.go:115 (runbookLines) reads it, the second of "
+         "runbookPaths, for the reset's, the restore's and the sweep's blocks the tests run")),
+    f"{ENVOY}/internal/cipher/store/person_subject_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/cipher/store/person_subject_test.go:152 (operatorClearBlock) reads it, for the "
+         "operator's clear of one refusal"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/cipher/store/person_subject_test.go:152 (operatorClearBlock) and :212 (heredocAfter) "
+         "read it, for the reset's clear and its read of the broker's recorded generation"),
+        (f"{ENVOY}/internal/dispatch/store/README.md",
+         "internal/cipher/store/person_subject_test.go:152 (operatorClearBlock) reads it under ../.., "
+         "for the clear the store README gives")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
@@ -2232,6 +2260,7 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
+BROWSER_MP_OUTSIDE = "Browser-test outside sign-in at a second origin"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
@@ -2256,12 +2285,13 @@ BROWSER_RECORD_STEP = "What the run left behind"
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The visual job's second browser step: the same rows in reverse order (e2e/visual-order.ts).
 BROWSER_VISUAL_REVERSE_SPECS = "Browser-test dispatch dashboard against its baselines, rows in reverse order"
-# The seven steps that run the browser suite, named together wherever a Run or a read cites the
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the seven names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
+    f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} and "
     f"{at_browser(BROWSER_VISUAL_REVERSE_SPECS, BROWSER_VISUAL)}"

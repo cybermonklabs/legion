@@ -1,6 +1,6 @@
 import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 
-import { api, isCredentialFeatureOff } from "../../api/client";
+import { api, isCredentialFeatureOff, isDeploymentReadRefused } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
 import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { credentialGrantsQuery } from "./grants";
@@ -12,11 +12,13 @@ import { credentialGrantsQuery } from "./grants";
 const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 
 /** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
- *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one
- *  function, so the two can never drift apart: a `null`-holding query can neither fetch again on
- *  its own nor have the poll armed for it. */
+ *  answered. A list the server refuses the viewer (`isDeploymentReadRefused`: a restricted member,
+ *  whom it never lists the deployment's requests) holds no list either. `enabled` and
+ *  `refetchInterval` below both gate on this one fact through this one function, so the two can
+ *  never drift apart: a query holding `null` or that refusal can neither fetch again on its own nor
+ *  have the poll armed for it. */
 function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
-  return query.state.data !== null;
+  return query.state.data !== null && !isDeploymentReadRefused(query.state.error);
 }
 
 /** Every credential request waiting on the viewer, as the Inbox's credential-requests section
@@ -59,11 +61,12 @@ export function reaskHeldCredentialList(queryClient: QueryClient): void {
 }
 
 /** What the Inbox knows about the credential requests waiting on the viewer. `listed` carries the
- *  list, empty where the broker is not configured (a deployment without one has none); while the
- *  list is `loading`, `requests` is empty and the Inbox claims nothing about them. `failed` means
- *  no list has ever loaded; a poll that fails after a list already loaded keeps reporting that
- *  list as `listed` rather than blanking it, since TanStack keeps the last good `data` on a
- *  refetch error and only clears it on the query's first, still-`isLoadingError`, attempt. */
+ *  list, empty where the broker is not configured (a deployment without one has none) and where
+ *  the server refuses the viewer the list (a restricted member decides none); while the list is
+ *  `loading`, `requests` is empty and the Inbox claims nothing about them. `failed` means no list
+ *  has ever loaded; a poll that fails after a list already loaded keeps reporting that list as
+ *  `listed` rather than blanking it, since TanStack keeps the last good `data` on a refetch error
+ *  and only clears it on the query's first, still-`isLoadingError`, attempt. */
 export interface CredentialRequests {
   requests: readonly CredentialPendingRow[];
   status: "failed" | "listed" | "loading";
@@ -79,6 +82,10 @@ export function useCredentialRequests(): CredentialRequests {
   const pending = useQuery(credentialPendingQuery(restricted));
   if (restricted) return { requests: [], status: "listed" };
   if (pending.isPending) return { requests: [], status: "loading" };
-  if (pending.isLoadingError) return { requests: [], status: "failed" };
+  if (pending.isLoadingError) {
+    return isDeploymentReadRefused(pending.error)
+      ? { requests: [], status: "listed" }
+      : { requests: [], status: "failed" };
+  }
   return { requests: pending.data?.pending ?? [], status: "listed" };
 }

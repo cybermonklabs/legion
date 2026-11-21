@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // proofHistory writes a document's stored history as a room stores one: each write is the update
@@ -345,7 +346,7 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		Persistence: persistence,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {

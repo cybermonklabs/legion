@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A write to a document no room holds forks the stored document and loads no room while it runs:
@@ -162,7 +163,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				Persistence: store,
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
-				ServerURL:   "https://dispatch.example",
+				Origins:     text.NewOrigins("https://dispatch.example"),
 				Settle:      time.Hour,
 			})
 			t.Cleanup(func() {

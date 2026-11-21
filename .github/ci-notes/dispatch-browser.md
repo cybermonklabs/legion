@@ -728,7 +728,9 @@ The browser suite's two-process mode (packages/dispatch/e2e/harness-processes.ts
 envoy-dispatch processes against one Postgres, behind e2e/round-robin-proxy.ts, B serving a
 second build of the dashboard, which is what a rolling release puts in front of a browser. It
 runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
-suite's job does not wait on a second Vite build and two more servers.
+suite's job does not wait on a second Vite build and two more servers, and then, on the same
+build and machine, the one spec of outside sign-in (DISPATCH_E2E_SIGNIN=google), whose
+one-process harness signs people in through the dev OIDC issuer the step before it built.
 
 That Postgres is the harness's own, a `docker run` of the image the job's "Pull the multiprocess stack's Postgres image" step pulls, per Playwright run
 (e2e/harness-postgres.ts), as the visual job's is, and not a `services:` container. The
@@ -776,7 +778,9 @@ connections read, which takes the two-minute floor until runs of it are measured
 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
-the 202 s its 4 min derives from. With budgets on the steps, the
+the 202 s its 4 min derives from. The outside sign-in step adds its own two minutes
+(.github/ci-notes/dispatch-browser.md#what-the-outside-sign-in-step-runs gives its measurement): 16 min
+15 s + 2 min = 18 min 15 s -> 19 min. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
@@ -820,7 +824,7 @@ apt source, which it carried only because that source's index intermittently fai
 The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
 coedit, cross-build, read-marker-disk-stall, signin and two-builds today
 (`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
-one joins without an edit here) -- and they run
+one joins without an edit here) -- and outside-sign-in.e2e.ts, and they run
 headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
 `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
 already. A row that later needs CJK or Thai glyphs would fail visibly.
@@ -845,7 +849,7 @@ nothing can make it launch another engine, and so keeps this one download.
 
 The image the harness starts each Playwright run's Postgres from, pulled here so the
 browser steps of its job after it do not pay for it inside their own budgets, as the visual job pulls
-it. The digest is the browser steps', written three times, and the three must stay the
+it. The digest is the browser steps', written four times, and the four must stay the
 same: a pull of another digest leaves the browser step to pull its own. Each new step's
 name carries the lane, as the embedder job's build step's does, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
@@ -873,6 +877,20 @@ Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=o
 e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
 step before built the dashboard; B serves A's build, which this spec does not tell apart.
 Its Postgres is a second one the harness starts from the same image.
+
+## What the outside sign-in step runs
+
+One server signs people in through the same issuer standing in for Google
+(DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts), with outside sign-in on and a second
+origin, and its one spec signs a person from outside the domain in there as a restricted
+member while an access list names them. The steps before built the dashboard, the server
+and the issuer. Its Postgres is a third one the harness starts from the same image: this
+job has no job-level DATABASE_URL, and a run of one stack given neither a database nor an
+image starts its server with no database, which e2e/run-server.sh refuses. Measured once,
+in full-lane run 43875720942 (job 133328121115), on the `services:` Postgres the job had
+then: 6 s, 13:42:10 to 13:42:16. The sign-in step above, which starts its own Postgres
+the same way, took 14 s in run 44684874945 (job 136116810172). 14 s x 1.15 = 17 s -> the
+two-minute floor, the sign-in step's; its harness is that step's, one server and no proxy.
 
 ## Why the two-process job's upload runs on failure alone
 

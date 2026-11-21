@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -390,11 +389,12 @@ type hubGeneration struct {
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
 	// readersStale is set when something may have moved what a subscriber sees: an access change
-	// announced on access.ChangedChannel, a relayed event that can move it (movesSight, receive),
-	// the listener's (re)connection, which may have missed an announcement, and the socket's
-	// heartbeat, past which an access change no event or announcement carries goes unread no
-	// longer (work). The worker resolves every sub's reader again before its next recompute
-	// (recheckStaleReaders), once for however many came since its last pass.
+	// announced on store.AccessChangedChannel (an access write, or a person's member kind changed), a
+	// relayed event that can move it (movesSight, receive), the listener's (re)connection, which may
+	// have missed an announcement, and the socket's heartbeat, past which an access change no event
+	// or announcement carries goes unread no longer (work). The worker resolves every sub's reader
+	// again before its next recompute (recheckStaleReaders), once for however many came since its
+	// last pass.
 	readersStale atomic.Bool
 	// feeds hands the intake the relay subscription seedEventsLocked took. It has no slot: a
 	// hand-over completes only as the intake takes it, so a subscription is always either the
@@ -613,7 +613,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, access.ChangedChannel, legion.StateChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, store.AccessChangedChannel, legion.StateChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -686,7 +686,7 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 		h.applyFreshness(g, payload)
 	case legion.StateChannel:
 		h.dirtyLegionBoard(g, payload)
-	case access.ChangedChannel:
+	case store.AccessChangedChannel:
 		g.readersStale.Store(true)
 		signal(g.wakeWork)
 	}

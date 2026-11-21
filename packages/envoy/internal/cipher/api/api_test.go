@@ -184,6 +184,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
+		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 
 	deps := api.Deps{

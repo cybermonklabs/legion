@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
+import { dispatchOrigins } from "../../api/origins";
 import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
@@ -266,11 +267,11 @@ function referenceCards(
  * and starts none.
  */
 export function Unfurl({ body, source }: UnfurlProps): ReactNode {
-  const origin = window.location.origin;
+  const origins = dispatchOrigins();
   const shaped = useMemo(
     () =>
-      referencesOnly(body, referenceWords(body, readTextReferences(body, { origin }).references)),
-    [body, origin]
+      referencesOnly(body, referenceWords(body, readTextReferences(body, { origins }).references)),
+    [body, origins]
   );
   // The hook's own reading of the same body, made with everything its queries answered: the
   // cards are read from it rather than from a second pass over the text.

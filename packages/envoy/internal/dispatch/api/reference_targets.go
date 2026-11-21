@@ -114,7 +114,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 	}
 	parsed := make([]text.Ref, len(raw))
 	for index, value := range raw {
-		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.ServerURL)
+		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.Origins)
 		if err != nil {
 			return nil, err
 		}

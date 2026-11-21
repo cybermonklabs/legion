@@ -132,7 +132,11 @@ const (
 const (
 	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
 	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two.
+	// shared public-session account's). It never holds two. No person's credential makes one: a
+	// person's sign-in on a machine and a dev box's machine login decide the person scope
+	// (exchange.Set's Person and Machine). A resource server holds such a token to no Google
+	// account and no creation time, since the operator's configuration, not an account, names its
+	// person (internal/dispatch/api, brokerPersonAdmitted).
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -202,8 +206,9 @@ func JoinProjects(projects []string) string { return strings.Join(projects, " ")
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
 // through (internal/ciphertoken). The broker's tokens are opaque, so everything here comes from
-// the row the token is stored in rather than from the token's own bytes, and a token the broker
-// has revoked or let expire is simply not live.
+// the rows the broker stores rather than from the token's own bytes — the token's, and for its
+// account the row of the credential behind it — and a token the broker has revoked or let expire
+// is simply not live.
 //
 // The JSON names are RFC 7662's where it has one and the broker's own where it does not; the
 // route serialises this struct and adds no field of its own. Both ends read this one declaration,
@@ -229,6 +234,29 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
+	// AccountIssuer is the issuer of the Google account the credential behind a token naming a
+	// person records, as oidc.CanonicalIssuer spells it, which the token's trade wrote onto the
+	// token when it minted it: for a token a person's sign-in on a machine minted, the issuer of
+	// the person's own identity token that made the trade; for a token a machine login's own token
+	// was exchanged for, the issuer of the account that approved that login. It is set with
+	// AccountSubject or not at all, and is empty for a token naming no person, for one of a login
+	// no person's account approved (or an older Dispatch approved), and for one minted before the
+	// broker recorded the account on its token. RFC 7662's own `iss` is the token's issuer, which
+	// is the broker, so this is named apart from it.
+	AccountIssuer string `json:"account_issuer,omitempty"`
+	// AccountSubject is that account's `sub`, beside AccountIssuer. RFC 7662's own `sub` is the
+	// token's subject, the principal the exchange decided, so this is named apart from it. It is
+	// what lets a resource server tell which account a token is: a token whose account no longer
+	// holds the person's address is the replaced account's, however its person reads.
+	AccountSubject string `json:"account_subject,omitempty"`
+	// CredentialCreatedAt is when the credential behind a token naming a person was made, as Unix
+	// seconds from the broker database's own clock: the person's sign-in on a machine, or the
+	// machine login the token was exchanged from, not the token's own iat, which a refresh renews.
+	// The token's trade wrote it onto the token when it minted it. A resource server holds a token
+	// recording no account to it: one made before the person's account was recorded may be an
+	// earlier holder's. It is 0, and absent, for a token naming no person and for one minted
+	// before the broker recorded it.
+	CredentialCreatedAt int64 `json:"credential_created_at,omitempty"`
 	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
 	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
 	// neither this nor Projects.

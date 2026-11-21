@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A broker-issued token whose DPoP proof carries a control character in its `jti`, U+0000 among
+  them, is now refused `401 BROKER_TOKEN_PROOF_INVALID`, the caller's own refusal. Before,
+  PostgreSQL could not store the NUL, and Dispatch answered `503 BROKER_UNAVAILABLE` ("try again in
+  a minute") with a warning blaming the secrets broker. The replay store records nothing of such a
+  proof, as the broker's own store refuses the same characters.
+time: 2026-11-21T05:50:21.000000000Z
+custom:
+    Issue: pr4199

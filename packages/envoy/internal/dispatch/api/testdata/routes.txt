@@ -1,4 +1,4 @@
-GET /api/v1 public
+GET /api/v1 any
 GET /api/v1/access-groups any
 DELETE /api/v1/access-groups/{name} any
 PUT /api/v1/access-groups/{name} any
@@ -200,7 +200,7 @@ GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
 POST /api/v1/results/{id}/retract any
-GET /api/v1/schema/blocks public
+GET /api/v1/schema/blocks any
 GET /api/v1/search any
 GET /api/v1/search/coverage any
 GET /api/v1/search/results any
@@ -216,3 +216,4 @@ GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any
 GET /api/v1/whoami any
+GET /metrics any

@@ -8,7 +8,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,10 +22,12 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -227,7 +231,7 @@ func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options 
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-			Origin:    testServerURL,
+			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
 			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
@@ -295,6 +299,43 @@ func TestALiveBrokerTokenWithASoundProofIsAccepted(t *testing.T) {
 	}
 	if answer.Service != nil {
 		t.Fatalf("whoami service = %v, want null: no service-account token authenticated this", *answer.Service)
+	}
+}
+
+// TestAnEntryTokenMintsAndApprovesNothing: an operator entry's token (project scope named) is held
+// to no account at its admission (brokerPersonAdmitted), and the mint's and an approve's re-reads
+// hold every broker token to its account without that exemption. They never meet one: such a
+// token holds no Dispatch scope, so the mint and the approve, which need the person and approve
+// scopes, refuse it 403 OAUTH_SCOPE_REQUIRED before either re-read runs, even while it acts as its
+// person on the route it may use. The review that found the asymmetry (round 15's A2) asked for
+// this proof. The code is asserted, not the status alone: a later check of the same route answers
+// 403 for another reason (the approve's project-scope refusal), which would hide the scope's.
+//
+// Control: brokerTokenActor granting a named-scope token the person and approve scopes; the mint
+// reaches the project check and answers 400, and the approve answers another 403.
+func TestAnEntryTokenMintsAndApprovesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "an-entry-token-the-broker-issued"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	if acted := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)); acted.Code != http.StatusOK {
+		t.Fatalf("whoami under the entry's token: status=%d body=%s", acted.Code, acted.Body.String())
+	}
+	for _, request := range []struct {
+		name, path string
+		body       any
+	}{
+		{"the mint", "/api/v1/me/agent-tokens", map[string]any{"name": "minted by an entry's token"}},
+		{"the approve", "/api/v1/credential-requests/rec1/approve", map[string]any{"code": "ABCD-1234"}},
+	} {
+		refused := rig.serve(caller.presenting(t, http.MethodPost, request.path, token, request.body))
+		if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"OAUTH_SCOPE_REQUIRED"`) {
+			t.Errorf("%s by the entry's token: status=%d body=%s, want 403 OAUTH_SCOPE_REQUIRED", request.name, refused.Code, refused.Body.String())
+		}
+	}
+	var minted int
+	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from agent_tokens where name = 'minted by an entry''s token'`).Scan(&minted); err != nil || minted != 0 {
+		t.Errorf("tokens minted by the entry's token = %d (%v), want none", minted, err)
 	}
 }
 
@@ -1128,5 +1169,398 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project="+brokerTestProject, nil)
 	if strings.Contains(issues.Body.String(), "Filed with no proof") {
 		t.Fatalf("the unproved write created an issue: %s", issues.Body.String())
+	}
+}
+
+// outsideBrokerRig is outsideTokenRig for the broker's tokens: two API servers over one database,
+// each deciding broker tokens against one stub broker, as one deployment is before and after its
+// operator turns outside sign-in off. on signs in people from outside its domain and off does not.
+// The database holds ACC, which alice owns and whose access list names erin, a restricted member,
+// and carol, a full member. Every token the rig's broker holds is bound to caller's key.
+type outsideBrokerRig struct {
+	on, off  http.Handler
+	offDeps  Deps
+	database *store.Store
+	broker   *ciphertokentest.StubBroker
+	caller   *brokerCaller
+}
+
+func newOutsideBrokerRig(t *testing.T) outsideBrokerRig {
+	t.Helper()
+	broker := ciphertokentest.NewStubBroker(t)
+	on, database := newAccessServerWith(t, testServerOptions{signInOutside: true, brokerTokens: stubBrokerTokens(t, broker)})
+	off, _, offDeps := newTestServer(t, testServerOptions{store: database, brokerTokens: stubBrokerTokens(t, broker)})
+	if listed := dispatchRequest(t, on, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	return outsideBrokerRig{on: on, off: off, offDeps: offDeps, database: database, broker: broker, caller: newBrokerCaller(t)}
+}
+
+// personToken is the broker's answer for a dev box session's token acting for person: live,
+// bound to the rig's caller's key and scoped to that person rather than to one project.
+func (r outsideBrokerRig) personToken(person string) ciphertoken.Introspection {
+	answer := liveNamedToken(r.caller.jkt)
+	answer.Person, answer.ProjectScope, answer.Projects = person, ciphertoken.ProjectScopePerson, nil
+	return answer
+}
+
+// whoami is GET /api/v1/whoami under token, with a fresh proof, on handler.
+func (r outsideBrokerRig) whoami(t *testing.T, handler http.Handler, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, r.caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+	return response
+}
+
+// wantAPIError fails the test unless err is the refusal status with code.
+func wantAPIError(t *testing.T, err error, status int, code, what string) {
+	t.Helper()
+	var refusal *apiError
+	if !errors.As(err, &refusal) || refusal.status != status || refusal.code != code {
+		t.Fatalf("%s: %v, want %d %s", what, err, status, code)
+	}
+}
+
+// TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem (R5): a token the secrets
+// broker issued for a restricted member is held to the rule their personal token is held to, at
+// every request and at every heartbeat of a socket it opened (callerStillResolves). It acts while
+// the deployment signs in people from outside its domain and a project names the owner. Over the
+// same database with outside sign-in off it is 401 TOKEN_OWNER_NOT_ADMITTED naming the setting;
+// once no project names the owner it is refused with the same code, saying so; once one names them
+// again it acts again; and lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an accept.
+func TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	const token = "erins-broker-token"
+	rig.broker.Says(token, rig.personToken(accessErin))
+	withOutside := rig.offDeps
+	withOutside.RestrictedAdmission = testOutsideRule(rig.database.Pool)
+	on, off := directServer(withOutside), directServer(rig.offDeps)
+	wantActs := func(when string) {
+		t.Helper()
+		if response := rig.whoami(t, rig.on, token); response.Code != http.StatusOK {
+			t.Fatalf("%s: erin's broker token on GET /api/v1/whoami = %d %s, want 200", when, response.Code, response.Body.String())
+		}
+	}
+	wantRefused := func(response *httptest.ResponseRecorder, call, saying string) {
+		t.Helper()
+		wantRefusal(t, response, http.StatusUnauthorized, codeTokenOwnerNotAdmitted, "erin's broker token", call)
+		if !strings.Contains(response.Body.String(), saying) {
+			t.Fatalf("erin's broker token: %s = %s, want the refusal to say %q", call, response.Body.String(), saying)
+		}
+	}
+	wantActs("outside sign-in on and ACC's list naming erin")
+	// The socket erin's agent opens with the token, and its heartbeat while she is admitted.
+	opened := rig.caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
+	if _, _, err := on.optionalActor(opened); err != nil {
+		t.Fatalf("erin's broker token opening /ws/live with outside sign-in on: %v, want her agent", err)
+	}
+	// beat is one heartbeat of erin's socket on served (callerStillResolves), its error alone.
+	beat := func(served *server) error {
+		_, _, err := served.callerStillResolves(opened)
+		return err
+	}
+	if err := beat(on); err != nil {
+		t.Fatalf("the heartbeat of erin's socket with outside sign-in on: %v, want it kept", err)
+	}
+	// The rule with other.example among the Workspace's domains would refuse erin's sign-in
+	// (identity.ErrWorkspaceAddress), so it refuses her broker token too, on a request and at the
+	// heartbeat, while ACC's list still names her: the API asks the sign-in rule, not a copy of it.
+	workspace := rig.offDeps
+	workspace.RestrictedAdmission = testOutsideRule(rig.database.Pool, "other.example")
+	ofTheWorkspace := directServer(workspace)
+	const onAWorkspaceDomain = "on a domain the Google Workspace owns"
+	_, _, err := ofTheWorkspace.brokerTokenActor(rig.caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+	wantAPIError(t, err, http.StatusUnauthorized, codeTokenOwnerNotAdmitted, "erin's broker token with other.example a Workspace domain")
+	if !strings.Contains(err.Error(), onAWorkspaceDomain) {
+		t.Fatalf("erin's broker token with other.example a Workspace domain: %v, want the refusal to say %q", err, onAWorkspaceDomain)
+	}
+	wantAPIError(t, beat(ofTheWorkspace), http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+		"the heartbeat of erin's socket with other.example a Workspace domain")
+
+	wantRefused(rig.whoami(t, rig.off, token), "GET /api/v1/whoami with outside sign-in off", "DISPATCH_SIGNIN_OUTSIDE is unset")
+	wantAPIError(t, beat(off), http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+		"the heartbeat of erin's socket with outside sign-in off")
+
+	if unlisted := dispatchRequest(t, rig.on, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); unlisted.Code != http.StatusOK {
+		t.Fatalf("alice takes erin off ACC's list: status=%d body=%s", unlisted.Code, unlisted.Body.String())
+	}
+	wantRefused(rig.whoami(t, rig.on, token), "GET /api/v1/whoami once no project names erin", "no project names them any more")
+	wantAPIError(t, beat(on), http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+		"the heartbeat of erin's socket once no project names her")
+
+	if listed := dispatchRequest(t, rig.on, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list again: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	wantActs("ACC's list naming erin again")
+
+	rename := func(from, to string) {
+		t.Helper()
+		if _, err := rig.database.Pool.Exec(context.Background(), `alter table `+from+` rename to `+to); err != nil {
+			t.Fatalf("rename %s to %s: %v", from, to, err)
+		}
+	}
+	rename("project_access", "project_access_unreadable")
+	unreadable := rig.whoami(t, rig.on, token)
+	heartbeat := beat(on)
+	rename("project_access_unreadable", "project_access")
+	wantRefusal(t, unreadable, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "erin's broker token", "GET /api/v1/whoami while the lists cannot be read")
+	wantAPIError(t, heartbeat, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", "the heartbeat of erin's socket while the lists cannot be read")
+	wantActs("the lists read again")
+}
+
+// A connection a full member's broker token opened closes once their member kind changes, as a
+// cookie's and a personal token's does: its events subscription reads its reader again only at an
+// event, and a change of member kind appends none. erin is made full, opens the connection with
+// her broker token (whileCallerResolves with the live socket's resolution, callerStillResolves, and
+// its grant compare), and is then restricted again while ACC's list names her, so the outside rule
+// still admits her token; the heartbeat reads her kind changed and cancels the connection.
+//
+// Control: callerStillResolves answers no person for a broker token, as it did. The heartbeat then
+// reads no member kind, the connection outlives the window, and the test fails saying so.
+func TestABrokerTokensConnectionClosesOnceItsPersonsMemberKindChanges(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	const token = "erins-broker-token-holding-a-socket"
+	rig.broker.Says(token, rig.personToken(accessErin))
+	if _, err := rig.database.Pool.Exec(context.Background(), `update people set member_kind = 'full' where email = $1`, accessErin); err != nil {
+		t.Fatal(err)
+	}
+	deps := rig.offDeps
+	deps.RestrictedAdmission = testOutsideRule(rig.database.Pool)
+	deps.StreamHeartbeat = 50 * time.Millisecond
+	served := directServer(deps)
+	opened, ended := make(chan struct{}), make(chan bool, 1)
+	connection := served.whileCallerResolves(served.callerStillResolves, true, func(_ http.ResponseWriter, r *http.Request) {
+		close(opened)
+		select {
+		case <-r.Context().Done():
+			ended <- true
+		case <-time.After(10 * time.Second):
+			ended <- false
+		}
+	})
+	go connection.ServeHTTP(httptest.NewRecorder(), rig.caller.presenting(t, http.MethodGet, "/ws/live", token, nil))
+	<-opened
+	time.Sleep(4 * deps.StreamHeartbeat)
+	select {
+	case closed := <-ended:
+		t.Fatalf("erin's connection, a full member's, ended (closed %t) before her member kind changed", closed)
+	default:
+	}
+	markRestricted(t, rig.database, accessErin)
+	if !<-ended {
+		t.Fatal("erin's connection, opened by her broker token as a full member, was still open 10s after she was restricted: the heartbeat read no member kind for a broker token")
+	}
+}
+
+// A connection a broker token opened for a person no people row holds stays open when their first
+// row appears, full, as it does on their first sign-in: they acted as a full member before it and
+// do after it, so nothing they see changed. And each heartbeat of a broker token's connection reads
+// the person's member kind once, in the admission statement that reads their revocations and
+// account, never in a read of its own beside it.
+//
+// Controls: compare the stored kind rather than whether the person is restricted (the connection
+// closes as the row appears); have the heartbeat read the kind beside the admission (two reads of
+// people a heartbeat).
+func TestABrokerTokensConnectionKeepsAFirstPeopleRowAndReadsTheKindOnceABeat(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	const newcomer, token = "newcomer@example.com", "a-newcomers-broker-token"
+	rig.broker.Says(token, rig.personToken(newcomer))
+	counter := &statementCounter{}
+	deps := rig.offDeps
+	deps.Store = storetest.TracedStore(t, rig.database, counter)
+	deps.StreamHeartbeat = 50 * time.Millisecond
+	served := directServer(deps)
+	opened, ended := make(chan struct{}), make(chan bool, 1)
+	connection := served.whileCallerResolves(served.callerStillResolves, true, func(_ http.ResponseWriter, r *http.Request) {
+		close(opened)
+		select {
+		case <-r.Context().Done():
+			ended <- true
+		case <-time.After(time.Second):
+			ended <- false
+		}
+	})
+	go connection.ServeHTTP(httptest.NewRecorder(), rig.caller.presenting(t, http.MethodGet, "/ws/live", token, nil))
+	<-opened
+	since := counter.mark()
+	seedPeople(t, rig.database, newcomer)
+	if closed := <-ended; closed {
+		t.Fatalf("the connection of %s, whom no people row held, closed when their first row appeared, full", newcomer)
+	}
+	beats := counter.count(since, "in (subject, holder_subject)", newcomer)
+	kindReads := counter.count(since, "member_kind from people", newcomer)
+	if beats == 0 || kindReads != beats {
+		t.Fatalf("%d heartbeats of a broker token's connection read the member kind %d times, want once each, in the admission", beats, kindReads)
+	}
+}
+
+// A broker token of an account Google gave the address to, which has not signed in to Dispatch
+// since, is refused with a code of its own that says to sign in, never BROKER_TOKEN_NOT_ACTIVE: a
+// client takes that code for a stale token, trades again and sends again, which fails the same way
+// on every request. A token of the replaced account, which a revocation names, keeps
+// BROKER_TOKEN_NOT_ACTIVE.
+//
+// Control: the refusal answers BROKER_TOKEN_NOT_ACTIVE for both, as it did.
+func TestABrokerTokenOfAnAccountNotSignedInIsToldToSignIn(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	deps := rig.offDeps
+	deps.SignInIssuer = "https://accounts.google.com"
+	served := directServer(deps)
+	const person = "carol@example.com"
+	if _, err := rig.database.Pool.Exec(context.Background(), `update people set sub = 'replaced-account' where email = $1`, person); err != nil {
+		t.Fatal(err)
+	}
+	token := func(subject string) ciphertoken.Caller {
+		return ciphertoken.Caller{Person: person, AccountIssuer: "https://accounts.google.com", AccountSubject: subject}
+	}
+	if _, err := rig.database.Pool.Exec(context.Background(), `update people set sub = 'holder-account' where email = $1`, person); err != nil {
+		t.Fatal(err)
+	}
+	_, err := served.brokerPersonAdmitted(context.Background(), token("new-account"))
+	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_ACCOUNT_NOT_SIGNED_IN", "a token of an account that has not signed in to Dispatch")
+	if !strings.Contains(err.Error(), "sign in to Dispatch") {
+		t.Errorf("the refusal %q does not say to sign in to Dispatch", err)
+	}
+	// A recording names the address's session generation as it stands (migration 20261118152422).
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, done_at, session_generation)
+		values ($1, 'https://accounts.google.com', 'replaced-account', 'holder-account', now() - interval '1 hour', now() - interval '1 hour',
+			(select generation from user_sessions where login = $1))`, person); err != nil {
+		t.Fatal(err)
+	}
+	_, err = served.brokerPersonAdmitted(context.Background(), token("replaced-account"))
+	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE", "a token of the replaced account, which a settled revocation names")
+
+	// An earlier holder whose own loss of the address recorded no revocation of it is named only as
+	// a holder: it held the address and lost it, so its token is the replaced account's too. The row
+	// is history (its holder no longer holds the address), which a recording now cannot write, so
+	// the fixture writes it with the guard off.
+	// Control: brokerAccountNamed reading only the replaced account (it answers SIGNED_IN).
+	storetest.TestOnlyWriteBrokerRevocations(t, rig.database, `
+		insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, done_at)
+		values ($1, 'https://accounts.google.com', 'first-account', 'former-holder', now() - interval '2 hours', now() - interval '2 hours')`, person)
+	_, err = served.brokerPersonAdmitted(context.Background(), token("former-holder"))
+	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE", "a token of an earlier holder, which a revocation names as its holder")
+}
+
+// TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison: the settle window refused, while a
+// revocation of the address was unsettled, a broker token recording another account than the one
+// people records or recording none, at its admission (and, before no broker token held approve,
+// at a held approve's re-read and a held mint's). The comparison refuses each of them first, owed
+// or settled: the replaced account's token records its account, which people no longer records
+// (BROKER_TOKEN_NOT_ACTIVE); a token recording none was made before the replacing sign-in recorded
+// the holder's account, which set sub_recorded_at in the transaction that recorded the revocation
+// (BROKER_TOKEN_RECORDS_NO_ACCOUNT), or its creation time is not known (the same). The old window
+// admitted those again once the revocation settled; the comparison never does. The holder's own
+// token acts, owed or settled. So there is no window left to wait out.
+//
+// Control: brokerAccountReplaced turned off (the predicate false); the replaced account's and the
+// no-account tokens are then admitted, owed and settled.
+func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	deps := rig.offDeps
+	deps.SignInIssuer = "https://accounts.google.com"
+	served := directServer(deps)
+	const person = "carol@example.com"
+	ctx := context.Background()
+	exec := func(statement string) {
+		t.Helper()
+		if _, err := rig.database.Pool.Exec(ctx, statement, person); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	exec(`update people set sub = 'member-account' where email = $1`)
+	exec(`insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation)
+		values ($1, 'https://accounts.google.com', 'outsider-account', 'member-account', now() - interval '1 minute',
+			(select generation from user_sessions where login = $1))`)
+	var recordedAt time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `select sub_recorded_at from people where email = $1`, person).Scan(&recordedAt); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		subject string
+		created time.Time
+		code    string
+	}{
+		{"the replaced account's token", "outsider-account", recordedAt.Add(-time.Hour), "BROKER_TOKEN_NOT_ACTIVE"},
+		{"a token recording no account, made before the recording", "", recordedAt.Add(-time.Hour), "BROKER_TOKEN_RECORDS_NO_ACCOUNT"},
+		{"a token recording no account, its creation time unknown", "", time.Time{}, "BROKER_TOKEN_RECORDS_NO_ACCOUNT"},
+	}
+	refused := func(when string) {
+		t.Helper()
+		for _, c := range cases {
+			caller := ciphertoken.Caller{Person: person, CredentialCreatedAt: c.created}
+			if c.subject != "" {
+				caller.AccountIssuer, caller.AccountSubject = "https://accounts.google.com", c.subject
+			}
+			_, err := served.brokerPersonAdmitted(ctx, caller)
+			wantAPIError(t, err, http.StatusUnauthorized, c.code, c.name+" at its admission, "+when)
+		}
+		if _, err := served.brokerPersonAdmitted(ctx, ciphertoken.Caller{Person: person,
+			AccountIssuer: "https://accounts.google.com", AccountSubject: "member-account"}); err != nil {
+			t.Errorf("the holder's own token, %s: %v, want it admitted", when, err)
+		}
+	}
+	refused("while the revocation is owed")
+	exec(`update broker_revocations set done_at = now() - interval '1 hour' where email = $1`)
+	refused("an hour after the broker confirmed")
+}
+
+// TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff (R9): with outside sign-in off, a
+// broker token acting for a full member, for a person no people row holds, and for a service that
+// names no person answer GET /api/v1/whoami as they do on the base, whose broker token holds the
+// person scope alone (no broker token gets approve, #4644). Resolving one that names a person
+// costs one statement of Dispatch's store, the read of that person's member kind by the people
+// table's key, and reads no access list; one that names no person reads nothing. The instrument is
+// shown seeing a list read in the same run: a restricted owner's token, which must read one,
+// resolves in two.
+func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	const nobody = "nobody@example.com"
+	if rows := countRows(t, rig.database, `select count(*) from people where email = $1`, nobody); rows != 0 {
+		t.Fatalf("people holds %d rows for %s, want none", rows, nobody)
+	}
+	recorder := &storetest.StatementRecorder{}
+	traced := &store.Store{Pool: storetest.Traced(t, rig.database.Pool, recorder, nil)}
+	for _, test := range []struct {
+		name, token, whoami string
+		answer              ciphertoken.Introspection
+		signInOutside       bool
+		statements          int
+		readsLists          bool
+	}{
+		{"carol, a full member", "carols-broker-token",
+			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
+			rig.personToken(accessCarol), false, 1, false},
+		{"a person no people row holds", "nobodys-broker-token",
+			`{"kind":"agent","owner":"nobody@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
+			rig.personToken(nobody), false, 1, false},
+		{"a service naming no person", "a-service-broker-token",
+			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
+			serviceOnlyToken(rig.caller.jkt), false, 0, false},
+		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
+			rig.personToken(accessErin), true, 2, true},
+	} {
+		rig.broker.Says(test.token, test.answer)
+		handler := rig.off
+		if test.signInOutside {
+			handler = rig.on
+		}
+		response := rig.whoami(t, handler, test.token)
+		if got := strings.TrimSpace(response.Body.String()); response.Code != http.StatusOK || got != test.whoami {
+			t.Errorf("%s: GET /api/v1/whoami = %d %s, want 200 %s", test.name, response.Code, got, test.whoami)
+		}
+		served := directServer(Deps{Store: traced, BrokerTokens: rig.offDeps.BrokerTokens, RestrictedAdmission: restrictedAdmissionOf(test.signInOutside, traced.Pool)})
+		request := rig.caller.presenting(t, http.MethodGet, "/api/v1/whoami", test.token, nil)
+		before := len(recorder.Statements())
+		actor, _, err := served.brokerTokenActor(request)
+		statements := recorder.Statements()[before:]
+		readsLists := strings.Contains(strings.Join(statements, "\n"), access.Marker)
+		if err != nil || actor.ID != brokerTestSession || len(statements) != test.statements || readsLists != test.readsLists {
+			t.Errorf("%s: the token resolved to %+v, %v in %d statements, reading the lists %t; want its session in %d, reading the lists %t:\n%s",
+				test.name, actor, err, len(statements), readsLists, test.statements, test.readsLists, strings.Join(statements, "\n---\n"))
+		}
 	}
 }

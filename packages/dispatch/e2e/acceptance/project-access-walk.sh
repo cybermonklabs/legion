@@ -138,10 +138,10 @@ pub_object() {
   esac
 }
 
-# mark_restricted BUILD PERSON makes PERSON a restricted member. No route of this stack writes a
-# member kind: the outside sign-in does, when it signs in an email outside the
-# deployment's domain that a project names. Until it is in this stack, the people row is written
-# as that sign-in writes it.
+# mark_restricted BUILD PERSON makes PERSON a restricted member. No route writes a member kind: the
+# outside sign-in does, when it signs in an email outside the deployment's domain that a project
+# names, and a server refuses to boot with it beside the dev sign-in this driver's servers run
+# (scripts/e2e/lib/two-builds.sh). So the people row is written as that sign-in writes it.
 mark_restricted() {
   local url_var=${1}_database_url
   psql "${!url_var}" -X -q -v ON_ERROR_STOP=1 \
@@ -641,7 +641,10 @@ declare -A query_fixed=(
 readonly query_no_project=" author author_session parent_agent assignee approver person "
 # exclude_issue and exclude_issues name an issue of the path's own project, so an issue of PRIV
 # goes under a path of PRIV, which the path walk answers as missing; thread is a flag (1 or none).
-readonly query_no_object=" advances after at before blocks closed_before closed_since component cursor deployed download exclude_issue exclude_issues from ids keywords_only kind label limit max_chars moved offset open order pinned priority q rework route_status session since source_kind state status summary text thread title to unlinked until updated_since versions wait "
+# account, account_issuer, account_subject and credential_created_at describe the credential a
+# membership question asks about (the broker's introspection's account, or none, and the moment it
+# was made): a Google account and a time, never an object a project owns.
+readonly query_no_object=" account account_issuer account_subject advances after at before blocks closed_before closed_since component credential_created_at cursor deployed download exclude_issue exclude_issues from ids keywords_only kind label limit max_chars moved offset open order pinned priority q rework route_status session since source_kind state status summary text thread title to unlinked until updated_since versions wait "
 
 # query_fill KIND prints PRIV's object of KIND and the missing one, a tab between them.
 query_fill() {

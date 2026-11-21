@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // subcommand is an argument envoy-dispatch takes in place of serving. run gets the arguments
@@ -52,7 +53,13 @@ var subcommands = []subcommand{
 		return scrubAccessEventsCommand(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
+		serverURL := loadServerURL(env)
+		outsideOrigin, err := rebuildRefsOutsideOrigin(env, serverURL)
+		if err != nil {
+			fmt.Fprintf(stdout, "rebuild-refs: %v\n", err)
+			return 1
+		}
+		return rebuildRefs(ctx, env.get("DATABASE_URL"), serverURL, outsideOrigin, stdout)
 	}},
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
@@ -77,6 +84,9 @@ var subcommands = []subcommand{
 	}},
 	{"project-visibility", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return makeProjectPublic(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+	}},
+	{"clear-broker-revocation", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return clearBrokerRevocation(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"settings", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
 		if err := writeSettings(stdout); err != nil {
@@ -441,10 +451,26 @@ func loadServerURL(env settingValues) string {
 	return envoyConfig.Dispatch.ServerURL
 }
 
-// rebuildRefs reparses every reference source and reconciles the refs index with it. It
-// refuses an empty server URL: text.Extract recognises same-origin dashboard URLs only against
-// it, so an empty value would delete every URL-form mention.
-func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writer) int {
+// rebuildRefsOutsideOrigin is DISPATCH_OUTSIDE_ORIGIN as the server takes it beside serverURL, the
+// canonical origin: the dashboard URLs of both are references, so a rebuild that read only the
+// canonical one would drop every link written on the outside origin. A value the server would
+// refuse is refused here too.
+func rebuildRefsOutsideOrigin(env settingValues, serverURL string) (string, error) {
+	origin, err := parseOutsideOrigin(env.get("DISPATCH_OUTSIDE_ORIGIN"), env.get("DISPATCH_TEST_HOOKS") == "1")
+	if err != nil {
+		return "", err
+	}
+	if err := checkOutsideOrigin(origin, serverURL); err != nil {
+		return "", err
+	}
+	return origin, nil
+}
+
+// rebuildRefs reparses every reference source and reconciles the refs index with it, reading a
+// dashboard URL of serverURL or of outsideOrigin (empty for none) as a reference. It refuses an
+// empty server URL: text.Extract recognises same-origin dashboard URLs only against the origins
+// it is given, so an empty value would delete every URL-form mention.
+func rebuildRefs(ctx context.Context, databaseURL, serverURL, outsideOrigin string, out io.Writer) int {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, "rebuild-refs: DATABASE_URL is required")
 		return 1
@@ -460,7 +486,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 	defer database.Pool.Close()
 	// rebuild-refs opens a transaction per source, so it marks its context like the other
 	// commands: a read taken inside one is refused rather than left to deadlock the pool.
-	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, serverURL)
+	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, text.NewOrigins(serverURL, outsideOrigin))
 	if err != nil {
 		fmt.Fprintf(out, "rebuild-refs: %v\n", err)
 		return 1

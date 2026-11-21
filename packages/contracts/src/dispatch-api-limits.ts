@@ -441,6 +441,22 @@ export type SessionAnswerRelation = (typeof SESSION_ANSWER_RELATIONS)[number];
  *  the session: a sign-out answered that way did not go through. */
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
 
+/** Why Dispatch signed a person out, the `reason` its `401 AUTH_NO_IDENTITY` carries beside
+ *  `login`, the address whose sign-in ended (`identity.SignedOut`, spelled in Go as the
+ *  `identity.SignedOut*` constants): `NOT_LISTED` once no project's access list names a person who
+ *  signed in from outside the sign-in domain, `OUTSIDE_SIGNIN_OFF` once the deployment signs
+ *  nobody from outside the domain in any more, and `WORKSPACE_ADDRESS` once such a person's
+ *  address is on a domain the Google Workspace owns, which signs in only as a Workspace account. A
+ *  `401` that gives no reason - no cookie, an expired one, a sign-out - carries neither key, and a
+ *  deployment with outside sign-in never set gives none at all. */
+export const AUTH_SIGNED_OUT_REASONS = [
+  "NOT_LISTED",
+  "OUTSIDE_SIGNIN_OFF",
+  "WORKSPACE_ADDRESS",
+] as const;
+
+export type AuthSignedOutReason = (typeof AUTH_SIGNED_OUT_REASONS)[number];
+
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
  * holds is outside the Proof schema: it completes the upgrade and closes with this code, and

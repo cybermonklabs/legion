@@ -600,7 +600,10 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 // carries, so no constructor may answer it; a named scope carries its entry's one project and a
 // person scope the list its trade asked for, so a later reader never has to guess which a list
 // is. A read entry's decision says that it writes nothing, carries no project, and reads apart
-// from the zero value in a refusal or a log line too.
+// from the zero value in a refusal or a log line too. A person's own credential (Machine and
+// Person here) is never named: Dispatch holds a named token to no account, as an operator
+// entry's (oauthwire.ProjectScopeNamed), so a person's credential decided named would escape the
+// account binding.
 func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	set := listed(t)
 	pod, err := set.Pod(podToken(workerAccount, podUID), "implementer-g1", nil)

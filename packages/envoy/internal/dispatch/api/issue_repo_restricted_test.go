@@ -19,12 +19,13 @@ import (
 // repo (refuseRepoOfRestrictedMember).
 const restrictedRepoRefusal = `{"code":"RESTRICTED_MEMBER","error":"a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository"}`
 
-// newIssueRepoAccessServer is newAccessServer with erin named on ACC's list, so she sees ACC, and
-// acme/widgets mapped to ACC as its default repository, so an issue of ACC with no repository of
-// its own resolves to it.
+// newIssueRepoAccessServer is newAccessServer with outside sign-in on, so erin's personal token
+// acts for her as her sign-in does (TestARestrictedOwnersTokenActsOnlyWhileOutsideSignInAdmitsThem),
+// erin named on ACC's list, so she sees ACC, and acme/widgets mapped to ACC as its default
+// repository, so an issue of ACC with no repository of its own resolves to it.
 func newIssueRepoAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database := newAccessServer(t)
+	handler, database := newAccessServerWith(t, testServerOptions{signInOutside: true})
 	if named := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); named.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC: status=%d body=%s", named.Code, named.Body.String())
 	}

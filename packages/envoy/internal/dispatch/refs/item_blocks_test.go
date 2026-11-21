@@ -31,7 +31,7 @@ func itemBlockNodeID(kind ItemKind, itemID, blockID string) string {
 func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body, serverURL string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, serverURL).Mentions(body)
+	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, text.NewOrigins(serverURL)).Mentions(body)
 	if _, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil); err != nil {
 		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
 	}
@@ -52,7 +52,7 @@ func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
 		t.Fatalf("Split = %+v, want three blocks", next)
 	}
 	ids := []string{"b1", "b4", "b2"}
-	pairs := itemBlockPairs(next, ids, text.ExtractAt(body, "https://dispatch.example"))
+	pairs := itemBlockPairs(next, ids, text.ExtractAt(body, text.NewOrigins("https://dispatch.example")))
 	got := make([]string, len(pairs))
 	for i, pair := range pairs {
 		got[i] = pair.blockID + "->" + pair.target.Kind + ":" + pair.target.ID

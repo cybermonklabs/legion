@@ -26,7 +26,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
@@ -171,6 +173,23 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // the code the person typed. A secret request is decided on the broker's own page alone: the broker
 // answers either route for one 403 DECIDE_ON_BROKER_PAGE with its approve_url, relayed verbatim like
 // every answer.
+//
+// A decision is relayed only while its caller still holds the address: an approve mints a machine
+// login in the approver's name, and the broker decides a denial whatever account asks, so a deny
+// relayed for a caller who lost the address would let the replaced account deny the new holder's
+// pending machine login. The caller resolved before the body was read, which a client may hold
+// back as long as it likes (and a keyed decision resolves before its body is spooled), so once the
+// body has arrived the caller's standing is read again, right before the broker is called
+// (approverStanding), and a caller who lost the address since is refused as their next request
+// would be, with no broker call. The broker's client bounds the rest to its own five seconds. The
+// approve names the approving Google account too: the one bound to the credential that made it
+// (credentialSubjectSQL), read in that same re-read, never whichever account holds the address when
+// the approve is relayed. The broker records it on the login it mints, so a later revocation of that
+// account ends the login, and the broker refuses an approval by an account already revoked. It
+// carries the address's session generation the same re-read saw (approver_session_generation), so
+// the broker refuses it once a revocation of a replacement after that read reaches it first,
+// whatever account it names: a sign-in that commits between this check and the relay records its
+// revocation at a greater generation. A deny mints nothing and names no account.
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -185,8 +204,81 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	subject, generation, err := s.approverStanding(r, actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	if subject != "" && s.deps.SignInIssuer != "" {
+		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, subject
+	}
+	decision.ApproverSessionGeneration = &generation
 	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
+}
+
+// approverStanding reads again whether a decision's caller (an approve's or a deny's), actor as
+// actingPerson resolved it, still holds the address, and answers the Google account its own
+// credential is bound to ("" for none, credentialSubjectSQL) and the address's session generation
+// (user_sessions.generation, 0 when it holds none), in one statement, so the generation is the one
+// the check of the caller saw:
+//
+//   - a cookie: refused once the login's session generation is another; its account is the
+//     address's recorded `sub`, the cookie's own while the generation stands;
+//   - a personal token: refused once revoked, or once its account no longer holds the address
+//     (tokenAccountReplaced: people records another account, or the token records none and was
+//     made before people recorded the address's); its account is the one its mint recorded.
+//
+// A broker-issued token never decides: none holds the approve scope these routes require
+// (brokerPersonScopes), so it is refused before it gets here.
+//
+// A personal token that records no account, made after the recording, is bound to the address's
+// account (credentialSubjectSQL). The read runs in a transaction of its own after the address's
+// advisory lock, taken shared (store.AddressLockSharedSQL), the lock every sign-in that records the
+// address's account takes first: a sign-in in flight makes the decision wait and then read what it
+// recorded, so a credential that records no account and was made before that recording is never
+// relayed while the sign-in is uncommitted, on an address no row holds too, however long the
+// sign-in takes; a decision read before the sign-in takes the lock is relayed within the broker's
+// request deadline, which brokerCredentialMargin covers. A caller who lost the address is refused
+// as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
+// a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
+	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
+	var tokenID *string
+	if actor.Act != nil && actor.Act.TokenID != "" {
+		tokenID = &actor.Act.TokenID
+	}
+	var cookieGone, tokenGone bool
+	unread := func(err error) (string, int64, error) {
+		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
+		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"whether this caller may still decide could not be read; try again in a minute")
+	}
+	tx, err := s.deps.Store.Pool.Begin(r.Context())
+	if err != nil {
+		return unread(err)
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), store.AddressLockSharedSQL, actor.ID); err != nil {
+		return unread(err)
+	}
+	if err := tx.QueryRow(r.Context(), `
+		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
+			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
+				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$5::boolean")+`)),
+			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
+			coalesce((select generation from user_sessions where login = $1::text), 0)
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, s.deps.SignInIssuer != "").
+		Scan(&cookieGone, &tokenGone, &subject, &generation); err != nil {
+		return unread(err)
+	}
+	switch {
+	case cookieGone:
+		return "", 0, identity.ErrNoIdentity
+	case tokenGone:
+		return "", 0, errTokenRevoked()
+	}
+	return subject, generation, nil
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +293,10 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	decision, ok := s.decisionFor(w, r, actor)
 	if !ok {
+		return
+	}
+	if _, _, err := s.approverStanding(r, actor); err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	body, err := client.Deny(r.Context(), r.PathValue("id"), decision)

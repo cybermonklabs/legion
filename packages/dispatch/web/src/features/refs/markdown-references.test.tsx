@@ -116,7 +116,7 @@ function cacheOf(row: (typeof DISPATCH_TEXT_REFERENCES)[number], server: string)
       questionsOf(row.questions)
     );
   }
-  for (const reference of readTextReferences(row.body, { origin: server }).needs.prefixes) {
+  for (const reference of readTextReferences(row.body, { origins: [server] }).needs.prefixes) {
     const answer = prefixAnswer(reference, row.items ?? {});
     if (answer !== undefined) {
       queryClient.setQueryData(["references", "to", reference], answer);

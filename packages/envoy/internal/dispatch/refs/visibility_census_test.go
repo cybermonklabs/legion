@@ -436,11 +436,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	// statement that resolves it is the read of the graph the census holds it to.
 	const shortComment = "See dispatch://CORE-1/comment/00000000."
 	record("NewReader", "NewReader's resolution of a short comment id", func() error {
-		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example")).Mentions(shortComment)
 		return nil
 	})
 	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
-		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example"), nil).Mentions(shortComment)
 		return nil
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
@@ -513,7 +513,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
-	located := text.ExtractAt(markdown, "https://dispatch.example")
+	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
 	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)

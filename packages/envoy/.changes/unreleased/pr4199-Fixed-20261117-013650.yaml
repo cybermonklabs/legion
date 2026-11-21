@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  When another account takes a member's address, Dispatch now has the secrets broker revoke the old
+  account's machine logins and machine sign-ins by the account, not by when the broker issued them:
+  those the old account made at any time end, a sign-in it makes later with a Google token it got
+  before included, and those the new account makes are kept, however soon after its sign-in. Two
+  replacements of one address before the broker is reached are both revoked, in turn. A Dispatch
+  process with no secrets broker configured (`DISPATCH_AGENT_SECRETS_URL` unset) records no
+  revocation, so set it on every process of a deployment with a broker: a replacement such a
+  process serves is never revoked at the broker.
+time: 2026-11-17T01:36:50.540825185Z
+custom:
+    Issue: pr4199

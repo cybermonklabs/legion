@@ -7,8 +7,10 @@
  *   points at a record on the real broker, so a run whose switch names another broker or none, and
  *   a deployed run, start neither (`e2e/harness-broker.ts`);
  * - the spec is not a `*.multiprocess.e2e.ts`, so only a one-process run selects it, and
- *   two-process mode starts neither (`e2e/harness-processes.ts`). `DISPATCH_E2E_SIGNIN=oidc` is
- *   two-process mode, so its own dev OIDC issuer and this one never run together.
+ *   two-process mode starts neither (`e2e/harness-processes.ts`);
+ * - the spec signs people in through dev sign-in, so only a run under it selects it, and a run
+ *   under `DISPATCH_E2E_SIGNIN=oidc` or `google` (`e2e/harness-signin.ts`), which runs its own
+ *   spec alone, starts neither. Their dev OIDC issuer and this one never run together.
  *
  * `bun run dispatch:local` (`e2e/local-instance.ts`) runs one Dispatch process and leaves the
  * broker switch as the shell set it, so it starts both rows whenever it starts the fake broker, as
@@ -20,5 +22,7 @@
 
 import { usesFakeBroker } from "./harness-broker";
 import { harnessProcessCount } from "./harness-processes";
+import { harnessSignIn } from "./harness-signin";
 
-export const usesRealBroker = usesFakeBroker && harnessProcessCount === 1;
+export const usesRealBroker =
+  usesFakeBroker && harnessProcessCount === 1 && harnessSignIn === "dev";

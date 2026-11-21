@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // writeAccess runs write in a transaction of its own and commits it, as an access route does: the
@@ -322,12 +323,12 @@ func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T)
 // admitted while a re-check runs, a socket the re-check closes, and the 503 a socket gets past a
 // cap - leaves nothing holding the service once its sockets have closed and it has shut down. A
 // burst of sockets, alice's and bob's, opens at once against both caps while bob is taken off
-// DOC's list and put back on it, each change announced on access.ChangedChannel to the running
-// room sync, while the re-check runs in a loop beside it, and while one re-check, begun before the
-// burst, is held inside its first read until every socket of the burst has been answered. Once the
-// subtest that built the service has ended and its cleanups have run, the service must be
-// collected within the leak report's budget (leakWaitBudget), as TestMain requires of every
-// service a test builds.
+// DOC's list and put back on it, each change announced on store.AccessChangedChannel to the
+// running room sync, while the re-check runs in a loop beside it, and while one re-check, begun
+// before the burst, is held inside its first read until every socket of the burst has been
+// answered. Once the subtest that built the service has ended and its cleanups have run, the
+// service must be collected within the leak report's budget (leakWaitBudget), as TestMain
+// requires of every service a test builds.
 func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *testing.T) {
 	var built weak.Pointer[Service]
 	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
@@ -376,7 +377,7 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	t.Cleanup(holder.release)
 	database := storetest.TracedStore(t, storetest.Open(t), holder)
 	service := New(Deps{
-		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database), ServerURL: "https://dispatch.example",
+		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database), Origins: text.NewOrigins("https://dispatch.example"),
 		Settle: time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
 	})
 	*built = weak.Make(service)

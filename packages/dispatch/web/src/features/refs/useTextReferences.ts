@@ -1,6 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import { dispatchOrigins } from "../../api/origins";
 import type { ReferenceLinking } from "./RefLink";
 import {
   issueSummaryQuery,
@@ -62,10 +63,10 @@ export function useTextReferences(
   text: string | readonly string[],
   source?: TextSource
 ): TextReferences {
-  const origin = window.location.origin;
+  const origins = dispatchOrigins();
   // The first reading: it resolves every `dispatch://` reference and dashboard address on its
   // own, and says which keys, question and prefixes the rest waits on.
-  const written = useMemo(() => readText(text, { origin }), [origin, text]);
+  const written = useMemo(() => readText(text, { origins }), [origins, text]);
   const { keys, prefixes, questions } = written.needs;
 
   // `combine` is held to its last answer by structural sharing, so these keep one identity
@@ -99,8 +100,8 @@ export function useTextReferences(
   });
 
   const facts = useMemo(
-    () => ({ issues, items, origin, questions: askedQuestions }),
-    [askedQuestions, issues, items, origin]
+    () => ({ issues, items, origins, questions: askedQuestions }),
+    [askedQuestions, issues, items, origins]
   );
   const reading: TextReading = useMemo(
     () =>

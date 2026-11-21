@@ -417,7 +417,11 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 // whose entry fixes its session, a run of a workflow whose entry fixes its session, and a dev box
 // session trading its machine login are each answered exactly the token they were before read
 // entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
-// the named pod's answer the same way.
+// the named pod's answer the same way. The dev box's token, the one of them that acts as its
+// person by its own credential, also answers when its machine login was made
+// (CredentialCreatedAt, which Dispatch holds a token recording no account to): that is a time of
+// the broker's clock within this test, not a value the row can name, so it is read back and held
+// to the last minute.
 func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -429,6 +433,8 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 		name  string
 		token string
 		want  oauthwire.Introspection
+		// credentialMade is whether the token answers when its credential was made.
+		credentialMade bool
 	}{
 		{name: "a pod of a fixed-session account",
 			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
@@ -437,12 +443,20 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
 			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a dev box session",
-			token: f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
-			want:  oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			token:          f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
+			want:           oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)},
+			credentialMade: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := f.introspected(t, c.token)
 			c.want.ExpiresAt = answer.ExpiresAt
+			if c.credentialMade {
+				made := time.Unix(answer.CredentialCreatedAt, 0)
+				if since := time.Since(made); since < -time.Minute || since > time.Minute {
+					t.Errorf("the token answers its credential was made at %s, %s from now; want within a minute of now", made, since)
+				}
+				c.want.CredentialCreatedAt = answer.CredentialCreatedAt
+			}
 			if !reflect.DeepEqual(answer, c.want) {
 				t.Errorf("Introspect = %+v, want %+v", answer, c.want)
 			}

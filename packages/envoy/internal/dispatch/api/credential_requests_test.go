@@ -5,7 +5,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,12 +19,23 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
 )
+
+// With approvetimingtest.Env set, this package's tests time each approve's relay; the package
+// reads its own variable here, in a test file, as Dispatch reads its environment only through
+// the settings table.
+func init() {
+	if os.Getenv(approvetimingtest.Env) != "" {
+		approvetimingtest.Enable()
+	}
+}
 
 // credentialTestAccountToken stands in for Dispatch's own projected ServiceAccount token: what
 // the fake broker sees it present, since no fake verifies one.
@@ -58,7 +71,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	t.Helper()
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(t.Context()) })
 	seedPeople(t, database, "alice", "bob")
@@ -80,7 +93,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	return approvetimingtest.Approves(brokerURL, mux)
 }
 
 // featureOffRoutes is every credential route that answers 404 FEATURE_OFF without a broker: all of
@@ -169,7 +182,7 @@ type fakeBrokerRig struct {
 func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 	t.Helper()
 	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}}
-	rig.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rig.server = httptest.NewServer(approvetimingtest.Broker(func() string { return rig.server.URL }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rig.calls++
 		rig.lastAuth = r.Header.Get("Authorization")
 		rig.lastQuery = r.URL.RawQuery
@@ -187,7 +200,7 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(responseBody))
-	}))
+	})))
 	t.Cleanup(rig.server.Close)
 	return rig
 }
@@ -259,12 +272,13 @@ func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
 	}
 }
 
-// TestDecisionsNameTheCallerNeverTheBrowsersApprover pins the one thing Dispatch adds to a
-// decision: the broker trusts the approver field on its listed caller's word, so approve, deny,
-// dismiss and revoke must send the login Dispatch's own session resolved, canonical lowercase, and
-// forward a machine login's typed code — never an approver, or anything else, the browser put in
-// its body. A dismissal reads no body at all, so it sends the approver alone whatever the browser
-// sent.
+// TestDecisionsNameTheCallerNeverTheBrowsersApprover pins what Dispatch adds to a decision: the
+// broker trusts the approver field on its listed caller's word, so approve, deny, dismiss and
+// revoke must send the login Dispatch's own session resolved, canonical lowercase, and forward a
+// machine login's typed code — never an approver, or anything else, the browser put in its body. A
+// dismissal reads no body at all, so it sends the approver alone whatever the browser sent. An
+// approve also carries the session generation its check read, 0 here, where alice's address holds
+// none (TestAnApproveCarriesTheSessionGenerationItsCheckRead).
 func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 	browserBody := map[string]any{"approver": "bob", "code": "ABCD-1234", "assertion": map[string]string{"id": "x"}}
 	for _, tc := range []struct {
@@ -272,9 +286,9 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 		body     any
 		wantBody string
 	}{
-		{"/api/v1/credential-requests/rec1/approve", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
+		{"/api/v1/credential-requests/rec1/approve", browserBody, `{"approver":"alice","code":"ABCD-1234","approver_session_generation":0}`},
 		{"/api/v1/credential-requests/rec1/deny", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
-		{"/api/v1/credential-requests/rec1/approve", nil, `{"approver":"alice"}`},
+		{"/api/v1/credential-requests/rec1/approve", nil, `{"approver":"alice","approver_session_generation":0}`},
 		{"/api/v1/credential-requests/rec1/dismiss", browserBody, `{"approver":"alice"}`},
 		{"/api/v1/credential-requests/rec1/dismiss", nil, `{"approver":"alice"}`},
 		{"/api/v1/credential-grants/grant1/revoke", browserBody, `{"approver":"alice"}`},
@@ -292,6 +306,53 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnApproveCarriesTheSessionGenerationItsCheckRead: an approve relays the session generation
+// of its caller's address that its check of the caller read (approverStanding:
+// approver_session_generation), 0 while user_sessions holds no row for the address, and the
+// generation the row holds once it does, followed as it moves; the broker refuses an approve whose
+// generation is below the one a revocation of the address recorded. A deny carries none.
+func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	database := storetest.Open(t)
+	seedPeople(t, database, "alice")
+	deps, err := NewDeps(DepsInput{
+		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
+		ServerURL: "https://dispatch.example", Events: events.NewBroker(),
+		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	if err != nil {
+		t.Fatalf("new API dependencies: %v", err)
+	}
+	mux := http.NewServeMux()
+	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	handler := approvetimingtest.Approves(rig.server.URL, mux)
+	decide := func(action, want string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/credential-requests/rec1/"+action, map[string]any{"code": "ABCD-1234"}, "alice")
+		if response.Code != http.StatusOK || rig.lastBody != want {
+			t.Fatalf("alice's %s answered %d %s and relayed %s, want 200 relaying %s", action, response.Code, response.Body.String(), rig.lastBody, want)
+		}
+	}
+	relayed := func(generation int64) string {
+		return fmt.Sprintf(`{"approver":"alice","code":"ABCD-1234","approver_session_generation":%d}`, generation)
+	}
+	decide("approve", relayed(0))
+	for _, statement := range []string{
+		`insert into user_sessions (login, generation) values ('alice', 4)`,
+		`update user_sessions set generation = 6 where login = 'alice'`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+		var generation int64
+		if err := database.Pool.QueryRow(context.Background(), `select generation from user_sessions where login = 'alice'`).Scan(&generation); err != nil {
+			t.Fatal(err)
+		}
+		decide("approve", relayed(generation))
+	}
+	decide("deny", `{"approver":"alice","code":"ABCD-1234"}`)
 }
 
 func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) {

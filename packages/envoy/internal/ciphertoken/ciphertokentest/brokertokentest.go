@@ -10,6 +10,7 @@
 package ciphertokentest
 
 import (
+	"crypto/ecdsa"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -132,6 +133,13 @@ func NewCaller(t testing.TB) *Caller {
 	if err != nil {
 		t.Fatalf("mint the caller's key: %v", err)
 	}
+	return NewCallerWith(t, key)
+}
+
+// NewCallerWith is a caller holding key, a key the test already has: the one a machine logged in
+// and traded with, so its proofs are of the key the broker bound that machine's token to.
+func NewCallerWith(t testing.TB, key *ecdsa.PrivateKey) *Caller {
+	t.Helper()
 	jkt, err := proof.Thumbprint(&key.PublicKey)
 	if err != nil {
 		t.Fatalf("thumbprint the caller's key: %v", err)

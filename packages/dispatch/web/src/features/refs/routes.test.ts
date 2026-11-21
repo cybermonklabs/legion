@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { artifactVersionPath } from "../../api/client";
+import { setDispatchOrigins } from "../../api/origins";
 import type { DispatchReferenceRoute } from "./routes";
 import {
   buildDispatchReference,
@@ -9,6 +11,7 @@ import {
   buildMachinePath,
   buildProjectPath,
   buildReferencePath,
+  composerReferences,
   documentItemPath,
   documentRoute,
   issueTabForRoute,
@@ -60,24 +63,24 @@ test("a long-named document's own reference is its node, though text past the bo
     slug,
   });
   // A search hit or a copied-from link the server returned is read the same way, its page too.
-  const origin = "https://dispatch.test";
+  const origins = ["https://dispatch.test"];
   const page = `/issues/CORE-1/artifacts/${slug}`;
-  expect(referenceRouteFromHref(page, origin)).toBeUndefined();
-  expect(nodeRouteFromHref(page, origin)).toEqual({ key: "CORE-1", kind: "artifact", slug });
-  expect(nodeRouteFromHref(`${page}#b-p1`, origin)).toEqual({
+  expect(referenceRouteFromHref(page, origins)).toBeUndefined();
+  expect(nodeRouteFromHref(page, origins)).toEqual({ key: "CORE-1", kind: "artifact", slug });
+  expect(nodeRouteFromHref(`${page}#b-p1`, origins)).toEqual({
     block: { id: "p1" },
     key: "CORE-1",
     kind: "artifact",
     slug,
   });
-  expect(nodeRouteFromHref(document, origin)).toEqual({ key: "CORE-1", kind: "artifact", slug });
+  expect(nodeRouteFromHref(document, origins)).toEqual({ key: "CORE-1", kind: "artifact", slug });
 });
 
 // A block id past the 256 bytes the graph keys a block by, counted in UTF-8 bytes (`é` is two),
 // is cited by no text: the reference names nothing and its page is the document. The server's
 // own reference to such a block, and its page, still name the block.
 test("a block id past the bound is no citation in text, but the server's reference reads it", () => {
-  const origin = "https://dispatch.test";
+  const origins = ["https://dispatch.test"];
   const atBound = "é".repeat(128);
   for (const [id, cited] of [
     [atBound, true],
@@ -88,12 +91,12 @@ test("a block id past the bound is no citation in text, but the server's referen
     const reference = buildDispatchReference(block);
     const page = buildReferencePath(block);
     expect(parseDispatchReference(reference)).toEqual(cited ? block : undefined);
-    expect(referenceRouteFromHref(page, origin)).toEqual(
+    expect(referenceRouteFromHref(page, origins)).toEqual(
       cited ? block : { key: "CORE-1", kind: "spec" }
     );
     expect(parseNodeReference(reference)).toEqual(block);
     expect(parseNodeReference(`${reference}@v2`)).toEqual({ ...block, block: { id, pin: "2" } });
-    expect(nodeRouteFromHref(page, origin)).toEqual(block);
+    expect(nodeRouteFromHref(page, origins)).toEqual(block);
   }
 });
 
@@ -158,8 +161,35 @@ test("every block link writes its id as encodeBlockId does, so `_` is %5F", () =
   // Read back with any percent-encoding, the reference and the page name the same block.
   expect(parseDispatchReference("dispatch://CORE-1/spec#b-ship_it")).toEqual(block);
   expect(
-    referenceRouteFromHref("/issues/CORE-1/spec#b-ship%5Fit", "https://dispatch.test")
+    referenceRouteFromHref("/issues/CORE-1/spec#b-ship%5Fit", ["https://dispatch.test"])
   ).toEqual(block);
+});
+
+// A person from outside signs in at a second origin, and a body holds the dashboard URLs people
+// of the sign-in domain copied on the canonical one: each names there what it names on the
+// canonical origin, as the server's `text.Extract` reads it against either origin.
+test("a canonical-origin URL read on the outside origin names the issue", () => {
+  const testWindow = window as unknown as HappyDOMWindow;
+  const pageBefore = window.location.href;
+  testWindow.happyDOM.setURL("https://outside.test/issues/CORE-2");
+  setDispatchOrigins(["https://canon.test", "https://outside.test"]);
+  try {
+    expect(referenceRouteFromHref("https://canon.test/issues/CORE-1")).toEqual({
+      key: "CORE-1",
+      kind: "issue",
+    });
+    expect(nodeRouteFromHref("https://canon.test/issues/CORE-1/spec")).toEqual({
+      key: "CORE-1",
+      kind: "spec",
+    });
+    expect(composerReferences("See https://canon.test/issues/CORE-1 here.")).toEqual([
+      { href: "/issues/CORE-1", reference: "dispatch://CORE-1" },
+    ]);
+    // An origin this Dispatch does not answer at names nothing.
+    expect(referenceRouteFromHref("https://evil.test/issues/CORE-1")).toBeUndefined();
+  } finally {
+    testWindow.happyDOM.setURL(pageBefore);
+  }
 });
 
 test("a pinned block reference round-trips with its pin, and opens the version it pins", () => {
@@ -238,29 +268,29 @@ test("a block names nothing on a versioned document, an issue or a malformed pin
   }
   // A page's raw `@` is no pin, and a version page or an item page is the page whatever its
   // fragment.
-  const origin = "https://dispatch.test";
-  expect(referenceRouteFromHref("/issues/CORE-1/spec#b-p1@v2", origin)).toEqual({
+  const origins = ["https://dispatch.test"];
+  expect(referenceRouteFromHref("/issues/CORE-1/spec#b-p1@v2", origins)).toEqual({
     key: "CORE-1",
     kind: "spec",
   });
-  expect(referenceRouteFromHref("/issues/CORE-1/artifacts/notes-md?v=2#b-p1", origin)).toEqual({
+  expect(referenceRouteFromHref("/issues/CORE-1/artifacts/notes-md?v=2#b-p1", origins)).toEqual({
     key: "CORE-1",
     kind: "artifact",
     slug: "notes-md",
     version: 2,
   });
-  expect(referenceRouteFromHref("/issues/CORE-1/spec?comment=c1#b-p1", origin)).toEqual({
+  expect(referenceRouteFromHref("/issues/CORE-1/spec?comment=c1#b-p1", origins)).toEqual({
     id: "c1",
     key: "CORE-1",
     kind: "comment",
   });
-  expect(referenceRouteFromHref("/issues/CORE-1/spec?ask=a1#b-p1", origin)).toEqual({
+  expect(referenceRouteFromHref("/issues/CORE-1/spec?ask=a1#b-p1", origins)).toEqual({
     id: "a1",
     key: "CORE-1",
     kind: "ask",
   });
   // An ask's own page names the part its fragment lands on.
-  expect(referenceRouteFromHref("/issues/CORE-1/asks/a1#b-p1", origin)).toEqual({
+  expect(referenceRouteFromHref("/issues/CORE-1/asks/a1#b-p1", origins)).toEqual({
     block: { id: "p1" },
     id: "a1",
     key: "CORE-1",
@@ -269,13 +299,13 @@ test("a block names nothing on a versioned document, an issue or a malformed pin
   // A version of the spec is the spec's artifact at that version, as the server and `dispatch
   // read` read the page, and names no block; a malformed version is the spec, with no block.
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
-    expect(read("/issues/CORE-1/spec?v=2#b-p1", origin)).toEqual({
+    expect(read("/issues/CORE-1/spec?v=2#b-p1", origins)).toEqual({
       key: "CORE-1",
       kind: "artifact",
       slug: "spec",
       version: 2,
     });
-    expect(read("/issues/CORE-1/spec?v=x#b-p1", origin)).toEqual({ key: "CORE-1", kind: "spec" });
+    expect(read("/issues/CORE-1/spec?v=x#b-p1", origins)).toEqual({ key: "CORE-1", kind: "spec" });
   }
 });
 
@@ -286,7 +316,7 @@ test("a block names nothing on a versioned document, an issue or a malformed pin
 // block of the document, so a `?comment=` page names the comment whatever its fragment, and a
 // project document's comment block opens its comment with no fragment.
 test("a block of a comment or a message is named under its item, as the server reads it", () => {
-  const origin = "https://dispatch.test";
+  const origins = ["https://dispatch.test"];
   const comment = "11111111-1111-4111-8111-111111111111";
   const message = "33333333-3333-4333-8333-333333333333";
   const commentBlock: DispatchReferenceRoute = {
@@ -297,13 +327,13 @@ test("a block of a comment or a message is named under its item, as the server r
   };
   const commentReference = `dispatch://CORE-1/comment/${comment}#b-b2`;
   expect(parseDispatchReference(commentReference)).toEqual(commentBlock);
-  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-b2`, origin)).toEqual(
+  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-b2`, origins)).toEqual(
     commentBlock
   );
   // A document page's `?comment=` names the comment, never its block, at any version of the
   // document: the dashboard writes a document block's fragment there.
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
-    expect(read(`/issues/CORE-1/spec?v=2&comment=${comment}#b-b2`, origin)).toEqual({
+    expect(read(`/issues/CORE-1/spec?v=2&comment=${comment}#b-b2`, origins)).toEqual({
       id: comment,
       key: "CORE-1",
       kind: "comment",
@@ -329,7 +359,7 @@ test("a block of a comment or a message is named under its item, as the server r
   };
   const messageReference = `dispatch://CORE-1/message/${message}#b-b2`;
   expect(parseDispatchReference(messageReference)).toEqual(messageBlock);
-  expect(referenceRouteFromHref(`/issues/CORE-1/messages/${message}#b-b2`, origin)).toEqual(
+  expect(referenceRouteFromHref(`/issues/CORE-1/messages/${message}#b-b2`, origins)).toEqual(
     messageBlock
   );
   expect(buildReferencePath(messageBlock)).toBe(`/issues/CORE-1/messages/${message}#b-b2`);
@@ -356,11 +386,11 @@ test("a block of a comment or a message is named under its item, as the server r
     slug: "handbook-md",
   };
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
-    expect(read(`/projects/CORE/documents/handbook-md?comment=${comment}#b-b2`, origin)).toEqual(
+    expect(read(`/projects/CORE/documents/handbook-md?comment=${comment}#b-b2`, origins)).toEqual(
       projectComment
     );
     expect(
-      read(`/projects/CORE/documents/handbook-md?version=3&comment=${comment}#b-b2`, origin)
+      read(`/projects/CORE/documents/handbook-md?version=3&comment=${comment}#b-b2`, origins)
     ).toEqual({ ...projectComment, version: 3 });
   }
   // Its link opens the comment on its document's page, with no fragment that would name a block
@@ -386,17 +416,17 @@ test("a block of a comment or a message is named under its item, as the server r
   // A block id past the bound is cited by no text: the comment's page names the comment.
   const long = "a".repeat(257);
   expect(parseDispatchReference(`dispatch://CORE-1/comment/${comment}#b-${long}`)).toBeUndefined();
-  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-${long}`, origin)).toEqual({
+  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-${long}`, origins)).toEqual({
     id: comment,
     key: "CORE-1",
     kind: "comment",
   });
-  expect(nodeRouteFromHref(`/issues/CORE-1/comments/${comment}#b-${long}`, origin)).toEqual({
+  expect(nodeRouteFromHref(`/issues/CORE-1/comments/${comment}#b-${long}`, origins)).toEqual({
     ...commentBlock,
     block: { id: long },
   });
   // A page's raw `@` is no pin: the page names the comment.
-  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-b2@v1`, origin)).toEqual({
+  expect(referenceRouteFromHref(`/issues/CORE-1/comments/${comment}#b-b2@v1`, origins)).toEqual({
     id: comment,
     key: "CORE-1",
     kind: "comment",
@@ -408,7 +438,7 @@ test("a block of a comment or a message is named under its item, as the server r
 // a part can be pinned to a revision of the ask's parts, and opens the live ask at the part. A
 // document page's `?ask=` names the ask whatever its fragment, which is the document's.
 test("a part of an ask is named under the ask, as the server reads it", () => {
-  const origin = "https://dispatch.test";
+  const origins = ["https://dispatch.test"];
   const ask = "22222222-2222-4222-8222-222222222222";
   const askBlock: DispatchReferenceRoute = {
     block: { id: "b3" },
@@ -418,7 +448,7 @@ test("a part of an ask is named under the ask, as the server reads it", () => {
   };
   const askReference = `dispatch://CORE-1/ask/${ask}#b-b3`;
   expect(parseDispatchReference(askReference)).toEqual(askBlock);
-  expect(referenceRouteFromHref(`/issues/CORE-1/asks/${ask}#b-b3`, origin)).toEqual(askBlock);
+  expect(referenceRouteFromHref(`/issues/CORE-1/asks/${ask}#b-b3`, origins)).toEqual(askBlock);
   expect(buildDispatchReference(askBlock)).toBe(askReference);
   expect(buildReferencePath(askBlock)).toBe(`/issues/CORE-1/asks/${ask}#b-b3`);
   expect(referenceTargetKind(askBlock)).toBe("block");
@@ -450,12 +480,12 @@ test("a part of an ask is named under the ask, as the server reads it", () => {
   expect(buildReferencePath(projectBlock)).toBe(`/projects/CORE/documents/handbook-md?ask=${ask}`);
   // A document page's `?ask=` names the ask, never a part of it, at any version of the document.
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
-    expect(read(`/issues/CORE-1/spec?v=2&ask=${ask}#b-b3`, origin)).toEqual({
+    expect(read(`/issues/CORE-1/spec?v=2&ask=${ask}#b-b3`, origins)).toEqual({
       id: ask,
       key: "CORE-1",
       kind: "ask",
     });
-    expect(read(`/projects/CORE/documents/handbook-md?ask=${ask}#b-b3`, origin)).toEqual({
+    expect(read(`/projects/CORE/documents/handbook-md?ask=${ask}#b-b3`, origins)).toEqual({
       item: { id: ask, kind: "ask" },
       kind: "document",
       project: "CORE",
@@ -463,7 +493,7 @@ test("a part of an ask is named under the ask, as the server reads it", () => {
     });
   }
   // A page's raw `@` is no pin: the page names the ask.
-  expect(referenceRouteFromHref(`/issues/CORE-1/asks/${ask}#b-b3@v2`, origin)).toEqual({
+  expect(referenceRouteFromHref(`/issues/CORE-1/asks/${ask}#b-b3@v2`, origins)).toEqual({
     id: ask,
     key: "CORE-1",
     kind: "ask",
@@ -626,7 +656,9 @@ test("the activity tab owns its path, its reference and its short form", () => {
   expect(parseIssuePath("/issues/CORE-1/activity")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/activity"));
   expect(
-    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/activity", "https://dispatch.test")
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/activity", [
+      "https://dispatch.test",
+    ])
   ).toEqual(route);
 });
 
@@ -639,10 +671,9 @@ test("the collaborators tab owns its path, its reference and its short form", ()
   expect(parseIssuePath("/issues/CORE-1/collaborators")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/collaborators"));
   expect(
-    referenceRouteFromHref(
-      "https://dispatch.test/issues/CORE-1/collaborators",
-      "https://dispatch.test"
-    )
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/collaborators", [
+      "https://dispatch.test",
+    ])
   ).toEqual(route);
 });
 
@@ -655,7 +686,7 @@ test("the steps tab owns its path, its reference and its short form", () => {
   expect(parseIssuePath("/issues/CORE-1/steps")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/steps"));
   expect(
-    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/steps", "https://dispatch.test")
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/steps", ["https://dispatch.test"])
   ).toEqual(route);
 });
 
@@ -668,10 +699,9 @@ test("the verification tab owns its path, its reference and its short form", () 
   expect(parseIssuePath("/issues/CORE-1/verification")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/verification"));
   expect(
-    referenceRouteFromHref(
-      "https://dispatch.test/issues/CORE-1/verification",
-      "https://dispatch.test"
-    )
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/verification", [
+      "https://dispatch.test",
+    ])
   ).toEqual(route);
 });
 
@@ -684,7 +714,7 @@ test("the plan tab owns its path, its reference and its short form", () => {
   expect(parseIssuePath("/issues/CORE-1/plan")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/plan"));
   expect(
-    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/plan", "https://dispatch.test")
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/plan", ["https://dispatch.test"])
   ).toEqual(route);
 });
 
@@ -700,11 +730,11 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
   expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifact/decisions-md");
   expect(shortForm(route)).toBe("CORE-1 decisions");
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
-    expect(read("https://dispatch.test/issues/CORE-1/decisions", "https://dispatch.test")).toEqual(
-      document
-    );
     expect(
-      read("https://dispatch.test/issues/CORE-1/decisions#b-x", "https://dispatch.test")
+      read("https://dispatch.test/issues/CORE-1/decisions", ["https://dispatch.test"])
+    ).toEqual(document);
+    expect(
+      read("https://dispatch.test/issues/CORE-1/decisions#b-x", ["https://dispatch.test"])
     ).toEqual(document);
   }
 });
@@ -796,10 +826,9 @@ test("an agent conversation's artifact round-trips through its reference, its pa
   expect(buildReferencePath(pinned)).toBe("/agents/ses-1/artifacts/shot-png?v=2");
   expect(parseAgentArtifactPath("/agents/ses-1/artifacts/shot-png", "?v=2")).toEqual(pinned);
   expect(
-    referenceRouteFromHref(
-      "https://dispatch.test/agents/ses-1/artifacts/shot-png?v=2",
-      "https://dispatch.test"
-    )
+    referenceRouteFromHref("https://dispatch.test/agents/ses-1/artifacts/shot-png?v=2", [
+      "https://dispatch.test",
+    ])
   ).toEqual(pinned);
   expect(referenceTargetKind(pinned)).toBe("document");
   // Until its title resolves, a link to it reads as the session's short id and the slug.
@@ -925,7 +954,7 @@ test("a picture and an explicit link naming a long-named document are that docum
 
   const target = `dispatch://CORE-1/artifact/${slug}`;
   expect(parseDispatchReference(target)).toBeUndefined();
-  const link = nodeRouteFromHref(target, "https://dispatch.test");
+  const link = nodeRouteFromHref(target, ["https://dispatch.test"]);
   expect(link).toEqual({ key: "CORE-1", kind: "artifact", slug });
   expect(link === undefined ? undefined : buildReferencePath(link)).toBe(
     `/issues/CORE-1/artifacts/${slug}`

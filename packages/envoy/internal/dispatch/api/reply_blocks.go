@@ -138,7 +138,7 @@ type replyRowPlan struct {
 func (s *server) planReplyBlock(
 	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string,
 ) (refs.ItemRepair, *namedBlock, error) {
-	repair, err := refs.PlanItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL)
+	repair, err := refs.PlanItemIfOwed(ctx, tx, kind, itemID, s.deps.Origins)
 	if err != nil {
 		return refs.ItemRepair{}, nil, err
 	}

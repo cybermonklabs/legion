@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The database never lets an address's recorded Google account disappear: setting
+  `people.sub` to null, deleting a row that records an account and truncating `people` are each
+  refused, since Dispatch holds every credential of the address to that account and a row
+  recording none binds nothing.
+time: 2026-11-18T00:24:08.246530111Z
+custom:
+    Issue: pr4199

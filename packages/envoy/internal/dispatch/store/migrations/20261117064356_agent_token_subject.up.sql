@@ -1,0 +1,28 @@
+-- 20261117064356_agent_token_subject.up.sql — the Google account a personal agent token was minted by.
+--
+-- An approve of a machine login names the approving Google account to the secrets
+-- broker, which records it on the login, so a later revocation of that account (another account
+-- took the address) ends the login. The account must be the one bound to the credential that made
+-- the approve, never whichever account holds the address when the approve is relayed. A session
+-- cookie is bound by its session generation, which every change of people.sub ends; a broker token
+-- by the account its admission read; a personal token by the account its own mint was bound to,
+-- which this column records (api.credentialSubjectSQL, read in the mint's insert beside the check
+-- that its caller still holds the address).
+--
+-- The column is null for every token minted before it, by the release before this one while
+-- Dispatch rolls (its insert names its own columns, and a nullable column with no default takes
+-- it), and by a credential bound to no Google account (a header identity, a dev sign-in, a pool
+-- sign-in). Such a token's approve names no account. The check refuses an empty string, so "no
+-- account" has one spelling.
+--
+-- The column and its check are two statements: an inline check is validated at once, which reads
+-- every row of agent_tokens under its ACCESS EXCLUSIVE lock, while `not valid` writes the catalog
+-- alone and still refuses every row written or updated after it (packages/envoy/cmd/dispatch/
+-- README.md). No release validates it: every row below it holds a null subject, which the check
+-- passes. A VALIDATE CONSTRAINT here would read every row under the lock the ADD COLUMN already
+-- holds to the migration's commit, the one transaction it runs in. So the migration holds
+-- agent_tokens' ACCESS EXCLUSIVE lock for milliseconds and reads and rewrites no row. Its
+-- identifier is the UTC moment it was written, as `migrationid` requires of every migration past
+-- the numbered series.
+alter table agent_tokens add column subject text;
+alter table agent_tokens add constraint agent_tokens_subject_check check (subject <> '') not valid;

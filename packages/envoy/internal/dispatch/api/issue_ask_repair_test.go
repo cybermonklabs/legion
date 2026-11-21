@@ -854,7 +854,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}
 	for _, block := range blocks {
 		reference := "dispatch://" + issue.Key + "/spec#b-" + text.EncodeBlockID(block.ID)
-		ref, ok := text.ParseRef(reference, "https://dispatch.example")
+		ref, ok := text.ParseRef(reference, text.NewOrigins("https://dispatch.example"))
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}

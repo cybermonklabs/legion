@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { harnessVariables } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
+import { harnessSignIn } from "./harness-signin";
 import { type Harness, startHarness } from "./harness-start";
 import {
   agentViewRefusal,
@@ -103,6 +104,14 @@ async function main(): Promise<void> {
     throw new Error(
       "unset DISPATCH_E2E_PROCESSES: this command runs one Dispatch server; " +
         "`bun run e2e:multiprocess` runs two"
+    );
+  }
+  // It signs people in at the dev sign-in route, which a server under DISPATCH_E2E_SIGNIN=google
+  // does not mount (e2e/harness-signin.ts); that mode's one spec signs its own people in.
+  if (harnessSignIn !== "dev") {
+    throw new Error(
+      "unset DISPATCH_E2E_SIGNIN: this command signs people in through dev sign-in; " +
+        "`DISPATCH_E2E_SIGNIN=google bun run e2e` runs the outside sign-in spec"
     );
   }
   const given = process.env.DATABASE_URL?.trim();

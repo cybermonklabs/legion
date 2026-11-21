@@ -15,8 +15,8 @@ import (
 	gws "github.com/gorilla/websocket"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fakeLiveKind stands in for the events and agent views, which a live socket starts as it starts
@@ -216,7 +216,7 @@ func TestADeliveryViewTheHubDropsFreesItsPlaceUnderTheCap(t *testing.T) {
 	client.refusal(t, 3*time.Second, "over", "TOO_MANY_SUBSCRIPTIONS")
 
 	markRestricted(t, rig.database, "alice")
-	if _, err := rig.database.Pool.Exec(t.Context(), `select pg_notify($1, '')`, access.ChangedChannel); err != nil {
+	if _, err := rig.database.Pool.Exec(t.Context(), `select pg_notify($1, '')`, store.AccessChangedChannel); err != nil {
 		t.Fatalf("announce the access change: %v", err)
 	}
 	client.refusal(t, 10*time.Second, "d", "DEPLOYMENT_READ_REFUSED")

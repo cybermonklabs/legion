@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -15,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 const agentTokenPrefixLength = 8
@@ -104,6 +107,28 @@ type createAgentTokenInput struct {
 // plaintext is shown, so an Idempotency-Key never keeps it (keyedWrites, answerHoldsSecret): the
 // insert commits in a transaction of its own, which marks the key committed, and a repeat under the
 // key is 409 KEY_COMMITTED - the token was made and cannot be shown again - never a second token.
+//
+// A token must never outlive the account that minted it. A sign-in under another Google account
+// (store.PgPeopleStore.SignInSubject) ends the address's sessions and revokes its tokens in its
+// transaction, but a mint whose caller resolved before that sign-in committed would otherwise
+// insert after its revoke and leave the replaced account a live token. So the mint takes the
+// address's advisory lock shared (store.AddressLockSharedSQL), which every such sign-in takes
+// before it reads or writes the address's row, and only then inserts, in a statement read after
+// that lock (mintAgentTokenSQL), on condition that its caller still holds the address: a cookie's
+// session generation is still its login's, and a personal token is not revoked and its account
+// still holds the address (tokenAccountReplaced): such a sign-in records another account, and the
+// time it did, in its transaction, and the comparison reads both. A sign-in in flight makes the
+// mint wait for it, a first sign-in on an address no row holds included; one that comes after
+// waits for the mint, and then the token it made is revoked. A mint whose caller lost the address
+// inserts nothing and is refused as that caller's next request is (mintCallerGone): 401
+// TOKEN_REVOKED for a personal token, 401 NO_IDENTITY for a cookie. A broker-issued token never
+// mints: none holds the approve scope this route requires (brokerPersonScopes). The lock is the
+// one statement a mint costs beyond what it always cost; the re-check rides in the insert.
+//
+// The token records the Google account its minting credential is bound to (agent_tokens.subject,
+// credentialSubjectSQL), read in the insert beside that re-check: an approve by the token names
+// that account as the approving one (approverStanding), never whichever account holds the address
+// when the approve is relayed.
 func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -140,11 +165,22 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
-		values ($1, $2, $3, $4, $5, $6)
-		returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
-	`, actor.ID, input.Name, hash[:], prefix, scopes, projects))
+	if _, err := tx.Exec(r.Context(), store.AddressLockSharedSQL, actor.ID); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("create agent token: lock the owner's address: %w", err))
+		return
+	}
+	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
+	var tokenID *string
+	if actor.Act != nil && actor.Act.TokenID != "" {
+		tokenID = &actor.Act.TokenID
+	}
+	recordsAccounts := s.deps.SignInIssuer != ""
+	token, err := scanAgentToken(tx.QueryRow(r.Context(), mintAgentTokenSQL,
+		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID, recordsAccounts))
+	if errors.Is(err, pgx.ErrNoRows) {
+		s.writeAuthenticationError(w, mintCallerGone(tokenID))
+		return
+	}
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
 		return
@@ -154,6 +190,91 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusCreated, createAgentTokenResponse{AgentToken: token, Token: plaintext})
+}
+
+// mintAgentTokenSQL inserts a personal token only while its caller still holds the address. It is
+// a statement of its own after store.AddressLockSharedSQL, so it reads what a sign-in that held
+// the lock committed: under read committed, a Postgres statement's snapshot is taken as it starts,
+// after the lock statement's wait. $7 and $8 are a cookie caller's login and session generation,
+// refused once the login's generation is another (a row the login lacks is a session nothing
+// ended since its cookie was checked); $9 is a personal token caller's token id, refused once
+// revoked or once its account no longer holds the address (tokenAccountReplaced: people records
+// another account, or the token records none and was made before people recorded the address's).
+// Each is null for a caller of the other kind. $10 is whether the deployment's sign-in records
+// accounts. The token records the minting credential's account (credentialSubjectSQL).
+var mintAgentTokenSQL = `
+	insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects, subject)
+	select $1::text, $2::text, $3::bytea, $4::text, $5::text[], $6::text[], ` +
+	credentialSubjectSQL("$1::text", "$7::text", "$9::uuid", "$10::boolean") + `
+	where not exists (select 1 from user_sessions where login = $7::text and generation <> $8::bigint)
+	  and not exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
+		where agent_tokens.id = $9::uuid and (agent_tokens.revoked_at is not null or ` + tokenAccountReplaced("$10::boolean") + `))
+	returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
+`
+
+// credentialSubjectSQL is the SQL expression of the Google account (`sub`) a caller's own
+// credential is bound to, null for none, over the four values a statement names: the caller's
+// address, of the two credentials that may mint or decide the one it presented (the other null),
+// and whether the deployment's sign-in records Google accounts (Deps.SignInIssuer non-empty).
+// Each is read in the statement that also checks the credential still stands, so it is the
+// credential's account and never another's:
+//
+//   - a session cookie: the address's recorded `sub`, which is the cookie's own while its session
+//     generation stands, since the one write of people.sub (store.PgPeopleStore.SignInSubject) ends
+//     every session of the address whenever it changes it; none where the sign-in records no
+//     account (a Cognito pool's), since a `sub` left there by a Google sign-in before a switch to
+//     the pool is not the account that signed this cookie in;
+//   - a personal token: the account it recorded at its own mint (agent_tokens.subject).
+//
+// A token that records none is bound to the address's recorded account when it was made after
+// people recorded it: no account that held the address before made it, so what it mints records
+// the holder and the no-account state stops there. One made before is refused
+// (tokenAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
+// as before. Any other caller is bound to none: a broker-issued token never mints or decides
+// (brokerPersonScopes).
+func credentialSubjectSQL(address, cookieLogin, tokenID, recordsAccounts string) string {
+	return "(case when " + cookieLogin + " is not null then (select sub from people where email = " + address + " and " + recordsAccounts + ")" +
+		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + "), " +
+		"(select sub from people where email = " + address + " and " + recordsAccounts +
+		" and sub_recorded_at is not null and (select created_at from agent_tokens where id = " + tokenID + ") >= sub_recorded_at))" +
+		" end)"
+}
+
+// mintCookie is the login and session generation of the cookie a mint's caller signed in with, or
+// nil for both when the caller is no cookie: a credential's caller (actor.Act names it), or an
+// identity of another kind (identity.SessionCookies).
+func (s *server) mintCookie(r *http.Request, actor model.Actor) (*string, *int64) {
+	if actor.Act != nil {
+		return nil, nil
+	}
+	cookies, ok := s.deps.Identity.(identity.SessionCookies)
+	if !ok {
+		return nil, nil
+	}
+	login, generation, ok := cookies.SessionCookie(r)
+	if !ok || model.CanonicalLogin(login) != actor.ID {
+		return nil, nil
+	}
+	return &login, &generation
+}
+
+// mintCallerGone is the refusal of a mint whose caller lost the address while it waited on the
+// address's lock, the one mintAgentTokenSQL's refusing arm names: a personal token caller's token was
+// revoked or its account no longer holds the address (401 TOKEN_REVOKED, as personalTokenActor
+// answers it next), and a cookie caller's session was ended (401 NO_IDENTITY). It writes nothing:
+// the caller is not resolved again, since resolving writes its credential's bookkeeping, and a
+// keyed write's handler writes only in the transaction that marks its key
+// (TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks).
+func mintCallerGone(tokenID *string) error {
+	if tokenID != nil {
+		return errTokenRevoked()
+	}
+	return identity.ErrNoIdentity
+}
+
+// errTokenRevoked is the refusal of a revoked personal token.
+func errTokenRevoked() error {
+	return errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
 }
 
 // updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}.
@@ -377,24 +498,67 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// codeTokenOwnerNotAdmitted refuses a token acting for a restricted member this deployment would
+// not sign in now (restrictedOwnerAdmitted): their personal token, or a token the secrets broker
+// issued naming them.
+const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
+
+// personalTokenActor resolves a personal token (dsp_) to the credential its row says it is: its
+// owner, its scopes and its list of projects. A plaintext no row holds is no actor, and a revoked
+// token is 401 TOKEN_REVOKED. A token carries its owner's sign-in to an agent, so it acts only
+// while its owner may still sign in: a restricted member's token is checked at every use
+// (restrictedOwnerAdmitted, which asks the sign-in rule itself), so it stops the moment the rule
+// would refuse its owner's sign-in (outside sign-in turned off, the owner's address on a domain
+// the Workspace owns, no project naming them any more) and works again if that is undone, while
+// the owner's cookie stops at its next hourly confirmation. optionalActor is the one place a
+// bearer is resolved, for every route and the live socket's heartbeat (whileCallerResolves), so
+// the check holds on all of them.
+//
+// The owner's member kind is read in the token's own statement, a left join on people by the
+// owner in the form people.email holds, model.CanonicalLogin's as SQL spells it once
+// (canonical_login, migration 20261117000831: every Unicode space trimmed, A-Z lowered), whatever
+// case or surrounding space the row was written with, so a token whose owner differs from its
+// people row only so is still held to that row's kind. The join is
+// an equality on people's key, so the token of a full member, or of an owner no people row holds,
+// costs no read beyond the one it always cost and answers as it always did; only a restricted
+// owner's token reads the lists.
+//
+// The same join reads whether the token's account still holds the address (tokenAccountReplaced):
+// a token that recorded a Google account at its mint (agent_tokens.subject) acts only while
+// people.sub records that account or none, and one that recorded none only while it was made
+// after people recorded the address's account, or no recording time is set. Once another account's
+// sign-in records itself for the address, the first recording included (which also revokes the
+// address's tokens that recorded another account, store.PgPeopleStore.SignInSubject), the token is
+// 401 TOKEN_REVOKED, as a revoked token is, since its account is not the address's any more and
+// never will be again under this token.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
 	var scopes, projects []string
 	var revokedAt *time.Time
+	var memberKind *string
+	var replaced bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, projects, revoked_at
+		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
+			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
+			`+tokenAccountReplaced("$2::boolean")+`
 		from agent_tokens
-		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt)
+		left join people on people.email = canonical_login(agent_tokens.owner)
+		where agent_tokens.token_hash = $1
+	`, hash[:], s.deps.SignInIssuer != "").Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
 	if err != nil {
 		return model.Actor{}, fmt.Errorf("look up agent token: %w", err)
 	}
-	if revokedAt != nil {
-		return model.Actor{}, errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
+	if revokedAt != nil || replaced {
+		return model.Actor{}, errTokenRevoked()
+	}
+	if memberKind != nil && model.MemberKind(*memberKind) == model.MemberRestricted {
+		if err := s.restrictedOwnerAdmitted(ctx, model.CanonicalLogin(owner)); err != nil {
+			return model.Actor{}, err
+		}
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
 		update agent_tokens
@@ -412,6 +576,64 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		Owner:      &owner,
 		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
+}
+
+// tokenAccountReplaced is the SQL expression, over the row agent_tokens joined to its owner's
+// people row and whether the deployment's sign-in records accounts (recordsAccounts), that the
+// personal token's account no longer holds the address (personalTokenActor, the mint's and an
+// approve's re-reads). With accounts recorded and people recording one for the address, it is true
+// for a token that recorded another account at its mint, and for one that recorded none and was
+// made before people recorded the address's account (agent_tokens.created_at before
+// people.sub_recorded_at, both from Dispatch's own clock): an account that held the address before
+// may have minted it. A token made after the recording, an address recording no account or no
+// recording time, and a deployment whose sign-in records none are not replaced.
+func tokenAccountReplaced(recordsAccounts string) string {
+	return "coalesce(" + recordsAccounts + " and people.sub is not null and (" +
+		"(agent_tokens.subject is not null and agent_tokens.subject <> people.sub)" +
+		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at)), false)"
+}
+
+// restrictedOwnerAdmitted answers nil while a token acting for a restricted member may act - their
+// personal token (personalTokenActor) or a token the secrets broker issued naming them
+// (brokerPersonAdmitted), the one check both are held to: while the sign-in rule would sign owner
+// in now (Deps.RestrictedAdmission, identity.SignInRule's AdmitsRestricted, the very decision a
+// restricted sign-in and its hourly confirmation make), so there is no second copy of the rule
+// here to fall behind it. Otherwise it is 401 TOKEN_OWNER_NOT_ADMITTED saying why: outside sign-in
+// is off (or this server signs nobody in), the address is on a domain the Workspace owns, or no
+// project names owner any more. Lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an
+// accept. The answer names no owner: whoever holds the token is told why it stopped, not whose it
+// is.
+func (s *server) restrictedOwnerAdmitted(ctx context.Context, owner string) error {
+	if s.deps.RestrictedAdmission == nil {
+		return tokenOwnerOutsideOff()
+	}
+	err := s.deps.RestrictedAdmission.AdmitsRestricted(ctx, owner)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, identity.ErrMembershipUnreadable):
+		slog.Warn("dispatch: a restricted member's token was refused: the access lists could not be read", "error", err)
+		return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"whether a project still names this token's owner could not be read; try again in a minute")
+	case errors.Is(err, identity.ErrOutsideSignInOff):
+		return tokenOwnerOutsideOff()
+	case errors.Is(err, identity.ErrWorkspaceAddress):
+		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+			"this token's owner is a restricted member from outside the sign-in domain whose address is on a domain the Google Workspace owns (DISPATCH_SIGNIN_DOMAIN or DISPATCH_SIGNIN_WORKSPACE_DOMAINS), which signs in only as a Workspace account, so the token acts for nobody")
+	case errors.Is(err, identity.ErrNotListed):
+		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+			"this token's owner is a restricted member from outside the sign-in domain, and no project names them any more, as its owner or on its access list, so the token acts for nobody")
+	default:
+		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+			"this token's owner is a restricted member from outside the sign-in domain whom this deployment would not sign in now, so the token acts for nobody")
+	}
+}
+
+// tokenOwnerOutsideOff is a restricted member's token on a deployment that signs nobody from
+// outside its domain in.
+func tokenOwnerOutsideOff() error {
+	return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
+		"this token's owner is a restricted member from outside the sign-in domain, and outside sign-in is off on this deployment (DISPATCH_SIGNIN_OUTSIDE is unset), so the token acts for nobody")
 }
 
 func newAgentToken() (string, [sha256.Size]byte, error) {

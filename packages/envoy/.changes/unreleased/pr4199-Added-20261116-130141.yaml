@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A person from outside the domain whom the hourly confirmation signs out is told why. Their
+  `401 NO_IDENTITY`, at the request that ran the confirmation and at every request after it,
+  carries `reason` (`NOT_LISTED` once no project's access list names them, `OUTSIDE_SIGNIN_OFF` for
+  a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off) and `login`, their address, and the
+  dashboard's sign-in page says it in plain words. The reason is read from the person's row and
+  the access lists at each request, so it reaches them whichever request ran the confirmation and
+  whichever server process answers, with no new column. A sign-out, an expired cookie and a full
+  member are told nothing more, and a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` answers
+  as before.
+time: 2026-11-16T13:01:41.125501897Z
+custom:
+    Issue: pr4199

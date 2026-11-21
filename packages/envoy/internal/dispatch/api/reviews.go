@@ -981,7 +981,7 @@ func (s *server) renewApprovalAsk(
 			open.Question)
 	case waitingOn == "agent":
 		if changed {
-			if err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.ServerURL); err != nil {
+			if err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.Origins); err != nil {
 				return nil, err
 			}
 		}

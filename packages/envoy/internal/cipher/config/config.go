@@ -141,9 +141,11 @@ type Config struct {
 	// the provider's issuer (an absolute https URL, or http only to a loopback host, for a run on
 	// one machine), the client's id, a file holding the client's secret (read at startup and
 	// trimmed; no variable carries the secret itself, so BROKER_SIGNIN_CLIENT_SECRET is refused),
-	// the Google Workspace domain a person's ID token must name in its hd claim, and how many
-	// seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours, the
-	// default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
+	// the Google Workspace domain a person's ID token must name in its hd claim (the client's
+	// consent screen may be External, as Dispatch's outside sign-in needs of the one screen both
+	// clients share, so Google issues ID tokens for any account; this domain is the gate), and how
+	// many seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours,
+	// the default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
 	// people in and is missing any of them refuses to start, naming the ones missing, since
 	// nobody could approve a secret request on a page nobody can sign in to. With BROKER_SIGNIN
 	// off every one of the five is refused, and SignIn is empty.

@@ -32,6 +32,8 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		// word, so no table is named by it unquoted.
 		"create trigger snap after insert or update or delete or truncate on route_roster for each statement execute function f();": {"route_roster"},
 		"create trigger snap after truncate on route_roster for each statement execute function f();":                               {"route_roster"},
+		"create trigger people_not_truncated before truncate on people for each statement execute function f();":                    {"people"},
+		"create trigger t after insert or truncate or update on comments for each statement execute function f();":                  {"comments"},
 		"drop trigger comments_embeddings_enqueue on comments;":                                                                     {"comments"},
 		"DROP TRIGGER IF EXISTS asks_embeddings_enqueue ON \"asks\";":                                                               {"asks"},
 		"update events set payload = '{}' where type = 'x';":                                                                        {"events"},

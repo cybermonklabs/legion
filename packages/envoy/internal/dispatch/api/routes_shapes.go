@@ -528,6 +528,18 @@ type accessPersonQuery struct {
 	// Person is the email whose member kind, and for a project whether they see it, the answer
 	// reads; the project read takes none and answers the project alone.
 	Person string `query:"person"`
+	// AccountIssuer and AccountSubject are the Google account the credential being checked
+	// records (the broker's introspection's account_issuer and account_subject), named together,
+	// only with a person. Account is "none" for a credential recording none. CredentialCreatedAt
+	// is when the credential was made at the broker, in Unix seconds (the introspection's
+	// credential_created_at), only beside an account or account=none. A question naming an
+	// account or account=none gets holder: false, with visible false, when the credential's
+	// account does not hold the person's address; one naming neither gets the answer it got
+	// before them, with no holder (readAccessQuestion).
+	AccountIssuer       string `query:"account_issuer"`
+	AccountSubject      string `query:"account_subject"`
+	Account             string `query:"account"`
+	CredentialCreatedAt string `query:"credential_created_at"`
 }
 
 // --- the shapes ------------------------------------------------------------------------------
@@ -563,6 +575,11 @@ var routeShapes = map[string]routeShape{
 		Status:             http.StatusOK,
 		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentTypes: []string{"application/json"},
+	},
+	"GET /metrics": {
+		Status:             http.StatusOK,
+		Opaque:             "the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON",
+		OpaqueContentTypes: []string{"text/plain"},
 	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {

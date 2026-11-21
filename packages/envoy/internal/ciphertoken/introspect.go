@@ -82,13 +82,20 @@ func expiryOf(answer Introspection) time.Time {
 // answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
 // and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
 // sessionCaller lets a read-only answer through only with its switch set, which only a verifier
-// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+// that serves one sets, so a Caller marked read-only is one such a verifier accepted. The account
+// the token's credential records, and when that credential was made, are carried too, which the
+// cache keeps with the rest of the answer.
 func callerOf(answer Introspection, shape tokenShape) Caller {
-	return Caller{
+	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
 		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
-		ReadOnly: shape == shapeReadOnly,
+		ReadOnly:      shape == shapeReadOnly,
+		AccountIssuer: answer.AccountIssuer, AccountSubject: answer.AccountSubject,
 	}
+	if answer.CredentialCreatedAt > 0 {
+		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
+	}
+	return caller
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount

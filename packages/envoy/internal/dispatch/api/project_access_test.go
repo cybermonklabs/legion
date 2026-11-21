@@ -27,7 +27,14 @@ const (
 // three access people.
 func newAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	return newAccessServerWith(t, testServerOptions{})
+}
+
+// newAccessServerWith is newAccessServer's server under options: the outside sign-in tests
+// (agent_tokens_test.go, broker_token_test.go) build it with outside sign-in on.
+func newAccessServerWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, options)
 	seedPeople(t, database, accessCarol, accessDave, accessErin)
 	markRestricted(t, database, accessErin)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

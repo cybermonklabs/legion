@@ -920,7 +920,7 @@ func (s *server) storeArtifact(
 		// stores (docs.MoveApprovalAsk). The move's writes and its event are queued after the
 		// version's; Commit publishes the event before this route publishes its own.
 		if err := docs.MoveApprovalAsk(
-			documentCtx, tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.Origins,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -932,7 +932,7 @@ func (s *server) storeArtifact(
 		// ask rows it reads are as this transaction's own queued writes leave them, its own
 		// writes join the queue, and its events reach the ledger beside the move's.
 		if err := docs.CarryRestoredApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.Origins,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return

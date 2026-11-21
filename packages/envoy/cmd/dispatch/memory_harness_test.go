@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -307,10 +308,10 @@ func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
 		return
 	}
 	// One service for both pieces of work, shut down before the server starts, so neither its
-	// compaction queue nor a lease of its own outlives this step. ServerURL is the port the test
+	// compaction queue nor a lease of its own outlives this step. Its origin is the port the test
 	// already holds, the one refs.ReindexOwed hands text.ExtractAt, so the index this writes
 	// is the index the server would have written.
-	service := docs.New(docs.Deps{Store: h.database, Events: events.NewBroker(), ServerURL: "http://127.0.0.1:" + port})
+	service := docs.New(docs.Deps{Store: h.database, Events: events.NewBroker(), Origins: text.NewOrigins("http://127.0.0.1:" + port)})
 	defer service.Shutdown(context.Background())
 	if owed.settlements > 0 {
 		h.settleOwed(t, service)

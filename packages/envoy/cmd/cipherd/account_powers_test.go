@@ -58,13 +58,13 @@ const (
 
 // TestAListedAccountReachesOnlyItsOwnRoutes lists three callers and drives every route
 // accountAuth authenticates from each of them. The listener caller, listed for introspection
-// alone, is refused each of the twelve relay routes — approve, deny, dismiss, both
-// revoke-by-approver, the RFC 7009 token revocation and both person sign-in routes among them —
-// and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and still reads a
-// token back. The access-review caller reads the grant log and is refused the other thirteen the
-// same way. The dispatch caller reaches all thirteen of its own, the introspection route
-// included, and is refused the grant log: the broker's audit trail is not another of the powers
-// the name that decides already holds.
+// alone, is refused each of the thirteen relay routes — approve, deny, dismiss, both
+// revoke-by-approver, the RFC 7009 token revocation, both person sign-in routes and the replaced
+// account's revoke among them — and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and
+// the route, and still reads a token back. The access-review caller reads the grant log and is
+// refused the other fourteen the same way. The dispatch caller reaches all fourteen of its own,
+// the introspection route included, and is refused the grant log: the broker's audit trail is not
+// another of the powers the name that decides already holds.
 func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -124,6 +124,10 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		{method: http.MethodGet, pattern: "/v1/person-signins", path: "/v1/person-signins?person=" + powersApprover, caller: dispatchCaller},
 		{method: http.MethodPost, pattern: "/v1/person-signins/{id}/revoke", path: "/v1/person-signins/" + unknownID + "/revoke",
 			contentType: "application/json", body: `{"person":"` + powersApprover + `"}`, caller: dispatchCaller},
+		// Its body names one account as both the replaced one and the holder, which the handler
+		// refuses 400 before it writes anything.
+		{method: http.MethodPost, pattern: "/v1/person-subjects/revoke", path: "/v1/person-subjects/revoke",
+			contentType: "application/json", body: `{"person":"` + powersApprover + `","issuer":"https://accounts.google.com","subject":"1","holder_subject":"1"}`, caller: dispatchCaller},
 		// The review's own route, called for a period that closed long ago, so the answer the
 		// review gets here is a page of the grant log rather than a refusal of its period.
 		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},

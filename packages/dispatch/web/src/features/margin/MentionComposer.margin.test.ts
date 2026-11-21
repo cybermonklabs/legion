@@ -7,7 +7,7 @@ test("composer turns typed dispatch and pasted same-origin links into reference 
   expect(
     composerReferences(
       "See dispatch://CORE-1/spec and https://dispatch.test/issues/CORE-1/artifact/design",
-      "https://dispatch.test"
+      ["https://dispatch.test"]
     )
   ).toEqual([
     {

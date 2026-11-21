@@ -24,9 +24,25 @@ const (
 	signInOtherVM  = "example-pool@example-project.iam.gserviceaccount.com"
 )
 
+// signInIssuer is the identity provider every person token in these tests is Google's own.
+const signInIssuer = "https://accounts.google.com"
+
+// accountOf is the account person's own Google identity token names in these tests, unless a
+// test says otherwise.
+func accountOf(person string) store.IssuerSubject {
+	return store.IssuerSubject{Issuer: signInIssuer, Subject: "109" + person}
+}
+
 // record writes one sign-in through a transaction of its own, which is how the exchange writes
-// it: the broker's own transaction carries the token the sign-in is recorded beside.
+// it: the broker's own transaction carries the token the sign-in is recorded beside. The trade is
+// person's own account's (accountOf).
 func record(t *testing.T, st *store.Store, person, thumbprint, machine string) error {
+	t.Helper()
+	return recordAs(t, st, person, thumbprint, machine, accountOf(person))
+}
+
+// recordAs is record as the account account.
+func recordAs(t *testing.T, st *store.Store, person, thumbprint, machine string, account store.IssuerSubject) error {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := st.Pool.Begin(ctx)
@@ -34,7 +50,9 @@ func record(t *testing.T, st *store.Store, person, thumbprint, machine string) e
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, person, thumbprint, machine); err != nil {
+	if _, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine, Account: account,
+	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -218,6 +236,86 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 	// machine login twice answers the same.
 	if thumbprint, ended, err := revokeSignIn(t, st, target.ID, signInPerson); err != nil || ended != 0 || thumbprint != "" {
 		t.Fatalf("revoking it again = %q, %d, %v; want no box key, no token ended and no error", thumbprint, ended, err)
+	}
+}
+
+// A sign-in row from before migration 0041 records no account, and might be any account's. A trade
+// under its key never gives it one: it ends the row, deleting it, ends every live token already
+// traded on that person's key, and inserts a row of its own recording the trade's account, all in
+// its transaction, and says so (the answer the caller ends the row's credential by). The person's
+// token on another box and another person's token on this key are left alone; a later trade of
+// the same account is the same sign-in, so it ends nothing and answers so.
+//
+// Control: adopt the row in place, as the previous head did (the row keeps its id and the
+// earlier token stays live).
+func TestATradeUnderARowRecordingNoAccountEndsItAndRecordsItsOwn(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	var before string
+	if err := st.Pool.QueryRow(ctx, `insert into person_signins (person, thumbprint, machine_account) values ($1, $2, $3) returning id::text`,
+		signInPerson, signInBoxOne, signInMachine).Scan(&before); err != nil {
+		t.Fatalf("a sign-in from before migration 0041: %v", err)
+	}
+	if err := record(t, st, signInPerson, signInBoxTwo, signInMachine); err != nil {
+		t.Fatalf("record(%s, %s): %v", signInPerson, signInBoxTwo, err)
+	}
+	if err := record(t, st, signInOther, signInBoxOne, signInMachine); err != nil {
+		t.Fatalf("record(%s, %s): %v", signInOther, signInBoxOne, err)
+	}
+	for _, c := range []struct{ signature, person, thumbprint string }{
+		{"token-before-the-account", signInPerson, signInBoxOne},
+		{"token-other-box", signInPerson, signInBoxTwo},
+		{"token-other-person", signInOther, signInBoxOne},
+	} {
+		storeAccessToken(t, st, c.signature, c.person, c.thumbprint)
+	}
+	newcomer := store.IssuerSubject{Issuer: signInIssuer, Subject: "109another-account"}
+	trade := func() bool {
+		t.Helper()
+		tx, err := st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		ended, err := store.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: newcomer,
+		})
+		if err != nil {
+			t.Fatalf("the trade under the row: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		return ended
+	}
+	if !trade() {
+		t.Error("the trade under a row recording no account answered that it ended none")
+	}
+	var rows int
+	var id, subject string
+	if err := st.Pool.QueryRow(ctx, `select count(*) over (), id::text, coalesce(subject, '') from person_signins
+		where person = $1 and thumbprint = $2`, signInPerson, signInBoxOne).Scan(&rows, &id, &subject); err != nil {
+		t.Fatalf("read the key's rows: %v", err)
+	}
+	if rows != 1 || id == before || subject != newcomer.Subject {
+		t.Errorf("after the trade the key holds %d row(s), id %s (the old row's was %s), recording %q; want one new row recording %s",
+			rows, id, before, subject, newcomer.Subject)
+	}
+	for signature, want := range map[string]bool{
+		"token-before-the-account": false,
+		"token-other-box":          true,
+		"token-other-person":       true,
+	} {
+		if got := tokenActive(t, st, signature); got != want {
+			t.Errorf("%s is active=%t after a trade ended %s's row on %s, which recorded no account; want %t", signature, got, signInPerson, signInBoxOne, want)
+		}
+	}
+	storeAccessToken(t, st, "token-after-the-account", signInPerson, signInBoxOne)
+	if trade() {
+		t.Error("a later trade of the account the row records answered that it ended a sign-in")
+	}
+	if !tokenActive(t, st, "token-after-the-account") {
+		t.Error("a later trade of the account the row records ended a token minted under it, want it left alone")
 	}
 }
 
@@ -426,7 +524,9 @@ func TestATradeRacingTheRevokeThatCommitsFirstIsRefused(t *testing.T) {
 			return
 		}
 		defer trading.Rollback(ctx)
-		if err := store.RecordPersonSignIn(ctx, trading, signInPerson, signInBoxOne, signInMachine); err != nil {
+		if _, err := store.RecordPersonSignIn(ctx, trading, store.SignInTrade{
+			Person: signInPerson, Thumbprint: signInBoxOne, MachineAccount: signInMachine, Account: accountOf(signInPerson),
+		}); err != nil {
 			traded <- err
 			return
 		}

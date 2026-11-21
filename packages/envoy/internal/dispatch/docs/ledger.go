@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -697,7 +698,7 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
-	serverURL string,
+	origins text.Origins,
 	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
@@ -716,7 +717,7 @@ func (l *Ledger) QueueAskParts(
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
-	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
+	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, origins, document)
 	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err

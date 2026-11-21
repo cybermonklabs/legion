@@ -365,7 +365,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		return tick, err
 	}
 	for _, item := range items {
-		indexed, err := refs.ReindexOwed(ctx, s.store.Pool, item, s.serverURL)
+		indexed, err := refs.ReindexOwed(ctx, s.store.Pool, item, s.origins)
 		if err != nil {
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
@@ -384,7 +384,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		return tick, err
 	}
 	for _, item := range itemBlocks {
-		indexed, err := refs.IndexOwedItemBlocks(ctx, s.store.Pool, item, s.serverURL)
+		indexed, err := refs.IndexOwedItemBlocks(ctx, s.store.Pool, item, s.origins)
 		if err != nil {
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
@@ -939,7 +939,7 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, error) {
 	switch source.Kind {
 	case "comment", "ask", "message":
-		return refs.ReindexOwed(ctx, s.store.Pool, source, s.serverURL)
+		return refs.ReindexOwed(ctx, s.store.Pool, source, s.origins)
 	case "artifact":
 		return s.drainOwedDocument(ctx, source)
 	case "scope":
@@ -1040,7 +1040,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 	}
 	for _, source := range sources {
 		if source.Kind != "artifact" {
-			if _, err := refs.ReindexScopeSource(ctx, s.store.Pool, source.Kind, source.ID, s.serverURL); err != nil {
+			if _, err := refs.ReindexScopeSource(ctx, s.store.Pool, source.Kind, source.ID, s.origins); err != nil {
 				return err
 			}
 			continue
@@ -1054,7 +1054,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 		if err != nil {
 			return err
 		}
-		if !found || !refs.HoldsQuestionCandidate(body, s.serverURL) {
+		if !found || !refs.HoldsQuestionCandidate(body, s.origins) {
 			continue
 		}
 		if err := oweDocumentIndex(ctx, s.store.Pool, source.ID, s.markingRule); err != nil {

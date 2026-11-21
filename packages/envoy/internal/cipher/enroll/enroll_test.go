@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -93,7 +94,7 @@ func mintCredentialFrom(t *testing.T, svc *Service, operator, service *string, h
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := svc.mintLauncherCredential(context.Background(), svc.Store.Pool, operator, service, host, thumbprint, jwk, recordID, time.Now().Add(time.Hour))
+	id, err := svc.mintLauncherCredential(context.Background(), svc.Store.Pool, operator, service, host, thumbprint, jwk, recordID, time.Now().Add(time.Hour), store.IssuerSubject{})
 	if err != nil {
 		t.Fatalf("mintLauncherCredential: %v", err)
 	}

@@ -431,6 +431,20 @@ func routes() []apiRoute {
 		// revoking person is the one the request names, which the broker takes on the caller's
 		// word: a revoke only takes power away.
 		{http.MethodPost, "/v1/person-signins/{id}/revoke", accountAuth(relaysDecisions, (*server).revokePersonSignIn)},
+		// End everything one Google account holds under an address another account now holds,
+		// whenever it was issued, and refuse it anything new there: Dispatch's server calls it
+		// when another account takes an address it holds for a person, naming the address,
+		// the identity provider, the replaced account's `sub` and the holder's. Every sign-in on
+		// a machine that account's person token made, every login of the address's own machines
+		// it approved and every session on the broker's own approval page it signed in ends, with
+		// the tokens and sessions each holds, and so does every row that records no account; the
+		// holder's, and a service's login, are untouched. From then on a sign-in trade with that
+		// account's token is refused invalid_grant, an approval by it 403 APPROVER_REPLACED and
+		// its sign-in to the approval page 403, and a revoke naming it as the holder stops
+		// refusing it. A repeat ends nothing and answers zeros. The broker takes the accounts on
+		// the caller's word, which does more than take power away: naming the holder lifts the
+		// refusal an earlier revoke recorded for that account, and nothing else.
+		{http.MethodPost, "/v1/person-subjects/revoke", accountAuth(relaysDecisions, (*server).revokePersonSubject)},
 		// Read the broker's grant log for one closed period, for a quarterly access review:
 		// every audit row between ?since and ?until (RFC 3339, half-open), oldest first, each
 		// naming the session that wrote it, that session's person, the service the broker
@@ -501,13 +515,17 @@ func routes() []apiRoute {
 		{http.MethodGet, "/approve/{record}", signInAuth((*approval.Page).ServeRecord)},
 		// Decide records an approval page printed, as the signed-in person: a form from the
 		// broker's own origin only, carrying the page's token, which binds it to the session and to
-		// exactly the records the page printed with a button, for an hour. Each record is decided
-		// on its own, and the answer is a 303 back to the page, which says what became of each.
+		// exactly the records the page printed with a button, for an hour. The session is read
+		// again once the form has arrived, so one that ended while its body was on the way
+		// decides nothing. Each record is decided on its own, and the answer is a 303 back to the
+		// page, which says what became of each.
 		{http.MethodPost, "/approve", signInAuth((*approval.Page).ServeDecide)},
 		// Finish a sign-in to the approval page, the provider's redirect back with a code, checked
 		// against the sign-in this browser started (its __Host-broker-signin cookie, used once):
-		// state, PKCE, the ID token and the Workspace domain. It makes a new session, ending the one
-		// the browser held, and answers a 303 to the record's page the sign-in started from.
+		// state, PKCE, the ID token and the Workspace domain. A Google account that no longer
+		// holds its address, which Dispatch named replaced, is refused 403 with no session. It
+		// makes a new session recording the account that signed in, ending the one the browser
+		// held, and answers a 303 to the record's page the sign-in started from.
 		{http.MethodGet, "/signin/callback", signInAuth((*approval.Page).ServeCallback)},
 		// Sign out of the approval page, from the broker's own origin only: the session ends and
 		// its cookie is cleared, and the answer links back to the record.

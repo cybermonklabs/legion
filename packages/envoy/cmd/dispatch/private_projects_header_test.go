@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // wildcard is a pattern's wildcard, which a request fills with NOPE.
@@ -44,7 +43,7 @@ func requestOf(pattern string) (method, path string) {
 
 // Every Dispatch HTTP response, errors and /healthz included, carries Dispatch-Private-Projects:
 // 1 when DISPATCH_PRIVATE_PROJECTS is non-empty or the database holds a private project, and 0
-// otherwise. The process's handler is built as main builds it - the router, dispatchHandler's
+// otherwise. The process's handler is built as main builds it - the router, routes.Process's
 // mounts, then serveHandler's wrap - and every route the router serves is requested with no
 // credential: each row of the route index, each pattern readclass.Handle mounted in the process,
 // and both sockets once more as upgrades: /ws/live's 101 carries it, and /ws/doc/NOPE, a room no
@@ -85,7 +84,7 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 			router := routerFor(t, resolveWith(t, nil), routes.AppContextOptions{
 				Store: database, Events: broker, Docs: docs.New(docs.Deps{Store: database, Events: broker}),
 			})
-			served := serveHandler(dispatchHandler(router, metrics.New(), database, nil, nil, nil, "", nil, issuers{}, privateState, nil), privateState)
+			served := serveHandler(routes.Process(router, healthzHandler(database, nil, nil, nil, "", nil, issuers{}, privateState, nil)), privateState)
 			server := httptest.NewServer(served)
 			t.Cleanup(server.Close)
 			client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -107,7 +106,14 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 			var body struct {
 				Routes []struct{ Method, Path string } `json:"routes"`
 			}
-			index, err := client.Get(server.URL + "/api/v1")
+			// The route index needs a credential, as every route but sign-in, health and the web
+			// app does; the routes it names are then requested with none.
+			indexRequest, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1", nil)
+			if err != nil {
+				t.Fatalf("build GET /api/v1: %v", err)
+			}
+			indexRequest.Header.Set("Authorization", "Bearer agent-token")
+			index, err := client.Do(indexRequest)
 			if err != nil {
 				t.Fatalf("GET /api/v1: %v", err)
 			}

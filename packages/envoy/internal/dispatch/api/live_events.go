@@ -318,7 +318,7 @@ func (s *server) accessRecheckEvery() time.Duration {
 // recheckEventsReader resolves the caller of an events subscription again on the socket's
 // heartbeat (accessRecheckEvery) and reports whether the subscription goes on. An access change
 // that no event carries, one made by SQL alone, which appends none and announces nothing on
-// access.ChangedChannel, moves what the caller sees all the same, and no event can tell the live
+// store.AccessChangedChannel, moves what the caller sees all the same, and no event can tell the live
 // loop so: this is what finds it, a heartbeat at most after it committed. One that moved what the
 // caller sees (sightMoved) ends the subscription (behind), as an access change an event carries
 // does (sendReadable), so nothing more of a project the caller lost reaches its page; the

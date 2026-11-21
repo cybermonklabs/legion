@@ -36,10 +36,10 @@ import (
 // than a second grant.revoked. Another person's revoke (an approver's of the grant) ends the grant
 // alone and withholds nothing: the session is not theirs. It locks the session's row before it
 // reads or writes the grant: the order every writer that locks both takes them in, and the one
-// lock Create and ApplyDecision read the withheld names under, so a request deciding on the
-// session as this runs either is written first, and then ended here if it got a withheld name, or
-// decides with the name withheld. A revoke that ends nothing and withholds nothing new succeeds
-// and changes nothing.
+// lock Create and a decision (applyDecisionAttempt) read the withheld names under, so a request
+// deciding on the session as this runs either is written first, and then ended here if it got a
+// withheld name, or decides with the name withheld. A revoke that ends nothing and withholds
+// nothing new succeeds and changes nothing.
 // The enrollment it reads the operator off is the enrollment the grants row names now, so an
 // approver's revoke reaches a grant that moved. An operator's withhold writes against that
 // enrollment and every other live or dormant enrollment of the grant's session (revokeJudged), so

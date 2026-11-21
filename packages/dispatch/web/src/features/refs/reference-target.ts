@@ -12,6 +12,7 @@ import {
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
+import { dispatchOrigins } from "../../api/origins";
 import { issueQuery } from "../../api/queries";
 import type {
   Artifact,
@@ -385,7 +386,7 @@ export interface WholeRouteRead {
  * `.route`.
  */
 export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): WholeRouteRead {
-  const origin = window.location.origin;
+  const origins = dispatchOrigins();
   const prefix = route === undefined ? undefined : prefixReference(route);
   const resolution = useQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
   return {
@@ -394,7 +395,7 @@ export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): Wh
     route:
       route === undefined || prefix === undefined
         ? route
-        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origin),
+        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origins),
   };
 }
 

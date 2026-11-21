@@ -529,7 +529,7 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 // threeBadRequests sends every route the table held before this child three requests a declared
 // shape does not authorize.
 //
-//   - An unauthorized actor: an anonymous request, which every row but a public one refuses.
+//   - An unauthorized actor: an anonymous request, which every row refuses.
 //   - An identifier of another project: a route addressing one project's object under another
 //     project's key, which answers that object to nobody.
 //   - An undeclared traversal parameter: every word a caller would walk the graph with that the
@@ -543,9 +543,6 @@ func threeBadRequests(t *testing.T) {
 	rows := routesBeforeThisChild(t, false)
 
 	for _, route := range rows {
-		if route.Auth == authPublic {
-			continue
-		}
 		response := personPageRequest(t, handler, routeProbePath(route.Pattern), "")
 		if route.Method != http.MethodGet {
 			response = probeWithoutCredential(t, handler, route)

@@ -82,22 +82,25 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 
 // writesBesideTheTable is every pattern mux serves (servedPatterns, read from the mux itself, so
 // a pattern mounted on it by any means is read) that serves a write and is no row of the API's
-// table, which GET /api/v1 lists, sorted.
+// table, which GET /api/v1 lists, sorted. The index is read as a signed-in caller, as the POST
+// below is made: every route answers 401 to a request that names no one, the index included.
 func writesBesideTheTable(t *testing.T, mux *http.ServeMux) []string {
 	t.Helper()
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil))
-	var index struct {
+	index := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil)
+	index.Header.Set("X-Dispatch-User", "alice@d.example")
+	mux.ServeHTTP(response, index)
+	var listed struct {
 		Routes []struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
 		} `json:"routes"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &index); err != nil || len(index.Routes) == 0 {
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil || len(listed.Routes) == 0 {
 		t.Fatalf("GET /api/v1 answered %d %s (%v), want the table's index", response.Code, response.Body.String(), err)
 	}
 	table := map[string]bool{}
-	for _, route := range index.Routes {
+	for _, route := range listed.Routes {
 		table[route.Method+" "+route.Path] = true
 	}
 	var outside []string

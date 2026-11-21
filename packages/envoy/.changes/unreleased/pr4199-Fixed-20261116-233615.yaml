@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  When another Google account takes an address, the replaced account's credentials at the secrets
+  broker end too, not only its sessions and personal tokens: the sign-in records, in its own
+  transaction (migration `20261116232217_broker_revocations`), which account it replaced, and
+  Dispatch then tells the broker in one call (`POST /v1/person-subjects/revoke`), trying again every
+  30 seconds until the broker confirms. The broker ends every machine login the old account approved
+  for the address's own machines and every sign-in it made on a machine, whenever it made them, with
+  every token minted under them, and refuses it any new one. A service's machine login and the new
+  account's credentials are left as they are. Deploy the secrets broker that serves that route first:
+  an older broker answers it 404, which leaves the revocation owed.
+time: 2026-11-16T23:36:15.829142660Z
+custom:
+    Issue: pr4199

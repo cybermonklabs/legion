@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -20,24 +21,39 @@ var _ SignInRule = DomainRule{}
 // Person names the person by the ID token's `email` claim, which Google writes, and checks the
 // account is of the domain by `hd`, the account's Workspace domain, never by the email's own
 // domain: the Workspace rule the secrets broker's sign-in applies too (oidc.WorkspaceLogin), each
-// of its refusals worded as Dispatch's own. A token with no subject is ErrNoPerson, one with no
-// email of an address's shape ErrNoEmail, one of another domain or none ErrNotInDomain, and one
-// whose email Google has not verified ErrEmailNotVerified.
-func (r DomainRule) Person(claims oidc.Claims) (string, error) {
+// of its refusals worded as Dispatch's own. The person is a full member. A token with no subject is
+// ErrNoPerson, one with no email of an address's shape ErrNoEmail, one of another domain or none
+// ErrNotInDomain, and one whose email Google has not verified ErrEmailNotVerified.
+func (r DomainRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, error) {
 	email, err := oidc.WorkspaceLogin(claims, r.Domain)
+	if err == nil {
+		return SignedIn{Email: email, Kind: model.MemberFull}, nil
+	}
+	return SignedIn{Email: email}, googleRefusal(email, claims, err)
+}
+
+// AdmitsRestricted is ErrOutsideSignInOff: DomainRule signs in nobody from outside the domain, so
+// no restricted member's credential acts under it (a deployment that turned
+// DISPATCH_SIGNIN_OUTSIDE off). OutsideRule, which embeds this rule, answers for itself.
+func (r DomainRule) AdmitsRestricted(_ context.Context, email string) error {
+	return fmt.Errorf("%s: %w", email, ErrOutsideSignInOff)
+}
+
+// googleRefusal words a refusal of oidc.WorkspaceLogin or oidc.VerifiedLogin for email as
+// Dispatch's own: ErrNoPerson, ErrNoEmail, ErrNotInDomain or ErrEmailNotVerified, naming email
+// when there is one.
+func googleRefusal(email string, claims oidc.Claims, err error) error {
 	switch {
-	case err == nil:
-		return email, nil
 	case errors.Is(err, oidc.ErrNoSubject):
-		return "", fmt.Errorf("%w: the Google ID token carries no subject", ErrNoPerson)
+		return fmt.Errorf("%w: the Google ID token carries no subject", ErrNoPerson)
 	case errors.Is(err, oidc.ErrNoEmail):
-		return "", ErrNoEmail
+		return ErrNoEmail
 	case errors.Is(err, oidc.ErrNotInDomain):
-		return email, fmt.Errorf("%s (hd %q): %w", email, claims.HostedDomain, ErrNotInDomain)
+		return fmt.Errorf("%s (hd %q): %w", email, claims.HostedDomain, ErrNotInDomain)
 	case errors.Is(err, oidc.ErrEmailNotVerified):
-		return email, fmt.Errorf("%s: %w", email, ErrEmailNotVerified)
+		return fmt.Errorf("%s: %w", email, ErrEmailNotVerified)
 	default:
-		return email, err
+		return err
 	}
 }
 
@@ -54,6 +70,18 @@ func (r DomainRule) Subject(claims oidc.Claims) string {
 // BootLog logs the issuer, client and Workspace domain boot is signing people in under.
 func (r DomainRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in with Google for a Workspace domain", "issuer", issuer, "client_id", clientID, "domain", r.Domain)
+}
+
+// DomainHint is true: the domain's people alone sign in, so Google's account chooser is narrowed
+// to the domain.
+func (r DomainRule) DomainHint() bool {
+	return true
+}
+
+// OffersAccountChooser is false: a refusal under the domain alone keeps its plain link to
+// /auth/start.
+func (r DomainRule) OffersAccountChooser() bool {
+	return false
 }
 
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row
@@ -73,21 +101,53 @@ func (r DomainRule) ConfirmSubject(claims oidc.Claims, stored string) (string, e
 	return stored, nil
 }
 
-// End ends email's sign-in only while the address's row still records subject, the Google
-// account this refresh read (auth.PeopleStore.EndSubject); when another account has signed in to
-// the address since, the failure was the old account's, so it writes nothing and the old
-// account's request is simply not signed in.
-func (r DomainRule) End(ctx context.Context, people auth.PeopleStore, sessions auth.SessionStore, email, subject, reason string) error {
-	ended, err := people.EndSubject(ctx, email, subject)
+// End ends email's sign-in only while the address's row still records the Google account this
+// refresh read and still holds the refresh token it read (endSubject).
+func (r DomainRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string) error {
+	return endSubject(ctx, people, email, read, reason, "dispatch: sign-in ended: Google did not confirm the person's membership of the domain")
+}
+
+// endSubject ends email's sign-in only while the address's row still records read's subject and
+// holds read's refresh token (auth.PeopleStore.EndSubject), and logs ended, the rule's own words for
+// what ended it. When another account has signed in to the address since, or the same account again
+// with a new refresh token, the failure was the refresh token the confirmation read, which no longer
+// stands for the address, so it writes nothing and the request is simply not signed in.
+func endSubject(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason, ended string) error {
+	done, err := people.EndSubject(ctx, email, read.Subject, read.RefreshToken)
 	if err != nil {
 		return err
 	}
-	if !ended {
-		slog.Info("dispatch: a failed confirmation ended nothing: another Google account has signed in to the address since", "email", email, "reason", reason)
+	if !done {
+		slog.Info("dispatch: a failed confirmation ended nothing: the address was signed in to again since it read the sign-in", "email", email, "reason", reason)
 		return ErrNoIdentity
 	}
-	slog.Warn("dispatch: sign-in ended: Google did not confirm the person's membership of the domain", "email", email, "reason", reason)
+	slog.Warn(ended, "email", email, "reason", reason)
 	return ErrNoIdentity
+}
+
+// SignedOutReason is SignedOutOutsideOff for a restricted member whose sign-in no longer stands
+// (endedRestricted): DomainRule admits nobody from outside the domain, so only a deployment that
+// once signed people from outside in (OutsideRule) holds such a row, and its next hourly
+// confirmation under this rule ends it. Everyone else is told no reason, so a deployment that
+// never set DISPATCH_SIGNIN_OUTSIDE answers as it always has.
+func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
+	ended, err := endedRestricted(ctx, people, email)
+	if err != nil || !ended {
+		return "", err
+	}
+	return SignedOutOutsideOff, nil
+}
+
+// endedRestricted reads email's row (auth.PeopleStore.Membership) and reports whether it is a
+// restricted member's whose sign-in no longer stands: the row holds no refresh token, which the
+// hourly confirmation's end and a sign-out both forget, and a sign-in by anyone since would have
+// written again.
+func endedRestricted(ctx context.Context, people auth.PeopleStore, email string) (bool, error) {
+	membership, found, err := people.Membership(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	return found && membership.RefreshToken == "" && membership.Kind == model.MemberRestricted, nil
 }
 
 // ConfirmCookie reads the address's row (auth.PeopleStore.Membership) and refuses with
@@ -104,13 +164,15 @@ func (r DomainRule) ConfirmCookie(ctx context.Context, people auth.PeopleStore, 
 	return nil
 }
 
-// WriteSignIn records a sign-in for the Workspace domain (auth.PeopleStore.SignInSubject).
-func (r DomainRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.SignInSubject(ctx, email, subject, refreshToken)
+// WriteSignIn records a Google sign-in as the member kind Person named
+// (auth.PeopleStore.SignInSubject).
+func (r DomainRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, person SignedIn, subject, refreshToken string) error {
+	return people.SignInSubject(ctx, person.Email, subject, refreshToken, person.Kind)
 }
 
-// WriteConfirm records a refresh that confirmed email's domain-mode membership
+// WriteConfirm records a refresh that confirmed a Google sign-in's membership, as the member kind
+// Person named again, only while the row still holds the sign-in read names
 // (auth.PeopleStore.ConfirmSubject).
-func (r DomainRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, email, subject, refreshToken string) error {
-	return people.ConfirmSubject(ctx, email, subject, refreshToken)
+func (r DomainRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, read auth.PersonMembership, person SignedIn, subject, refreshToken string) error {
+	return people.ConfirmSubject(ctx, person.Email, subject, read.RefreshToken, refreshToken, person.Kind)
 }

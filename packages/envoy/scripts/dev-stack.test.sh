@@ -135,7 +135,7 @@ EOF
 chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake curl: dev-stack.sh curls its own broker's health and pod-session route, its own
-# listener's health and its own Dispatch's route index; record the exact command line (which names
+# listener's health and its own Dispatch's health; record the exact command line (which names
 # the port dev-stack.sh read from each process's own log) to the instance's own
 # DEV_STACK_TEST_CURL_CALL_FILE and answer success at once, so no readiness loop ever opens a
 # socket. ---
@@ -704,8 +704,8 @@ assert_instance_ready() {
     fail "$label did not check its own broker's health at port ${process_port[broker]}"
   grep -qxF -e "-sf http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
     fail "$label did not check its own listener's health at port ${process_port[listener]}"
-  grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]}"
+  grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own Dispatch's health at port ${process_port[dispatch]}"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.

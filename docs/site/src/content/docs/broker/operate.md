@@ -773,6 +773,91 @@ box she has finished with.
 A sign-in belongs to the machine it was made on: the same box key presented with another
 machine's identity token is refused `invalid_grant` naming `agent-secrets login`, since the
 machine login it holds is keyed by the person, the machine and the key together.
+A sign-in also belongs to the Google account that made it: the broker records the `iss` and `sub`
+of the person's own identity token on it, and the same box key traded with another account's token
+is refused `invalid_grant` naming `agent-secrets login`. A machine login records the account that
+approved it, which Dispatch relays beside the approving address.
+
+When Google gives an address to another account, Dispatch names the account it replaced
+(`POST /v1/person-subjects/revoke`), and the broker ends, in one transaction, every sign-in on a
+machine that account made and every login of the address's own machines it approved, whenever
+they were issued, with their tokens and sessions, and every session that account holds on the
+broker's own approval page, so a page it has open decides nothing more. It refuses that
+account from then on: its sign-in trade, on any box key and with an identity token minted before
+the move, is `invalid_grant` saying another account holds the address, an approval relayed as it
+is `403 APPROVER_REPLACED`, and its sign-in to the approval page is a `403` page saying another
+account holds the address, with no session made. The new holder's sign-ins, machine logins and
+approval-page sessions are untouched, made before the revoke reached the broker or after it, and
+so is every service's machine login. A sign-in, machine login or approval-page session from a
+broker before migration `0041_person_subjects` records no account, so the revoke ends it too, and
+if it was the new holder's, that machine signs in or logs in again and the holder signs in to the
+page again. One lock per address orders the revoke with each trade, approval, page sign-in and
+page decision of that address, so nothing the replaced account makes in the meantime outlives it,
+and no Approve or Deny of its page commits after the revoke: a decision posted just before the
+revoke either commits first or decides nothing. The same lock makes one person's decisions on the
+page wait for each other. Dispatch does not name an account that took the address back while its
+revoke was still owed, unless a call naming it was already under way: it names the account it
+took the address back from, whose revoke ends the broker's refusal of the account that holds the
+address again.
+
+Dispatch also places each approve against each replacement. Its revoke carries
+`session_generation`, the address's session generation at Dispatch once the replacing sign-in
+committed, which the route requires (`400 SESSION_GENERATION_REQUIRED` without it), and the broker
+records it beside the replaced account, keeping the greater one on a repeat. Its approve carries
+`approver_session_generation`, the generation its check of the approver read. An approval whose
+generation is below one a revoke recorded for the address was checked before that replacement,
+and is `403 APPROVER_REPLACED`, minting nothing, whatever account it names. Where nothing places
+an approval (one carrying no generation that names no account, as a Dispatch from before the field
+relays it), it is refused for 50 seconds after the replacement was recorded: the longest an
+approve can be in flight, since Dispatch gives up a call to the broker after 5 seconds and the
+broker ends a request 45 seconds after it arrives, so every approve whose check passed before the
+replacement is refused.
+`broker_machine_login_approvals_without_generation_total` ([Metrics](#metrics)) counts the
+approves that carry no generation; once it stays at zero, the fallback can come out.
+
+The broker also keeps, for each address, the greatest session generation a revoke it applied
+there carried. A revoke carrying a lower one changes nothing: it answers
+`200 {"state":"superseded","superseded_by":<the greater generation>}`, and the broker logs
+`person subject revocation superseded` at WARN with both generations. A revoke Dispatch gave up on
+can reach the broker after a later one, and its answer goes to no one; one Dispatch is still waiting
+on is answered so only when Dispatch's session generation for the address is below the broker's,
+so Dispatch leaves that revocation owed, logs it at ERROR and counts it
+(`envoy_dispatch_broker_revocations_superseded_total`). The broker's migration
+`0041_person_subjects` says how such a revoke can arrive.
+
+Reset or restore the broker's database and Dispatch's together, never one alone, for the reason
+[the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, and its
+[After a restore](/legion/dispatch/after-a-restore/) gives the recovery when one was: for
+Dispatch's database alone, a reset that ends every person's
+browser sessions, personal tokens and credentials at the broker, at once and again an hour and ten
+minutes later, lifts a refusal at the broker only for the account the Workspace directory names as
+an address's holder, and records its own start and end in Dispatch's `deployment_resets`; for the
+broker's database alone, telling the broker again every revocation Dispatch settled at or after
+the broker's backup less an hour and after the last reset's start (the reset settled the
+revocations it chose not to pay), which nothing else finds — the broker holds those replaced
+accounts' credentials live again, and Dispatch, which settled each, owes nothing and raises no
+alarm. Then the Dispatch runbook's read of the last reset's end says whether the backup may
+predate it, by the same hour's margin; when it may, run [the Dispatch runbook's credentials and
+directory blocks](/legion/dispatch/after-a-restore/#after-a-dispatch-database-restored-or-made-again-alone) again after record-again
+and before starting Dispatch, and when the deployment ever moved from the Cognito pool to a domain,
+that move's sweep of machine logins recording no approving account too. A refusal an operator
+lifted by hand comes back with the restore and nothing records it: that runbook's block finds each
+refusal of the account Dispatch records for its address, which is cleared again before Dispatch
+starts. Where the last reset is still open, Dispatch is still stopped: finish that reset rather
+than starting Dispatch. A broker database made again, which has no backup moment, takes the
+record-again step and that read with `-infinity`, so it takes the reset's blocks again whenever a
+reset ran.
+
+The broker's database holds the record of replaced accounts to the revoke's own writes, and
+refuses any other with SQLSTATE 23514: a row's address, account and recording time never change,
+its session generation only rises, the table is never truncated, and a row is deleted only by a
+transaction that first names that one row, with its own transaction id, in
+`broker.replaced_subject_delete`, as the JSON array `[transaction id, person, issuer, subject]`,
+which no two rows share whatever their fields hold. The revoke does that when an address comes
+back to an account it was taken from, and so does the operator's clear in Dispatch's runbook. It
+holds each address's greatest applied generation the same way: the row's address never changes,
+its generation only rises, and the row is never deleted or truncated.
+
 The broker refuses an exchange whose token is for another audience or does not verify, whose email
 Google does not hold verified, whose account no entry lists, or whose Compute Engine project or
 instance name the entry's pins do not allow, each `400 invalid_request` naming what did not match.
@@ -994,9 +1079,12 @@ deployment whose sign-in broke. What an operator reads from each field:
 ### Ending a person's sessions
 
 A broker session lasts `BROKER_SIGNIN_SESSION_SECONDS` from the moment it was made and is never
-extended, so a person whose Workspace account is suspended can still approve until it expires. To
-end every browser session one login holds, wherever and whenever it was made, run the subcommand
-`end-sessions` with that login ([Running a subcommand](#running-a-subcommand) says where):
+extended, so a person whose Workspace account is suspended can still approve until it expires.
+When Google gives an address to another account, nothing here is needed for the account it
+replaced: the revoke Dispatch sends ends that account's sessions and refuses its sign-in, and
+leaves the new holder's sessions alone. To end every browser session one login holds, wherever
+and whenever it was made and whichever account made it, run the subcommand `end-sessions` with
+that login ([Running a subcommand](#running-a-subcommand) says where):
 
 ```text
 end-sessions: ended 2 sessions of ada@example.com
@@ -1954,11 +2042,12 @@ own listing.
 | `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
+| `broker_machine_login_approvals_without_generation_total` | counter | none | Each machine-login approve whose body carries no `approver_session_generation`, as a Dispatch from before the field relays it. Against a replacement of its approver's address, such an approve is decided only by the 50-second fallback the revoke's description above gives; once this stays at zero on every pod, no relaying Dispatch omits the field, and the fallback can come out. |
 | `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |
 | `broker_nats_callout_seconds` | histogram | | How long the auth service took to answer one connection, from the request reaching the replica. Its buckets straddle the decision's 1.5-second budget and the two seconds the hub waits for an answer. |
 | `broker_nats_callout_dropped_total` | counter | `reason` | Each authorization request the auth service answered not at all; the hub refuses that client at its own timeout. `reason` is `past_bounds` (the replica already held 1024 requests waiting and 1024 being refused), `hub_gave_up` (the hub had stopped waiting for the answer, read from the hub's own clock, so no skew between the broker's clock and the hub's counts here), `unopened` (not sealed to the service's curve key), `not_a_request`, or `pending_limit` (dropped by the NATS client on arrival, past the subscription's pending limits). The count moves every second whether or not the log takes writes. The broker logs the first drop in a minute, at WARN, `natscallout: dropped authorization requests unanswered` with each reason's count since the last such line and each reason's first drop (`<reason>_first`); a replica that stops logs what it counted since its last line. |
 
-Each pod counts its own answers, attempts and reads, from zero at its start.
+Each pod counts its own answers, attempts, reads and approves, from zero at its start.
 [Run the broker locally](/legion/broker/guides/run-locally/#read-the-log-and-the-metrics) shows a
 scrape.
 

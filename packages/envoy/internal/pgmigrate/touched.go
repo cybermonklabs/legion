@@ -112,6 +112,11 @@ func matchedTouches(code string) []touch {
 	var out []touch
 	for _, form := range touchedTablePatterns {
 		for _, match := range matchedNames(code, form.pattern) {
+			// A trigger's event list names truncate as an event, not a statement: `before truncate
+			// on people`, `insert or truncate on t`. What follows it there is a keyword, never a table.
+			if form.writes == truncatesRows && (match.name == "on" || match.name == "or") {
+				continue
+			}
 			out = append(out, touch{name: match.name, writes: form.writes, offset: match.offset})
 		}
 	}

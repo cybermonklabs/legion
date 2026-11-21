@@ -131,3 +131,35 @@ func TestTheEventHeadsAPersonReadsDoNotMoveWithAProjectTheyCannotSee(t *testing.
 		t.Errorf("alice's whoami event_head after her own write in PUB = %d, want that write's event %d", head, newest)
 	}
 }
+
+// GET /auth/whoami answers the person its cookie or identity header names, and its event_head is
+// that person's: a bearer sent beside it is never read for the head (api.personEventHead resolves
+// what the person sees with the request's Authorization header removed). A bearer that does not
+// verify, beside alice's identity, still answers alice's head; were it read, the head's resolution
+// would refuse it and whoami would answer 503 EVENT_HEAD_READ_FAILED.
+//
+// Control: resolve the head's caller from the request as it came (no header removed); the whoami
+// answers 503 and the test fails naming it.
+func TestWhoamisEventHeadIsThePersonsWhateverBearerItCarries(t *testing.T) {
+	database := storetest.Open(t)
+	handler := storeRouter(t, database)
+	const alice = "alice@d.example"
+	writeAs(t, handler, alice, http.MethodPost, "/api/v1/projects", `{"key":"PUB","name":"PUB project"}`, http.StatusCreated)
+	want := whoamiHeadAs(t, handler, alice)
+
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
+	request.Header.Set("X-Dispatch-User", alice)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("x", 12))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("whoami as %s with a bearer beside her identity answered %d %s, want 200 with her head %d: the bearer was read for the head", alice, response.Code, response.Body.String(), want)
+	}
+	var answer whoamiAnswer
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode whoami %s: %v", response.Body.String(), err)
+	}
+	if answer.Login != alice || eventHeadID(t, answer) != want {
+		t.Errorf("whoami with a bearer beside %s's identity answered %+v, want her login and her head %d", alice, answer, want)
+	}
+}

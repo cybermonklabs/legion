@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestSearchLatencyOnCorpus measures GET /api/v1/search against a real corpus copy
@@ -74,7 +75,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
+		Store: database, Events: broker, Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour,
 	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {

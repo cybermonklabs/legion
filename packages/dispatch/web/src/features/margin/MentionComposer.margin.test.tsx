@@ -122,19 +122,19 @@ test("Composer uploads dropped files and inserts their references", async () => 
 test("Composer ignores a pasted project page URL because only documents are references", () => {
   const origin = "https://dispatch.test";
 
-  expect(composerReferences(`${origin}/projects/CORE`, origin)).toEqual([]);
+  expect(composerReferences(`${origin}/projects/CORE`, [origin])).toEqual([]);
 });
 
 test("Composer preserves a project document reference with its document page href", () => {
   const origin = "https://dispatch.test";
 
-  expect(composerReferences(`${origin}/projects/CORE/documents/design-notes`, origin)).toEqual([
+  expect(composerReferences(`${origin}/projects/CORE/documents/design-notes`, [origin])).toEqual([
     {
       href: "/projects/CORE/documents/design-notes",
       reference: "dispatch://CORE/artifact/design-notes",
     },
   ]);
-  expect(composerReferences("dispatch://CORE/artifact/design-notes", origin)).toEqual([
+  expect(composerReferences("dispatch://CORE/artifact/design-notes", [origin])).toEqual([
     {
       href: "/projects/CORE/documents/design-notes",
       reference: "dispatch://CORE/artifact/design-notes",

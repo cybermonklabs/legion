@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -2010,7 +2011,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 
 	// Another task: its own broker and documents, on the same database.
 	other := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: rig.database, Events: other, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documents := docs.New(docs.Deps{Store: rig.database, Events: other, Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: rig.database, Identity: headerIdentity(rig.database), AgentTokens: sharedAgentTokens(t, "agent-token"),

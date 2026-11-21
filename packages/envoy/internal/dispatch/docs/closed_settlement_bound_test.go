@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // One resumption pass arms at most settlementResumeBatch documents, closed and open issues'
@@ -174,7 +175,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
-		ServerURL: "https://dispatch.example",
+		Origins:   text.NewOrigins("https://dispatch.example"),
 		Settle:    time.Hour,
 		TestHooks: true,
 	})

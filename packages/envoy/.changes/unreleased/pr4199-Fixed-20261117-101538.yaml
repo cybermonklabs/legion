@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A member whom the hourly confirmation restricts, because their account left the Google Workspace
+  while a project's list still names them, stops reading the projects that do not name them at
+  once, not at their next sign-in. Their open document sockets of those projects close, their
+  delivery views are refused, and their live socket closes, so the page opens a new one that reads
+  as a restricted member.
+time: 2026-11-17T10:15:38.654187568Z
+custom:
+    Issue: pr4199

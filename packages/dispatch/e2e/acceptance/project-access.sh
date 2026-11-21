@@ -445,7 +445,8 @@ if [ "$priv_private" = 1 ]; then
   pass
 
   begin sockets
-  schema_version=$(curl -fsS --max-time 5 "${build_url[main]}/api/v1/schema/blocks" | jq -r '.version // .schema_version // empty')
+  # The block schema needs a credential, as every route but sign-in, health and the web app does.
+  schema_version=$(curl -fsS --max-time 5 -H "@$work/auth/main-shared" "${build_url[main]}/api/v1/schema/blocks" | jq -r '.version // .schema_version // empty')
   [ -n "$schema_version" ] || fail "the block schema names no version"
   printf 'document\t%s\n' "$(recalled main "PRIV spec")" >"$work/fill-hidden"
   printf 'document\t%s\n' "${missing[document]}" >"$work/fill-missing"

@@ -67,14 +67,15 @@ func TestATokenIsNeverReadAsABrowser(t *testing.T) {
 
 // resolveCallers is every function of internal/dispatch that calls access.Resolve, by package and
 // name, with every call the actor it resolves comes from, sorted. Each is the request's own caller
-// with its credential, never an actor a write recorded: optionalActor's (resolveReader's and the
-// token mint's, both through readerFor); model.BrowserActor, a cookie's (the signed-in person GET
-// /auth/whoami's event head is read for, through readerFor: personEventHead's login is the one
-// router.login read from the request's cookie); and a live socket's caller as its upgrade resolved
-// it, credential kept (liveSocket.caller, and the subscription stream's Caller, which answers it).
+// with its credential, never an actor a write recorded: optionalActor's (resolveReader's, the
+// token mint's and GET /auth/whoami's event head's, all through readerFor; personEventHead resolves
+// the request with its Authorization header removed, so the head is the signed-in person's that
+// router.login read from the cookie); model.BrowserActor's in the document service and the GitHub
+// proxy, a cookie's; and a live socket's caller as its upgrade resolved it, credential kept
+// (liveSocket.caller, and the subscription stream's Caller, which answers it).
 // A new call is added here only once its actor is shown to come from the request's credential.
 var resolveCallers = map[string][]string{
-	"api.readerFor":           {"BrowserActor", "Caller", "caller", "optionalActor"},
+	"api.readerFor":           {"Caller", "caller", "optionalActor"},
 	"docs.ServeHTTP":          {"BrowserActor"},
 	"docs.readableRooms":      {"BrowserActor"},
 	"routes.repositoryHidden": {"BrowserActor"},

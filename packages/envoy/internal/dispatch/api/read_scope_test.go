@@ -56,10 +56,16 @@ func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
 }
 
 // TestADeploymentReadIsRefusedToAViewerThatIsNotOpen walks every GET row the table classes as a
-// read of the deployment. bob, a restricted member, is refused each one 403 DEPLOYMENT_READ_REFUSED
-// before its handler runs, the refusal naming the row; alice, a full member no list names, and the
-// shared token, both open viewers, are not. A wildcard is filled with a value no row holds, since
-// the refusal comes before any row is read.
+// read of the deployment. bob, a restricted member, and bob's token that lists PRIV, one acting for
+// him, are refused each one 403 DEPLOYMENT_READ_REFUSED before its handler runs, the refusal naming
+// the row; alice, a full member no list names, her token that lists PRIV, carol's token that lists
+// PRIV and the shared token, all open viewers, are not: a full member's credential list decides
+// only private projects, and a read of the deployment names none. GET /metrics, among the rows,
+// answers each open viewer 200. A wildcard is filled with a value no row holds, since the refusal
+// comes before any row is read.
+//
+// Control in access/access.go: a credential that lists projects read as not open (the listing
+// tokens are refused every row).
 func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 	seed := seedPrivateProject(t)
 	var walked []string
@@ -69,20 +75,25 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 		}
 		walked = append(walked, route.Pattern)
 		target := patternWildcard.ReplaceAllString(route.Pattern, "1")
-		refused := seed.request(t, callerBob, http.MethodGet, target, nil)
-		var refusal struct{ Code, Error string }
-		_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
-		if refused.Code != http.StatusForbidden || refusal.Code != "DEPLOYMENT_READ_REFUSED" || !strings.Contains(refusal.Error, "GET "+route.Pattern) {
-			t.Errorf("bob read GET %s as %d %s, want 403 DEPLOYMENT_READ_REFUSED naming the row", route.Pattern, refused.Code, refused.Body.String())
+		for _, restricted := range []privateCaller{callerBob, callerBobPrivToken} {
+			refused := seed.request(t, restricted, http.MethodGet, target, nil)
+			var refusal struct{ Code, Error string }
+			_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
+			if refused.Code != http.StatusForbidden || refusal.Code != "DEPLOYMENT_READ_REFUSED" || !strings.Contains(refusal.Error, "GET "+route.Pattern) {
+				t.Errorf("%s read GET %s as %d %s, want 403 DEPLOYMENT_READ_REFUSED naming the row", restricted, route.Pattern, refused.Code, refused.Body.String())
+			}
 		}
-		for _, open := range []privateCaller{callerAlice, callerSharedToken} {
-			if answered := seed.request(t, open, http.MethodGet, target, nil); strings.Contains(answered.Body.String(), "DEPLOYMENT_READ_REFUSED") {
-				t.Errorf("%s, an open viewer, read GET %s as %d %s", open, route.Pattern, answered.Code, answered.Body.String())
+		for _, open := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolPrivToken, callerSharedToken} {
+			answered := seed.request(t, open, http.MethodGet, target, nil)
+			if strings.Contains(answered.Body.String(), "DEPLOYMENT_READ_REFUSED") || (route.Pattern == "/metrics" && answered.Code != http.StatusOK) {
+				t.Errorf("%s, an open viewer, read GET %s as %d %s", open, route.Pattern, answered.Code, firstLine(answered.Body.String()))
 			}
 		}
 	}
-	if !slices.Contains(walked, "/api/v1/priorities") {
-		t.Fatalf("the walk read the deployment's rows %q, without GET /api/v1/priorities", walked)
+	for _, row := range []string{"/api/v1/priorities", "/metrics"} {
+		if !slices.Contains(walked, row) {
+			t.Fatalf("the walk read the deployment's rows %q, without GET %s", walked, row)
+		}
 	}
 }
 

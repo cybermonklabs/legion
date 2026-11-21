@@ -15,6 +15,9 @@ export interface AuthenticatedUser {
    *  because a project's access list names them. Absent for everyone else, so a full member's
    *  answer is the one it always was. */
   readonly member_kind?: "restricted";
+  /** The origins this Dispatch answers at, the canonical one first; absent where it answers at
+   *  one origin. */
+  readonly origins?: readonly string[];
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered, read as the newest event this person can see, so no event of a
    *  project they cannot see moves it. Every read the page makes after this answer holds every

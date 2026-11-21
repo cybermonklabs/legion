@@ -47,7 +47,7 @@ func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Se
 	var service *docs.Service
 	var counted *readCountingDocs
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
+		service = docs.New(docs.Deps{Store: database, Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		counted = &readCountingDocs{API: service}
 		return counted

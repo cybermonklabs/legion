@@ -20,7 +20,7 @@ const m14Heartbeat = 100 * time.Millisecond
 const m14Within = 10 * time.Second
 
 // m14MakePUBPrivate makes PUB private by SQL alone: an update of its row that appends no event and
-// announces nothing on access.ChangedChannel, as an operator's statement at a psql prompt does.
+// announces nothing on store.AccessChangedChannel, as an operator's statement at a psql prompt does.
 func m14MakePUBPrivate(t *testing.T, seed privateSeed) {
 	t.Helper()
 	if _, err := seed.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = $1`, seedPublic); err != nil {
@@ -56,7 +56,7 @@ func TestAProjectMadePrivateBySQLAloneEndsTheFeedOfWhoLostIt(t *testing.T) {
 }
 
 // TestAnAccessChangeBySQLAloneReadsADeliveryViewAgain: an access change made by SQL alone appends
-// no event and announces nothing on access.ChangedChannel, and moves what a subscriber sees all the
+// no event and announces nothing on store.AccessChangedChannel, and moves what a subscriber sees all the
 // same. The hub resolves every subscriber's reader again on the socket's heartbeat, and moves the
 // one that moved to the view of the reader it is now, answered with a snapshot that names no pull
 // request of a project it no longer sees, as an access change made through the API moves it: alice

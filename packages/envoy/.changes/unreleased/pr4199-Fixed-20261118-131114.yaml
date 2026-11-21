@@ -1,0 +1,35 @@
+kind: Fixed
+body: |-
+  A machine-login approval that Dispatch checked before another Google account took the
+  approver's address is refused at the secrets broker (`403 APPROVER_REPLACED`), whatever account
+  it names, where before an approval naming no account could still mint a login the replaced
+  account kept. Dispatch's approve relay now carries the address's session generation its check
+  read (`approver_session_generation`) and its subject revoke the generation the replacement left
+  (`session_generation`); the broker refuses an approval below a recorded replacement's
+  generation. An approval with no generation that names no account, from an older Dispatch, is
+  refused for 50 seconds, the relay's own bound, after a replacement at its address, and every approval with no
+  generation counts on `broker_machine_login_approvals_without_generation_total`, so that
+  fallback can come out once the counter stays at zero. The broker's record of replaced
+  accounts is now held to its writers: a row's account and time are written once, its generation
+  only rises, it is never truncated, and a row is deleted only in a transaction that names it,
+  so the operator's clear of a broker refusal now names its row first (see the runbook).
+  Dispatch's owed revocations are held the same way, record the generation too, and are paid
+  in generation order. A subject revoke must carry its generation, and one that reaches the
+  broker after a later replacement at the same address was applied is a no-op the broker
+  answers `superseded` (`superseded_by` names the applied generation), where before it could
+  restore the older refusal and lift the newer one. When Dispatch's own loop gets that answer
+  the two databases disagree, so it leaves the revocation owed, logs an error and counts it on
+  `envoy_dispatch_broker_revocations_superseded_total` (alert on it above 0); a lone Dispatch
+  restore requires the runbook's deployment reset, which ends every credential and settles every
+  restored revocation before Dispatch starts again.
+  The guards on recorded times compare with the later of the statement's and the database's
+  clock, so a backward clock step refuses no writer's own stamp, and run under a search_path of
+  their own taken from the schema the migration ran in. Restore or reset Dispatch's and the
+  broker's databases together: a Dispatch database made again or restored alone holds lower
+  generations, the broker refuses its approvals until the address's generation reaches the one
+  it recorded, and replaced accounts keep live broker credentials.
+  The runbook's switch between a sign-in pool and a Workspace domain now keeps each recorded
+  account and runs each statement on its own, as the guarded schema requires.
+time: 2026-11-18T13:11:14.000000000Z
+custom:
+    Issue: pr4199

@@ -599,7 +599,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, service.origins), ask.ID, ask.Question)
 	if err != nil {
 		t.Fatalf("plan the reworded question's references: %v", err)
 	}

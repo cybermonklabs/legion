@@ -12,14 +12,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
 	return New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:   database,
+		Events:  events.NewBroker(),
+		Origins: text.NewOrigins("https://dispatch.example"),
+		Settle:  20 * time.Millisecond,
 	})
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A room of a document can report its unload after a later room of the same document has loaded,
@@ -657,11 +658,11 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	t.Helper()
 	database := storetest.Open(t)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   time.Hour,
 	})
 	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
 	t.Cleanup(func() {

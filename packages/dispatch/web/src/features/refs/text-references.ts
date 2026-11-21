@@ -1,5 +1,6 @@
 import { isIdPrefix } from "@legion/contracts";
 
+import { dispatchOrigins } from "../../api/origins";
 import { itemOfBlock } from "./block-reference";
 import { referenceSpans } from "./reference-spans";
 import {
@@ -17,7 +18,7 @@ import { type ReferenceTargetKind, referenceTargetKind, routeInBound } from "./t
  * pass over a rendered body (`RefLink.tsx`), the unfurl cards, and the document editors' host
  * scanner. There is no second reading of a bare key, a `#id` or an id prefix anywhere.
  *
- * It is pure: it takes the text and what is already known about it - the server origin, which
+ * It is pure: it takes the text and what is already known about it - the server's origins, which
  * issue keys exist, the question map of the text's document, and the items a prefix resolved to -
  * and answers every reference the text holds. For a caller that has asked the server nothing yet
  * it answers, from the same pass, exactly what it would have to ask (`TextReferenceNeeds`), so a
@@ -109,8 +110,9 @@ export function textSourceOf(
 /** What a caller already knows about the text. Each is read only where the text holds a
  *  candidate for it; everything absent leaves its candidates unresolved. */
 export interface TextReferenceFacts {
-  /** The dashboard's own origin, which its URLs are read against; the page's by default. */
-  readonly origin?: string;
+  /** The origins this Dispatch answers at, which its URLs are read against; the page's own and
+   *  the ones whoami named (`dispatchOrigins`) by default. */
+  readonly origins?: readonly string[];
   /** The issue keys that name an issue that exists. */
   readonly issues?: readonly string[];
   /** The question map of the document the text's source belongs to, as the server answers it:
@@ -389,11 +391,11 @@ function prefixIds(route: DispatchReferenceRoute): {
  *  within the owner the reference names. */
 function itemKinds(
   items: Readonly<Record<string, string>>,
-  origin: string
+  origins: readonly string[]
 ): readonly { id: string; kind: ReferenceTargetKind }[] {
   const kinds: { id: string; kind: ReferenceTargetKind }[] = [];
   for (const [id, reference] of Object.entries(items)) {
-    const route = referenceRouteFromHref(reference, origin);
+    const route = referenceRouteFromHref(reference, origins);
     if (route !== undefined) {
       kinds.push({ id, kind: referenceTargetKind(route) });
     }
@@ -474,9 +476,9 @@ function resolvePrefixIds(
 export function routeWithWholeIds(
   route: DispatchReferenceRoute,
   items: Readonly<Record<string, string>>,
-  origin: string
+  origins: readonly string[]
 ): DispatchReferenceRoute | undefined {
-  const resolved = resolvePrefixIds(route, itemKinds(items, origin));
+  const resolved = resolvePrefixIds(route, itemKinds(items, origins));
   return resolved.unresolved ? undefined : resolved.route;
 }
 
@@ -499,10 +501,10 @@ interface AddressReading {
  *  Undefined where the value is no address. */
 function readAddress(
   value: string,
-  origin: string,
+  origins: readonly string[],
   items: () => readonly { id: string; kind: ReferenceTargetKind }[]
 ): AddressReading | undefined {
-  const route = referenceRouteFromHref(value, origin);
+  const route = referenceRouteFromHref(value, origins);
   if (route === undefined) {
     return undefined;
   }
@@ -524,7 +526,7 @@ function readAddress(
  * mention of its own.
  */
 export function readTextReferences(text: string, facts: TextReferenceFacts = {}): TextReading {
-  const origin = facts.origin ?? window.location.origin;
+  const origins = facts.origins ?? dispatchOrigins();
   const issues = facts.issues === undefined ? undefined : new Set(facts.issues);
   const references: TextReference[] = [];
   const keys: string[] = [];
@@ -536,14 +538,14 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   let kinds: readonly { id: string; kind: ReferenceTargetKind }[] | undefined;
   // The kind of every item a prefix resolved to, read on the first address that writes a short
   // id and kept for the rest of the text.
-  const items = () => (kinds ??= itemKinds(facts.items ?? {}, origin));
+  const items = () => (kinds ??= itemKinds(facts.items ?? {}, origins));
 
   const spans = referenceSpans(text);
   let from = 0;
   for (const span of spans) {
     bareCandidates(text, from, span.start, bare);
     from = span.end;
-    const address = readAddress(span.value, origin, items);
+    const address = readAddress(span.value, origins, items);
     if (address === undefined) {
       continue;
     }
@@ -558,7 +560,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     const shortened = trimmedMention(span.value);
     const named =
       shortened !== undefined &&
-      readAddress(shortened, origin, items)?.reference === address.reference
+      readAddress(shortened, origins, items)?.reference === address.reference
         ? shortened.length
         : undefined;
     references.push({
@@ -611,7 +613,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
       form: "question",
       named,
       reference,
-      route: reference === undefined ? undefined : referenceRouteFromHref(reference, origin),
+      route: reference === undefined ? undefined : referenceRouteFromHref(reference, origins),
       start: candidate.start,
       text: written,
       unresolved: reference === undefined,

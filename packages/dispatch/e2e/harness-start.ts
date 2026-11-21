@@ -1,11 +1,12 @@
 /** Starts the Dispatch e2e harness: every row of `e2e/harness-listeners.ts` a run needs, in the
- *  table's order (the fakes, then the Dispatch server, then the plain-HTTP proxy). A row whose
- *  port variable is unset serves on a port the OS chose and stays held until it serves — the
- *  server through a socket `scripts/e2e/lib/held-port.py` holds and hands it, each Bun listener by
- *  binding port 0 — and reports it on its listening line, which this module reads. A row whose
- *  variable is set serves on exactly that port, and an occupied one fails with "address already in
- *  use". Each row starts in the environment the rows before it reported, so the server's names the
- *  fakes' ports and the proxy's the server's.
+ *  table's order (the fakes, then under `DISPATCH_E2E_SIGNIN=oidc` or `google` the dev OIDC
+ *  issuer the servers sign people in at, then the Dispatch server, then the plain-HTTP proxy). A
+ *  row whose port variable is unset serves on a port the OS chose and stays held until it serves
+ *  — the server through a socket `scripts/e2e/lib/held-port.py` holds and hands it, each Bun
+ *  listener by binding port 0 — and reports it on its listening line, which this module reads. A
+ *  row whose variable is set serves on exactly that port, and an occupied one fails with "address
+ *  already in use". Each row starts in the environment the rows before it reported, so the
+ *  server's names the fakes' ports and the issuer's, and the proxy's the server's.
  *
  *  In two-process mode the round-robin proxy starts before Dispatch A and B, whose ports it
  *  forwards to, since both serve its origin. Their ports are held first (`heldAhead` in
@@ -75,10 +76,12 @@ export interface HarnessProcess {
 
 export interface Harness {
   /** The port each started listener serves on, by its variable (`DISPATCH_E2E_PORT`,
-   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, and in
-   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`), and the path of each file
-   *  a row keeps, by its variable (`DISPATCH_E2E_ACCESS_TOKEN_FILE`): the environment a process
-   *  that addresses the harness needs. */
+   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, in two-process
+   *  mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`, and under `DISPATCH_E2E_SIGNIN=oidc`
+   *  or `google` the issuer's `DISPATCH_E2E_SIGNIN_ISSUER_PORT`, which a spec under google queues
+   *  its people at), and the path of each file a row keeps, by its variable
+   *  (`DISPATCH_E2E_ACCESS_TOKEN_FILE`): the environment a process that addresses the harness
+   *  needs. */
   readonly env: Readonly<Record<string, string>>;
   readonly processes: readonly HarnessProcess[];
   /** Rejects as soon as one of the processes exits by itself, naming it. */

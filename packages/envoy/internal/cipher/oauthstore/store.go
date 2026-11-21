@@ -25,8 +25,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"authelia.com/provider/oauth2"
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
@@ -763,15 +765,17 @@ func LockCredential(ctx context.Context, credentialID string) error {
 }
 
 // EndCredential deactivates, in tx, every access and refresh token whose session names the
-// launcher credential, so revoking the credential also ends the machine login's tokens.
-func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) error {
+// launcher credential, so revoking the credential also ends the machine login's tokens. It
+// answers how many live access tokens it ended.
+func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) (int, error) {
 	if _, err := tx.Exec(ctx, `update oauth_refresh_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's refresh tokens: %w", err)
+		return 0, fmt.Errorf("end the credential's refresh tokens: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's access tokens: %w", err)
+	tag, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID)
+	if err != nil {
+		return 0, fmt.Errorf("end the credential's access tokens: %w", err)
 	}
-	return nil
+	return int(tag.RowsAffected()), nil
 }
 
 // DeleteCredentialTokens deletes, in tx, every access and refresh token whose session names the
@@ -793,11 +797,31 @@ func DeleteCredentialTokens(ctx context.Context, tx pgx.Tx, credentialID string)
 // database's, so the margin covers skew between the two.
 const jtiRetentionMargin = time.Minute
 
+// ErrUnstorableText is a DPoP proof the replay store records nothing of, because the row it would
+// write cannot be stored: its jti holds a control character (unicode.IsControl, U+0000 among them),
+// or its jti and htu together are longer than maxStoredProofKey. PostgreSQL writes U+0000 in no
+// text, and refuses a key too long for the primary key's btree (SQLSTATE 54000); either way the
+// insert failed and the provider answered 500 server_error for a request whose only fault is the
+// caller's. The provider answers it 400 invalid_request REQUEST_INVALID (Provider.writeError), and
+// nothing is written. Dispatch's replay store refuses the same proofs (its store.ErrUnstorableProof).
+var ErrUnstorableText = errors.New("oauthstore: the DPoP proof's jti holds a control character, or its jti and target URI are too long to record")
+
+// maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together, under the primary
+// key (jti, htu)'s btree limit of 2,704 bytes a tuple: the tuple adds to the two texts at most 26
+// bytes (its header, a length header for each column and alignment), and 2,048 leaves that and
+// more. Dispatch's replay store holds the same bound for the same key.
+const maxStoredProofKey = 2048
+
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
 // on its jti and target URI (htu), and reports whether it already was. The insert, or the takeover
 // of an expired record of the same key, is one statement, so two requests presenting the same
-// proof cannot both see it unused. Sweep deletes expired records.
+// proof cannot both see it unused. Sweep deletes expired records. A proof whose jti holds a control
+// character, or whose jti and htu are over maxStoredProofKey bytes together, is ErrUnstorableText,
+// and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
+	if strings.IndexFunc(jti, unicode.IsControl) >= 0 || len(jti)+len(htu) > maxStoredProofKey {
+		return false, ErrUnstorableText
+	}
 	var recorded bool
 	err := s.db(ctx).QueryRow(ctx, `insert into oauth_dpop_proofs (jti, htu, expires_at) values ($1, $2, $3)
 		on conflict (jti, htu) do update set expires_at = excluded.expires_at

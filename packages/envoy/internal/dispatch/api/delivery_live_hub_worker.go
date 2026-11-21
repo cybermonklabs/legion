@@ -21,7 +21,7 @@ import (
 // earliest moment a view is due or the reconciled sources cross their threshold; nothing else
 // wakes it but a mark, and the socket's heartbeat (accessRecheckEvery), on which it resolves every
 // sub's reader again: an access change that appends no event and announces nothing on
-// access.ChangedChannel, one made by SQL alone, moves a reader all the same, and the re-check is
+// store.AccessChangedChannel, one made by SQL alone, moves a reader all the same, and the re-check is
 // what moves its sub to the view of the reader it is now (recheckSubs), as an announced change does.
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {

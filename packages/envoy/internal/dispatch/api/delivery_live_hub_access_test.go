@@ -8,22 +8,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange: an access change announces itself on
-// access.ChangedChannel as it commits, and the hub resolves every subscriber's reader again before
-// its next recompute. dave, a full member PRIV's list names, holds a timeline. He is taken off the
-// list in a write that appends no event, so the live event feed carries nothing that could move
-// what he sees; only the announcement does. acme/secret#7, a pull request of PRIV's issue, then
-// reaches dave's page in no frame. acme/widgets#8, which names no issue and so is shown to every
-// open viewer, written after it, does: the read that names it has read acme/secret#7's row as well,
-// and would name it too were it made for the reader dave had before. The test ends on that frame,
-// and fails when no frame names it.
+// store.AccessChangedChannel as it commits, and the hub resolves every subscriber's reader again
+// before its next recompute. dave, a full member PRIV's list names, holds a timeline. He is taken
+// off the list in a write that appends no event, so the live event feed carries nothing that could
+// move what he sees; only the announcement does. acme/secret#7, a pull request of PRIV's issue,
+// then reaches dave's page in no frame. acme/widgets#8, which names no issue and so is shown to
+// every open viewer, written after it, does: the read that names it has read acme/secret#7's row
+// as well, and would name it too were it made for the reader dave had before. The test ends on
+// that frame, and fails when no frame names it.
 //
-// Control: the hub does not listen on access.ChangedChannel. dave's page is sent acme/secret#7
-// with the next delta, read for the reader he had before, and the test fails naming it.
+// Control: the hub does not listen on store.AccessChangedChannel. dave's page is sent
+// acme/secret#7 with the next delta, read for the reader he had before, and the test fails naming
+// it.
 func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
@@ -53,7 +54,7 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	if _, err := tx.Exec(t.Context(), `delete from project_access where project_key = 'PRIV' and principal_kind = 'person' and principal = $1`, dave); err != nil {
 		t.Fatalf("take dave off PRIV's list: %v", err)
 	}
-	if _, err := tx.Exec(t.Context(), `select pg_notify($1, '')`, access.ChangedChannel); err != nil {
+	if _, err := tx.Exec(t.Context(), `select pg_notify($1, '')`, store.AccessChangedChannel); err != nil {
 		t.Fatalf("announce the change: %v", err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
@@ -192,8 +193,8 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 
 // TestADeliveryViewIsReadAgainForItsReaderAtANewProject: a new project is public, so every full
 // member sees it as it is made, and its project.created event, which the relay's feed carries and
-// nothing announces on access.ChangedChannel, has the hub resolve every subscriber's reader again.
-// alice, a full member, holds a timeline; carol makes project NEW and an issue in it, and
+// nothing announces on store.AccessChangedChannel, has the hub resolve every subscriber's reader
+// again. alice, a full member, holds a timeline; carol makes project NEW and an issue in it, and
 // acme/fresh#9, a pull request of that issue, then reaches alice's page.
 //
 // Control: the hub's intake takes project.created as it takes any other event; alice's view stays

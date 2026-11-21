@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // tokenTypeAccessToken is RFC 8693's own name for an access token: the only kind this provider's
@@ -74,6 +75,25 @@ const (
 	// projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
+	// ClaimAccountIssuer and ClaimAccountSubject are the Google account the credential behind a
+	// token naming a person records, written onto the token's own session when it is minted and
+	// read nowhere else (Provider.Introspect): for a person's sign-in on a machine, the `iss` (as
+	// oidc.CanonicalIssuer spells it) and `sub` of the person token that made the trade
+	// (personSignIn); for a token exchanged from a machine login's own, the account that approved
+	// that login (launcher_credentials' approver columns, read once in the exchange's transaction,
+	// approverAccount). Both are absent for a token recording none: one naming no person, one of a
+	// login no person's account approved, and one minted before the broker recorded them on the
+	// token, which an introspection answers as recording no account and never reads a row for.
+	ClaimAccountIssuer  = "account_issuer"
+	ClaimAccountSubject = "account_subject"
+	// ClaimCredentialCreatedAt is when the credential behind a token naming a person was made, as
+	// Unix seconds from the broker database's own clock: the person's sign-in on a machine
+	// (person_signins.created_at, personSignIn) or the machine login a token was exchanged from
+	// (launcher_credentials.created_at, approverAccount), not the token's own iat, which every
+	// refresh renews. It is written onto the token's own session when it is minted, read nowhere
+	// else (Provider.Introspect), and absent for a token naming no person and for one minted
+	// before the broker recorded it. A resource server holds a token recording no account to it.
+	ClaimCredentialCreatedAt = "credential_created_at"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -183,10 +203,12 @@ type ExchangeConfig struct {
 	// runs. Its issuer and keys are Google's own, since both tokens come from the one issuer.
 	PersonAudience string
 	// PersonSignIns records the sign-in of the person a trade names on the box key its DPoP
-	// proof presented, in the transaction the exchange carries, and refuses with ErrSignInRevoked
-	// a trade whose key that person has revoked. It is what makes a revoked sign-in stop working
-	// at the broker rather than at the person's own machine, and it is required of a broker that
-	// accepts a person's Google identity token and unused by one that does not.
+	// proof presented, as the account the person's token names, in the transaction the exchange
+	// carries, and refuses with ErrSignInRevoked a trade whose key that person has revoked and
+	// with ErrSignInSubjectReplaced one whose account no longer holds the person's address. It is
+	// what makes a revoked sign-in stop working at the broker rather than at the person's own
+	// machine, and it is required of a broker that accepts a person's Google identity token and
+	// unused by one that does not.
 	PersonSignIns PersonSignIns
 	// Projects asks Dispatch whether a project is private, whether a person may see it, and what
 	// kind of member a person is (BROKER_PROJECT_ACCESS_URL). The exchange asks it before it opens
@@ -267,10 +289,19 @@ type PersonSignIn struct {
 	// Machine is the Google account of the machine the person signed in on, as the actor token
 	// named it and BROKER_VM_SERVICES lists it.
 	Machine string
+	// Issuer and Subject are the account the person's own Google identity token was minted for:
+	// its `iss`, as oidc.CanonicalIssuer spells it, and its `sub`. An address is held by one
+	// account at a time, and Dispatch names the account an address no longer belongs to by
+	// these two, which is what the broker ends that account's sign-ins by.
+	Issuer  string
+	Subject string
 }
 
 // PersonSignIns records the sign-in in, in the transaction ctx carries, and answers
-// ErrSignInRevoked when that person has revoked that box key.
+// ErrSignInRevoked when that person has revoked that box key, ErrSignInMachineChanged and
+// ErrSignInSubjectChanged when the sign-in that key belongs to was made on another machine or by
+// another account, and ErrSignInSubjectReplaced when the account no longer holds the person's
+// address.
 type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 
 // subjectTokenTypes is every type in types a caller may present as a subject token, sorted: all
@@ -484,6 +515,10 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 			p.writeError(ctx, w, request, err)
 			return
 		}
+		if err := p.approverAccount(txCtx, session); err != nil {
+			p.writeError(ctx, w, request, err)
+			return
+		}
 	}
 	asked, err := launcherCredentialAsked(request.GetRequestForm())
 	if err != nil {
@@ -685,6 +720,12 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
+	// No account carries over from a session read back out of a subject token's row: a token
+	// records the account its own trade names (personSignIn, approverAccount), or none, and the
+	// creation time of its own credential.
+	delete(session.Extra, ClaimAccountIssuer)
+	delete(session.Extra, ClaimAccountSubject)
+	delete(session.Extra, ClaimCredentialCreatedAt)
 	if err := writeProjectScope(request, session, claims); err != nil {
 		return "", err
 	}
@@ -929,6 +970,39 @@ func (p *Provider) liveCredential(ctx context.Context, subjectToken map[string]a
 	return nil
 }
 
+// approverAccount writes onto the session of a token exchanged from a machine login's own the
+// Google account that approved that login (oauthstore.Store.CredentialApprover: the credential's
+// approver columns, written once when the login was approved) and when the login was made, read in
+// the exchange's transaction after liveCredential holds the credential. The token records both
+// from then on, so an introspection answers them from the token's own row (ClaimAccountIssuer,
+// ClaimCredentialCreatedAt). A login no account approved records no account, and its token none,
+// but its creation time all the same: that is what a resource server holds a token recording no
+// account to. A token naming no person records neither.
+func (p *Provider) approverAccount(ctx context.Context, session *oauthstore.ExchangeSession) error {
+	if person, _ := session.Extra[ClaimPerson].(string); person == "" {
+		return nil
+	}
+	credential, _ := session.GetSubjectToken()[oauthwire.ExtraCredentialID].(string)
+	read, err := p.store.CredentialApprover(ctx, credential)
+	if err != nil {
+		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
+	}
+	if read.Issuer != "" && read.Subject != "" {
+		session.Extra[ClaimAccountIssuer] = read.Issuer
+		session.Extra[ClaimAccountSubject] = read.Subject
+	}
+	recordCredentialCreatedAt(session, read.CreatedAt)
+	return nil
+}
+
+// recordCredentialCreatedAt writes onto session when the credential behind the token it mints was
+// made, as Unix seconds (ClaimCredentialCreatedAt), and nothing for the zero time.
+func recordCredentialCreatedAt(session *oauthstore.ExchangeSession, createdAt time.Time) {
+	if !createdAt.IsZero() {
+		session.Extra[ClaimCredentialCreatedAt] = createdAt.Unix()
+	}
+}
+
 // launcherCredentialAsked reports whether this trade wants the launcher credential its identity
 // holds minted or moved onto the key it proved (oauthwire.FormLauncherCredential).
 //
@@ -1031,14 +1105,16 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, sessi
 
 // personSignIn records the sign-in the person's trade belongs to
 // (ExchangeConfig.PersonSignIns), in the exchange's own transaction, and refuses a trade whose
-// box key that person has revoked, or whose box key belongs to a sign-in made on another
-// machine.
+// account no longer holds the person's address, whose box key that person has revoked, or whose
+// box key belongs to a sign-in made on another machine or by another account.
 //
-// The sign-in is the person, the box key and the machine: the person the decision named, the
-// RFC 7638 thumbprint of the key the request's DPoP proof presented — which is the key
-// `agent-secrets login` made at the sign-in and keeps with Google's refresh token — and the
-// Google account the actor token named. The first trade of a person and a box key writes the
-// row; every later trade of that pair, from that same machine, is the same sign-in used again.
+// The sign-in is the person, the box key, the machine and the account: the person the decision
+// named, the RFC 7638 thumbprint of the key the request's DPoP proof presented — which is the key
+// `agent-secrets login` made at the sign-in and keeps with Google's refresh token — the Google
+// account the actor token named, and the `iss` and `sub` of the person's own token, which the
+// library has verified. The first trade of a person and a box key writes the row; every later
+// trade of that pair, from that same machine and by that same account, is the same sign-in used
+// again.
 //
 // It runs in the transaction the token is written in, for the reason the machine's credential
 // does: a revoke that commits first refuses this trade, and one that commits after it ends the
@@ -1051,31 +1127,53 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, sessi
 // credential_id). That is why a person's trade may not decline the credential
 // (personDeclinesNothing): a token with none would escape the second half.
 //
-// Both refusals are invalid_grant rather than a server error, and name the sign-in command: the
-// subject token is sound and it is the broker's own record that refuses, which the person fixes
-// by signing in again, with a key of its own. The machine's is a refusal and not an update
-// because the credential this sign-in holds is keyed by all three (exchange.PersonSubject): a
-// row that followed its key to another machine would ask for a subject no live credential has,
-// and every trade of it from then on would collide on launcher_credentials_live_key and be
-// refused invalid_grant with nothing naming the cure.
+// Every refusal is invalid_grant rather than a server error: the subject token is sound and it is
+// the broker's own record that refuses. Three of them the person fixes by signing in again, with a
+// key of its own, and they name the sign-in command. The machine's is a refusal and not an update
+// because the credential this sign-in holds is keyed by the person, the machine and the key
+// (exchange.PersonSubject): a row that followed its key to another machine would ask for a subject
+// no live credential has, and every trade of it from then on would collide on
+// launcher_credentials_live_key and be refused invalid_grant with nothing naming the cure. The
+// account's is a refusal because the account is what a revoke of a replaced account ends the
+// sign-in by. The fourth, an account that no longer holds the address, nothing on this box fixes:
+// Google gave the address to another account, and it says so.
 func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
 	machine, _ := session.Extra[ClaimMachine].(string)
 	thumbprint := session.GetDPoPJWKThumbprint()
-	if person == "" || machine == "" || thumbprint == "" {
-		return oauth2.ErrServerError.WithDebugf("the exchange reached a person's sign-in with person (%t), machine (%t) and bound key (%t)",
-			person != "", machine != "", thumbprint != "")
+	issuer, _ := session.GetSubjectToken()["iss"].(string)
+	subject, _ := session.GetSubjectToken()["sub"].(string)
+	if person == "" || machine == "" || thumbprint == "" || issuer == "" || subject == "" {
+		return oauth2.ErrServerError.WithDebugf("the exchange reached a person's sign-in with person (%t), machine (%t), bound key (%t), issuer (%t) and subject (%t)",
+			person != "", machine != "", thumbprint != "", issuer != "", subject != "")
 	}
-	err := p.exchange.PersonSignIns(ctx, PersonSignIn{Person: person, Thumbprint: thumbprint, Machine: machine})
+	err := p.exchange.PersonSignIns(ctx, PersonSignIn{
+		Person: person, Thumbprint: thumbprint, Machine: machine,
+		Issuer: oidc.CanonicalIssuer(issuer), Subject: subject,
+	})
 	switch {
+	case errors.Is(err, ErrSignInSubjectReplaced):
+		return oauth2.ErrInvalidGrant.WithHintf("The Google account this token was minted for no longer holds %s: another account holds that address now, and the broker takes no sign-in of the account it replaced.", person).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, ErrSignInRevoked):
 		return oauth2.ErrInvalidGrant.WithHintf("%s revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`.", person).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, ErrSignInMachineChanged):
 		return oauth2.ErrInvalidGrant.WithHintf("%s's sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on. Sign in again with `agent-secrets login`.", person).WithWrap(err).WithDebugError(err)
+	case errors.Is(err, ErrSignInSubjectChanged):
+		return oauth2.ErrInvalidGrant.WithHintf("%s's sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it. Sign in again with `agent-secrets login`.", person).WithWrap(err).WithDebugError(err)
 	}
 	if err != nil {
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
+	// The account the sign-in records, and when the sign-in was made, onto the session the token
+	// is stored with, so an introspection answers both from the token's own row and never from
+	// the sign-in's.
+	session.Extra[ClaimAccountIssuer] = oidc.CanonicalIssuer(issuer)
+	session.Extra[ClaimAccountSubject] = subject
+	createdAt, err := p.store.SignInCreatedAt(ctx, person, thumbprint)
+	if err != nil {
+		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
+	}
+	recordCredentialCreatedAt(session, createdAt)
 	return nil
 }
 

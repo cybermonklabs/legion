@@ -716,6 +716,52 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 	return true, nil
 }
 
+// CredentialAccount is what a token minted from a credential records about it: the Google account
+// it records, issuer then `sub`, empty for none, and when the credential was made, read from the
+// broker database's own clock (the row's created_at, which its insert's default wrote). A resource
+// server holds a token recording no account to that time (oauth.ClaimCredentialCreatedAt).
+type CredentialAccount struct {
+	Issuer, Subject string
+	CreatedAt       time.Time
+}
+
+// CredentialApprover is what a token exchanged from the machine login credentialID names records
+// about it: the Google account that approved the login (launcher_credentials' approver_issuer and
+// approver_subject, migration 0041), as the approval Dispatch relayed named it, written once when
+// the login was approved, and the login's created_at. The exchange reads it once, when it mints a
+// token from that login's own, and writes it onto the token (oauth.Provider.approverAccount). The
+// account is empty for a credential that records none, which is one made before 0041, one an older
+// Dispatch approved, and every credential no person approved (a machine's own, a pod's); all of it
+// is empty for a credential there is no row of.
+func (s *Store) CredentialApprover(ctx context.Context, credentialID string) (CredentialAccount, error) {
+	return s.credentialAccount(ctx, `select coalesce(approver_issuer, ''), coalesce(approver_subject, ''), created_at
+		from launcher_credentials where id = $1::uuid`, credentialID)
+}
+
+// SignInCreatedAt is when the live sign-in of person on the box key thumbprint was made (the
+// person_signins row's created_at), read in the trade's own transaction just after the trade wrote
+// it (oauth.Provider.personSignIn), so a token the trade mints records it. The zero time for no
+// live row.
+func (s *Store) SignInCreatedAt(ctx context.Context, person, thumbprint string) (time.Time, error) {
+	read, err := s.credentialAccount(ctx, `select '', '', created_at from person_signins
+		where person = $1 and thumbprint = $2 and revoked_at is null`, person, thumbprint)
+	return read.CreatedAt, err
+}
+
+// credentialAccount reads the one row query selects, issuer, subject and created_at, answering the
+// zero CredentialAccount for no row.
+func (s *Store) credentialAccount(ctx context.Context, query string, args ...any) (CredentialAccount, error) {
+	var read CredentialAccount
+	err := s.db(ctx).QueryRow(ctx, query, args...).Scan(&read.Issuer, &read.Subject, &read.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CredentialAccount{}, nil
+	}
+	if err != nil {
+		return CredentialAccount{}, fmt.Errorf("read what a token's credential records: %w", err)
+	}
+	return read, nil
+}
+
 // ReleasePodSessions marks released every live registration of each name in sessions that the
 // registrar registrar wrote, and answers released: how many of registrar's live registrations of
 // those names are released once it commits, by this call or an earlier one. It is what POST

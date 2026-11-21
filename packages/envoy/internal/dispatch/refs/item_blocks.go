@@ -954,7 +954,7 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // takes the source_seq of the item's own refs row for its target at the item's first indexing
 // (PlanItemIndex) and none otherwise, and no ?since= read lists a row with none until a later
 // write of the item stamps it (Stamp).
-func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, serverURL string) (bool, error) {
+func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, origins text.Origins) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {
 		return false, err
@@ -970,7 +970,7 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 	if err != nil || !found {
 		return false, err
 	}
-	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, serverURL)
+	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, origins)
 	if err != nil {
 		return false, err
 	}

@@ -249,7 +249,7 @@ start_dispatch() {
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
-    curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
+    curl -fsS "http://127.0.0.1:$port_dispatch/healthz"
 }
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane

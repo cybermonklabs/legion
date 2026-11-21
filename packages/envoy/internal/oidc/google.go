@@ -20,6 +20,17 @@ func (v *Verifier) namesIssuer(iss string) bool {
 	return iss == v.issuer || v.issuer == GoogleIssuer && iss == googleSchemelessIssuer
 }
 
+// CanonicalIssuer is the one spelling of iss that a subject is recorded and compared under:
+// Google's scheme-less spelling is Google's issuer, as namesIssuer takes it, and every other
+// issuer is its own spelling. Dispatch names a replaced account by it and the broker records a
+// sign-in's and an approval's account by it, so the two compare one spelling.
+func CanonicalIssuer(iss string) string {
+	if iss == googleSchemelessIssuer {
+		return GoogleIssuer
+	}
+	return iss
+}
+
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an
 // address rather than by its subject: it also reads Claims.Email, Claims.EmailVerified and
 // Claims.HostedDomain from the verified token's payload, the one the signature covers, as a

@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -198,7 +197,7 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
 // while the hub had no connection reached nobody and nothing announces it again. The access lane
 // closes each socket whose person no longer reads its room on each access change
-// (access.ChangedChannel) and after each LISTEN, for the same reason (Service.recheckAccess).
+// (store.AccessChangedChannel) and after each LISTEN, for the same reason (Service.recheckAccess).
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -222,7 +221,7 @@ func (r *roomSync) handlers() []roomSyncHandler {
 			connected: r.service.recheckRemovedRooms,
 		},
 		{
-			channels:  []roomSyncChannel{{name: access.ChangedChannel, notified: r.service.accessChanged}},
+			channels:  []roomSyncChannel{{name: store.AccessChangedChannel, notified: r.service.accessChanged}},
 			connected: r.service.recheckAccess,
 		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},

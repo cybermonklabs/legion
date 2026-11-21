@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,6 +37,15 @@ import (
 // by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
 // carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
 // NATS connection presents, so a forged one must cost the broker no database query.
+//
+// A live token naming a person also answers the Google account the credential behind it records,
+// which the token's trade wrote onto the token's own session when it minted it
+// (ClaimAccountIssuer, ClaimAccountSubject), so the whole answer is the one row the library read.
+// No other row is read for it: a sign-in's or a machine login's row could change, or be ended and
+// replaced, while the token lives, and a second read could pair this token with another account.
+// A token that records none, one minted before the broker recorded the account on the token among
+// them, answers none, which a resource server reads as "the broker cannot say which account this
+// is".
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -67,6 +77,14 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
+	if answer.Person != "" {
+		issuer, _ := session.Extra[ClaimAccountIssuer].(string)
+		subject, _ := session.Extra[ClaimAccountSubject].(string)
+		if issuer != "" && subject != "" {
+			answer.AccountIssuer, answer.AccountSubject = issuer, subject
+		}
+		answer.CredentialCreatedAt = unixSeconds(session.Extra[ClaimCredentialCreatedAt])
+	}
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
 		if answer.ProjectScope == oauthwire.ProjectScopeNamed {
@@ -96,6 +114,21 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	}
 	answer.Projects = projects
 	return answer, nil
+}
+
+// unixSeconds reads a Unix time a session's extras hold, as the exchange wrote it (an int64) or as
+// it reads back out of the stored request's JSON (a float64), and 0 for anything else.
+func unixSeconds(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	}
+	return 0
 }
 
 // malformedClaimOwner names the row of a malformed stored claim: the token's session and the

@@ -918,6 +918,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}); err != nil {
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
+	if s.afterSettlementCommit != nil {
+		s.afterSettlementCommit(room)
+	}
 	st.finishSlots()
 	for _, event := range st.published {
 		s.events.Publish(event)

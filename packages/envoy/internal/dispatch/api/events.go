@@ -481,21 +481,32 @@ func (s *server) eventFeedHead(ctx context.Context) (int64, error) {
 	return 0, ErrEventHeadUnproven
 }
 
-// personEventHead is the event_head GET /auth/whoami answers person (Background.EventHead):
-// eventFeedHead's id, read as the head that person's browser reads of the log (viewerEventHead),
-// so no event of a project the person does not see moves it.
-func (s *server) personEventHead(ctx context.Context, person string) (int64, error) {
-	through, err := s.eventFeedHead(ctx)
+// personEventHead is the event_head GET /auth/whoami answers its caller (Background.EventHead):
+// eventFeedHead's id, read as the head that caller's browser reads of the log (viewerEventHead), so
+// no event of a project the caller does not see moves it. What the caller sees is resolved from
+// the request's own credential, as every read resolves it (optionalActor, then readerFor), never
+// from a login handed over by name. whoami answers the person its cookie names, so the caller is
+// resolved from the request without its Authorization header: a token presented besides the
+// cookie, which optionalActor would resolve first, is not read, and the head is the cookie's
+// person's, as the login whoami answers is.
+func (s *server) personEventHead(r *http.Request) (int64, error) {
+	cookie := r.Clone(r.Context())
+	cookie.Header.Del("Authorization")
+	caller, _, err := s.optionalActor(cookie)
 	if err != nil {
 		return 0, err
 	}
-	reader, err := s.readerFor(ctx, model.BrowserActor(person))
+	through, err := s.eventFeedHead(r.Context())
+	if err != nil {
+		return 0, err
+	}
+	reader, err := s.readerFor(r.Context(), caller)
 	if err != nil {
 		// The error reaches /auth/whoami's log line, so it names no person
 		// (TestAFailedEventHeadReadNamesNoPerson).
 		return 0, fmt.Errorf("resolve what the signed-in person sees: %w", err)
 	}
-	return viewerEventHead(ctx, s.deps.Store.Pool, reader, through)
+	return viewerEventHead(r.Context(), s.deps.Store.Pool, reader, through)
 }
 
 // viewerEventHead is the head of the event log reader reads at through, an id at or below which

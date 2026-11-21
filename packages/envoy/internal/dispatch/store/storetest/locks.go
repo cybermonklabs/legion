@@ -152,6 +152,37 @@ func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answere
 	}
 }
 
+// WaitForAnyQueuedBehind waits up to within for any backend to queue behind a lock holder's
+// transaction owns, directly or behind an earlier waiter (as WaitForLockWaiters counts them),
+// polling through holder's own connection. It is WaitForQueuedBehind for a call under test that
+// runs in another process, a runbook block's psql, whose backend a test cannot name, on a database
+// no other session writes: it returns the call's answer and true if the call answers on answered
+// before any backend has queued, and fails the test if within passes first.
+func WaitForAnyQueuedBehind[T any](t testing.TB, holder pgx.Tx, answered <-chan T, within time.Duration) (T, bool) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(within)
+	for {
+		select {
+		case answer := <-answered:
+			return answer, true
+		default:
+		}
+		var queued bool
+		if err := holder.QueryRow(ctx, waitingBehindHolder+`select exists (select 1 from waiting)`).Scan(&queued); err != nil {
+			t.Fatalf("inspect database locks: %v", err)
+		}
+		if queued {
+			var none T
+			return none, false
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no backend queued behind the lock within %s, and the call under test did not answer", within)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // WaitForStatementBehind waits up to within for a session of database whose current statement is
 // exactly statement to queue behind a lock holder's transaction owns (QueuedBehind), and returns
 // that session's backend process id, or 0 if none did. It is for a call under test that runs in

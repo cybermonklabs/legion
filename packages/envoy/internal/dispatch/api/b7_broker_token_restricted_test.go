@@ -18,7 +18,9 @@ import (
 // token an operator's entry mapped to BRK, and her token acting as herself whose trade named BRK,
 // each read BRK's issue, read OTHER's issue exactly as an issue nobody holds, and are answered by
 // whoami with the list BRK: in a deployment where every project is public, and the same once a
-// third project is private.
+// third project is private. The deployment signs in people from outside its domain, as one that
+// holds a restricted member does: with outside sign-in off a restricted member's broker token acts
+// for nobody (TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem).
 //
 // Controls, in VisibleProjectsSQL's listed column: without its restricted-member arm (the rule at
 // 4421eb110d) the all-public case reads OTHER's issue and whoami names no list; with a broker
@@ -28,7 +30,7 @@ import (
 func TestARestrictedMembersBrokerTokenSeesOnlyItsListWhateverTheDeploymentHolds(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while every project is public", true: "once a project is private"}[private], func(t *testing.T) {
-			rig := newBrokerTokenRig(t)
+			rig := newBrokerTokenRigOn(t, testServerOptions{signInOutside: true})
 			caller := newBrokerCaller(t)
 			const named, person = "a-restricted-members-token-of-one-project", "a-restricted-members-person-token-of-one-project"
 			rig.broker.Says(named, liveNamedToken(caller.jkt))

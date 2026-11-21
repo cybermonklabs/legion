@@ -183,6 +183,83 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	}
 }
 
+// A document socket's open admits its person by the cookie alone (signInStillResolves), so
+// its heartbeat resolves that cookie alone too, whatever else the upgrade carried. A bearer beside
+// the cookie that resolves on its own - the same person's personal token - does not keep the
+// socket open once the cookie's session has ended, and one that resolves to nobody does not close
+// it while that session holds.
+func TestDocumentSocketHeartbeatResolvesTheCookieItWasOpenedBy(t *testing.T) {
+	const heartbeat = 250 * time.Millisecond
+	for _, test := range []struct {
+		name     string
+		bearer   func(*testing.T, *documentSocketRig) string
+		resolves bool
+	}{
+		{"a personal token of the same person", func(t *testing.T, rig *documentSocketRig) string {
+			return personalTokenOwnedBy(t, rig.database, rig.email, model.ScopePerson)
+		}, true},
+		{"a personal token no row holds", func(t *testing.T, _ *documentSocketRig) string {
+			plaintext, _, err := newAgentToken()
+			if err != nil {
+				t.Fatalf("make a token no row holds: %v", err)
+			}
+			return plaintext
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rig := newDocumentSocketRig(t, heartbeat)
+			bearer := test.bearer(t, rig)
+			// The bearer alone is what the case says it is.
+			whoami, err := http.NewRequest(http.MethodGet, rig.server.URL+"/api/v1/whoami", nil)
+			if err != nil {
+				t.Fatalf("build GET /api/v1/whoami: %v", err)
+			}
+			whoami.Header.Set("Authorization", "Bearer "+bearer)
+			answered, err := http.DefaultClient.Do(whoami)
+			if err != nil {
+				t.Fatalf("GET /api/v1/whoami under the bearer alone: %v", err)
+			}
+			_ = answered.Body.Close()
+			if resolved := answered.StatusCode == http.StatusOK; resolved != test.resolves {
+				t.Fatalf("GET /api/v1/whoami under the bearer alone = %d, want it to resolve: %t", answered.StatusCode, test.resolves)
+			}
+
+			peer := &syncedPeer{
+				wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
+				headers: http.Header{
+					"Cookie":        []string{rig.cookie.Name + "=" + rig.cookie.Value},
+					"Authorization": []string{"Bearer " + bearer},
+				},
+				artifactID: rig.artifactID, doc: crdt.New(),
+			}
+			peer.connect(t)
+			t.Cleanup(peer.close)
+
+			// While the cookie's session holds, the socket outlives several heartbeats and stays
+			// writable.
+			time.Sleep(4 * heartbeat)
+			select {
+			case <-peer.connection().Ended:
+				t.Fatalf("the document socket closed while its cookie's session held, beside %s", test.name)
+			default:
+			}
+			peer.appendParagraph(t, "typed while signed in")
+			peer.barrier(t)
+
+			if err := rig.sessions.RevokeSessions(context.Background(), rig.email); err != nil {
+				t.Fatalf("sign out: %v", err)
+			}
+			ended := time.Now()
+			select {
+			case <-peer.connection().Ended:
+				t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
+			case <-time.After(heartbeat + time.Second):
+				t.Fatalf("the document socket stayed open %s after its cookie's session ended, beside %s", time.Since(ended).Round(time.Millisecond), test.name)
+			}
+		})
+	}
+}
+
 // documentSocketRig is the server main serves a person signed in through a sign-in pool: cookie
 // identity confirming membership with the pool, and the API and document socket Register mounts.
 type documentSocketRig struct {
@@ -214,7 +291,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 		"cognito:groups":   []string{"dispatch-members"},
 		"identities":       []map[string]any{{"providerName": "ExampleIdP"}},
 	})
-	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce")
+	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
 	if err != nil {
 		t.Fatalf("start the sign-in: %v", err)
 	}
@@ -240,7 +317,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	person := identity.CookieIdentity{
 		SigningKey: testSigningKey,
 		Sessions:   rig.sessions,
-		Membership: &identity.Membership{People: rig.people, Sessions: rig.sessions, SignIn: flow, Rule: identity.GroupRule{Group: "dispatch-members"}},
+		Membership: &identity.Membership{People: rig.people, SignIn: flow, Rule: identity.GroupRule{Group: "dispatch-members"}},
 	}
 	broker := events.NewBroker()
 	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})

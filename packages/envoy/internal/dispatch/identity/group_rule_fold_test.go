@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -15,13 +16,13 @@ func TestPersonLowersTheUsernamesASCIILettersAlone(t *testing.T) {
 		{"a Kelvin sign is not the k of the listed address", "ExampleIdP_\u212aate@d.example", "\u212aate@d.example"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			email, err := dispatchMembers.Person(oidc.Claims{
+			person, err := dispatchMembers.Person(context.Background(), oidc.Claims{
 				Username:  tc.username,
 				Groups:    []string{"dispatch-members"},
 				Providers: []string{"ExampleIdP"},
 			})
-			if err != nil || email != tc.want {
-				t.Fatalf("Person(%q) = %q, %v; want %q", tc.username, email, err, tc.want)
+			if err != nil || person.Email != tc.want {
+				t.Fatalf("Person(%q) = %q, %v; want %q", tc.username, person.Email, err, tc.want)
 			}
 		})
 	}

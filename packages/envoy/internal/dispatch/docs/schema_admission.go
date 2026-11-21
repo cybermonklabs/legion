@@ -253,10 +253,10 @@ func (s *Service) recheckSchemaAdmissions(ctx context.Context) error {
 	return nil
 }
 
-// accessChanged is access.ChangedChannel's handler, on its room-sync lane (roomSync.handlers): an
-// owner, a visibility, an access list or a group changed, in a transaction of any process, whose
-// commit announced it. The notification names nothing, so the pass reads every socket again
-// (recheckAccess).
+// accessChanged is store.AccessChangedChannel's handler, on its room-sync lane
+// (roomSync.handlers): an owner, a visibility, an access list, a group or a person's member kind
+// changed, in a transaction of any process, whose commit announced it. The notification names
+// nothing, so the pass reads every socket again (recheckAccess).
 func (s *Service) accessChanged(ctx context.Context, _ string) {
 	s.recheckAccess(ctx)
 }
@@ -265,9 +265,10 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 // API runs it on the document sockets' heartbeat (its Deps.StreamHeartbeat, accessRecheckEvery),
 // on which the live socket and the Delivery views resolve their readers again too. An access change
 // made by SQL alone - a statement at a psql prompt - appends no event and announces nothing on
-// access.ChangedChannel, so no notification reaches room sync's access lane, and it moves what a
-// person sees all the same: this pass is what finds it, a heartbeat at most after it committed, and
-// closes each socket whose person lost its room with the code an announced change closes it with
+// store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
+// what a person sees all the same: this pass is what finds it, a heartbeat at most after it
+// committed, and closes each socket whose person lost its room with the code an announced change
+// closes it with
 // (errAccessRevoked). A pass while this process holds no socket reads nothing. ctx is a
 // process-lifetime context, outside any transaction of the pool: the passes run on a hold mark of
 // their own (store.ForConcurrentWorker), as each room-sync lane does.

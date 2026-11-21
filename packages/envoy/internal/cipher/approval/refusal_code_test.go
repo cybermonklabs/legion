@@ -136,6 +136,14 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			fresh, callback := started(t, claims)
 			return fresh.Get(t, callback.String())
 		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REFUSED"},
+		{"an account another account replaced", func(t *testing.T) ciphertest.Response {
+			const replaced = "sub-replaced-" + carol
+			r.revokeSubject(t, carol, replaced, "sub-"+carol)
+			claims := person(carol)
+			claims["sub"] = replaced
+			fresh, callback := started(t, claims)
+			return fresh.Get(t, callback.String())
+		}, http.StatusForbidden, "SIGN_IN_ACCOUNT_REPLACED"},
 		{"a sign-out form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/signin/logout", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -169,8 +177,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 17 {
-		t.Fatalf("the table drove %d of the page's 17 refusals", driven)
+	if driven != 18 {
+		t.Fatalf("the table drove %d of the page's 18 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

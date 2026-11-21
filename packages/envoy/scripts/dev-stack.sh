@@ -894,7 +894,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
 DISPATCH_URL="http://$awaited"
-until_true "Dispatch's route index" curl -sf "$DISPATCH_URL/api/v1"
+until_true "Dispatch's health" curl -sf "$DISPATCH_URL/healthz"
 echo "dev-stack: dispatch $DISPATCH_URL" >&2
 
 # --- The stand-in for a Compute Engine metadata server, written here and started by whoever

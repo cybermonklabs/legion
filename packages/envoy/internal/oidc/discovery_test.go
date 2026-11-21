@@ -62,7 +62,7 @@ func TestCodeFlowFailsUnavailableUntilDiscoveredAndWorksAfter(t *testing.T) {
 	ctx := context.Background()
 	calls := map[string]func() error{
 		"AuthURL": func() error {
-			_, err := flow.AuthURL(ctx, flowRedirect, "state-1", "nonce-1")
+			_, err := flow.AuthURL(ctx, flowRedirect, "state-1", "nonce-1", AuthOptions{DomainHint: true})
 			return err
 		},
 		"Exchange": func() error {

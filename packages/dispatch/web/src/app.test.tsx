@@ -1115,6 +1115,84 @@ test("a live socket refused once the person is signed out takes the page to sign
   }
 });
 
+/** The shell signed in as alice until its live socket is refused and whoami answers `signedOut`:
+ *  the way a page already open meets the hourly confirmation that ended its sign-in. Returns the
+ *  sign-in page's text, once it shows. */
+async function signInPageAfter(signedOut: ApiError): Promise<string> {
+  const sockets = installFakeLiveSockets();
+  let signedIn = true;
+  const teardown = await renderSignedIn(async () => {
+    if (!signedIn) throw signedOut;
+    return { event_head: "0", kind: "user", login: "alice" };
+  });
+  try {
+    act(() => sockets.latest().open());
+    signedIn = false;
+    act(() => sockets.latest().drop(1008));
+    await screen.findByRole("link", { name: "Sign in with Google" });
+    return screen.getByRole("main").textContent ?? "";
+  } finally {
+    teardown();
+    sockets.restore();
+  }
+}
+
+/** The sign-in page's text as it has always read. */
+const SIGN_IN_PAGE_TEXT =
+  "DispatchMake the next decision clear.Sign in to review your team's open decisions.Sign in with Google";
+
+// A sign-in the hourly confirmation ended is told in plain words on the sign-in page, from the
+// reason and the address Dispatch's `401 NO_IDENTITY` names.
+test("the sign-in page says why Dispatch signed the person out", async () => {
+  for (const [reason, words] of [
+    [
+      "NOT_LISTED",
+      "You were signed out because no Dispatch project's access list names alice@other.example any more.",
+    ],
+    [
+      "OUTSIDE_SIGNIN_OFF",
+      "You were signed out because Dispatch no longer signs in alice@other.example or any other account outside its Google Workspace domain.",
+    ],
+    [
+      "WORKSPACE_ADDRESS",
+      "You were signed out because alice@other.example is an address on a domain the Google Workspace owns, which signs in only as a Workspace account. Sign in with your Google Workspace account.",
+    ],
+  ] as const) {
+    const page = await signInPageAfter(
+      new ApiError(401, {
+        code: "NO_IDENTITY",
+        error: "signed out",
+        login: "alice@other.example",
+        reason,
+      })
+    );
+    expect(page).toBe(
+      `DispatchMake the next decision clear.${words}Sign in to review your team's open decisions.Sign in with Google`
+    );
+  }
+});
+
+// A 401 that gives no reason - a sign-out, a lapsed cookie, none at all - shows the sign-in page
+// alone, as does a reason this page does not know or a 401 from something in front of Dispatch.
+test("the sign-in page says nothing more for a 401 without a reason it knows", async () => {
+  for (const signedOut of [
+    new ApiError(401, { code: "NO_IDENTITY", error: "unauthorized" }),
+    new ApiError(401, {
+      code: "NO_IDENTITY",
+      error: "signed out",
+      login: "alice@other.example",
+      reason: "A_REASON_OF_A_LATER_RELEASE",
+    }),
+    new ApiError(401, {
+      error: "unauthorized",
+      login: "alice@other.example",
+      reason: "NOT_LISTED",
+    }),
+  ]) {
+    expect(await signInPageAfter(signedOut)).toBe(SIGN_IN_PAGE_TEXT);
+  }
+});
+
 const BOB_RESTRICTED: AuthenticatedUser = {
   event_head: "0",
   kind: "user",

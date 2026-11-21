@@ -22,8 +22,9 @@ type introspectionResponse = oauthwire.Introspection
 
 // introspect is POST /v1/oauth/introspect: the RFC 7662 request, a form whose token parameter
 // names the access token to read back, answered with what the broker knows about it — whether it
-// is live and, when it is, the session, the person and the projects it carries, the scope it was
-// granted, when it expires and the key it is bound to.
+// is live and, when it is, the session, the person and the projects it carries, the Google
+// account the credential behind a person's token records, the scope it was granted, when it
+// expires and the key it is bound to.
 //
 // A token the broker does not know, one it has revoked and one that has expired are all answered
 // with active false (RFC 7662 Section 2.2), so the answer discloses nothing to a caller holding a

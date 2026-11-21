@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 type testAdviceAsk struct {
@@ -949,7 +950,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example",
+		Store: database, Events: broker, Origins: text.NewOrigins("https://dispatch.example"),
 	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A member who signs in to an address an account outside the Workspace took before them keeps the
+  machine logins and machine sign-ins they made at the secrets broker, and their broker tokens
+  keep working. Dispatch asks the broker to revoke a replaced account whatever its member kind,
+  since an account the hourly confirmation restricted can have made credentials there while it
+  was a full member, and the broker ends only that account's credentials and those that record no
+  account. So an account that takes its address back from one restricted since is no longer
+  refused at the broker for good.
+time: 2026-11-17T01:26:18.561110053Z
+custom:
+    Issue: pr4199

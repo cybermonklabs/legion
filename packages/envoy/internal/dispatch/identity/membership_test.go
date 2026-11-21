@@ -1,15 +1,20 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -73,7 +78,7 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
 	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain)
 	issuer.SignInAs(claims)
-	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce")
+	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
 	if err != nil {
 		t.Fatalf("AuthURL: %v", err)
 	}
@@ -92,14 +97,17 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	// rig.now is the people store's clock, which stands in for the database's: it dates each
 	// confirmation and measures its age, and Membership reads no clock of its own.
 	rig.people.now = func() time.Time { return rig.now }
-	if err := rule.WriteSignIn(context.Background(), rig.people, memberEmail, subject, session.RefreshToken); err != nil {
+	person, err := rule.Person(context.Background(), session.Claims)
+	if err != nil || person.Email != memberEmail {
+		t.Fatalf("the rule names %+v (%v) for the sign-in, want %s", person, err, memberEmail)
+	}
+	if err := rule.WriteSignIn(context.Background(), rig.people, person, subject, session.RefreshToken); err != nil {
 		t.Fatalf("record sign-in: %v", err)
 	}
 	rig.membership = &Membership{
-		People:   rig.people,
-		Sessions: rig.sessions,
-		SignIn:   flow,
-		Rule:     rule,
+		People: rig.people,
+		SignIn: flow,
+		Rule:   rule,
 	}
 	return rig
 }
@@ -424,7 +432,7 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	rig.now = rig.now.Add(2 * time.Hour)
 	var newGeneration int64
 	rig.membership.SignIn = refresherFunc(func(ctx context.Context, _ string) (oidc.Session, error) {
-		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B"); err != nil {
+		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B", model.MemberFull); err != nil {
 			t.Errorf("the new account's sign-in: %v", err)
 		}
 		generation, err := rig.sessions.EnsureSession(ctx, memberEmail)
@@ -443,5 +451,90 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	}
 	if membership, _ := rig.people.get(memberEmail); membership.Subject != "google-subject-B" || membership.RefreshToken != "refresh-B" {
 		t.Fatalf("the row after the old account's failure: %#v, want google-subject-B with refresh-B", membership)
+	}
+}
+
+// outsideDomain is the sign-in domain of the outside-rule membership tests: memberEmail, at
+// d.example, is outside it.
+const outsideDomain = "example.com"
+
+// newOutsideMembershipRig signs memberEmail in with Google under the outside rule for
+// outsideDomain at rig.now, an account of no Workspace that lister names, as the sign-in callback
+// does, and returns the membership that renews it.
+func newOutsideMembershipRig(t *testing.T, lister *stubLister) *membershipRig {
+	t.Helper()
+	claims := googleMemberClaims()
+	delete(claims, "hd")
+	rig := newMembershipRigFor(t, OutsideRule{DomainRule: DomainRule{Domain: outsideDomain}, People: lister}, outsideDomain, claims, "google-subject")
+	if person, _ := rig.people.get(memberEmail); person.Kind != model.MemberRestricted {
+		t.Fatalf("the outside sign-in recorded member kind %q, want restricted", person.Kind)
+	}
+	return rig
+}
+
+// set makes l answer listed for email, and err for every question, from now on.
+func (l *stubLister) set(email string, listed bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.listed = map[string]bool{email: listed}
+	l.err = err
+}
+
+// The hourly confirmation runs the outside rule again: once no access list names the account, the
+// refresh ends every session, as a person who left the domain's Workspace ends under the domain
+// rule, and its row keeps no refresh token. The log line says the confirmation no longer admits
+// the person, with the reason, rather than that Google did not confirm a membership of the domain,
+// which this person never had.
+func TestOutsideSignInMembershipEndsWhenNoListNamesTheAccount(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
+	rig := newOutsideMembershipRig(t, lister)
+	rig.now = rig.now.Add(30 * time.Minute)
+	lister.set(memberEmail, false, nil)
+	if err := rig.membership.Confirm(context.Background(), memberEmail); err != nil {
+		t.Fatalf("Confirm within the hour of the delisting: %v, want the sign-in kept until the hourly check", err)
+	}
+	rig.now = rig.now.Add(time.Hour)
+	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("Confirm past the hour with no list naming the account: err = %v, want ErrNoIdentity", err)
+	}
+	if asked := lister.calls(); len(asked) != 2 || asked[1] != memberEmail {
+		t.Fatalf("the lister was asked %q, want the sign-in's question and the hourly check's", asked)
+	}
+	assertSessionEnded(t, rig)
+	logged := logs.String()
+	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
+		!strings.Contains(logged, "no Dispatch project's access list names this account") ||
+		strings.Contains(logged, "membership of the domain") {
+		t.Errorf("the delisting's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
+	}
+}
+
+// A list that cannot be read at the hourly confirmation ends nothing: the request fails with an
+// error matching ErrMembershipUnreadable, the sessions, refresh token and lapsed confirmation stay
+// as they were, and the first request after the lists can be read again is confirmed and served.
+func TestOutsideSignInMembershipKeepsTheSignInWhenTheListCannotBeRead(t *testing.T) {
+	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
+	rig := newOutsideMembershipRig(t, lister)
+	signedIn, _ := rig.people.get(memberEmail)
+	lister.set(memberEmail, true, errors.New("the database is down"))
+	rig.now = rig.now.Add(2 * time.Hour)
+	err := rig.membership.Confirm(context.Background(), memberEmail)
+	if !errors.Is(err, ErrMembershipUnreadable) || errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("Confirm while the lists cannot be read: err = %v, want ErrMembershipUnreadable and not ErrNoIdentity", err)
+	}
+	if generation := rig.sessions.generation(memberEmail); generation != 0 {
+		t.Fatalf("session generation after the failed read = %d, want 0 (no cookie revoked)", generation)
+	}
+	if kept, _ := rig.people.get(memberEmail); kept.RefreshToken != signedIn.RefreshToken || !kept.ConfirmedAt.Equal(signedIn.ConfirmedAt) {
+		t.Fatalf("membership after the failed read = %#v, want the sign-in's %#v unchanged", kept, signedIn)
+	}
+	lister.set(memberEmail, true, nil)
+	if err := rig.membership.Confirm(context.Background(), memberEmail); err != nil {
+		t.Fatalf("Confirm once the lists can be read: %v", err)
+	}
+	if confirmed, _ := rig.people.get(memberEmail); !confirmed.ConfirmedAt.Equal(rig.now) || confirmed.Kind != model.MemberRestricted {
+		t.Fatalf("membership after the lists answered = %#v, want restricted, confirmed at %s", confirmed, rig.now)
 	}
 }

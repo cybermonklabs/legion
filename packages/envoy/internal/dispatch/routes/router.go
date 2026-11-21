@@ -68,9 +68,16 @@ type AppContext struct {
 	Store          *store.Store
 	DefaultProject string
 	ServerURL      string
+	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
+	// none): a request whose Host is its host is answered as that origin (publicOrigin), and
+	// /auth/whoami names it after ServerURL's.
+	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
-	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
-	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
+	// members of a Cognito pool's group, the people of a Google Workspace domain, or those people
+	// and the accounts outside the domain that a project names; the API holds a restricted
+	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission), or, on a dev sign-in
+	// server, which has none, to AppContextOptions.DevRestrictedAdmission. A nil SignIn is a
+	// test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
 	// answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
@@ -84,12 +91,17 @@ type AppContext struct {
 	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
 	// turn the route on without the origin check.
 	devSignInHost string
-	// eventHead reads the event_head GET /auth/whoami answers a person: nil for a context with a
-	// Store, whose router reads it through the API server it registers (api.Background's EventHead,
-	// an id at or below which every event is final, read as the highest id of an event the person
-	// can see), and, for a context with no Store, nothing, since it has no event log to read (whoami
-	// then answers 503). A test sets it to answer a head of its own.
-	eventHead func(ctx context.Context, person string) (int64, error)
+	// origins is what GET /auth/whoami answers as origins: the canonical origin and OutsideOrigin,
+	// in that order, where the server answers at both, and nil where it answers at one. Only
+	// BuildAppContext sets it.
+	origins []string
+	// eventHead reads the event_head GET /auth/whoami answers the person its request's cookie
+	// names: nil for a context with a Store, whose router reads it through the API server it
+	// registers (api.Background's EventHead, an id at or below which every event is final, read as
+	// the highest id of an event the person can see, resolved from the request's own credential),
+	// and, for a context with no Store, nothing, since it has no event log to read (whoami then
+	// answers 503). A test sets it to answer a head of its own.
+	eventHead func(r *http.Request) (int64, error)
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -120,8 +132,11 @@ type AppContextOptions struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	InsecureCookie  bool
-	EnvoyURL        string
+	// OutsideOrigin is the second origin the server answers at (cmd/dispatch:
+	// DISPATCH_OUTSIDE_ORIGIN), written as weborigin.Parse returns it; empty for none.
+	OutsideOrigin  string
+	InsecureCookie bool
+	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -169,6 +184,9 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER);
+	// empty for none. See api.DepsInput.
+	SignInIssuer string
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -192,13 +210,23 @@ type AppContextOptions struct {
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
-	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
+	// Metrics is the process's metrics registry, which GET /metrics serves and the API adds its
+	// held gauges to; nil serves an empty one. See api.Deps.Metrics.
 	Metrics *metrics.Registry
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// DevRestrictedAdmission is what a dev sign-in server (DevSignIn, which has no SignInRule) holds
+	// a restricted member's credentials to: cmd/dispatch sets identity.ListedAdmission over the
+	// access lists, the outside rule's list arm. A server with a SignInRule holds them to that rule
+	// instead, and BuildAppContext refuses this beside one, or without DevSignIn.
+	DevRestrictedAdmission identity.RestrictedAdmission
+	// BrokerRevocationsSuperseded is the process's count of revocations the secrets broker
+	// answered superseded (api.NewBrokerRevocationsSuperseded), beside Metrics; nil counts
+	// nothing. See api.DepsInput.
+	BrokerRevocationsSuperseded *metrics.Counter
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -215,6 +243,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
 	}
+	// The one rule a restricted member's credentials are held to: the sign-in rule where the
+	// server has one, and a dev sign-in server's list check where it has none.
+	var restricted identity.RestrictedAdmission
+	switch {
+	case opts.DevRestrictedAdmission != nil && (opts.SignInRule != nil || !opts.DevSignIn):
+		return nil, fmt.Errorf("BuildAppContext: DevRestrictedAdmission is a dev sign-in server's, which has no SignInRule")
+	case opts.DevRestrictedAdmission != nil:
+		restricted = opts.DevRestrictedAdmission
+	case opts.SignInRule != nil:
+		restricted = opts.SignInRule
+	}
 	var devSignInHost string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
@@ -226,6 +265,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		}
 		devSignInHost = host
 	}
+	// A second origin is the second of two: whoami names the canonical one first, and a request
+	// whose Host is neither's is answered as the canonical one.
+	var origins []string
+	outsideOrigin := strings.TrimSuffix(opts.OutsideOrigin, "/")
+	if outsideOrigin != "" {
+		canonical, err := url.Parse(opts.ServerURL)
+		if err != nil || canonical.Scheme == "" || canonical.Host == "" {
+			return nil, fmt.Errorf("BuildAppContext: OutsideOrigin needs a ServerURL, the canonical origin it is the second of")
+		}
+		origins = []string{canonical.Scheme + "://" + canonical.Host, outsideOrigin}
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -234,6 +284,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
+		OutsideOrigin:          outsideOrigin,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
@@ -247,6 +298,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
+		RestrictedAdmission:    restricted,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,
@@ -254,6 +306,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		SignInIssuer:           opts.SignInIssuer,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -265,15 +318,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		// The process's count of revocations the broker answered superseded.
+		BrokerRevocationsSuperseded: opts.BrokerRevocationsSuperseded,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
 	}
 	// A context with a Store reads its head through the API server New registers (api.Background's
 	// EventHead), which holds the event horizon it is read from.
-	var eventHead func(context.Context, string) (int64, error)
+	var eventHead func(*http.Request) (int64, error)
 	if apiDeps.Store == nil {
-		eventHead = func(context.Context, string) (int64, error) { return 0, errNoEventLog }
+		eventHead = func(*http.Request) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
 		SigningKey:     opts.SigningKey,
@@ -285,10 +340,12 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Store:          opts.Store,
 		DefaultProject: opts.DefaultProject,
 		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
+		OutsideOrigin:  outsideOrigin,
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,
 		InsecureCookie: opts.InsecureCookie,
 		devSignInHost:  devSignInHost,
+		origins:        origins,
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
 		lifetime:       opts.Lifetime,
@@ -324,10 +381,10 @@ type router struct {
 	// assets keeps what the asset store answered, for every request of the process
 	// (serveRetainedAsset).
 	assets *assetCache
-	// eventHead is what GET /auth/whoami answers a person as event_head: the context's own
-	// (AppContext's eventHead) when it names one, else the registered API server's
+	// eventHead is what GET /auth/whoami answers its request's person as event_head: the
+	// context's own (AppContext's eventHead) when it names one, else the registered API server's
 	// (api.Background's EventHead).
-	eventHead func(ctx context.Context, person string) (int64, error)
+	eventHead func(r *http.Request) (int64, error)
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -337,12 +394,19 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	handler, _, background := serve(ctx)
+	return handler, background
+}
+
+// serve is New, answering besides the handler the mux every route is mounted on, whose patterns
+// a walk of what the server serves reads (readclass.Patterns).
+func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+		return r.enforceCookieOrigin(mux), mux, background
 	}
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), mux, background
 }
 
 // mount builds New's router, mounts every route the server serves on mux, the API's table among
@@ -381,11 +445,15 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in. The sign-in in flight (its state, nonce,
-// the page it returns to and when it lapses) travels in the browser's dispatch_oauth_state cookie,
-// signed under a key derived from the current signing key (signOAuthState), and no process keeps
-// it: whichever process holding that key the issuer's redirect reaches completes the sign-in. An
-// issuer not yet discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
+// the request came to (callbackURL), with the Workspace domain named as hd only where the rule
+// asks for it (SignInRule.DomainHint), and Google's account chooser asked for only where the
+// request carries prompt=select_account (selectAccountPrompt), which the link of a refused
+// outside sign-in does. The sign-in in flight (its state, nonce, the page it returns to and when
+// it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key derived from
+// the current signing key (signOAuthState), and no process keeps it: whichever process holding
+// that key the issuer's redirect reaches completes the sign-in. An issuer not yet discovered is
+// answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -401,7 +469,10 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce)
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce, oidc.AuthOptions{
+		DomainHint:    r.ctx.SignInRule.DomainHint(),
+		SelectAccount: req.URL.Query().Get("prompt") == selectAccountPrompt,
+	})
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -426,8 +497,14 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // person's ID token and signs in only a person SignInRule admits (SignInRule.Person), keeping the
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
 // their pool username carries; under a domain, by the email of a Google account of the domain,
-// and the account's subject is recorded with the sign-in, which ends the address's sessions when
-// another account held it (auth.PeopleStore.SignInSubject).
+// and, under outside sign-in, also by that of a verified Google account outside the domain that a
+// project names, as a restricted member; the account's subject is recorded with the sign-in, which
+// ends the address's sessions when another account held it (auth.PeopleStore.SignInSubject); an
+// account outside the domain never takes the address of a full member under another account: the
+// store records nothing (auth.ErrAddressHeldByMember), and the callback answers the refusal page
+// saying so, with no cookie, as it answers a rule's refusal. The callback URL the exchange names
+// is the one of the origin the request came to (callbackURL), the one authStart sent the issuer
+// from that origin.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -435,7 +512,8 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
 // process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502.
+// SIGNIN_UNAVAILABLE; any other failed exchange 502. Access lists the rule cannot read
+// (identity.ErrMembershipUnreadable) are no refusal: 500 IDENTITY_ERROR, and no cookie.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -457,7 +535,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
 		return
 	}
-	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
+	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
@@ -468,14 +546,26 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error())
 		return
 	}
-	email, err := r.ctx.SignInRule.Person(session.Claims)
-	if err != nil {
-		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-		writeSignInRefusedPage(w, email, err)
+	person, err := r.ctx.SignInRule.Person(req.Context(), session.Claims)
+	if errors.Is(err, identity.ErrMembershipUnreadable) {
+		// The rule could not decide (the access lists did not answer): no refusal, and no cookie.
+		slog.Error("dispatch: sign-in failed: the access lists could not be read", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "error", err)...)
+		identity.WriteError(w, err)
 		return
 	}
+	if err != nil {
+		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
+		writeSignInRefusedPage(w, person.Email, err, r.ctx.SignInRule.OffersAccountChooser())
+		return
+	}
+	email := person.Email
 	subject := r.ctx.SignInRule.Subject(session.Claims)
-	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, email, subject, session.RefreshToken); err != nil {
+	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, person, subject, session.RefreshToken); err != nil {
+		if errors.Is(err, auth.ErrAddressHeldByMember) {
+			slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
+			writeSignInRefusedPage(w, email, err, r.ctx.SignInRule.OffersAccountChooser())
+			return
+		}
 		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
 		writeError(w, http.StatusInternalServerError, "record sign-in")
 		return
@@ -547,13 +637,15 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
 // answer's JSON has always carried them in. MemberKind is "restricted" for a restricted member and
-// absent for everyone else, so a full member's answer is byte for byte what it was before member
-// kinds existed.
+// absent for everyone else, and Origins names the server's two origins, the canonical one first,
+// only where it answers at a second (DISPATCH_OUTSIDE_ORIGIN): so a full member's answer from a
+// server at one origin is byte for byte what it was before either existed.
 type whoamiAnswer struct {
-	EventHead  string `json:"event_head"`
-	Kind       string `json:"kind"`
-	Login      string `json:"login"`
-	MemberKind string `json:"member_kind,omitempty"`
+	EventHead  string   `json:"event_head"`
+	Kind       string   `json:"kind"`
+	Login      string   `json:"login"`
+	MemberKind string   `json:"member_kind,omitempty"`
+	Origins    []string `json:"origins,omitempty"`
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
@@ -576,7 +668,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	head, err := r.eventHead(req.Context(), email)
+	head, err := r.eventHead(req)
 	if err != nil {
 		// A read the page's own leaving cut short says nothing of the database.
 		if req.Context().Err() == nil {
@@ -589,7 +681,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email}
+	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.origins}
 	if r.ctx.Store != nil {
 		kind, err := access.MemberKind(req.Context(), r.ctx.Store.Pool, email)
 		if err != nil {
@@ -674,8 +766,11 @@ func signInUnconfigured(w http.ResponseWriter) {
 // serverRoots are the path roots the server itself answers: an unmatched path under one of them
 // is a real JSON 404, decided before any dashboard lookup, never the SPA shell. "/v1" is
 // reserved because it is the API path typed without its "/api" prefix — an API client's mistake
-// that must be answered as one.
-var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz"}
+// that must be answered as one. "/metrics" and "/livez" are the roots of a route each, so a path
+// below one ("/metrics/") is no dashboard page either. A root matches whatever its case
+// ("/API/V1"), since a path under one that the mux, which compares case, did not route is a
+// client's mistake about a server route and never a dashboard page (TestNoVariantOfAServerRouteIsTheDashboard).
+var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz", "/livez", "/metrics"}
 
 // unmatchedRoute is the access-log route of a request under serverRoots that no route answers.
 const unmatchedRoute = "unmatched"
@@ -697,14 +792,14 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	requestedPath := req.URL.Path
 	// A rooted clean holds no `..`, so every path joined under the dist directory below stays in it.
 	normalized := filepath.Clean("/" + requestedPath)
-	if isReservedPath(normalized, serverRoots) {
+	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
 			api.WriteJSON(w, http.StatusNotFound, map[string]string{
 				"code":  "NOT_FOUND",
 				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
+				"hint":  "GET /api/v1, with a credential, lists every route",
 			})
 		})(w, req)
 		return
@@ -1010,14 +1105,22 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
-func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
+// callbackURL is the sign-in callback of the origin the request came to (publicOrigin).
+func callbackURL(serverURL, outsideOrigin string, req *http.Request) string {
+	return publicOrigin(serverURL, outsideOrigin, req) + "/auth/callback"
 }
 
-func publicOrigin(serverURL string, req *http.Request) string {
+// publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
+// Host is its host, compared without regard to case as DevSignInOrigin's host is; otherwise
+// Dispatch's configured canonical origin, serverURL, whenever it is set. A backend request's Host
+// and TLS state make the origin only for unconfigured local deployments; forwarded headers are
+// deliberately ignored.
+func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
+	// outsideOrigin is written as weborigin.Parse returns it, scheme://host[:port] and nothing
+	// more, so what follows the scheme is its Host.
+	if _, host, ok := strings.Cut(outsideOrigin, "://"); ok && strings.EqualFold(req.Host, host) {
+		return outsideOrigin
+	}
 	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
 		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 	}
@@ -1029,16 +1132,19 @@ func publicOrigin(serverURL string, req *http.Request) string {
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
-// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
-// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
-// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
+// cookie or an IAP assertion, unless its Origin is the origin of the request's own Host
+// (publicOrigin), or it carries none and the browser says the write is same-origin: so neither
+// another site's page nor a page on one of the server's origins can write as a person signed in
+// on the other. A browser sends the credential with a request another site's page makes: its
+// cookie, or under IAP the IAP cookie, for which IAP adds a valid assertion. A request with an
+// Authorization header is an agent's.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, req) {
+		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, r.ctx.OutsideOrigin, req) {
 			next.ServeHTTP(w, req)
 			return
 		}
@@ -1097,18 +1203,34 @@ func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 	api.WriteJSON(w, status, map[string]string{"error": message, "code": code})
 }
 
+// selectAccountPrompt is the value of /auth/start's prompt query that asks Google for its account
+// chooser (oidc.AuthOptions.SelectAccount): the one the link of a refused outside sign-in carries.
+const selectAccountPrompt = "select_account"
+
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from
 // the issuer where JSON would be unreadable, for a person the issuer vouched for but Dispatch does
-// not admit, with the reason: one outside the group or the domain, or whose email Google has not
-// verified, each named by email; a Google sign-in that carries no email; or a sign-in that names
-// nobody by email.
-func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
+// not admit, with the reason: one outside the group or the domain, an account outside the domain
+// that no project's access list names, an account outside the Workspace at an address on a domain
+// the Workspace owns (identity.ErrWorkspaceAddress) or at the address of one of its members
+// (auth.ErrAddressHeldByMember), or one whose email Google has not verified, each named by email;
+// a Google sign-in that carries no email; or a sign-in that names nobody by email.
+// Where the rule offers it (chooser: SignInRule.OffersAccountChooser, outside sign-in alone), its
+// link to sign in with a different account asks Google for its account chooser, since a browser
+// holding one Google session would otherwise be sent straight back with the account just refused;
+// under every other rule the link is as it always was.
+func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error, chooser bool) {
 	message := "This sign-in does not name a person by email. Sign in again, or with a different account."
 	switch {
 	case errors.Is(reason, identity.ErrNotMember):
 		message = html.EscapeString(email) + " is not in the group that may use Dispatch. Ask an administrator to add you, then sign in again."
+	case errors.Is(reason, identity.ErrNotListed):
+		message = html.EscapeString(email) + " is not on the access list of any Dispatch project. Ask a project's owner to add this address, then sign in again."
 	case errors.Is(reason, identity.ErrNotInDomain):
 		message = html.EscapeString(email) + " is not in the domain that may use Dispatch. Sign in with your Google Workspace account."
+	case errors.Is(reason, identity.ErrWorkspaceAddress):
+		message = html.EscapeString(email) + " is an address on a domain the Google Workspace owns, so it signs in only as a Workspace account. Sign in with your Google Workspace account."
+	case errors.Is(reason, auth.ErrAddressHeldByMember):
+		message = html.EscapeString(email) + " is the address of a member of the Google Workspace, so a Google account outside the Workspace cannot sign in with it. Sign in with your Google Workspace account."
 	case errors.Is(reason, identity.ErrEmailNotVerified):
 		message = html.EscapeString(email) + ": email not verified. Google has not verified this account's email address, so Dispatch cannot name you by it."
 	case errors.Is(reason, identity.ErrNoEmail):
@@ -1117,14 +1239,18 @@ func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
+	start := "/auth/start"
+	if chooser {
+		start += "?prompt=" + selectAccountPrompt
+	}
 	fmt.Fprintf(w, `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Dispatch: sign-in refused</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dispatch: sign-in refused</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem">
 <h1>Sign-in refused</h1>
 <p>%s</p>
-<p><a href="/auth/start">Sign in with a different account</a></p>
+<p><a href="%s">Sign in with a different account</a></p>
 </body></html>
-`, message)
+`, message, start)
 }
 
 func randomToken() (string, error) {

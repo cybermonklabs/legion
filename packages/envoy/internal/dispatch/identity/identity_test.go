@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -66,11 +67,13 @@ type testPeopleStore struct {
 }
 
 // testPerson is one person's row in testPeopleStore: ConfirmedAt is the store clock's time of
-// the last confirmation, zero for none.
+// the last confirmation, zero for none, and Kind the member kind the last sign-in or confirmation
+// wrote.
 type testPerson struct {
 	RefreshToken string
 	Subject      string
 	ConfirmedAt  time.Time
+	Kind         model.MemberKind
 }
 
 func newTestPeopleStore(sessions *testSessionStore) *testPeopleStore {
@@ -97,12 +100,12 @@ func (s *testPeopleStore) SignIn(_ context.Context, email, refreshToken string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
 	s.people[email] = person
 	return nil
 }
 
-func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string) error {
+func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, existed := s.people[email]
@@ -112,7 +115,7 @@ func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, ref
 		}
 	}
 	person.Subject = subject
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
 	s.people[email] = person
 	return nil
 }
@@ -121,30 +124,21 @@ func (s *testPeopleStore) Membership(_ context.Context, email string) (auth.Pers
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject}
+	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}
 	return membership, found, nil
 }
 
-func (s *testPeopleStore) Confirm(_ context.Context, email, refreshToken string) error {
+func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, readToken, refreshToken string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
-	s.people[email] = person
-	return nil
-}
-
-func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, refreshToken string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	person := s.people[email]
-	if person.Subject != subject {
+	if person.Subject != subject || person.RefreshToken != readToken {
 		return nil
 	}
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
 	s.people[email] = person
 	return nil
 }
@@ -153,7 +147,7 @@ func (s *testPeopleStore) End(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if person, found := s.people[email]; found {
-		s.people[email] = testPerson{Subject: person.Subject}
+		s.people[email] = testPerson{Subject: person.Subject, Kind: person.Kind}
 	}
 	return nil
 }
@@ -288,11 +282,37 @@ func TestWriteErrorMapsNoIdentityToUnauthorized(t *testing.T) {
 	}
 }
 
-func (s *testPeopleStore) EndSubject(ctx context.Context, email, subject string) (bool, error) {
+// A session the sign-in rule says why it ended is still Dispatch's 401 NO_IDENTITY, which every
+// caller refusing no identity matches, now with the reason and the address it ended for.
+func TestOutsideSignInWriteErrorTellsTheReason(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&SignedOut{Email: "outsider@other.example", Reason: SignedOutNotListed},
+			`{"code":"NO_IDENTITY","error":"signed out: no Dispatch project's access list names outsider@other.example any more","login":"outsider@other.example","reason":"NOT_LISTED"}` + "\n"},
+		{fmt.Errorf("resolve the caller: %w", &SignedOut{Email: "outsider@other.example", Reason: SignedOutOutsideOff}),
+			`{"code":"NO_IDENTITY","error":"signed out: Dispatch no longer signs in outsider@other.example or any other account outside its Google Workspace domain","login":"outsider@other.example","reason":"OUTSIDE_SIGNIN_OFF"}` + "\n"},
+		{&SignedOut{Email: "outsider@second.example", Reason: SignedOutWorkspaceAddress},
+			`{"code":"NO_IDENTITY","error":"signed out: outsider@second.example is an address on a domain the Google Workspace owns, which signs in only as a Workspace account","login":"outsider@second.example","reason":"WORKSPACE_ADDRESS"}` + "\n"},
+		{ErrNoIdentity, `{"code":"NO_IDENTITY","error":"unauthorized"}` + "\n"},
+	} {
+		if !errors.Is(tc.err, ErrNoIdentity) {
+			t.Errorf("%v does not match ErrNoIdentity", tc.err)
+		}
+		w := httptest.NewRecorder()
+		WriteError(w, tc.err)
+		if w.Code != http.StatusUnauthorized || w.Body.String() != tc.want {
+			t.Errorf("WriteError(%v) = %d %s, want 401 %s", tc.err, w.Code, w.Body.String(), tc.want)
+		}
+	}
+}
+
+func (s *testPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	if !found || person.Subject != subject {
+	if !found || person.Subject != subject || person.RefreshToken != refreshToken {
 		return false, nil
 	}
 	if err := s.sessions.RevokeSessions(ctx, email); err != nil {

@@ -356,7 +356,7 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 	}
 
 	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
-	authURL, err := flow.AuthURL(ctx, testRedirect, "state-3", "nonce-3")
+	authURL, err := flow.AuthURL(ctx, testRedirect, "state-3", "nonce-3", oidc.AuthOptions{DomainHint: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,14 +364,14 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch's code flow: %v", err)
 	}
-	email, err := identity.DomainRule{Domain: testDomain}.Person(session.Claims)
-	if err != nil || email != "alice@d.example" || session.Claims.Subject != "alice@d.example" {
-		t.Fatalf("Dispatch's domain rule names %q (%v) for subject %q, want alice@d.example, the default once bob's turn is spent", email, err, session.Claims.Subject)
+	person, err := identity.DomainRule{Domain: testDomain}.Person(ctx, session.Claims)
+	if err != nil || person.Email != "alice@d.example" || session.Claims.Subject != "alice@d.example" {
+		t.Fatalf("Dispatch's domain rule names %+v (%v) for subject %q, want alice@d.example, the default once bob's turn is spent", person, err, session.Claims.Subject)
 	}
-	if email, err := (identity.GroupRule{Group: "dispatch-members"}).Person(session.Claims); err != nil || email != "alice@d.example" {
-		t.Fatalf("Dispatch's group rule names %q (%v), want alice@d.example, a member of dispatch-members", email, err)
+	if person, err := (identity.GroupRule{Group: "dispatch-members"}).Person(ctx, session.Claims); err != nil || person.Email != "alice@d.example" {
+		t.Fatalf("Dispatch's group rule names %+v (%v), want alice@d.example, a member of dispatch-members", person, err)
 	}
-	if _, err := (identity.GroupRule{Group: "other-group"}).Person(session.Claims); !errors.Is(err, identity.ErrNotMember) {
+	if _, err := (identity.GroupRule{Group: "other-group"}).Person(ctx, session.Claims); !errors.Is(err, identity.ErrNotMember) {
 		t.Fatalf("Dispatch's group rule for another group: %v, want ErrNotMember", err)
 	}
 }

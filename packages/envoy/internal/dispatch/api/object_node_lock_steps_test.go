@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an ask's
@@ -128,7 +129,7 @@ func (r *storeWriterRig) approvalRequest() storeWriter {
 // runs on the service's own goroutine, so a run's write ends once the block's ask is there, which
 // the settlement's commit puts there.
 func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
-	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, ServerURL: testServerURL, Settle: time.Hour})
+	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, Origins: text.NewOrigins(testServerURL), Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := settler.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the settling document service: %v", err)

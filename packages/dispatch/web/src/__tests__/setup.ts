@@ -7,6 +7,7 @@ import { configure } from "@testing-library/react";
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
+import { setDispatchOrigins } from "../api/origins";
 import { resetReachability } from "../api/reachability";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
@@ -192,6 +193,10 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// The origins a whoami answer named are the page's for every later read (`origins.ts`): a test
+// whose fake whoami named a second origin would otherwise have the next test read its links
+// against it.
+afterEach(() => setDispatchOrigins([]));
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later

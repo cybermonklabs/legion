@@ -382,7 +382,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")
 
-	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, "")[0] }
+	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, text.NewOrigins(""))[0] }
 	for doc, want := range map[string]map[string]text.Ref{
 		spec: {
 			"q1":     issueAsk(q1),
@@ -392,7 +392,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 			"after":  issueAsk(source),
 		},
 		record:   nil,
-		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
+		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, text.NewOrigins(""))[0]},
 	} {
 		got, err := QuestionMap(ctx, tx, serverReader, doc)
 		if err != nil {
@@ -429,8 +429,8 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 		t.Fatalf("question map of the spec: %v", err)
 	}
 	want := map[string]text.Ref{
-		"q1":  text.Extract("dispatch://ACME-1/ask/"+shortcut, "")[0],
-		"q 2": text.Extract("dispatch://ACME-1/ask/"+quoted, "")[0],
+		"q1":  text.Extract("dispatch://ACME-1/ask/"+shortcut, text.NewOrigins(""))[0],
+		"q 2": text.Extract("dispatch://ACME-1/ask/"+quoted, text.NewOrigins(""))[0],
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("question map of the spec = %#v; want %#v", got, want)

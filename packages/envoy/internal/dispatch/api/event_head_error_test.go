@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -17,7 +19,9 @@ func TestAFailedEventHeadReadNamesNoPerson(t *testing.T) {
 	if _, err := database.Pool.Exec(t.Context(), `alter table projects rename to projects_gone`); err != nil {
 		t.Fatalf("take the projects table away: %v", err)
 	}
-	_, err := served.personEventHead(t.Context(), seedAlice)
+	request := httptest.NewRequest(http.MethodGet, "/auth/whoami", nil)
+	request.Header.Set("X-Dispatch-User", seedAlice)
+	_, err := served.personEventHead(request)
 	if err == nil {
 		t.Fatal("the event head of a person whose projects cannot be read answered no error")
 	}

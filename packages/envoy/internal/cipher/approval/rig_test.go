@@ -66,7 +66,14 @@ type rig struct {
 	issuer  *oidctest.Issuer
 	machine *requests.Machine
 	sweeper *requests.Sweeper
-	// accountToken is dispatchAccount's projected token, for the machine-login approval only.
+	// page is the approval page the broker's routes serve, for a test that hands one of its
+	// methods a session read at a moment of the test's choosing.
+	page *approval.Page
+	// enrollments is the broker's enrollment service, for a test that revokes a replaced account
+	// (RevokePersonSubject) at a moment of the test's choosing, beside a decision of the page's.
+	enrollments *enroll.Service
+	// accountToken is dispatchAccount's projected token, for the machine-login approval and the
+	// subject revoke, the two routes of Dispatch's a test calls.
 	accountToken string
 }
 
@@ -129,6 +136,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
+	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine)
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
@@ -137,13 +145,13 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine),
+		Approval: page,
 	})
 
 	claims := issuer.Claims(dispatchAccount, dispatchAudience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &rig{
-		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine,
+		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine, page: page, enrollments: enr,
 		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
 		accountToken: issuer.Mint(t, key, claims),
 	}
@@ -253,6 +261,25 @@ func (r *rig) machineLogin(t *testing.T, key *ecdsa.PrivateKey, person, host str
 	return decode[struct {
 		RecordID string `json:"record_id"`
 	}](t, body).RecordID, da.UserCode
+}
+
+// revokeSubject posts POST /v1/person-subjects/revoke as Dispatch's server does when another
+// Google account takes person's address: subject is the `sub` of the account it replaced and
+// holder that of the one that holds it now, both of the rig's provider, at session generation 1.
+// It fails t unless the broker answered 200 revoked, and answers how many approval-page sessions
+// the revoke ended.
+func (r *rig) revokeSubject(t *testing.T, person, subject, holder string) int {
+	t.Helper()
+	status, body := r.call(t, http.MethodPost, "/v1/person-subjects/revoke", map[string]string{"Authorization": "Bearer " + r.accountToken},
+		map[string]any{"person": person, "issuer": r.issuer.URL(), "subject": subject, "holder_subject": holder, "session_generation": 1})
+	revoked := decode[struct {
+		State            string `json:"state"`
+		ApprovalSessions int    `json:"approval_sessions"`
+	}](t, body)
+	if status != http.StatusOK || revoked.State != "revoked" {
+		t.Fatalf("POST /v1/person-subjects/revoke (%s replaced by %s) = %d %s, want 200 revoked", subject, holder, status, body)
+	}
+	return revoked.ApprovalSessions
 }
 
 // enroll logs a machine of ben's on host in, approved by ben as Dispatch relays a machine login,

@@ -16,13 +16,13 @@ const metricsPath = "github.com/sjawhar/envoy/internal/metrics"
 var namingLabels = []string{"project", "issue", "key", "login", "session"}
 
 // TestMetricsNameNoProject: no metric family of the registry GET /metrics serves carries a label
-// named project, issue, key, login or session, which is what lets /metrics, which answers every
-// caller with no credential, be a read of no caller's rows (readclass.None). A label of this
-// registry is named where a series is written: a call of internal/metrics that takes labels
-// (Counter.Inc and Add, Histogram.Observe, Timer.ObserveDuration) and a GaugeSample's Labels. The
-// test reads every such site in the server's source (every package of this module cmd/dispatch
-// builds in, and every package under internal/dispatch) and each label's name, which must be a
-// constant: a label it cannot read the name of fails it, named, rather than passing unread.
+// named project, issue, key, login or session, which is what lets /metrics be a read of the
+// deployment (readclass.Deployment) and no project's. A label of this registry is named where a
+// series is written: a call of internal/metrics that takes labels (Counter.Inc and Add,
+// Histogram.Observe, Timer.ObserveDuration) and a GaugeSample's Labels. The test reads every such
+// site in the server's source (every package of this module cmd/dispatch builds in, and every
+// package under internal/dispatch) and each label's name, which must be a constant: a label it
+// cannot read the name of fails it, named, rather than passing unread.
 //
 // The walk's controls run every time: it must read the two labels the outbox's families carry
 // today, and over testdata/metriclabels, a tree no build reads, it must name that tree's project

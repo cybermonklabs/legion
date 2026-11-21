@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -38,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -83,6 +85,14 @@ type testServerOptions struct {
 	// Nil is the deployment that names none.
 	oidcAccounts   []string
 	accessAccounts []string
+	// signInIssuer is Deps.SignInIssuer: the issuer people sign in through, the issuer of every
+	// Google account people records. Empty is the deployment that records none.
+	signInIssuer string
+	// signInOutside is a deployment that signs in people from outside its domain
+	// (DISPATCH_SIGNIN_OUTSIDE=1): its sign-in rule (testOutsideRule over the server's database)
+	// is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False is the
+	// deployment that does not, whose server holds no such rule.
+	signInOutside bool
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -287,7 +297,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, Origins: text.NewOrigins(testServerURL), Settle: settle})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -340,6 +350,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDC:                  options.oidc,
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
+		SignInIssuer:          options.signInIssuer,
+		RestrictedAdmission:   restrictedAdmissionOf(options.signInOutside, database.Pool),
 		PrivateProjects:       options.privateProjects,
 		BusProjects:           options.busProjects,
 		BrokerTokens:          brokerTokens,
@@ -372,6 +384,29 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// so a test that did not wait for them would close its database under a worker still writing.
 	t.Cleanup(func() { waitBackgroundOf(t, served) })
 	return mux, database, deps, served
+}
+
+// testOutsideRule is the sign-in rule cmd/dispatch builds under DISPATCH_SIGNIN_OUTSIDE=1 for the
+// Workspace domain example.com and the other domains it owns, workspaceDomains, its access lists
+// read through pool as main's are through the server's own database (accessLister): the rule a
+// restricted member's sign-in and tokens are both held to.
+func testOutsideRule(pool *store.Pool, workspaceDomains ...string) identity.OutsideRule {
+	return identity.OutsideRule{
+		DomainRule: identity.DomainRule{Domain: "example.com"},
+		People: identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
+			return access.Listed(ctx, pool, email)
+		}),
+		WorkspaceDomains: workspaceDomains,
+	}
+}
+
+// restrictedAdmissionOf is Deps.RestrictedAdmission for a deployment that signs in people from
+// outside its domain (testOutsideRule over pool) or one that does not (none).
+func restrictedAdmissionOf(signInOutside bool, pool *store.Pool) identity.RestrictedAdmission {
+	if !signInOutside {
+		return nil
+	}
+	return testOutsideRule(pool)
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A test that has already
@@ -2104,14 +2139,15 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	// Every server mounts GET /ws/live, the event feed's socket, which a revoked cookie is refused
 	// too.
 	t.Cleanup(Register(handler, t.Context(), deps).Wait)
+	// A session cookie is issued at sign-in, and a sign-in records the person first (people.Record,
+	// as the sign-in callback does, before EnsureSession; a new session names a person people holds,
+	// migration 20261118041916), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	generation, err := sessions.EnsureSession(context.Background(), "alice@d.example")
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
-	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
-	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
-	// defaults to her, and that default is held to the people table like every other.
-	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

@@ -73,7 +73,7 @@ func awaitAccessPasses(t *testing.T, service *Service, passes uint64, open map[s
 
 // TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone: an access change made
 // by SQL alone, as a statement at a psql prompt makes it, appends no event and announces nothing on
-// access.ChangedChannel, so the room sync that listens there, running here as it runs in every
+// store.AccessChangedChannel, so the room sync that listens there, running here as it runs in every
 // process, hears nothing of it. The access re-check the sockets' heartbeat runs
 // (RunAccessRecheck) finds it all the same: the socket of the person who lost the room closes with
 // the code an announced change closes it with, within a heartbeat and a pass of the change, and

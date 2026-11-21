@@ -152,7 +152,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	located := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.serverURL).Mentions(markdown)
+	located := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.origins).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
@@ -202,7 +202,7 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	reader := refs.NewReader(ctx, tx, writer, "artifact", artifactID, s.serverURL)
+	reader := refs.NewReader(ctx, tx, writer, "artifact", artifactID, s.origins)
 	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil)
 }
 
@@ -678,7 +678,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 				deferDocument(document)
 				continue
 			}
-			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.serverURL)
+			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.origins)
 			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown))
 		}
 		// The reconciliation appends no event, so what it moved is named nowhere: until it stores

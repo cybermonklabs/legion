@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Opening a document socket is what every browser tab does on every load and every reconnect, and
@@ -488,7 +489,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			Store:             database,
 			Events:            events.NewBroker(),
 			Identity:          headerIdentity(database),
-			ServerURL:         "https://dispatch.example",
+			Origins:           text.NewOrigins("https://dispatch.example"),
 			Settle:            time.Hour,
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
@@ -646,7 +647,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		Persistence: store,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -1112,10 +1111,10 @@ type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
-	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
-	// without its scheme is dropped too; "" when the configured URL names no host (none is
-	// configured, or it does not parse).
-	host string
+	// hosts are the host names of this Dispatch's own origins in lower case (text.Origins.Hosts:
+	// DISPATCH_SERVER_URL's, and DISPATCH_OUTSIDE_ORIGIN's where it answers there too), so a link
+	// to either written without its scheme is dropped too; none when no origin is configured.
+	hosts []string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.
 	punctuation string
@@ -1187,10 +1186,10 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 	if err != nil {
 		return lineWords{}, err
 	}
-	return lineWordsFor(keys, s.deps.ServerURL), nil
+	return lineWordsFor(keys, s.deps.Origins), nil
 }
 
-// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at origins. A word
 // holds an issue key where one of those keys stands in it, in any case, at the word's start or
 // after a character that is neither a letter nor a digit, followed by `-` and a number that ends
 // there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
@@ -1200,11 +1199,8 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 // project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
 // number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
 // drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
-func lineWordsFor(keys []string, serverURL string) lineWords {
-	words := lineWords{punctuation: plainPunctuation}
-	if parsed, err := url.Parse(serverURL); err == nil {
-		words.host = strings.ToLower(parsed.Hostname())
-	}
+func lineWordsFor(keys []string, origins text.Origins) lineWords {
+	words := lineWords{punctuation: plainPunctuation, hosts: origins.Hosts()}
 	if len(keys) == 0 {
 		return words
 	}
@@ -1224,12 +1220,20 @@ func (w lineWords) drops(word string) bool {
 	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
-// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
-// key of a project this Dispatch holds.
+// holds reports whether word holds `://`, a private host, one of this Dispatch's own hosts or an
+// issue key of a project this Dispatch holds.
 func (w lineWords) holds(word string) bool {
-	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
-		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
-		(w.issueKey != nil && w.issueKey.MatchString(word))
+	if holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word)) {
+		return true
+	}
+	lower := strings.ToLower(word)
+	for _, host := range w.hosts {
+		if host != "" && strings.Contains(lower, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.
@@ -1350,7 +1354,7 @@ func nonNilStrings(values []string) []string {
 // issue or of the check's issue, named by their dispatch:// reference and read as who reads them.
 func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, who model.Actor, issueKey, checkIssueKey string, screenshots []string) error {
 	for _, screenshot := range screenshots {
-		ref, ok := text.ParseRef(screenshot, "")
+		ref, ok := text.ParseRef(screenshot, text.Origins{})
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",

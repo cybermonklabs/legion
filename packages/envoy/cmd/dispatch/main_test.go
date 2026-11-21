@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -160,6 +161,11 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
+
+		// Outside sign-in's own two settings, which only the Google sign-in rule reads.
+		"DISPATCH_SIGNIN_OUTSIDE":           "1",
+		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "example.org",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
 			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
@@ -617,8 +623,8 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 	}
 }
 
-func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil)
+func TestProcessReportsDisabledNATS(t *testing.T) {
+	handler := routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{}, nil, nil))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -634,9 +640,9 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // A process whose NATS is not connected serves every request that does not need the bus, so the
 // probe answers 200 with `ok` true and reports the bus in `nats` alone: a readiness probe that
 // failed with the bus would take every server process out of service at once.
-func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
+func TestProcessReportsDisconnectedNATS(t *testing.T) {
 	database := storetest.Open(t)
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil, nil)
+	handler := routes.Process(http.NewServeMux(), healthzHandler(database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil, nil))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -659,12 +665,12 @@ type untouchedFiles struct{ files.Store }
 // client and a file store any call on which panics, it still answers, and the router behind it is
 // never reached. It is what the liveness and startup probes ask, which must not wait on or fail
 // with a dependency.
-func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
+func TestProcessLivezAnswersWithoutDependencies(t *testing.T) {
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -673,22 +679,30 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 	}
 }
 
-// A scrape of /metrics reads the process's registry, not the router: the router answers every
-// path it does not know with the dashboard's HTML shell, so a scraper would otherwise collect a
-// page instead of the outbox's publish failures.
-func TestDispatchHandlerServesMetrics(t *testing.T) {
-	router := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, "<!doctype html><title>dispatch</title>")
-	})
+// A scrape of /metrics reads the process's registry through its route of the API's table, which
+// needs a credential as every route but sign-in, health and the web app does: the deployment's
+// shared agent token, an open viewer, reads the outbox's publish failures, and a caller with no
+// credential is refused rather than handed the dashboard's HTML shell or the counters.
+func TestProcessServesMetricsToACredential(t *testing.T) {
 	registry := metrics.New()
 	failures := registry.NewCounter("envoy_dispatch_outbox_publish_failures_total", "Destinations of an outbox publish attempt that did not reach NATS")
 	failures.Inc([2]string{"reason", "denied"})
+	boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"})
+	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry})
+	process := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
+	scrape := func(credential string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		if credential != "" {
+			request.Header.Set("Authorization", "Bearer "+credential)
+		}
+		response := httptest.NewRecorder()
+		process.ServeHTTP(response, request)
+		return response
+	}
 
-	response := httptest.NewRecorder()
-	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	response := scrape("agent-token")
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /metrics status = %d, want %d", response.Code, http.StatusOK)
+		t.Fatalf("GET /metrics with the shared token: status = %d %s, want %d", response.Code, response.Body.String(), http.StatusOK)
 	}
 	if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; version=0.0.4; charset=utf-8" {
 		t.Fatalf("GET /metrics content type = %q, want the Prometheus exposition format's", contentType)
@@ -696,35 +710,32 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	if body := response.Body.String(); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 1`) {
 		t.Fatalf("GET /metrics body = %q, want the outbox's publish failures in it", body)
 	}
+	if anonymous := scrape(""); anonymous.Code != http.StatusUnauthorized || strings.Contains(anonymous.Body.String(), "envoy_dispatch_outbox") {
+		t.Fatalf("GET /metrics with no credential: status = %d %s, want 401 and no counter", anonymous.Code, anonymous.Body.String())
+	}
 }
 
 // A mount's read class names the check that decides what a caller may read of it
-// (readclass.Class), and the probes dispatchHandler mounts above the router hold no such check:
+// (readclass.Class), and the probes routes.Process mounts above the router hold no such check:
 // each answers whoever reaches Dispatch's HTTP port, with no credential. So each is classed as a
-// read of no row a caller's access decides (readclass.None). /metrics is one of them: it answers the
-// deployment's counters, which name no project, issue, person or session (readclass's
-// TestMetricsNameNoProject), to a caller that sends nothing, so readclass.Deployment, which a
-// restricted member and a credential that lists projects are refused, is not what it reads.
+// read of no row a caller's access decides (readclass.None). /metrics is not one of them: it is a
+// row of the API's table, which needs a credential, and is classed a read of the deployment
+// (TestProcessServesMetricsToACredential, and api's TestEveryGETRouteHasAReadClass).
 func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *testing.T) {
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
-	mux, ok := dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).(*http.ServeMux)
-	if !ok {
-		t.Fatal("dispatchHandler answered no ServeMux, so the mounts it made cannot be read")
-	}
+	mux := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
 	probes := slices.DeleteFunc(readclass.Patterns(mux), func(pattern string) bool { return pattern == "/" })
-	if !slices.Equal(probes, []string{"GET /healthz", "GET /livez", "GET /metrics"}) {
-		t.Fatalf("dispatchHandler mounts %q above the router, want the three probes", probes)
+	if !slices.Equal(probes, []string{"GET /healthz", "GET /livez"}) {
+		t.Fatalf("routes.Process mounts %q above the router, want the two probes", probes)
 	}
-	// Both probes a request with no dependency reaches are answered with no credential; /healthz
-	// reads the database, which this handler holds none of, and is classed as the other two are.
-	for _, path := range []string{"/livez", "/metrics"} {
-		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusOK && response.Code != http.StatusNoContent {
-			t.Fatalf("GET %s with no credential answered %d, want the probe's answer", path, response.Code)
-		}
+	// The probe a request with no dependency reaches is answered with no credential; /healthz reads
+	// the database, which this handler holds none of, and is classed as /livez is.
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("GET /livez with no credential answered %d, want the probe's 204", response.Code)
 	}
 	for _, pattern := range probes {
 		if classes := readclass.ClassesOf(mux, pattern); !slices.Equal(classes, []readclass.Class{readclass.None}) {
@@ -738,12 +749,12 @@ func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *tes
 // configured, true where the bucket answers, and false where it does not, so a wrong grant shows
 // on the health page and not only as failed uploads. The bucket never decides `ok`: the load
 // balancer would replace the one task, taking documents and asks down with the files.
-func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
+func TestProcessReportsTheFileStore(t *testing.T) {
 	database := storetest.Open(t)
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, store, "", nil, issuers{}, nil, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -768,12 +779,12 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 // /healthz reports each OIDC issuer the process discovers in the background: null where none is
 // configured, false until its discovery document has been read, true after. Neither decides `ok`:
 // a process whose issuer is down still serves agents and the people whose confirmation stands.
-func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
+func TestProcessReportsEachIssuersDiscovery(t *testing.T) {
 	database := storetest.Open(t)
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, configured, nil, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -812,7 +823,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil, nil)
+	handler := routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, commit, nil, issuers{}, nil, nil))
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -850,7 +861,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{}, nil, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
@@ -882,7 +893,7 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	probe := func(state *privateProjectsState) (int, string) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, state, nil)).
 			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		return response.Code, response.Body.String()
 	}
@@ -1031,7 +1042,7 @@ type gitHubReadsHealth struct {
 func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (int, gitHubReadsHealth) {
 	t.Helper()
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, nil, reads)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health gitHubReadsHealth
 	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health response %s: %v", response.Body.String(), err)
@@ -1113,7 +1124,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil, nil), stop: stop}
+		return &process{outbox: publisher, handler: routes.Process(http.NewServeMux(), healthzHandler(database, client, publisher, nil, "", nil, issuers{}, nil, nil)), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -1177,7 +1188,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(probe.database, nil, nil, nil, "", nil, issuers{}, nil, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -1238,7 +1249,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, nil, nil)))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -1289,7 +1300,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, nil, nil)))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -1349,7 +1360,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil, nil))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, bucket, "", nil, issuers{}, nil, nil)))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}
@@ -1522,14 +1533,14 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 // would delete them all, so the subcommand refuses before it opens the database.
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 	var output bytes.Buffer
-	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
+	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", "", &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
 	}
 	if !strings.Contains(output.String(), "dispatch.server_url is required") {
 		t.Fatalf("rebuild-refs refusal = %q", output.String())
 	}
 	output.Reset()
-	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
+	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", "", &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
 		t.Fatalf("rebuild-refs without DATABASE_URL: code=%d output=%q", code, output.String())
 	}
 }

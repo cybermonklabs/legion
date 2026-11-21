@@ -28,7 +28,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 const (
 	// dispatchOrigin is DISPATCH_SERVER_URL for these tests: the origin a caller signs its
-	// proof's 'htu' against, whatever host the request reaches Dispatch under.
+	// proof's 'htu' against. A verifier of this origin alone checks every request against it,
+	// whatever host the request reaches Dispatch under; a verifier of two origins (twoOrigins)
+	// checks against it every request whose host is not outsideOrigin's.
 	dispatchOrigin = "https://dispatch.test"
 	// resourcePath is the route a caller presents its token to.
 	resourcePath = "/api/v1/sessions"
@@ -106,7 +108,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-		Origin:    dispatchOrigin,
+		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
 		Now:       tick.now,
@@ -116,7 +118,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	}
 	verifier, err := ciphertoken.New(opts)
 	if err != nil {
-		t.Fatalf("brokertoken.New: %v", err)
+		t.Fatalf("ciphertoken.New: %v", err)
 	}
 	return &rig{broker: broker, clock: tick, verifier: verifier}
 }
@@ -557,6 +559,47 @@ func TestAPersonScopedTokenNamesNoProject(t *testing.T) {
 	}
 }
 
+// TestTheAccountATokenRecordsReachesBothChecksFromTheCacheToo: the Google account the broker
+// answers a token's credential records is part of the caller both checks answer, and an answer
+// remembered in the cache keeps it, so the requests inside AffirmativeCacheTTL and an open
+// connection's heartbeat read the same account the first request did. A token whose credential
+// records none answers none, and the time its credential was made (credential_created_at, Unix
+// seconds), which a resource server holds such a token to.
+func TestTheAccountATokenRecordsReachesBothChecksFromTheCacheToo(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const token, unrecorded = "a-token-whose-sign-in-records-its-account", "a-token-from-before-the-broker-recorded-accounts"
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.AccountIssuer, answer.AccountSubject = "https://accounts.google.com", "109sjawhar"
+	rig.broker.Says(token, answer)
+	older := liveToken(caller.jkt, time.Hour)
+	older.CredentialCreatedAt = 1794900000
+	rig.broker.Says(unrecorded, older)
+
+	want := ciphertoken.Caller{
+		Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed,
+		AccountIssuer: "https://accounts.google.com", AccountSubject: "109sjawhar",
+	}
+	for request := range 2 {
+		decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Fatalf("Verify %d = %+v, %v; want %+v", request, decided, err, want)
+		}
+	}
+	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+	if err != nil || !reflect.DeepEqual(live, want) {
+		t.Fatalf("Live = %+v, %v; want %+v", live, err, want)
+	}
+	if rig.broker.Count() != 1 {
+		t.Fatalf("two requests and a heartbeat cost %d introspections, want 1: the later two read the cache", rig.broker.Count())
+	}
+
+	none, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, unrecorded))
+	if err != nil || none.AccountIssuer != "" || none.AccountSubject != "" || !none.CredentialCreatedAt.Equal(time.Unix(1794900000, 0)) {
+		t.Fatalf("Verify of a token recording no account = %+v, %v; want a caller naming no account, its credential made at %s", none, err, time.Unix(1794900000, 0).UTC())
+	}
+}
+
 // TestOneTokenCostsOneIntrospectionInsideTheCachesLife: the cache is what keeps this check off
 // the broker's account-class bucket, so many requests bearing one live token cost one
 // introspection, and the answer is dropped at the token's own expiry rather than held for the
@@ -861,29 +904,40 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 	}
 }
 
-// TestNewRefusesAnOriginItCannotCheckAProofAgainst: an origin that is not an absolute http(s)
-// origin is a deployment error, and it fails the build of the verifier rather than every
-// request.
+// TestNewRefusesAnOriginItCannotCheckAProofAgainst: no origin, an origin that is not an absolute
+// http(s) origin, and two origins with one Host (host and port), which no request's Host could
+// tell apart, are deployment errors, and each fails the build of the verifier rather than every
+// request. The control: two origins on two hosts build.
 func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	database := storetest.Open(t)
-	for name, origin := range map[string]string{
-		"empty":       "",
-		"no scheme":   "dispatch.test",
-		"not http":    "ftp://dispatch.test",
-		"with a path": "https://dispatch.test/dispatch",
+	build := func(t *testing.T, origins []string) error {
+		_, err := ciphertoken.New(ciphertoken.Options{
+			BrokerURL: "https://broker.test",
+			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Origins:   origins,
+			Replay:    store.NewDPoPProofs(database.Pool),
+			Address:   sourceAddress,
+		})
+		return err
+	}
+	for name, origins := range map[string][]string{
+		"none":                    nil,
+		"empty":                   {""},
+		"no scheme":               {"dispatch.test"},
+		"not http":                {"ftp://dispatch.test"},
+		"with a path":             {"https://dispatch.test/dispatch"},
+		"a second with a path":    {dispatchOrigin, "https://outside.test/dispatch"},
+		"a second with no scheme": {dispatchOrigin, "outside.test"},
+		"two on one host":         {dispatchOrigin, "http://DISPATCH.test"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ciphertoken.New(ciphertoken.Options{
-				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-				Origin:    origin,
-				Replay:    store.NewDPoPProofs(database.Pool),
-				Address:   sourceAddress,
-			})
-			if err == nil {
-				t.Fatalf("New accepted the origin %q", origin)
+			if err := build(t, origins); err == nil {
+				t.Fatalf("New accepted the origins %q", origins)
 			}
 		})
+	}
+	if err := build(t, []string{dispatchOrigin, outsideOrigin}); err != nil {
+		t.Fatalf("New refused two origins on two hosts: %v", err)
 	}
 }
 
@@ -897,7 +951,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-			Origin:    dispatchOrigin,
+			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
 	}

@@ -163,10 +163,27 @@ func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage,
 
 // Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the
 // deciding human's canonical login as Dispatch's session resolved it, and Code, for a machine
-// login, is the typed confirmation code the human entered.
+// login, is the typed confirmation code the human entered. An approve also names the Google
+// account that approves, the one bound to the credential that made the approve
+// (api.approverStanding), when it is bound to one: ApproverIssuer, Dispatch's sign-in issuer as
+// oidc.CanonicalIssuer spells it, and ApproverSubject, that account's `sub`. The broker records
+// them on the machine login it mints, so a later revocation of that account ends the login and the
+// broker refuses an approval by it once it is revoked (403 APPROVER_REPLACED). Every other
+// decision, and an approve whose credential is bound to no account, leaves both out: an approve
+// carries both or neither, since the broker refuses one alone (400 APPROVER_ACCOUNT_INPUT).
+//
+// Every approve also carries ApproverSessionGeneration, the approver's address's session
+// generation (user_sessions.generation, 0 when it holds none) as the same check read it: every
+// recording of an account moves that generation in its own transaction, and each revocation the
+// broker is told of carries the generation its replacement left, so the broker refuses an approve
+// carrying a lower one (403 APPROVER_REPLACED), which was checked before that replacement, whatever
+// account it names. Every other decision leaves it out.
 type Decision struct {
-	Approver string  `json:"approver"`
-	Code     *string `json:"code,omitempty"`
+	Approver                  string  `json:"approver"`
+	Code                      *string `json:"code,omitempty"`
+	ApproverIssuer            string  `json:"approver_issuer,omitempty"`
+	ApproverSubject           string  `json:"approver_subject,omitempty"`
+	ApproverSessionGeneration *int64  `json:"approver_session_generation,omitempty"`
 }
 
 func (d Decision) body() (json.RawMessage, error) {

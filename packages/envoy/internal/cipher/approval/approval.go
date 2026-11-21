@@ -98,7 +98,8 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
+	// ApplyPageDecision).
 	Machine *requests.Machine
 }
 
@@ -344,6 +345,9 @@ const (
 	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
+	// A verified sign-in by a Google account that no longer holds the person's address, which
+	// Dispatch named replaced when another account took it (store.ErrBrowserSessionSubjectReplaced).
+	codeSignInAccountReplaced = "SIGN_IN_ACCOUNT_REPLACED"
 )
 
 // writeMessage writes m as the page's answer with status, noting code on the answer's record

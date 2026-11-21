@@ -21,7 +21,7 @@ test.each(
     (row) => [row.body, row.origin ?? origin, row.refs] as const
   )
 )("%s cites, read against %s, %p", (body, server, refs) => {
-  expect(composerReferences(body, server).map((item) => item.reference)).toEqual([...refs]);
+  expect(composerReferences(body, [server]).map((item) => item.reference)).toEqual([...refs]);
 });
 
 // A body near the server's 1 MiB request cap that trails a reference with a run of closing
@@ -44,7 +44,7 @@ test.each([
   ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
   const start = performance.now();
-  const cited = composerReferences(body, origin).map((item) => item.reference);
+  const cited = composerReferences(body, [origin]).map((item) => item.reference);
   // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
   // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
   // loaded pod can fail it by being slow.

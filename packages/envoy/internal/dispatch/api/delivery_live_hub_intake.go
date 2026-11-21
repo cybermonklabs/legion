@@ -242,8 +242,8 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 	if movesSight(event.Type) {
 		// What a sub's caller sees may have moved, so the worker resolves each sub's reader again
 		// before its next recompute (recheckStaleReaders), as it does for an access change announced
-		// on access.ChangedChannel. A project.created is announced nowhere else; an access change is
-		// announced there too, and the one pass reads both.
+		// on store.AccessChangedChannel. A project.created is announced nowhere else; an access
+		// change is announced there too, and the one pass reads both.
 		g.readersStale.Store(true)
 		signal(g.wakeWork)
 	}

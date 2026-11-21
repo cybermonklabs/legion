@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A credential that records no Google account is held to when it was made: Dispatch records when
+  it records an address's account, and refuses a personal token, or a broker token whose sign-in
+  or machine login, made before that, since an account that held the address before may have made
+  it (`401 TOKEN_REVOKED`, and `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` for a broker token, which is
+  also refused within five minutes after, the two databases' clocks apart). One made later acts,
+  and a personal token it mints records the address's account. Nothing is refused at the upgrade.
+  Nothing Dispatch admits waits on the broker's revocation. The membership answer the broker reads
+  takes `account=none` and `credential_created_at` beside the account.
+time: 2026-11-17T18:58:02.611128146Z
+custom:
+    Issue: pr4199

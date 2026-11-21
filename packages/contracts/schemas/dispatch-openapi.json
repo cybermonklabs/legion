@@ -42,7 +42,7 @@
             }
           }
         },
-        "x-auth": "public"
+        "x-auth": "any"
       }
     },
     "/api/v1/access-groups": {
@@ -208,11 +208,39 @@
     },
     "/api/v1/access/person": {
       "get": {
-        "description": "One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "description": "One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (\u0026account_issuer=\u0026account_subject=), as the project answer carries it; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
         "operationId": "getApiV1AccessPerson",
         "parameters": [
           {
             "name": "person",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_issuer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_subject",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential_created_at",
             "in": "query",
             "schema": {
               "type": "string"
@@ -293,7 +321,7 @@
     },
     "/api/v1/access/projects/{key}": {
       "get": {
-        "description": "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "description": "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. With \u0026account_issuer=\u0026account_subject=, the Google account the credential being checked records, the answer also carries holder: false when Dispatch records another account for the person (an account of another issuer included), and then visible is false; true when it records that one or none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND; half an account, or an account with no person, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
         "operationId": "getApiV1AccessProjectsByKey",
         "parameters": [
           {
@@ -306,6 +334,34 @@
           },
           {
             "name": "person",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_issuer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_subject",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential_created_at",
             "in": "query",
             "schema": {
               "type": "string"
@@ -12476,7 +12532,7 @@
             }
           }
         },
-        "x-auth": "public"
+        "x-auth": "any"
       }
     },
     "/api/v1/search": {
@@ -13354,6 +13410,41 @@
         "x-test-hook": true,
         "x-write-scope": "deployment"
       }
+    },
+    "/metrics": {
+      "get": {
+        "description": "The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED.",
+        "operationId": "getMetrics",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON",
+            "content": {
+              "text/plain": {}
+            }
+          }
+        },
+        "x-auth": "any"
+      }
     }
   },
   "components": {
@@ -13621,6 +13712,9 @@
       },
       "AccessAnswer": {
         "properties": {
+          "holder": {
+            "type": "boolean"
+          },
           "member_kind": {
             "enum": [
               "full",
@@ -25911,6 +26005,9 @@
       },
       "PersonAnswer": {
         "properties": {
+          "holder": {
+            "type": "boolean"
+          },
           "member_kind": {
             "enum": [
               "full",

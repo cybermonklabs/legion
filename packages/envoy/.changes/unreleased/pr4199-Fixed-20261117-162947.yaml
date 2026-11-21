@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A recorded Google account never changes: the broker's and Dispatch's databases refuse any update
+  of the account a sign-in, a machine login's approval, an approval-page session, a broker token or
+  a personal token recorded when it was made. A personal token acts, approves and mints only while
+  Dispatch records the account the token recorded for its address, or none; the first Google
+  sign-in Dispatch records for an address revokes the tokens another account minted there and owes
+  the secrets broker that account's revocation. The membership answer the broker reads says
+  whether the account of the credential being checked still holds the address. A deployment that
+  signs people in through a Cognito pool names no Google account on a mint or an approve, since
+  its sign-in records none.
+time: 2026-11-17T16:29:47.502676770Z
+custom:
+    Issue: pr4199

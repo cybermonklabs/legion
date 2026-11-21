@@ -44,12 +44,13 @@ type Refresher interface {
 // ends nothing: the request that found the confirmation lapsed is refused with
 // ErrSignInUnavailable, since no one is served on a lapsed confirmation, and the session
 // generation and refresh token stay, so the first request after the issuer answers again
-// refreshes and is served.
+// refreshes and is served. Under OutsideRule, access lists that cannot be read
+// (ErrMembershipUnreadable) end nothing either: the request is refused with that error and the
+// sign-in kept, so a database blip signs nobody out.
 type Membership struct {
-	People   auth.PeopleStore
-	Sessions auth.SessionStore
-	SignIn   Refresher
-	Rule     SignInRule
+	People auth.PeopleStore
+	SignIn Refresher
+	Rule   SignInRule
 
 	// refreshes holds one refresh per person in flight in this process: a page load's many
 	// requests share it. Another server process refreshes on its own, so two processes that find
@@ -94,33 +95,54 @@ func (m *Membership) refresh(ctx context.Context, email string) error {
 		return nil
 	}
 	if !m.Rule.CanRefresh(membership.Subject) {
-		return m.end(ctx, email, membership.Subject, "the address's sign-in recorded no Google account to confirm")
+		return m.end(ctx, email, membership, "the address's sign-in recorded no Google account to confirm")
 	}
 	session, err := m.SignIn.Refresh(ctx, membership.RefreshToken)
 	if errors.Is(err, oidc.ErrGrantRefused) {
-		return m.end(ctx, email, membership.Subject, err.Error())
+		return m.end(ctx, email, membership, err.Error())
 	}
 	if err != nil {
 		slog.Warn("dispatch: the sign-in issuer could not confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
 		return fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	}
-	person, err := m.Rule.Person(session.Claims)
-	if err != nil {
-		return m.end(ctx, email, membership.Subject, err.Error())
+	person, err := m.Rule.Person(ctx, session.Claims)
+	if errors.Is(err, ErrMembershipUnreadable) {
+		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
+		return err
 	}
-	if person != email {
-		return m.end(ctx, email, membership.Subject, "the refreshed sign-in names "+person)
+	if err != nil {
+		return m.end(ctx, email, membership, err.Error())
+	}
+	if person.Email != email {
+		return m.end(ctx, email, membership, "the refreshed sign-in names "+person.Email)
 	}
 	subject, err := m.Rule.ConfirmSubject(session.Claims, membership.Subject)
 	if err != nil {
-		return m.end(ctx, email, membership.Subject, err.Error())
+		return m.end(ctx, email, membership, err.Error())
 	}
-	return m.Rule.WriteConfirm(ctx, m.People, email, subject, session.RefreshToken)
+	return m.Rule.WriteConfirm(ctx, m.People, membership, person, subject, session.RefreshToken)
 }
 
-// end ends email's sign-in under m.Rule's end policy (SignInRule.End).
-func (m *Membership) end(ctx context.Context, email, subject, reason string) error {
-	return m.Rule.End(ctx, m.People, m.Sessions, email, subject, reason)
+// end ends email's sign-in under m.Rule's end policy (SignInRule.End), naming read, the membership
+// this confirmation read, so a sign-in recorded since it read is not the one it ends.
+func (m *Membership) end(ctx context.Context, email string, read auth.PersonMembership, reason string) error {
+	return m.Rule.End(ctx, m.People, email, read, reason)
+}
+
+// signedOut is ErrNoIdentity for email, whose session has ended, told as SignedOut when Rule names
+// the reason (SignInRule.SignedOutReason). A reason Rule cannot read (the database or the access
+// lists not answering) is no reason: the request is refused either way, so it is ErrNoIdentity
+// alone, logged.
+func (m *Membership) signedOut(ctx context.Context, email string) error {
+	reason, err := m.Rule.SignedOutReason(ctx, m.People, email)
+	if err != nil {
+		slog.Warn("dispatch: could not read why a person's session ended; the request is refused without a reason", "email", email, "error", err)
+		return ErrNoIdentity
+	}
+	if reason == "" {
+		return ErrNoIdentity
+	}
+	return &SignedOut{Email: email, Reason: reason}
 }
 
 // fresh reports whether membership's confirmation stands: it exists and the store measures it

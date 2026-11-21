@@ -29,8 +29,8 @@ import (
 // repair's statements run at once as a batch of their own; a transaction that decides before it
 // writes plans the repair and queues it in its write phase, reading the blocks it leaves from
 // the plan (ItemRepair.Block).
-func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
-	repair, err := PlanItemIfOwed(ctx, tx, kind, itemID, serverURL)
+func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string, origins text.Origins) (bool, error) {
+	repair, err := PlanItemIfOwed(ctx, tx, kind, itemID, origins)
 	if err != nil {
 		return false, err
 	}
@@ -59,12 +59,12 @@ type ItemRepair struct {
 // PlanItemIfOwed plans the index comment, message or ask itemID is owed, read and planned from
 // its stored text as IndexItemIfOwed indexes it, its short ids resolved for the author its row
 // records (NewReader); an item that owes none plans nothing.
-func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serverURL string) (ItemRepair, error) {
+func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string, origins text.Origins) (ItemRepair, error) {
 	var query string
 	switch kind {
 	case ItemAsk:
 		// An ask has no body of its own: its blocks are its parts, read from its row.
-		return planAskIfOwed(ctx, q, itemID, serverURL)
+		return planAskIfOwed(ctx, q, itemID, origins)
 	case ItemComment:
 		query = `
 			select c.body, coalesce(c.edited_at, c.created_at), true,
@@ -98,7 +98,7 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 		if err != nil {
 			return ItemRepair{}, fmt.Errorf("read the author of %s %s: %w", kind, itemID, err)
 		}
-		located = NewReader(ctx, q, writer, string(kind), itemID, serverURL).Mentions(body)
+		located = NewReader(ctx, q, writer, string(kind), itemID, origins).Mentions(body)
 	}
 	index, err := ReadItemIndex(ctx, q, kind, itemID)
 	if err != nil {

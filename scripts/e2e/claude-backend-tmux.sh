@@ -235,7 +235,7 @@ start_dispatch() {
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "${dispatch_identity_dispatch_env[@]}" \
     "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
-    curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
+    curl -fsS "http://127.0.0.1:$port_dispatch/healthz"
   dispatch_base="http://127.0.0.1:$port_dispatch"
 }
 

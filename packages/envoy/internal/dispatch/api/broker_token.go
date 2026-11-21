@@ -13,12 +13,16 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -58,19 +62,262 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// ciphertoken.Verifier.Live, and it answers no caller and broker true, which tells the heartbeat
-// to compare no grant: a broker-issued token names its one project, or none, for its whole life.
-// Nothing is admitted through this, only kept.
+// ciphertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
+// and the token's account is still theirs (brokerPersonAdmitted), as every request under the
+// token asks: so a socket a replaced account's broker token opened closes at its next heartbeat
+// after the replacing sign-in commits. It answers the person the token names as the caller's owner,
+// and, as the caller's viewer, only whether that person is a restricted member, which its admission
+// read in its one statement (broker true: a broker-issued token names its one project, or none,
+// for its whole life, so no grant is compared). The heartbeat holds the connection to that
+// (memberKindPerson, personRestricted), with no read of its own, so a socket a demoted member's
+// broker token opened closes too. A token naming no person, a read-only one among them, answers
+// no caller. Nothing is admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
 			return model.Actor{}, true, errNoBrokerConfigured()
 		}
-		_, err := s.deps.BrokerTokens.Live(r.Context(), r)
-		return model.Actor{}, true, err
+		live, err := s.deps.BrokerTokens.Live(r.Context(), r)
+		if err != nil || live.Person == "" {
+			return model.Actor{}, true, err
+		}
+		admission, err := s.brokerPersonAdmitted(r.Context(), live)
+		if err != nil {
+			return model.Actor{}, true, err
+		}
+		person := live.Person
+		return model.Actor{Owner: &person, Viewer: &model.Viewer{Person: person, Restricted: admission.Restricted}}, true, nil
 	}
 	caller, _, err = s.optionalActor(r)
 	return caller, false, err
+}
+
+// brokerPersonAdmitted holds a broker-issued token naming a person (caller.Person) to the rule
+// that person's own personal token is held to, since it too carries their sign-in to an agent, and
+// to the Google account it is. One statement reads, by the person's key, their member kind, the
+// account (`sub`) people records for them, and when people recorded it (sub_recorded_at).
+//
+// A token is held to the account its credential records (brokerTokenSubject), read in the same
+// snapshot, on a deployment whose sign-in records accounts (Deps.SignInIssuer set; elsewhere
+// people.sub may be a Google account left from before a switch to a pool, and names nothing):
+//
+//   - a token recording the account people records for the person now, the holder's own, acts:
+//     the broker answers the account the token's own trade recorded on it when it was minted, and
+//     reads it from no other row, and no recorded account ever changes, so no token the replaced
+//     account traded records the holder's;
+//   - a token recording another account is refused from the commit that changed people's: 401
+//     BROKER_TOKEN_NOT_ACTIVE when a revocation names that account as the replaced one or as an
+//     earlier holder (it lost the address), 401 BROKER_ACCOUNT_NOT_SIGNED_IN when none does
+//     (Google gave the address to an account that has not signed in to Dispatch since);
+//   - a token recording an account of another issuer (brokerForeignAccount), which Dispatch cannot
+//     compare with the one it records, is refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT once people
+//     records an account for the person, whenever it was made: no credential of the broker's
+//     records such an account where Dispatch's sign-in records Google's, and holding it to a time
+//     would admit one the replaced account made under that issuer after the margin;
+//   - a token recording no account (its credential made before the broker recorded accounts)
+//     might be any account's, so it is held to when its credential was made
+//     (ciphertoken.Caller.CredentialCreatedAt): made before people recorded the person's account,
+//     or less than brokerCredentialMargin after it, or at a time the broker did not record, it is
+//     refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT; made at least the margin after, or with no
+//     recording to compare with (sub_recorded_at null), it acts.
+//
+// A token an operator's exchange entry mapped (ciphertoken.ProjectScopeNamed: a pod's account, a
+// workflow, a Google machine's account, each listed for the person) is held to no account and no
+// time: no person's credential made it, the operator's configuration names its person, and a pod
+// cannot sign in again, so a time would refuse it for as long as it lives once the person's account
+// is recorded, and every trade it makes in the margin after. The broker decides that scope for
+// those entries and for no person's own trade (exchange.Set's Pod, Workflow and Google; Person and
+// Machine decide the person scope), and such a token holds no scope, so it never mints or decides.
+//
+// That leaves no window to wait out while the broker pays a revocation: every credential the
+// replaced account holds records it or was made before the recording that replaced it, since
+// every credential the broker has made since it recorded accounts records the account that made
+// it, and the replacing sign-in sets sub_recorded_at in the transaction that records the
+// revocation (store.PgPeopleStore.SignInSubject). The broker revocation still ends those
+// credentials at the broker, for the secret reads Dispatch does not see (pass, broker_revocations).
+//
+// A restricted member is then held to restrictedOwnerAdmitted, the one check both credentials
+// share. A read that fails is 503 IDENTITY_UNAVAILABLE, never an accept. So the token of a full
+// member, or of a person no people row holds, costs that one read and answers as it always did
+// while its account is theirs; only a restricted member's reads the lists. A token naming a
+// service and no person is not asked. The admission answers whether the person is restricted,
+// which a live socket's heartbeat holds it to. A broker token never mints or decides
+// (brokerPersonScopes), so nothing past the admission reads its account.
+func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Caller) (brokerAdmission, error) {
+	var kind string
+	var replaced, named bool
+	subject, foreign := s.brokerTokenSubject(caller), s.brokerForeignAccount(caller)
+	held := s.deps.SignInIssuer != "" && caller.ProjectScope != ciphertoken.ProjectScopeNamed
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select coalesce((select member_kind from people where email = $1), ''),
+			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
+			`+brokerAccountNamed("$1", "$2::text")+`
+	`, model.CanonicalLogin(caller.Person), subject, timeOrNull(caller.CredentialCreatedAt), held, foreign).
+		Scan(&kind, &replaced, &named)
+	if err != nil {
+		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
+		return brokerAdmission{}, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"whether this token's person may still act could not be read; try again in a minute")
+	}
+	if replaced {
+		return brokerAdmission{}, brokerReplacedRefusal(subject == "", named)
+	}
+	admission := brokerAdmission{Restricted: model.MemberKind(kind) == model.MemberRestricted}
+	if !admission.Restricted {
+		return admission, nil
+	}
+	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+}
+
+// brokerCredentialMargin is how long after people recorded an address's Google account a broker
+// credential recording no account must have been made to count as made after it
+// (brokerAccountReplaced). Two things can put a credential the replaced account made after the
+// recording by the clocks, and the margin has to cover both, failing closed:
+//
+//   - The relay. An approve by the replaced account's credential that passed its last check
+//     (approverStanding) just before the replacing sign-in committed is relayed, and the broker
+//     makes the machine login in its own transaction later. Dispatch sends the decision within
+//     its own time after that check, and its client (cipher.Client's defaultTimeout, 5 s) bounds
+//     how long the request takes to reach the broker; the broker's handler then has its request
+//     deadline, 45 s (cmd/cipherd requestDeadline), to begin the transaction whose start is the
+//     login's created_at, so a late commit does not move it. So 50 s and Dispatch's own time.
+//   - The two clocks. The credential's time is the broker database's now() and the recording's
+//     is Dispatch's database's clock_timestamp(), so a broker clock ahead of Dispatch's by d moves
+//     every credential d later. Both databases run outside the cluster, managed, on Google's
+//     infrastructure, whose hosts take their time from Google's NTP (metadata.google.internal):
+//     on 2026-11-17 a GCP host of the same project read 2 µs slow of it (chronyc tracking, ±187 µs
+//     a sample, 0.65 ms root dispersion), and the production broker's and Dispatch's own hosts read
+//     within [-31, +131] ms and [-21, +90] ms of that host by their HTTP Date headers (a bound the
+//     round trip limits). The databases' own clocks could not be read from here. So healthy
+//     clocks are well under a second apart; what the margin really covers is a clock whose
+//     synchronization has failed and drifts.
+//
+// Five minutes less that 50 s relay leaves under 250 s of skew, less Dispatch's own time between
+// its check and its request, before a credential could be admitted wrongly: at a quartz drift of
+// 50 ppm, 4.3 s a day (a typical crystal's tolerance, not a measured one), a database clock would
+// have to run unsynchronized for about 58 days to use it up, which monitoring of either database
+// meets long before. A skew refuses, never admits. The
+// cost is one sign-in at the broker again for a credential recording no account made within five
+// minutes after its address's account was recorded, which after the recording only an older broker
+// makes: every approve then names the account (credentialSubjectSQL).
+const brokerCredentialMargin = 5 * time.Minute
+
+// brokerCredentialMarginSQL is brokerCredentialMargin as an SQL interval.
+var brokerCredentialMarginSQL = fmt.Sprintf("interval '%d seconds'", int(brokerCredentialMargin/time.Second))
+
+// timeOrNull is t as a statement parameter, nil (SQL null) for the zero time.
+func timeOrNull(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// brokerReplacedRefusal is the refusal of a broker token whose account no longer holds its
+// person's address (brokerAccountReplaced): a token recording no account Dispatch can name, none
+// or another issuer's (BROKER_TOKEN_RECORDS_NO_ACCOUNT), the replaced account's
+// (BROKER_TOKEN_NOT_ACTIVE, a revocation names it), or an account's that has not signed in since
+// Google gave it the address (BROKER_ACCOUNT_NOT_SIGNED_IN).
+func brokerReplacedRefusal(noAccount, named bool) error {
+	switch {
+	case noAccount:
+		return errBrokerTokenRecordsNoAccount()
+	case named:
+		return errBrokerCredentialRevoked()
+	}
+	return errBrokerAccountNotSignedIn()
+}
+
+// errBrokerTokenRecordsNoAccount is the refusal of a broker token whose credential records no
+// Google account Dispatch can name: none, made before people recorded its person's account, less
+// than brokerCredentialMargin after or at a time the broker did not record, or an account of
+// another issuer, whenever made (brokerAccountReplaced): an account that held the address before
+// may have made it. A credential the new holder made the same way needs one sign-in at the broker
+// again, whose credential records its account. The words name no person and no account.
+func errBrokerTokenRecordsNoAccount() error {
+	return errorf(http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT",
+		"this access token's credential records no Google account Dispatch can name, and Dispatch cannot tell it was made after it recorded the account that holds this address, so it acts for nobody; sign in again at the secrets broker, whose new credential records your account")
+}
+
+// brokerTokenSubject is the Google account (`sub`) a broker token's credential records, as an
+// account Dispatch can name: the broker's answer's account when its issuer is Dispatch's sign-in
+// issuer, the one every account people records is of. It is "" for a token recording none (a
+// sign-in or machine login made before the broker recorded accounts), for one whose account is of
+// another issuer (brokerForeignAccount), and for a Dispatch that signs nobody in.
+func (s *server) brokerTokenSubject(caller ciphertoken.Caller) string {
+	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" || oidc.CanonicalIssuer(caller.AccountIssuer) != s.deps.SignInIssuer {
+		return ""
+	}
+	return caller.AccountSubject
+}
+
+// brokerForeignAccount reports whether a broker token's credential records an account of another
+// issuer than Dispatch's sign-in issuer, on a deployment whose sign-in records accounts: an account
+// Dispatch cannot compare with the one it records for the person, which brokerAccountReplaced
+// refuses once it records one. The broker's own trades record its person token's issuer, Google's,
+// and its approvals the issuer Dispatch relays, so none is expected; the arm is what keeps one
+// from being held to a time instead.
+func (s *server) brokerForeignAccount(caller ciphertoken.Caller) bool {
+	return caller.AccountSubject != "" && s.deps.SignInIssuer != "" && oidc.CanonicalIssuer(caller.AccountIssuer) != s.deps.SignInIssuer
+}
+
+// brokerAdmission is a broker token's person admitted (brokerPersonAdmitted): whether the person
+// is a restricted member, read in the same statement as the token's account, which a live socket's
+// heartbeat compares (personRestricted).
+type brokerAdmission struct {
+	Restricted bool
+}
+
+// brokerAccountReplaced is the predicate that a broker token's account no longer holds the person
+// address, over five SQL expressions the statement names: the address, the token's own account
+// (brokerTokenSubject, "" for none), whether that account is of another issuer
+// (brokerForeignAccount), when its credential was made (null for a time the broker did not
+// record) and whether the token is held to an account at all: the deployment's sign-in records
+// accounts, and, at an admission, the token is no operator entry's. With accounts held and people
+// recording one for the address, it holds for a token recording another account (the replaced
+// account's, or an account's that has not signed in since Google gave it the address), for one
+// recording an account of another issuer, and for one recording none whose credential was made
+// before people recorded the address's account or less than brokerCredentialMargin after it, or at
+// an unrecorded time. It is false for an address recording no account, and, for a token recording
+// none, with no recording time, so nothing is refused that predates the column. An admission reads
+// it (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
+// (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
+func brokerAccountReplaced(address, subject, foreign, createdAt, held string) string {
+	return "(" + held + " and exists (select 1 from people where email = " + address + " and sub is not null and (" +
+		foreign + " or (nullif(" + subject + ", '') is not null and sub <> " + subject + ")" +
+		" or (nullif(" + subject + ", '') is null and sub_recorded_at is not null and (" + createdAt + " is null or " +
+		createdAt + " < sub_recorded_at + " + brokerCredentialMarginSQL + ")))))"
+}
+
+// brokerAccountNamed is the predicate that a broker revocation of the person address names
+// subject, a broker token's own account, as the account replaced or as an earlier holder, over
+// two SQL expressions the statement names: such an account held the address and lost it, so a
+// token of it that people no longer records is the replaced account's (BROKER_TOKEN_NOT_ACTIVE),
+// not an account that has not signed in yet. It is false for a token recording none.
+func brokerAccountNamed(address, subject string) string {
+	return "exists (select 1 from broker_revocations where email = " + address + " and nullif(" + subject + ", '') in (subject, holder_subject))"
+}
+
+// errBrokerCredentialRevoked is the refusal of a broker token naming a person whose account a
+// revocation names as the replaced one or an earlier holder while people records another
+// (brokerReplacedRefusal): the code a token the broker itself no longer holds live is refused with
+// (brokerTokenActor), since that is what the token is once the revocation is paid. The words name
+// no person.
+func errBrokerCredentialRevoked() error {
+	return errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
+		"another Google account signed in to this access token's address, so every credential the secrets broker issued for the address is revoked")
+}
+
+// errBrokerAccountNotSignedIn is the refusal of a broker token whose credential records a Google
+// account other than the one people records for its person when no revocation names that account
+// (brokerPersonAdmitted): Google gave the address to an account that has not signed in to Dispatch
+// since, so its own tokens act once it does. Its own code, not BROKER_TOKEN_NOT_ACTIVE, which a
+// client takes for a stale token and trades again for, which would fail the same way on every
+// request. A token whose account a revocation names is the replaced account's, and is
+// errBrokerCredentialRevoked. The words name no person and no account.
+func errBrokerAccountNotSignedIn() error {
+	return errorf(http.StatusUnauthorized, "BROKER_ACCOUNT_NOT_SIGNED_IN",
+		"the Google account this access token was issued for has not signed in to Dispatch since it was given this address; sign in to Dispatch with it, then use the token again")
 }
 
 // errNoBrokerConfigured is what a DPoP presentation is to a Dispatch with no broker: there is no
@@ -108,7 +355,9 @@ var brokerPersonScopes = []string{model.ScopePerson}
 //     revoked or expired).
 //   - 401 BROKER_TOKEN_PROOF_INVALID — the proof did not meet RFC 9449 Section 4.3: a bad
 //     signature, a method or target URI that is not this request's, an 'iat' outside the window,
-//     a missing or wrong 'ath', or a proof already spent.
+//     a missing or wrong 'ath', or a proof already spent; or its 'jti' holds a control character,
+//     which the replay store records nothing of (store.ErrUnstorableProof) and the library reports
+//     as its own failure, so it is answered here as the caller's.
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
@@ -125,6 +374,16 @@ var brokerPersonScopes = []string{model.ScopePerson}
 //   - 503 BROKER_UNAVAILABLE — the broker produced no answer, so the token was never judged. It
 //     is a 503 for the reason OIDC_ISSUER_UNAVAILABLE is: a caller told its token was refused
 //     would discard a token that may be perfectly live, where a 503 asks it to come back.
+//
+// A verified token naming a person is then held to the rule that person's personal token is
+// (brokerPersonAdmitted): a restricted member's acts only while the sign-in rule would sign them
+// in now (restrictedOwnerAdmitted), and is otherwise 401 TOKEN_OWNER_NOT_ADMITTED, or 503
+// IDENTITY_UNAVAILABLE when that cannot be read; and it is held to the Google account its
+// credential records: a token of an account a revocation names while people records another is 401
+// BROKER_TOKEN_NOT_ACTIVE, as a token the broker no longer holds live is; a token of another
+// account no revocation names is 401 BROKER_ACCOUNT_NOT_SIGNED_IN; and a token recording no
+// account Dispatch can name, whose credential was made before people recorded its person's account
+// or within brokerCredentialMargin after, is 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT.
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -138,7 +397,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
 			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented):
+	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented), errors.Is(err, store.ErrUnstorableProof):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
 			"the DPoP proof did not verify")
 	case errors.Is(err, ciphertoken.ErrNotASession):
@@ -158,6 +417,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
 		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
 			"the secrets broker cannot be reached; try again in a minute")
+	}
+	if caller.Person != "" {
+		if _, err = s.brokerPersonAdmitted(r.Context(), caller); err != nil {
+			return model.Actor{}, false, err
+		}
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No

@@ -286,7 +286,9 @@ func sameName(left, right string) bool {
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
 // and nothing else folded (fold.Login, the one spelling of that rule, which the broker's
 // record.CanonicalLogin reads too), the form the identity implementations name a person by and
-// the people table holds.
+// the people table holds. canonical_login (migration 20261117000831) is this form in SQL, for a
+// statement that compares a stored login with people.email; store.TestCanonicalLoginIsModelCanonicalLogin
+// holds the two to one another, so a change here is a change there.
 func CanonicalLogin(login string) string {
 	return fold.Login(login)
 }
@@ -471,6 +473,14 @@ type AccessAnswer struct {
 	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
 	// until a write changes the list.
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// Holder is present for a question naming a person that describes the credential being checked
+	// (?account_issuer=&account_subject=, or ?account=none, each with ?credential_created_at=):
+	// whether that credential holds the person's address. False when Dispatch records another
+	// Google account for the person, when the credential records an account of another issuer, or
+	// when it records none and was made before Dispatch recorded the person's account, within
+	// brokerCredentialMargin after, or at a time not given (accountHolder), and Visible is then
+	// false too. A question naming a person alone carries none, as before.
+	Holder *bool `json:"holder,omitempty"`
 }
 
 // PrivateProjectChannels is one private project's Slack channels as the secrets broker reads
@@ -483,10 +493,11 @@ type PrivateProjectChannels struct {
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
-// /api/v1/access/person?person=).
+// /api/v1/access/person?person=), with Holder as AccessAnswer carries it.
 type PersonAnswer struct {
 	Person     string `json:"person"`
 	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+	Holder     *bool  `json:"holder,omitempty"`
 }
 
 // The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a

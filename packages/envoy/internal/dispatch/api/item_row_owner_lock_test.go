@@ -972,10 +972,10 @@ func oneConnectionDocs(t *testing.T, deps Deps) (*docs.Service, uint32) {
 	t.Helper()
 	callStore, pid := oneConnectionStore(t, deps)
 	service := docs.New(docs.Deps{
-		Store:     callStore,
-		Events:    deps.Events,
-		Identity:  deps.Identity,
-		ServerURL: deps.ServerURL,
+		Store:    callStore,
+		Events:   deps.Events,
+		Identity: deps.Identity,
+		Origins:  deps.Origins,
 	})
 	// Registered after the store's close and so run before it, cleanups running last registered
 	// first, which leaves the service its connection while it shuts down.

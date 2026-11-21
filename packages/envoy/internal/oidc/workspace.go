@@ -8,8 +8,8 @@ import (
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
-// The reasons WorkspaceLogin refuses a Google sign-in, one per rule, so each caller can word its own
-// refusal: Dispatch's sign-in page and the secrets broker's approval page.
+// The reasons WorkspaceLogin and VerifiedLogin refuse a Google sign-in, one per rule, so each
+// caller can word its own refusal: Dispatch's sign-in page and the secrets broker's approval page.
 var (
 	ErrNoSubject        = errors.New("oidc: the Google ID token carries no subject")
 	ErrNoEmail          = errors.New("oidc: the Google ID token carries no email address")
@@ -18,9 +18,15 @@ var (
 )
 
 // EmailShape is an address with one @ and a dotted domain, the shape the deployment repository's
-// identity_email accepts: Google's email claim here, and Dispatch's federated username
-// (identity.GroupRule).
-var EmailShape = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+// identity_email accepts, holding no space: Google's email claim here, and Dispatch's federated
+// username (identity.GroupRule). A space is any character unicode.IsSpace names, not only the ASCII
+// ones Go's \s does: a trim (model.CanonicalLogin) takes U+00A0 NO-BREAK SPACE off an address's
+// end, so an address holding one could be read as another person's.
+var EmailShape = regexp.MustCompile(`^` + addressPart + `@` + addressPart + `\.` + addressPart + `$`)
+
+// addressPart is a run of characters that are neither @ nor a space: \s is \t, \n, \f, \r and the
+// space, and \v, U+0085 and the separators (\p{Z}) are the rest of unicode.IsSpace.
+const addressPart = `[^@\s\v\x{85}\p{Z}]+`
 
 // WorkspaceLogin applies the Google Workspace person rule to the claims a domain-mode code flow read
 // from a verified Google ID token, and returns the person's login: the email with its ASCII letters
@@ -33,13 +39,10 @@ var EmailShape = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 // ErrEmailNotVerified, and still returns the login when the email has an address's shape, so the
 // refusal can name the person.
 func WorkspaceLogin(claims Claims, domain string) (string, error) {
-	if claims.Subject == "" {
-		return "", ErrNoSubject
+	login, err := accountLogin(claims)
+	if err != nil {
+		return "", err
 	}
-	if !EmailShape.MatchString(claims.Email) {
-		return "", ErrNoEmail
-	}
-	login := fold.ASCII(claims.Email)
 	if domain == "" || claims.HostedDomain != domain {
 		return login, fmt.Errorf("%s (hd %q): %w", login, claims.HostedDomain, ErrNotInDomain)
 	}
@@ -47,4 +50,35 @@ func WorkspaceLogin(claims Claims, domain string) (string, error) {
 		return login, fmt.Errorf("%s: %w", login, ErrEmailNotVerified)
 	}
 	return login, nil
+}
+
+// VerifiedLogin applies WorkspaceLogin's rules but the domain to a Google ID token's claims, and
+// returns the person's login, the email with its ASCII letters lowered (fold.ASCII): the account
+// must have a subject and an email of an address's shape that Google has verified, whatever its
+// hd. It is for an account outside any Workspace, which a caller admits on a rule of its own
+// (Dispatch's outside sign-in, admitting an address a project's access list names). A refusal
+// wraps ErrNoSubject, ErrNoEmail or ErrEmailNotVerified, and still returns the login when the
+// email has an address's shape.
+func VerifiedLogin(claims Claims) (string, error) {
+	login, err := accountLogin(claims)
+	if err != nil {
+		return "", err
+	}
+	if !claims.EmailVerified {
+		return login, fmt.Errorf("%s: %w", login, ErrEmailNotVerified)
+	}
+	return login, nil
+}
+
+// accountLogin is the login of claims, its email with its ASCII letters lowered (fold.ASCII),
+// refusing an account with no subject (ErrNoSubject) or with no email of an address's shape
+// (ErrNoEmail).
+func accountLogin(claims Claims) (string, error) {
+	if claims.Subject == "" {
+		return "", ErrNoSubject
+	}
+	if !EmailShape.MatchString(claims.Email) {
+		return "", ErrNoEmail
+	}
+	return fold.ASCII(claims.Email), nil
 }

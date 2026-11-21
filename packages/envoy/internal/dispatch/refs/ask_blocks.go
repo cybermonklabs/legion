@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The type of each part of an ask, its ask_blocks.type and the salt of its identity hash
@@ -302,7 +303,7 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // reconciliation writes (ReindexOwed), where the links a part holds belong to the part index
 // this plans. The question's and the options' short ids resolve for the ask's author, whom its
 // row records (NewReader), and the answer's for its answerer (askPartPairs).
-func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (ItemRepair, error) {
+func planAskIfOwed(ctx context.Context, q Queryer, askID string, origins text.Origins) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string
 	var author []byte
@@ -328,7 +329,7 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	if err != nil {
 		return ItemRepair{}, fmt.Errorf("read the author of ask %s: %w", askID, err)
 	}
-	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, serverURL)
+	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, origins)
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}

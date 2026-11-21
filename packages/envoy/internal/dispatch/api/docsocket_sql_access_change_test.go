@@ -11,9 +11,10 @@ import (
 // TestADocumentSocketClosesOnItsHeartbeatOnceItsPersonLosesTheRoomBySQLAlone: the document service
 // re-checks its sockets' access on the sockets' heartbeat (Deps.StreamHeartbeat), the one the live
 // socket and the Delivery views resolve their readers again on (accessRecheckEvery), so an access
-// change made by SQL alone, which appends no event and announces nothing on access.ChangedChannel,
-// closes the socket of the person it took the room from as an announced change does: with 4412,
-// on which the provider reconnects. alice, signed in by her cookie, opens the spec of TEST, the
+// change made by SQL alone, which appends no event and announces nothing on
+// store.AccessChangedChannel, closes the socket of the person it took the room from as an
+// announced change does: with 4412, on which the provider reconnects. alice, signed in by her
+// cookie, opens the spec of TEST, the
 // project she made; the socket outlives several heartbeats while she reads it. Then TEST is given
 // to carol and made private by one statement, as at a psql prompt, which takes it from alice, and
 // her socket closes within a heartbeat and the pass's own reads, though her cookie still resolves.

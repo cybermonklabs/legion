@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 var (
@@ -75,11 +76,15 @@ const (
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
-	ServerURL         string
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
+	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
+	// either that a text writes is read as the reference its page names. The zero value reads only
+	// `dispatch://` references.
+	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -157,7 +162,7 @@ type Service struct {
 	persistence       VersionedStore
 	events            *events.Broker
 	identity          identity.Identity
-	serverURL         string
+	origins           text.Origins
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
@@ -206,6 +211,11 @@ type Service struct {
 	// afterSettleLock runs after settleRoom has taken the document's advisory lock and before
 	// it touches the room. Nil outside tests; tests use it to fail the room in that window.
 	afterSettleLock func(room string)
+	// afterSettlementCommit runs once a settlement's transaction has committed and released the
+	// room's lock it held across the commit (commitSettlement), and before the settlement finishes.
+	// Nil outside tests; a test reads the room there, the first moment another reader can find
+	// what the settlement committed.
+	afterSettlementCommit func(room string)
 	// beforeAwarenessWatch is given a room's awareness before the relay registers its own
 	// observer on it (awarenessRelay.watchRoomAwareness). Nil outside tests; tests use it to put
 	// an observer of their own ahead of the relay's, since ygo fires a room's update observers in
@@ -920,7 +930,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
+		origins:           deps.Origins,
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,

@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A broker token now says which Google account it is, and Dispatch holds it to that account. The
+  secrets broker's introspection answers `account_issuer` and `account_subject` for a token
+  naming a person, as the token recorded them when it was minted: the account that made the
+  sign-in on a machine it was minted under, or the account that approved the machine login it was
+  exchanged from, and neither for a token minted before this change. Dispatch refuses such a
+  token while it records another account for the address, on every route and at a live socket's
+  next heartbeat: `401 BROKER_TOKEN_NOT_ACTIVE` for the replaced account's token, which stops when
+  the new account signs in, and `401 BROKER_ACCOUNT_NOT_SIGNED_IN` for a token of an account
+  Google gave the address to, which approves nothing until that account signs in to Dispatch. A
+  machine login's approve by a broker token names the token's own account, never the one
+  Dispatch records for the address.
+time: 2026-11-17T10:11:47.000000000Z
+custom:
+    Issue: pr4199

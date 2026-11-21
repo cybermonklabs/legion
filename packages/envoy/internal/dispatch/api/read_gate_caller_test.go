@@ -17,11 +17,12 @@ import (
 )
 
 // tokenLookup reports whether statement is a personal token's read of its own row
-// (personalTokenActor): one per verification of a `dsp_` credential.
+// (personalTokenActor): one per verification of a `dsp_` credential. The read joins the owner's
+// people row, so it names the column by its table (agent_tokens.token_hash).
 func tokenLookup(statement string) bool {
 	statement = strings.TrimSpace(statement)
 	return strings.HasPrefix(statement, "select") && strings.Contains(statement, "from agent_tokens") &&
-		strings.Contains(statement, "where token_hash = $1")
+		strings.Contains(statement, "where agent_tokens.token_hash = $1")
 }
 
 // personRecord reports whether statement is the test identity's record of the person a request
