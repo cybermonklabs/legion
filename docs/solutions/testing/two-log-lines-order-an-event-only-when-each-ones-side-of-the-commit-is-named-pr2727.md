@@ -47,7 +47,7 @@ separately. Its three operator-visible lines are the ones the production check o
 from `kubectl logs`:
 
 ```
-msg="admission reconcile: holding roots for the Dispatch consumer to reach a stream position" count=1 target=1000 ack_floor=0
+msg="admission reconcile: holding roots for the Dispatch consumer to catch up" count=1 ack_floor=0
 msg="admission: the Dispatch consumer has caught up; releasing held roots" count=1 ack_floor=0 idle=true admitted=1
 msg="admission: slot taken" issue=LEGION-HELD slots=1 cap=1
 ```

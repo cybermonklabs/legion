@@ -758,7 +758,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 // The three admission log lines this proof reads, each the one an operator reads in the daemon's
 // own output.
 const (
-	holdingMessage   = "admission reconcile: holding roots for the Dispatch consumer to reach a stream position"
+	holdingMessage   = "admission reconcile: holding roots for the Dispatch consumer to catch up"
 	releaseMessage   = "admission: the Dispatch consumer has caught up; releasing held roots"
 	slotTakenMessage = "admission: slot taken"
 )

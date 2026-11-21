@@ -79,8 +79,10 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					t.Fatalf("flush the exceptions subscription: %v", err)
 				}
 
-				publishDaemonGrantFixture(t, js, "../intake/testdata/dispatch/issue-updated.json")
-				publishDaemonGrantFixture(t, js, "../intake/testdata/github/pr-opened.json")
+				// The captured event's own topic is the old keyed form; the narrowed Dispatch
+				// consumer hears only the project form Dispatch now publishes it on.
+				publishDaemonGrantFixture(t, js, "../intake/testdata/dispatch/issue-updated.json", issueSubject("CAPTURE-3", "issue.updated"))
+				publishDaemonGrantFixture(t, js, "../intake/testdata/github/pr-opened.json", "")
 				publishDaemonGrantEnvelope(t, js, wakeGrantSubject, "envoy", "listener-wake-grant",
 					fmt.Sprintf(`{"kind":"role_message","role":"legion-capture-capture-90-implementer","at":%d}`, time.Now().UnixMilli()))
 				publishDaemonGrantEnvelope(t, js, readyGrantSubject, "envoy", "listener-ready-grant",
@@ -240,7 +242,9 @@ func (h *failFirstDaemonGrantHandler) Apply(context.Context, pgx.Tx, intake.Fact
 	return intake.Result{}, nil
 }
 
-func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path string) {
+// publishDaemonGrantFixture publishes the captured envelope at path on subject, or on its own
+// topic when subject is empty.
+func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path, subject string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -252,7 +256,10 @@ func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path string
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
-	if _, err := js.Publish(t.Context(), envelope.Topic, data); err != nil {
+	if subject == "" {
+		subject = envelope.Topic
+	}
+	if _, err := js.Publish(t.Context(), subject, data); err != nil {
 		t.Fatalf("publish %s: %v", path, err)
 	}
 }
