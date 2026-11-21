@@ -107,9 +107,9 @@ import (
 // is applied after all of these but one and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
-// dispatch://INFRA-4015's selection records of the daemon's durable consumers (20261121001600) is
-// applied last: it creates the empty table intake_consumers and touches no other table, so it
-// needs no row of its own here.
+// The selection records of the daemon's durable consumers (20261121001600) are applied last: the
+// migration creates the empty table intake_consumers and touches no other table, so it needs no
+// row of its own here.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -136,7 +136,8 @@ var thisBranchsMigrations = []int{
 // forward (20261117064152), the kind list with the plan record (20261117023932),
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and dispatch://INFRA-4015's 20261121001600. That is why
+// dispatch://INFRA-4729's 20261120055717 and the durable consumers' selection records'
+// 20261121001600. That is why
 // the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
