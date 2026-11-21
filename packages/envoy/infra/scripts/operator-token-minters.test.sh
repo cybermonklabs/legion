@@ -13,12 +13,16 @@
 #     group system:masters allowed everything; it lists ServiceAccounts and reads a namespace;
 #   - gcloud describes roles from the world's role table (roles/container.admin's list is the
 #     real role's, read with `gcloud iam roles describe roles/container.admin` on 2026-11-20, cut
-#     to the permissions the check names and a few beside them), lists the project's clusters,
-#     writes a kubeconfig for get-credentials, and answers Policy Analyzer as the API does: a
-#     binding on the resource itself or on its project is seen from any scope, one on the
-#     organization only from the organization's scope, a group is expanded only with
-#     --expand-groups and --output-group-edges, and a role is given as its permissions only with
-#     --expand-roles;
+#     to the permissions the check names and a few beside them), lists the project's clusters (and
+#     says on stderr, as gcloud 593.0.0 does, which zones did not respond), writes a kubeconfig for
+#     a GKE cluster's get-credentials and for a fleet membership's, prints an access token, and
+#     answers Policy Analyzer as the API does: a binding on the resource itself or on its project is
+#     seen from any scope, one on the organization only from the organization's scope, a group is
+#     expanded only with --expand-groups and --output-group-edges, and a role is given as its
+#     permissions only with --expand-roles;
+#   - curl answers the GKE Hub API's list of the fleet's memberships, one membership a page, the
+#     locations it could not reach on the first page, so a reader that stops at one page, or reads
+#     `unreachable` from another, misses what the world holds;
 #   - agent-secrets shows a secret's tags as `secret show NAME --json` prints them, or answers as
 #     Secret Manager's NotFound and PermissionDenied are printed.
 #
@@ -61,7 +65,14 @@
 #        not know, an IAM resource type the check does not read, and a missing render or preview,
 #        each read UNKNOWN;
 #   (q)  a Policy Analyzer answer longer than a pipe holds (3000 people beside the Workload Identity
-#        member) still finds its witness, and exits 0.
+#        member) still finds its witness, and exits 0;
+#   (r)  the pool project's fleet: a member that is no GKE cluster, listed on the fleet's second
+#        page, whose cluster lets a ServiceAccount make a namespace, exits 1 naming the member (the
+#        control is the script before this step, which misses it); a GKE member in another project
+#        holding the namespace envoy-operator exits 1 naming the cluster; a fleet the API answers
+#        empty exits 0 and says so; a listing with an unreachable location, a refused listing, a
+#        member whose credentials are refused, and a project's cluster list gcloud says is
+#        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -144,15 +155,37 @@ case "${words[*]}" in
   "container clusters list")
     [ "${flag[project]:-}" = "$project" ] || { echo "fake gcloud: clusters list of project ${flag[project]:-none}" >&2; exit 2; }
     [ ! -e "$world/refuse-clusters" ] || refuse container.clusters.list "Required \"container.clusters.list\" permission(s) for \"projects/$project\"."
+    [ ! -e "$world/missing-zones" ] || echo "WARNING: The following zones did not respond: us-west1-b. List results may be incomplete." >&2
     cat "$world/clusters.json"
     ;;
   "container clusters get-credentials "*)
+    # A cluster of the project's own list, or a GKE member of the fleet, in the project named.
     cluster="${words[3]}"
-    jq -e --arg c "$cluster" --arg l "${flag[location]:-}" 'any(.[]; .name == $c and .location == $l)' "$world/clusters.json" >/dev/null ||
-      { echo "ERROR: (gcloud.container.clusters.get-credentials) NOT_FOUND: cluster $cluster in ${flag[location]:-} not found" >&2; exit 1; }
+    jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" \
+      '($p == $project and any(.[]; .name == $c and .location == $l))
+       or any($fleet[0].memberships[]; .gke == {project: $p, location: $l, cluster: $c})' "$world/clusters.json" >/dev/null ||
+      { echo "ERROR: (gcloud.container.clusters.get-credentials) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
+    [ ! -e "$world/refuse-credentials-$cluster" ] ||
+      refuse container.clusters.get-credentials "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
     [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG would write the caller's own kubeconfig" >&2; exit 2; }
     printf 'cluster: %s\n' "$cluster" >"$KUBECONFIG"
     echo "Fetching cluster endpoint and auth data." >&2
+    ;;
+  "container fleet memberships get-credentials "*)
+    # A member of the fleet that is no GKE cluster, through the Connect gateway.
+    id="${words[4]}"
+    [ "${flag[project]:-}" = "$(jq -r .project "$world/fleet.json")" ] || { echo "fake gcloud: membership get-credentials in project ${flag[project]:-none}" >&2; exit 2; }
+    member="$(jq -c --arg id "$id" --arg l "${flag[location]:-}" 'first(.memberships[] | select(.id == $id and .location == $l and (has("gke") | not))) // empty' "$world/fleet.json")"
+    [ -n "$member" ] || { echo "ERROR: (gcloud.container.fleet.memberships.get-credentials) NOT_FOUND: membership $id in ${flag[location]:-} not found" >&2; exit 1; }
+    [ "$(jq -r '.refuse // false' <<<"$member")" != true ] ||
+      refuse container.fleet.memberships.get-credentials "Permission 'gkehub.gateway.generateCredentials' denied on 'projects/$number/locations/${flag[location]:-}/memberships/$id'"
+    [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG would write the caller's own kubeconfig" >&2; exit 2; }
+    printf 'cluster: %s\n' "$(jq -r .cluster <<<"$member")" >"$KUBECONFIG"
+    echo "A new kubeconfig entry has been generated and set as the current context." >&2
+    ;;
+  "auth print-access-token")
+    [ ! -e "$world/refuse-token" ] || { echo "ERROR: (gcloud.auth.print-access-token) You do not currently have an active account selected." >&2; exit 1; }
+    echo example-access-token
     ;;
   "asset analyze-iam-policy")
     [ "${flag[show-response]:-}" = true ] || { echo "fake gcloud: without --show-response gcloud prints its own summary, which this fake does not render" >&2; exit 2; }
@@ -281,6 +314,50 @@ fi
 cat "$world/secrets/$3.json"
 EOF
 
+# --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it
+# (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
+# unreachable locations on the first page alone. The bearer token must come in through the
+# configuration curl reads on stdin (-K -), never on the command line. ---
+fake curl <<'EOF'
+config="$(cat)"
+url="" token=""
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --data-urlencode)
+      i=$((i + 1))
+      kv="${!i}"
+      [ "${kv%%=*}" != pageToken ] || token="${kv#*=}"
+      ;;
+    --max-time | -K) i=$((i + 1)) ;;
+    -*) ;;
+    *) url="$arg" ;;
+  esac
+done
+[[ "$*" != *example-access-token* ]] || { echo "fake curl: the access token is on the command line" >&2; exit 2; }
+# The scheme is held apart from the fake token so no line of this file reads as a credential.
+scheme=Bearer
+[[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
+fleet_project="$(jq -r .project "$world/fleet.json")"
+if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
+  project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
+  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' \
+    "'gkehub.memberships.list'" "'projects/${project_of%%/*}/locations/-/memberships'"
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+fi
+jq --argjson at "${token:-0}" '
+  . as $w
+  | ($w.memberships | length) as $n
+  | {resources: [$w.memberships[$at] // empty | {
+       name: "projects/\($w.project)/locations/\(.location)/memberships/\(.id)",
+       uniqueId: "uid-\(.id)", state: {code: "READY"},
+       endpoint: (if .gke then {gkeCluster: {resourceLink: "//container.googleapis.com/projects/\(.gke.project)/locations/\(.gke.location)/clusters/\(.gke.cluster)"}}
+                  else {kubernetesMetadata: {kubernetesApiServerVersion: "v1.33.0"}} end)}]}
+  + (if $at + 1 < $n then {nextPageToken: "\($at + 1)"} else {} end)
+  + (if $at == 0 and (($w.unreachable // []) | length) > 0 then {unreachable: $w.unreachable} else {} end)' "$world/fleet.json"
+EOF
+
 # --- The world. ---
 
 # edit FILE JQ [ARGS...]: rewrites a world JSON file through a jq program. The program and the file
@@ -318,6 +395,11 @@ role() { edit "$world/roles.json" '. + {($r): $ARGS.positional}' --arg r "$1" --
 # namespaces and ServiceAccounts, as a cluster's own controllers may.
 add_cluster() {
   edit "$world/clusters.json" '. + [{name: $n, location: $l, status: "RUNNING"}]' --arg n "$1" --arg l "$2"
+  make_cluster "$1"
+}
+# make_cluster NAME: a cluster's own world (its namespaces, ServiceAccounts and grants) and no
+# entry in the project's list, as a fleet member in another project or outside GKE has.
+make_cluster() {
   mkdir -p "$world/clusters/$1"
   printf '%s\n' default kube-system gke-managed-system gmp-system apps >"$world/clusters/$1/namespaces"
   jq -n '[{namespace: "kube-system", name: "namespace-controller"}, {namespace: "gke-managed-system", name: "addon-manager"},
@@ -328,6 +410,9 @@ add_cluster() {
   subject_grant "$1" "$(sa_subject gke-managed-system addon-manager)" create "" serviceaccounts "" "" ""
   subject_grant "$1" "$(sa_subject gmp-system collector)" create "" namespaces "" "" ""
 }
+# add_member JSON: one more membership of the fleet, last in its list: {id, location, gke:
+# {project, location, cluster}} for a GKE cluster, else {id, location, cluster: <its world's name>}.
+add_member() { edit "$world/fleet.json" '.memberships += [$m]' --argjson m "$1"; }
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
 # a few beside them it also holds.
@@ -349,6 +434,10 @@ build_world() {
   printf '%s\n' "$project" >"$world/project"
   printf '%s\n' "$number" >"$world/number"
   jq -n '[{name: "operator-cluster", location: "us-central1", status: "RUNNING"}]' >"$world/clusters.json"
+  # The pool project's fleet, holding the operator's cluster alone.
+  jq -n --arg p "$project" '{project: $p, unreachable: [],
+    memberships: [{id: "operator-cluster", location: "global", gke: {project: $p, location: "us-central1", cluster: "operator-cluster"}}]}' \
+    >"$world/fleet.json"
   printf '%s\n' default kube-system legion agent-sessions legion-abc123-sessions envoy-operator secrets-broker example-db \
     >"$world/clusters/operator-cluster/namespaces"
   jq -n --arg worker "$worker_gsa" --arg gsa "$gsa" --arg broker "$broker" '[
@@ -560,6 +649,8 @@ if row a; then
     "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR"; do
     want_text "PASS $step: " "a clean world's $step"
   done
+  want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here" \
+    "a clean world's fleet"
   passed "(a) people, the system namespaces and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
 fi
 
@@ -987,6 +1078,108 @@ if row q; then
   want_status 0 "3000 people beside the Workload Identity member"
   want_text "PASS live: minters of $gsa: 3003 holders listed" "3000 people beside the Workload Identity member"
   passed "(q) a Policy Analyzer answer longer than a pipe holds still finds its witness"
+fi
+
+# --- (r) The pool project's fleet. Every member cluster uses the pool, so a ServiceAccount
+# envoy-operator/envoy-operator there acts as the operator's Google service account. ---
+fleet_step="live: Workload Identity: the fleet of project $project"
+if row r; then
+  # A member that is no GKE cluster, second in the list, so on the API's second page, whose cluster
+  # lets a ServiceAccount outside its system namespaces make a namespace.
+  base_world
+  make_cluster edge-cluster
+  subject_grant edge-cluster "$(sa_subject apps deployer)" create "" namespaces "" "" ""
+  add_member '{"id": "edge", "location": "global", "cluster": "edge-cluster"}'
+  run
+  want_status 1 "a fleet member whose cluster has a minter"
+  want_line "FINDING system:serviceaccount:apps:deployer: create namespaces cluster-wide on fleet member $project/global/edge" \
+    "a fleet member whose cluster has a minter"
+  passed "(r) a fleet member that is no GKE cluster, on the listing's second page, whose cluster lets a ServiceAccount make a namespace, exits 1 naming it"
+
+  # A GKE member in another project, read in that project, holding the operator's namespace.
+  base_world
+  make_cluster shared-cluster
+  echo envoy-operator >>"$world/clusters/shared-cluster/namespaces"
+  add_member '{"id": "shared", "location": "global", "gke": {"project": "other-project", "location": "us-east1", "cluster": "shared-cluster"}}'
+  run
+  want_status 1 "a GKE fleet member in another project holding the namespace envoy-operator"
+  want_line "FINDING cluster:other-project/us-east1/shared-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog" \
+    "a GKE fleet member in another project holding the namespace envoy-operator"
+  passed "(r) a GKE fleet member in another project holding the namespace envoy-operator exits 1 naming the cluster"
+
+  # A member that is one of the project's own clusters, read once, by the project's step.
+  base_world
+  add_cluster other-cluster us-east1
+  add_member "$(jq -nc --arg p "$project" '{id: "other", location: "global", gke: {project: $p, location: "us-east1", cluster: "other-cluster"}}')"
+  run
+  want_status 0 "a fleet member that is one of the project's clusters"
+  want_line "PASS $fleet_step: 2 membership(s) listed, every location reached: 1 the operator's cluster, 1 read above as clusters of the project, 0 read here" \
+    "a fleet member that is one of the project's clusters"
+  passed "(r) a fleet member that is one of the project's clusters is read once, by the project's step"
+
+  # A fleet the API answers with no membership.
+  base_world
+  edit "$world/fleet.json" '.memberships = []'
+  run
+  want_status 0 "an empty fleet"
+  want_line "PASS $fleet_step: the GKE Hub API lists no membership in the fleet, and no location it could not reach" "an empty fleet"
+  passed "(r) a fleet the API answers with no membership exits 0 and says so"
+
+  # A listing that could not reach a location.
+  base_world
+  edit "$world/fleet.json" '.unreachable = ["us-west1"]'
+  run
+  want_status 2 "a fleet listing with an unreachable location"
+  want_line "UNKNOWN $fleet_step: the listing could not reach the locations us-west1, so a membership registered there is not listed" \
+    "a fleet listing with an unreachable location"
+  passed "(r) a fleet listing that could not reach a location exits 2 with UNKNOWN"
+
+  # A refused listing.
+  base_world
+  : >"$world/refuse-fleet"
+  run
+  want_status 2 "a refused fleet listing"
+  want_text "UNKNOWN $fleet_step: the GKE Hub API refused the listing of projects/$project/locations/-/memberships (it needs gkehub.memberships.list there): 403 PERMISSION_DENIED Permission 'gkehub.memberships.list' denied" \
+    "a refused fleet listing"
+  passed "(r) a refused fleet listing exits 2 with UNKNOWN naming the permission"
+
+  # No access token for the running identity.
+  base_world
+  : >"$world/refuse-token"
+  run
+  want_status 2 "no access token"
+  want_text "UNKNOWN $fleet_step: gcloud auth print-access-token gave no access token for the running identity" "no access token"
+  passed "(r) no access token for the running identity exits 2 with UNKNOWN"
+
+  # A member whose credentials are refused.
+  base_world
+  make_cluster edge-cluster
+  add_member '{"id": "edge", "location": "global", "cluster": "edge-cluster", "refuse": true}'
+  run
+  want_status 2 "a fleet member whose credentials are refused"
+  want_text "UNKNOWN live: Workload Identity on fleet member edge: gcloud container fleet memberships get-credentials edge --location global --project $project was refused" \
+    "a fleet member whose credentials are refused"
+  passed "(r) a fleet member whose credentials are refused exits 2 with UNKNOWN"
+
+  # A project's cluster list gcloud says is incomplete.
+  base_world
+  : >"$world/missing-zones"
+  run
+  want_status 2 "an incomplete cluster list"
+  want_text "UNKNOWN live: clusters: gcloud container clusters list says its list is incomplete" "an incomplete cluster list"
+  want_line "UNKNOWN live: Workload Identity: the project's cluster list is incomplete (live: clusters), so a cluster it leaves out is not read" \
+    "an incomplete cluster list"
+  passed "(r) a cluster list gcloud says is incomplete exits 2 with UNKNOWN"
+
+  # --pool-project naming another pool: the analysis lists the real pool's member, not the one
+  # named, and that pool's fleet cannot be listed, so the run cannot read clean.
+  base_world
+  run --pool-project other-pool
+  [ "$status" -ne 0 ] || fail "--pool-project other-pool: exit 0"
+  want_text "UNKNOWN live: minters of $gsa: the analysis does not list serviceAccount:other-pool.svc.id.goog[envoy-operator/envoy-operator]" \
+    "--pool-project other-pool"
+  want_text "UNKNOWN live: Workload Identity: the fleet of project other-pool: the GKE Hub API refused the listing" "--pool-project other-pool"
+  passed "(r) --pool-project naming another pool than the operator's member names cannot read clean"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

@@ -726,6 +726,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.streamMaxBytes > 0 {
 		appEnv = append(appEnv, valueEnv("ENVOY_STREAM_MAX_BYTES", strconv.Itoa(s.streamMaxBytes)))
 	}
+	if s.streamsOperatorMade {
+		appEnv = append(appEnv, valueEnv(bus.StreamsOperatorMadeEnvVar, "1"))
+	}
 	// Dispatch presents its own ServiceAccount's token to the listener, which verifies it against
 	// this cluster's issuer and takes a send's role mark from that account alone
 	// (dispatchListenerIdentityEnv). The kubelet mints it for the listener's URL as its audience

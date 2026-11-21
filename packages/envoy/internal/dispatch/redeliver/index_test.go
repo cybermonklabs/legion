@@ -30,7 +30,7 @@ func TestPendingFiltersCoverTheWindowWithoutOverlapping(t *testing.T) {
 		{"crossing an hour", base, base.Add(45 * time.Minute)},
 		{"crossing a day", day.Add(23*time.Hour + 50*time.Minute), day.Add(24*time.Hour + 10*time.Minute)},
 		{"a minute into a day to a minute into the fourth", day.Add(time.Minute), day.Add(72*time.Hour + time.Minute)},
-		{"the full retention", base.Add(-retention), base},
+		{"the full retention", base.Add(-Retention), base},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			window := tc.floor.Format(time.RFC3339) + " to " + tc.ceiling.Format(time.RFC3339)

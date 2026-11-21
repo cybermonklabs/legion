@@ -441,7 +441,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	}
 	open := func() spentProofs {
 		kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, js, &natsgo.KeyValueConfig{
-			Bucket: bus.DPoPProofBucket, TTL: spentProofRetention, Storage: natsgo.FileStorage, Replicas: 1,
+			Bucket: bus.DPoPProofBucket, TTL: ciphertoken.SpentProofRetention, Storage: natsgo.FileStorage, Replicas: 1,
 		})
 		if err != nil {
 			t.Fatalf("open %s: %v", bus.DPoPProofBucket, err)
@@ -472,8 +472,8 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the bucket's status: %v", err)
 	}
-	if status.TTL() != spentProofRetention {
-		t.Fatalf("the bucket's TTL = %s, want %s", status.TTL(), spentProofRetention)
+	if status.TTL() != ciphertoken.SpentProofRetention {
+		t.Fatalf("the bucket's TTL = %s, want %s", status.TTL(), ciphertoken.SpentProofRetention)
 	}
 }
 

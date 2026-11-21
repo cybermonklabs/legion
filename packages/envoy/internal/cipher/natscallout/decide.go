@@ -248,12 +248,16 @@ func decideOperator(ctx context.Context, deps Deps, entry ServiceEntry, expiry t
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The operator entry's grant is the writer
-// hold's phase's (decideOperator), and every other client it would admit is refused while the hold
-// row holds held or cannot be read (outsideTheHold); either reads the row once, after the
-// credential verified, so a client refused for its credential costs the broker's Postgres nothing.
-// The grant it answers is not yet checked: every answer passes the guard in admit (callout.go),
-// whatever decided it.
+// clock skew) and its account is listed in services. Every answer but the operator's is the grant
+// so decided less any stream create, update, delete or restore (natsgrant.ForCallout, applied to
+// whatever natsgrant.Session or scopeGrant returns, never in place of them), so no connection it
+// admits but the operator's makes, changes or removes a stream, while what a kind may reach and
+// the projects it is held to stay scopeGrant's. The operator entry's grant is the writer hold's
+// phase's (decideOperator), and every other client it would admit is refused while the hold row
+// holds held or cannot be read (outsideTheHold); either reads the row once, after the credential
+// verified, so a client refused for its credential costs the broker's Postgres nothing. The grant
+// it answers is not yet checked: every answer passes the guard in admit (callout.go), whatever
+// decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -330,7 +334,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 	if err != nil {
 		return Decision{}, refuse(labelBadSessionID, "session id is not one subject token")
 	}
-	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: time.Unix(answer.ExpiresAt, 0)}, nil
+	return Decision{Name: sessionNamePrefix + caller.Session, Grant: natsgrant.ForCallout(grant), Expires: time.Unix(answer.ExpiresAt, 0)}, nil
 }
 
 // longestServiceToken is the longest life a service's platform token may have from its issue: a
@@ -368,9 +372,9 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry.Kind == KindOperator {
 		return decideOperator(ctx, deps, *entry, expiry)
 	}
-	grant, err := scopeGrant(*entry, serviceGrant(*entry))
+	scoped, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return outsideTheHold(ctx, deps, Decision{Name: entry.name(), Grant: grant, Expires: expiry})
+	return outsideTheHold(ctx, deps, Decision{Name: entry.name(), Grant: natsgrant.ForCallout(scoped), Expires: expiry})
 }

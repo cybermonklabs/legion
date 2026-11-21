@@ -17,6 +17,31 @@ const (
 	SessionMaxAgeEnvVar  = "ENVOY_SESSION_MAX_AGE"
 )
 
+// StreamsOperatorMadeEnvVar is the setting of a program that runs beside the NATS auth service,
+// where no client but the operator may create or change a stream (natsgrant.ForCallout): set to 1,
+// the program's start reads every stream and bucket it needs and makes none, stopping, naming the
+// stream and the operator's command, when one is missing (ErrStreamNotMade); its client runs no
+// keeper, and a bucket's age is left as the operator set it (SetKeyValueMaxAge). Every stream is
+// then made, and raised, at deploy time by `envoy-infra streams update`. Unset, the start makes and
+// reconciles its streams as it always has. The bus reads it from the connect's environment
+// (WithEnvironment), as it reads the NATS credential, so every program connecting through it takes
+// it; ParseStreamsOperatorMade reads the value.
+const StreamsOperatorMadeEnvVar = "ENVOY_STREAMS_OPERATOR_MADE"
+
+// ParseStreamsOperatorMade reads StreamsOperatorMadeEnvVar: "1" is on, and unset, blank or "0"
+// off. Anything else is refused naming the variable and the value, so a "true" never reads as off
+// and has the start make its streams.
+func ParseStreamsOperatorMade(raw string) (bool, error) {
+	switch value := strings.TrimSpace(raw); value {
+	case "", "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s %q: want 1, or 0 or unset", StreamsOperatorMadeEnvVar, value)
+	}
+}
+
 // MaxReplicas is the most copies NATS keeps of a stream or a bucket, and so the largest
 // ReplicasEnvVar ParseNATSReplicas takes. aws:WebhookListener's rendering
 // (github.com/sjawhar/envoy/infra/aws/rendering) refuses a larger natsReplicas by this bound, so a

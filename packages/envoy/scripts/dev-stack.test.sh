@@ -35,28 +35,42 @@
 # (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
-# path two stand-ins would fight over; (h) a run given --binaries calls no go at all, copies the
-# prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
-# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
-# holding one that is not an executable file, is refused with exit 2, naming each such file,
-# before anything is created or started; and (j) a --callout run starts natsd behind the auth
-# callout with a monitor port, two brokers that each run the auth service on it, and the listener
-# and Dispatch each with a NATS service token the issuer writes, exports what callout-check.sh
-# reads, and outlives its second broker being killed, while a run without --callout does none of
-# it; (k) every run gives each broker its database URL with pool_max_conns=10, production's
-# pool size, joined to the server URL's own query string or starting one where it has none (the
-# --callout run names a server URL with no query string), while Dispatch, which refuses that
-# parameter, gets the URL's query string alone; (l) on the --callout run SIGUSR1 restarts natsd on
-# the ports it reported, with the same store and callout keys, and SIGUSR2 restarts the listener
-# on its keeper's socket, each old process gone, its log kept, and the stack up; and the controls
-# that (l)'s same-port checks can fail, each stopping the whole stack and naming both ports: (m) a
-# natsd that comes back on another client port, (n) one that comes back on its client port and
-# another monitor port, and (o) a listener that comes back on another port than its keeper's;
-# (p) a bash older than 5.1 (4.4, 5.0) is refused with exit 2 and one line naming the bash it needs
-# and the one it is, while 5.1 and 5.3 are taken, by the gate the driver runs at its top; and
-# (q) every broker a run starts, the --callout run's second among them, lists the run's registrar
-# as the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which
-# the one registration the run makes is refused.
+# path two stand-ins would fight over; (h) a run given --binaries with the eight binaries the
+# header names calls no go at all, copies the prebuilt stubs into its own bin directory, and runs
+# them, held to everything (a), (b), (c) and (e) hold a built run to; and (i) a --binaries
+# directory short of one of them, or holding one that is not an executable file, is refused with
+# exit 2, naming each such file, before anything is created or started; and (j) a --callout run
+# starts natsd behind the auth callout with a monitor port, two brokers that each run the auth
+# service on it, and the listener and Dispatch each with a NATS service token the issuer writes,
+# exports what callout-check.sh reads, and outlives its second broker being killed, while a run
+# without --callout does none of it; (k) every run gives each broker its database URL with
+# pool_max_conns=10, production's pool size, joined to the server URL's own query string or
+# starting one where it has none (the --callout run names a server URL with no query string),
+# while Dispatch, which refuses that parameter, gets the URL's query string alone; (l) on the
+# --callout run SIGUSR1 restarts natsd on the ports it reported, with the same store and callout
+# keys, and SIGUSR2 restarts the listener on its keeper's socket, each old process gone, its log
+# kept, and the stack up; and the controls that (l)'s same-port checks can fail, each stopping the
+# whole stack and naming both ports: (m) a natsd that comes back on another client port, (n) one
+# that comes back on its client port and another monitor port, and (o) a listener that comes back
+# on another port than its keeper's; (p) a bash older than 5.1 (4.4, 5.0) is refused with exit 2
+# and one line naming the bash it needs and the one it is, while 5.1 and 5.3 are taken, by the
+# gate the driver runs at its top; (q) a --project-access run points the broker at its own
+# Dispatch's access routes with a token of its own account, has Dispatch admit that account, and
+# starts the airlock in a container of its own, while a run without it sets none of it; (r) a
+# --project-access run whose airlock proxy bound another port than the one it picked stops,
+# naming both ports; (s) only --project-access needs the airlock's stands: it builds
+# dev-airlock-stands beside the eight, given --binaries it needs that ninth binary there, and it
+# needs docker on PATH, refused before anything is created or started without either, while a
+# run without it builds no stands and needs no docker; (t) --callout and --project-access
+# together, in either order, are refused with exit 2 and one line naming the pair, before anything
+# is created or started and with no psql, curl, go or docker call; and (u) every broker a run
+# starts, the --callout run's second among them, lists the run's registrar as the registrar of the
+# pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the one registration
+# the run makes is refused. (q) and (r) run after (h), and (s) and (t) after (i).
+#
+# The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
+# --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
+# both, and is the one entry point that runs every case.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -133,19 +147,33 @@ exit 0
 EOF
 chmod +x "${fake_bin_dir}/curl"
 
-# --- Fake python3, which dev-stack.sh runs only as scripts/e2e/lib/held-port.py: `keep` writes
-# its own PID to the port file as the port it holds (two concurrent keepers have distinct PIDs, as
-# two kernel-chosen ports are distinct) and stays alive, writing that file last as the real keeper
-# does, which writes it only once it is serving; it writes the same port at its --socket path,
-# which stands in for the socket a server's start is handed. `exec` drops its own options and
-# executes the command after `--`, as the real one does once it has put the held socket on
-# descriptor 3; with --from, it reads the port that socket path holds and puts it for each {port}
-# in the command, as the real one puts the held socket's port. No socket is opened either way. ---
+# --- Fake docker, which dev-stack.sh runs only under --project-access: write_fake_docker is
+# lib/dev-stack-test-docker.sh's. ---
+# shellcheck source=lib/dev-stack-test-docker.sh
+. "${project_root}/packages/envoy/scripts/lib/dev-stack-test-docker.sh"
+write_fake_docker "$fake_bin_dir"
+
+# --- Fake python3, which dev-stack.sh runs as two things. As scripts/e2e/lib/held-port.py:
+# `keep` writes its own PID to the port file as the port it holds (two concurrent keepers have
+# distinct PIDs, as two kernel-chosen ports are distinct) and stays alive, writing that file last
+# as the real keeper does, which writes it only once it is serving; it writes the same port at
+# its --socket path, which stands in for the socket a server's start is handed. `exec` drops its
+# own options and executes the command after `--`, as the real one does once it has put the held
+# socket on descriptor 3; with --from, it reads the port that socket path holds and puts it for
+# each {port} in the command, as the real one puts the held socket's port. And as `python3 -c`,
+# which asks the kernel for a free port for the airlock's proxy: this one prints its own PID for
+# the same reason, and with DEV_STACK_TEST_PICKED_PORT set prints that instead. The lost port race
+# of (r) does not use it: there the broker's stub reports another address
+# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way. ---
 cat >"${fake_bin_dir}/python3" <<'EOF'
 #!/usr/bin/env bash
 script="${1:-}"
 case "$script" in
   */held-port.py) shift ;;
+  -c)
+    printf '%s\n' "${DEV_STACK_TEST_PICKED_PORT:-$$}"
+    exit 0
+    ;;
   *)
     echo "fake python3: unexpected script $script" >&2
     exit 2
@@ -289,9 +317,22 @@ ISSUER
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
+echo "fake broker: airlock-rules=${BROKER_AIRLOCK_RULES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
+# The proxy binds the address it was given, as the real one does. dev-stack.sh starts every
+# process with env -i, so nothing of this test's environment reaches the stub: the control for a
+# lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
+if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ]; then
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
+    "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
+fi
 BROKER
+      if [[ -n "${DEV_STACK_TEST_AIRLOCK_BOUND:-}" ]]; then
+        # Written above the stub's own lines, so the proxy line it prints names this address.
+        sed -i "1a AIRLOCK_BOUND_ADDR=${DEV_STACK_TEST_AIRLOCK_BOUND}" "$target"
+      fi
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
 echo "fake broker: refusing to start" >&2
@@ -314,9 +355,13 @@ echo "fake natsd: pid=$$" >&2
 echo "fake natsd: args=$*" >&2
 # The ports it was given, bound as nats-server binds them: -1 is its own choice, which this stub's
 # PID stands for, and any other port is that port.
-client=$$ monitor=""
+client=$$ monitor="" callout=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -callout-keys)
+      callout="$2"
+      shift 2
+      ;;
     -p)
       [[ "$2" == -1 ]] || client="$2"
       shift 2
@@ -345,6 +390,8 @@ MOVES
 echo "[INF] Listening for client connections on 127.0.0.1:$client" >&2
 [[ -z "$monitor" ]] || echo "[INF] Starting http monitor on 127.0.0.1:$monitor" >&2
 echo "[INF] Server is ready" >&2
+# Behind the callout the real natsd then makes the declared streams as its own admin user.
+[[ -z "$callout" ]] || echo "natsd: made the declared streams as its admin user"
 NATSD
       ;;
     listener)
@@ -352,6 +399,7 @@ NATSD
 #!/usr/bin/env bash
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake listener: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
@@ -376,10 +424,12 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake dispatch: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
+echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
-    cipher | cipher-helper | natsprobe)
+    cipher | cipher-helper | natsprobe | dev-proxy-stands)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -424,7 +474,8 @@ chmod +x "${fake_bin_dir}/go"
 # it. TMPDIR is this test's own directory, so each run's work directory lives under it and this
 # test's cleanup removes both. The run is given no LEGION_TEST_PG_DSN and no DATABASE_URL, so
 # nothing of the machine it runs on decides which server it is pointed at. Arguments after the
-# fourth are dev-stack.sh's own, after its --database-url.
+# fourth are dev-stack.sh's own, after its --database-url. DEV_STACK_TEST_PATH, when set, is the
+# run's whole PATH in place of the fakes before this test's own.
 run_instance() {
   local which="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
   shift 4
@@ -435,13 +486,17 @@ run_instance() {
     : >"$DEV_STACK_TEST_GO_CALL_FILE"
   fi
   env -u LEGION_TEST_PG_DSN -u DATABASE_URL \
-    PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+    PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
     DEV_STACK_TEST_NATSD_MOVES="${DEV_STACK_TEST_NATSD_MOVES:-}" \
     DEV_STACK_TEST_NATSD_MONITOR_MOVES="${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" \
     DEV_STACK_TEST_LISTENER_MOVES="${DEV_STACK_TEST_LISTENER_MOVES:-}" \
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
+    DEV_STACK_TEST_DOCKER_CALL_FILE="${DEV_STACK_TEST_DOCKER_CALL_FILE:-}" \
+    DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}" \
+    DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}" \
+    DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}" \
     bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
 }
@@ -702,6 +757,11 @@ assert_everything_stopped() {
   done
 }
 
+# assert_project_access, which a run with --project-access and a run without it are each held to,
+# and the cases (q), (r) and (s) below call: lib/dev-stack-test-project-access.sh's.
+# shellcheck source=lib/dev-stack-test-project-access.sh
+. "${project_root}/packages/envoy/scripts/lib/dev-stack-test-project-access.sh"
+
 assert_databases_dropped() {
   local label="$1" psql_call_file="$2" suffix="$3" dropped
   dropped="$(dropped_databases "$psql_call_file")"
@@ -709,7 +769,7 @@ assert_databases_dropped() {
     fail "$label dropped '$dropped', not exactly the two databases it created"
 }
 
-# (q) Every broker of a run lists the account the run's registrar token is for as the registrar
+# (u) Every broker of a run lists the account the run's registrar token is for as the registrar
 # of the pod's account, and lists nothing else (BROKER_POD_REGISTRARS). A real broker admits a
 # registration from no registrar its list does not pair with the pod's account, and with the list
 # unset from none, so one started without it refuses the one registration the run makes 403
@@ -737,12 +797,17 @@ DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" run_instance 1 "$log1" "$psql_calls1" "
 run_instance 2 "$log2" "$psql_calls2" "$curl_calls2"
 
 assert_instance_ready 'instance 1' "$log1" "$psql_calls1" "$curl_calls1"
+assert_project_access 'instance 1' "$log1" false
 work_dir1="$work_dir"
 suffix1="$run_suffix"
 kept_port1="$kept_port"
 listener_pid1="${server_pid[listener]}"
 grep -q '^go build -o ' "$go_calls1" ||
   fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
+# (s) Only --project-access runs the airlock's stands, so a run without it builds none.
+if grep -q 'dev-proxy-stands' "$go_calls1"; then
+  fail "instance 1, run without --project-access, built the stands (cmd/dev-proxy-stands): $(cat "$go_calls1")"
+fi
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 1 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
@@ -754,6 +819,8 @@ grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/lo
 [[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
 grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
+grep -qx 'fake listener: operator-made=' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, set its listener's ENVOY_STREAMS_OPERATOR_MADE"
+grep -qx 'fake dispatch: operator-made=' "${work_dir1}/logs/dispatch.log" || fail "instance 1, run without --callout, set Dispatch's ENVOY_STREAMS_OPERATOR_MADE"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
 printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
 
@@ -898,7 +965,9 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
-# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
+# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e). The
+# directory holds the eight binaries the header and the usage name, as one built to them does:
+# dev-airlock-stands is --project-access's alone, (s) below.
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's binaries and their packages; the binary names the copy check reads come
 # from it. The builds farm names each binary as dev-stack.sh does, so a package whose directory is
@@ -932,27 +1001,36 @@ assert_everything_stopped 'the --binaries run'
 assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
 printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
 
+# (q) --project-access, and (r) the port race it takes: lib/dev-stack-test-project-access.sh's.
+project_access_run_cases
+
 # (i) A --binaries directory that does not hold each of those executable files is refused with
 # exit 2, naming each file that is missing or not executable and no other, before anything is
-# created or started: no work directory, and no psql, curl or go call.
+# created or started: no work directory, and no psql, curl or go call. refuse_run is that check
+# for any refusal: the status it wants, and dev-stack.sh's arguments after its --database-url;
+# DEV_STACK_TEST_PATH, when set, is the run's whole PATH, as for run_instance.
 work_dirs_made() { compgen -G "${temporary_dir}/dev-stack.*" | wc -l || true; }
-refuse_binaries() {
-  local label="$1" dir="$2" made_before tool
+refuse_run() { # <label> <status> <dev-stack.sh arguments...>
+  local label="$1" want="$2" made_before tool
+  shift 2
   made_before="$(work_dirs_made)"
   for tool in psql curl go; do
     rm -f "${temporary_dir}/${tool}-calls-binaries"
   done
   refusal_status=0
-  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
     DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
     DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
-    bash "$driver" --database-url "$admin_url" --binaries "$dir" >"$refusal" 2>&1 || refusal_status=$?
-  [[ "$refusal_status" -eq 2 ]] || fail "$label exited $refusal_status, not 2"
+    bash "$driver" --database-url "$admin_url" "$@" >"$refusal" 2>&1 || refusal_status=$?
+  [[ "$refusal_status" -eq "$want" ]] || fail "$label exited $refusal_status, not $want: $(cat "$refusal")"
   [[ "$(work_dirs_made)" -eq "$made_before" ]] || fail "$label made a work directory before it refused"
   for tool in psql curl go; do
     [[ ! -e "${temporary_dir}/${tool}-calls-binaries" ]] || fail "$label still called $tool"
   done
+}
+refuse_binaries() { # <label> <dir> [more dev-stack.sh arguments...]
+  refuse_run "$1" 2 --binaries "$2" "${@:3}"
 }
 # The refusal's lines that name a file of dir are exactly the lines given, in the order given.
 refused_files_are() {
@@ -987,6 +1065,30 @@ refused_files_are 'a --binaries directory with two unusable binaries' "$two_unus
   "  ${two_unusable}/listener: not an executable file" "  ${two_unusable}/natsd: missing"
 printf 'PASS: a --binaries directory with two unusable binaries names each of them\n'
 
+# (s) --project-access given --binaries, and given no docker on PATH:
+# lib/dev-stack-test-project-access.sh's.
+project_access_binaries_cases
+
+# (t) --callout and --project-access together: both of --callout's brokers would take the airlock
+# proxy's one port, so the pair is refused with exit 2 and one line naming it, before anything is
+# created or started. refuse_run holds it to no work directory and no psql, curl or go call, so no
+# stub is built or run; refuse_pair adds no docker call and nothing printed but that line. Both
+# orders, since the driver refuses the pair once it has read every option. The controls are (q)
+# and (j): each flag alone runs to ready.
+pair_line="dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port"
+pair_docker_calls="${temporary_dir}/docker-calls-pair"
+refuse_pair() { # <dev-stack.sh arguments...>
+  local label="a run given $*"
+  rm -f "$pair_docker_calls"
+  DEV_STACK_TEST_DOCKER_CALL_FILE="$pair_docker_calls" refuse_run "$label" 2 "$@"
+  [[ "$(<"$refusal")" == "$pair_line" ]] ||
+    fail "$label printed '$(<"$refusal")', not the one line naming the pair"
+  [[ ! -e "$pair_docker_calls" ]] || fail "$label still called docker: $(cat "$pair_docker_calls")"
+}
+refuse_pair --callout --project-access
+refuse_pair --project-access --callout
+printf 'PASS: --callout and --project-access together, in either order, are refused with exit 2 and one line naming the pair, before anything is created or started\n'
+
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer
 # writing each of those two a NATS-audience token, which each is started with, the exports
@@ -1016,6 +1118,11 @@ grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/l
   fail "the --callout run's listener was not started with its NATS token"
 grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
   fail "the --callout run's Dispatch was not started with its NATS token"
+# Neither makes a stream beside the auth service, and natsd made them before either started.
+grep -qx 'fake listener: operator-made=1' "${work_dir}/logs/listener.log" ||
+  fail "the --callout run's listener was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
+grep -qx 'fake dispatch: operator-made=1' "${work_dir}/logs/dispatch.log" ||
+  fail "the --callout run's Dispatch was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
 for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
   "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
   "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \

@@ -1351,7 +1351,7 @@ func main() {
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = openExisting(awaitBuckets, func() (*cistore.Store, error) {
-			return cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge))
+			return cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(cistore.Retention))
 		})
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)

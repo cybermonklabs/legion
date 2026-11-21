@@ -306,7 +306,7 @@ func (a Authorization) render(header []string) string {
 		}
 		user := Object{
 			{"nkey", u.NKey},
-			{"permissions", Object{{"publish", u.Publish.object()}, {"subscribe", u.Subscribe.object()}}},
+			{"permissions", Object{{"publish", a.renderedPublish(u).object()}, {"subscribe", u.Subscribe.object()}}},
 		}
 		b.WriteString("    # " + u.Name + "\n")
 		b.WriteString("    " + PyJSON(user, PyJSONOptions{SortKeys: true}) + "\n")

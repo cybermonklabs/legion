@@ -192,7 +192,13 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 	}
 	kv, err := lookUpBucket()
 	created, createdElsewhere := false, false
+	// A start beside the auth service makes and raises no bucket: the operator made it, at the
+	// deployment's copies (StreamsOperatorMadeEnvVar).
+	owner := clientOwning(conn)
+	operatorMade := owner != nil && owner.operatorMade
 	switch {
+	case errors.Is(err, nats.ErrBucketNotFound) && operatorMade:
+		err = streamNotMade(stream, err)
 	case errors.Is(err, nats.ErrBucketNotFound) && mode == openOnly:
 		err = namedRequest(lookup, ErrBucketMissing)
 	case errors.Is(err, nats.ErrBucketNotFound):
@@ -264,7 +270,10 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
 		}
-		before, raiseErr := raiseStream(ctx, js, info, config.Replicas)
+		before, raiseErr := 0, error(nil)
+		if !operatorMade {
+			before, raiseErr = raiseStream(ctx, js, info, config.Replicas)
+		}
 		switch {
 		case raiseErr != nil:
 			err = raiseErr
@@ -462,6 +471,8 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	if maxAge <= 0 {
 		return 0, nil
 	}
+	owner := clientOwning(conn)
+	operatorMade := owner != nil && owner.operatorMade
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)
@@ -472,8 +483,10 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}
-	if info.Config.MaxAge == maxAge {
-		return maxAge, nil
+	if info.Config.MaxAge == maxAge || operatorMade {
+		// Beside the auth service the bucket's age is the operator's, set at deploy time from the
+		// same setting (envoy-infra streams update), and this answers the age it carries.
+		return info.Config.MaxAge, nil
 	}
 	age := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 		aged := current.Config

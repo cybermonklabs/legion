@@ -7,6 +7,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // AuthCallout is a NATS server's authorization callout: every client that is not one of the
@@ -136,6 +137,11 @@ func (a Authorization) validateCallout() error {
 		if err := a.Callout.validate(a); err != nil {
 			return err
 		}
+		for i, u := range a.Users {
+			if u.NKey != "" && u.Name != a.Callout.ServiceUser && len(a.renderedPublish(u).Allow) == 0 {
+				return fmt.Errorf("%s %q: beside a callout a static user publishes no stream create, update, delete or restore, and it holds nothing else to publish; nats-server reads an empty publish allow list as every subject", u.label(i), u.Name)
+			}
+		}
 	}
 	if !a.PrivateProjects {
 		return nil
@@ -164,6 +170,24 @@ func (a Authorization) validateCallout() error {
 		return InputErrorf("privateProjects", "privateProjects: %s %q: %s while a project is private; every client connects through the auth service, so callout.serviceUser %q is the only user", u.label(i), u.Name, what, a.Callout.ServiceUser)
 	}
 	return nil
+}
+
+// renderedPublish is u's publish rules as the authorization renders them. Beside a callout every
+// static user's but the auth service's own is narrowed as the auth service narrows every answer
+// but the operator's (natsgrant.ForCallout): an entry a stream create, update, delete or restore
+// contains is not rendered, a wider entry that reaches one stays beside a deny of each call it
+// reaches, and every other entry and deny stand. A hub behind the auth
+// service has its streams made by the operator (envoy-infra streams update), and every program
+// beside it, a static user's included, reads its streams and makes none
+// (bus.StreamsOperatorMadeEnvVar): so no hub turns the callout on before its static listener and
+// Dispatch users start with ENVOY_STREAMS_OPERATOR_MADE=1, their streams made, or are removed.
+// Without a callout every user renders exactly the rules it holds (R9).
+func (a Authorization) renderedPublish(u User) *Rules {
+	if a.Callout == nil || u.Name == a.Callout.ServiceUser {
+		return u.Publish
+	}
+	narrowed := natsgrant.ForCallout(natsgrant.Permissions{Publish: u.Publish.Allow, PublishDeny: u.Publish.Deny})
+	return &Rules{Allow: narrowed.Publish, Deny: narrowed.PublishDeny}
 }
 
 // serviceGrantRefusal names the first allow entry of the service user's rules that reaches past

@@ -2,16 +2,16 @@
 # shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked and each reader is invoked by name
 # packages/envoy/scripts/dev-stack.sh
 #
-# The whole local stack a session is driven against, on one machine, with no cluster, no AWS and
-# no container runtime: cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount
-# token issuer and for the identity provider a person signs in at), cmd/cipherd on a fake secrets
-# file, internal/testnats/cmd/natsd (one throwaway NATS with JetStream, given the buckets a
-# listener copies by internal/testnats/cmd/fixturebuckets, since no listener creates one),
-# cmd/listener on that NATS, and cmd/dispatch, the real Dispatch server, pointed at that broker
-# and that listener. It is dev-broker.sh's broker with the two things that script has no room for
-# -- a real Dispatch and a real Envoy listener -- so a session on it gets a broker access token,
-# writes to Dispatch with it and sends an Envoy message, all against the processes production
-# runs.
+# The whole local stack a session is driven against, on one machine, with no cluster, no AWS and,
+# but for the one container --project-access runs (below), no container runtime:
+# cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount token issuer and for the
+# identity provider a person signs in at), cmd/cipherd on a fake secrets file,
+# internal/testnats/cmd/natsd (one throwaway NATS with JetStream, given the buckets a listener
+# copies by internal/testnats/cmd/fixturebuckets, since no listener creates one), cmd/listener on
+# that NATS, and cmd/dispatch, the real Dispatch server, pointed at that broker and that listener.
+# It is dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch
+# and a real Envoy listener -- so a session on it gets a broker access token, writes to Dispatch
+# with it and sends an Envoy message, all against the processes production runs.
 #
 # It takes one input, the URL of a Postgres server it may create databases on: --database-url,
 # else LEGION_TEST_PG_DSN (a Legion pod has one), else DATABASE_URL. With none it refuses, naming
@@ -28,10 +28,19 @@
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
 # its go build, and needs no go on PATH. It requires each of them in that directory, broker,
 # dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd, natsprobe and
-# fixturebuckets, each an executable file, and refuses before it creates or starts anything -- no
-# database, no port, no process -- when one is missing or is not, naming each such file. It
-# copies them into this run's own bin directory, where a build would have put them, so
-# everything after that step is the same either way.
+# fixturebuckets, and dev-airlock-stands as well under --project-access, each an executable file,
+# and refuses before it creates or starts anything -- no database, no port, no process -- when one
+# is missing or is not, naming each such file. It copies them into this run's own bin directory,
+# where a build would have put them, so everything after that step is the same either way.
+#
+# With --project-access the broker asks this run's Dispatch whether a project is private and who
+# may see it, and the stack runs the airlock beside it: the broker's own proxy, and
+# cmd/dev-proxy-stands, the stand-in host a private project's secret may go to. The stands run
+# in one docker container (DEV_STACK_AIRLOCK_IMAGE), the one container this script starts,
+# because a bound host must listen on port 443; so that run needs docker on PATH, and is refused
+# before anything is created or started without it. A run without the option builds no stands
+# and starts no container. What the option adds to a run, and PRIV's pod every run has, are
+# scripts/lib/project-access-stack.sh's.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
@@ -120,7 +129,8 @@
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
-# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds.
+# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
+# is refused beside --project-access, since both brokers would take the airlock proxy's one port.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -130,8 +140,8 @@
 #     --database-url 'postgres://postgres:dispatch@127.0.0.1:55432/postgres?sslmode=disable'
 #
 # Both from packages/envoy. It needs go (unless --binaries names the binaries), psql, curl, jq and
-# python3, and nothing else from the machine: no credential, no private hostname, no production
-# service.
+# python3, and docker under --project-access, and nothing else from the machine: no credential,
+# no private hostname, no production service.
 set -euo pipefail
 
 # refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
@@ -154,7 +164,8 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
+                    [--project-access] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -162,18 +173,28 @@ drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, 
 DATABASE_URL; this run creates and drops two databases of its own on that server.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
-agent-secrets-helper, natsd, natsprobe and fixturebuckets in <dir> in place of building them; a
-directory short of any of them, or holding one that is not an executable file, is refused, naming
-each, before anything is created or started.
+agent-secrets-helper, natsd, natsprobe and fixturebuckets in <dir> in place of building them, and
+dev-airlock-stands too under --project-access; a directory short of any of them, or holding one
+that is not an executable file, is refused, naming each, before anything is created or started.
 
 With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
 Dispatch with NATS service tokens rather than no credential.
+
+With --project-access, the broker asks this run's Dispatch whether a project is private and who
+may see it (BROKER_PROJECT_ACCESS_URL, with a token of its own account for Dispatch's audience),
+and Dispatch admits that account to its access routes. The run also starts the airlock: the
+broker's proxy, and dev-airlock-stands in a docker container, so it needs docker. Without the
+option none of this runs, as before.
+
+--callout and --project-access cannot run together: both of --callout's brokers would take the
+airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
 EOF
 }
 
 CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
+PROJECT_ACCESS=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -208,6 +229,10 @@ while [ "$#" -gt 0 ]; do
       fi
       shift
       ;;
+    --project-access)
+      PROJECT_ACCESS=true
+      shift
+      ;;
     --help | -h)
       usage
       exit 0
@@ -219,6 +244,15 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# --- --callout starts two brokers with one set of settings, and --project-access gives every
+# broker the one airlock proxy port this run picks (BROKER_AIRLOCK_LISTEN_ADDR), so the second
+# broker could not bind it and its start would stop the run. The pair is refused here, before
+# anything is created or started. ---
+if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
+  echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
+  exit 2
+fi
 
 # --- The one input, checked before anything is created, so a missing or malformed URL leaves
 # nothing behind. The three sources in order, as the header names them. ---
@@ -244,11 +278,15 @@ POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 # <binary>=<package>: the build's arguments and the names --binaries checks and copies all come
 # from here. go build names each binary for its package's last path element, so a package whose
 # directory is not its binary's name is renamed after the build. The header and the usage name
-# them for a reader. ---
+# them for a reader. dev-airlock-stands is --project-access's alone, since only that run starts
+# the airlock's stands. ---
 STACK_ENTRIES=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
   listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
   natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe
   fixturebuckets=./internal/testnats/cmd/fixturebuckets)
+if [ "$PROJECT_ACCESS" = true ]; then
+  STACK_ENTRIES+=(dev-airlock-stands=./cmd/dev-proxy-stands)
+fi
 STACK_PACKAGES=()
 STACK_BINARIES=()
 for stack_entry in "${STACK_ENTRIES[@]}"; do
@@ -277,10 +315,14 @@ if [ -n "$BINARIES_OPTION" ]; then
   fi
 fi
 
-# go builds the binaries, so a run given them needs none.
+# go builds the binaries, so a run given them needs none; docker runs the airlock's stands, which
+# only --project-access starts.
 required_tools=(psql curl jq python3)
 if [ -z "$BINARIES_OPTION" ]; then
   required_tools=(go "${required_tools[@]}")
+fi
+if [ "$PROJECT_ACCESS" = true ]; then
+  required_tools+=(docker)
 fi
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null || {
@@ -337,6 +379,12 @@ DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
+# PRIV's pod and the broker's own access account, which every run mints tokens for, and the
+# airlock --project-access starts: their names, and what the option does with them, are
+# scripts/lib/project-access-stack.sh's. It names paths in the work directory, so it is sourced
+# here, once that is made, on every run.
+# shellcheck source=lib/project-access-stack.sh
+. "$SCRIPT_DIR/lib/project-access-stack.sh"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -458,6 +506,10 @@ cleanup() {
       wait "$pid" 2>/dev/null
     fi
   done
+  # The stands' container, when this run started one (airlock_stands_stop is the library's).
+  if [ -n "${AIRLOCK_STANDS_CONTAINER:-}" ]; then
+    airlock_stands_stop
+  fi
   # Best-effort: cleanup runs on every exit path and must never itself fail, even if the server is
   # already gone or a drop fails for some other reason.
   if [ "$BROKER_DB_CREATED" = true ]; then
@@ -611,6 +663,9 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
+  --token "$EXCHANGE_AUDIENCE=$PRIV_ACCOUNT=$PRIV_EXCHANGE_TOKEN_FILE" \
+  --token "$BROKER_AUDIENCE=$PRIV_ACCOUNT=$PRIV_POD_TOKEN_FILE" \
+  --token "$DISPATCH_AUDIENCE=$BROKER_ACCESS_ACCOUNT=$BROKER_ACCESS_TOKEN_FILE" \
   --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
@@ -623,7 +678,7 @@ ISSUER_URL="$awaited"
 echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 
 # --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
-# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
+# JetStream in the work directory, since an agent's machine may have no container runtime. -1 is
 # nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
 # it makes before it serves, so it starts before the brokers that read them.
 #
@@ -683,6 +738,9 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
+# The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
+# stands they name, started; without the option both are empty and nothing is started.
+project_access_broker_setup
 # start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
 # every replica of one deployment, is the same binary and settings on the same database.
 started_pid=""
@@ -707,14 +765,16 @@ start_broker() {
     BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
     BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
     BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN $PRIV_ACCOUNT=$PRIV_PROJECT=$PRIV_OWNER=$PRIV_SESSION" \
     BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
     BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
     BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
     BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
     BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
-    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT $PRIV_SERVICE=$PRIV_ACCOUNT" \
     BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
+    "${PROJECT_ACCESS_ENV[@]}" \
+    "${AIRLOCK_ENV[@]}" \
     "${callout_broker_env[@]}" \
     "$BIN_DIR/broker" >"$1" 2>&1 &
   started_pid=$!
@@ -726,6 +786,8 @@ await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broke
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
+# Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
+project_access_proxy_check
 callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
@@ -810,6 +872,8 @@ echo "dev-stack: listener $LISTENER_URL" >&2
 # deployment's. HOME and the XDG directories are this run's own, so the server reads no app.json
 # and writes no key where a developer keeps theirs. ---
 DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# Dispatch's --project-access settings (DISPATCH_ACCESS_ENV); empty without the option.
+project_access_dispatch_env
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
 python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
@@ -833,6 +897,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   ENVOY_TOKEN="$LISTENER_API_TOKEN" \
   ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE" \
   NATS_URLS="$NATS_URL" \
+  "${DISPATCH_ACCESS_ENV[@]}" \
   "${callout_dispatch_env[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
 DISPATCH_PID=$!
@@ -994,6 +1059,7 @@ dev-stack: ready.
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
+$(project_access_exports)
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

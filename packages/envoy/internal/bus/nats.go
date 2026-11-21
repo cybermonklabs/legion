@@ -388,6 +388,11 @@ type Client struct {
 	// streamConfig is the stream an owning client ensures on its first connect and on every
 	// connection event after it (ensureStreamOn); nil for a client that owns no stream.
 	streamConfig *nats.StreamConfig
+	// operatorMade is StreamsOperatorMadeEnvVar as the client's environment set it: the client's
+	// start, and every connection event after it, reads the stream and makes or changes nothing
+	// (readOperatorMadeStream), it runs no keeper, and EnsureKeyValue and SetKeyValueMaxAge on its
+	// connection make and change no bucket. Set once by the constructor, never written after.
+	operatorMade bool
 	// deployedSubjects holds the subjects the deployed stream carried when the client last read them
 	// (DeployedStreamCaptures); nil until the client has read them once.
 	deployedSubjects atomic.Pointer[[]string]
@@ -509,6 +514,11 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err != nil {
 		return nil, err
 	}
+	raw, _ := opts.environment(StreamsOperatorMadeEnvVar)
+	operatorMade, err := ParseStreamsOperatorMade(raw)
+	if err != nil {
+		return nil, err
+	}
 	c := &Client{
 		urls:                        urls,
 		name:                        opts.name,
@@ -519,6 +529,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		stopCh:                      make(chan struct{}),
+		operatorMade:                operatorMade,
 	}
 	stream := opts.streamConfig()
 	if ownsStream {
@@ -647,9 +658,15 @@ const streamSubjectsRead = 10 * time.Second
 // and keeps the subjects it carries afterwards. defaultsAnUnsetCap is what the connected server
 // is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with
 // no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
-// the server, which the start's hang guard bounds too (ensureStreamWithConfig).
+// the server, which the start's hang guard bounds too (ensureStreamWithConfig). A client beside the
+// auth service (StreamsOperatorMadeEnvVar) only reads the stream the operator made
+// (readOperatorMadeStream).
 func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
-	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
+	ensure := ensureStreamWithConfig
+	if c.operatorMade {
+		ensure = readOperatorMadeStream
+	}
+	subjects, err := ensure(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}

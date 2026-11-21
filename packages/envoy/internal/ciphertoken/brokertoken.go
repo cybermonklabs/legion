@@ -145,6 +145,19 @@ const (
 	ProofLifespan  = time.Second
 )
 
+// SpentProofRetention is how long a listener keeps one spent proof's record, the TTL of the bucket
+// that holds them (bus.DPoPProofBucket): the whole window the proof it records can still be
+// presented in, and a minute more. A proof is accepted while now is between its 'iat' less
+// ProofClockSkew and its 'iat' plus ProofLifespan plus that skew, so a proof recorded now can be
+// presented again for at most two skews and a lifespan from this moment, whatever its 'iat'. The
+// extra minute covers the skew between the listener that recorded it and the one that reads it, as
+// the margin on Dispatch's own record of the same thing does (store.jtiRetentionMargin). It is the
+// bucket's TTL rather than a per-key one because every key means the same thing and lives the same
+// span: nothing reads a record back, so a key whose window has passed says nothing, and letting it
+// expire costs no delete. The listener makes the bucket with it, and so does the operator
+// (internal/streamset), which makes every stream beside the auth service.
+const SpentProofRetention = 2*ProofClockSkew + ProofLifespan + time.Minute
+
 // proofAlgorithms are the JWS algorithms a proof may be signed with. The broker binds every token
 // it issues to a key its own helper minted, and that key is ES256 (internal/cipher/proof.NewKey),
 // so a wider set would admit no token the broker issues and would widen the signatures a stranger

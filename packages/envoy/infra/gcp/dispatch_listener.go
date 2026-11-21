@@ -42,6 +42,7 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		StreamMaxBytes:          s.streamMaxBytes,
 		SenderMessagesPerMinute: s.senderMessagesPerMinute,
 		SenderMessageBurst:      s.senderMessageBurst,
+		StreamsOperatorMade:     s.streamsOperatorMade,
 	}).Env([]string{url})
 	if err != nil {
 		var input *core.InputError

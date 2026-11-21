@@ -42,7 +42,9 @@
 #                     apply) and a resource type there that can grant on those resources but that
 #                     this check does not read are UNKNOWN. A group the code names is judged by its
 #                     members in the live steps, which expand it.
-#   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster.
+#   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster. A list
+#                     gcloud says is incomplete (a zone that did not respond) is UNKNOWN: a cluster
+#                     there is neither read nor counted.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
 #                     the principals being every ServiceAccount of the agent namespaces
 #                     (--agent-namespace) with the groups the API server gives it
@@ -59,18 +61,30 @@
 #   live: minters     Policy Analyzer's holders, on --gsa or above it, of
 #                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
 #                     implicitDelegation and iam.serviceAccountKeys.create. They must be people and
-#                     the Workload Identity member serviceAccount:<project>.svc.id.goog[<namespace>/
+#                     the Workload Identity member serviceAccount:<pool>.svc.id.goog[<namespace>/
 #                     <service account>], which is the witness: the answer must list it. The broker
 #                     needs roles/iam.serviceAccountTokenCreator on that account to mint the secret
 #                     ENVOY_OPERATOR's token, so --broker-account allows that one binding, on that
 #                     account and in that role alone, and then the broker account's own minters are
 #                     checked the same way, its Workload Identity member (--broker-workload) the
 #                     witness and the one non-person allowed.
-#   live: Workload    The Workload Identity member names the project's pool, the namespace and the
-#     Identity        ServiceAccount, never the cluster, so on every other cluster of the project the
-#                     namespace --namespace must not exist, and no ServiceAccount outside that
-#                     cluster's system namespaces (kube-system, gke-*, gmp-*) may make a namespace or
-#                     a ServiceAccount in it. A project with the operator's cluster alone says so.
+#   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
+#     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
+#                     never the cluster, so every cluster that uses the pool can act as the
+#                     operator's Google service account. On every other cluster of the project, and
+#                     on every member cluster of the pool project's fleet, the namespace --namespace
+#                     must not exist, and no ServiceAccount outside that cluster's system namespaces
+#                     (kube-system, gke-*, gmp-*) may make a namespace or a ServiceAccount in it. A
+#                     project with the operator's cluster alone says so. The fleet's memberships are
+#                     read from the GKE Hub API (projects/<pool>/locations/-/memberships, every page)
+#                     with the running identity's access token, not through `gcloud container fleet
+#                     memberships list`, which drops the answer's `unreachable` locations: a listing
+#                     that could not reach a location reads complete there. A refused listing, and
+#                     one with an unreachable location, is UNKNOWN; a fleet the API answers with no
+#                     membership says so. A member that is a GKE cluster is read through `gcloud
+#                     container clusters get-credentials` in its own project, any other through
+#                     `gcloud container fleet memberships get-credentials` (the Connect gateway); the
+#                     operator's cluster, and a cluster the project step read, are not read twice.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each agent principal,
@@ -115,7 +129,7 @@
 # The controls run against scratch targets: --namespace envoy-operator-control --gsa
 # envoy-operator-control@<project>.iam.gserviceaccount.com --secret ENVOY_OPERATOR_CONTROL.
 # operator-token-minters.test.sh runs every plant and control against a fake kubectl, gcloud and
-# agent-secrets. Needs bash 4.4, jq, and for the live steps gcloud, kubectl and agent-secrets.
+# agent-secrets. Needs bash 4.4, jq, and for the live steps gcloud, kubectl, curl and agent-secrets.
 set -euo pipefail
 
 usage() {
@@ -123,6 +137,9 @@ usage() {
 usage: operator-token-minters.sh [flags]
   --project ID               the project that runs the operator's cluster
   --cluster NAME             the operator's cluster, one of the project's
+  --pool-project ID          the project whose workload pool (ID.svc.id.goog) the operator's and
+                             the broker's ServiceAccounts are in, and whose fleet's member clusters
+                             share it (default --project)
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --gsa EMAIL                the Google service account the operator's ServiceAccount acts as
@@ -149,7 +166,7 @@ usage_error() {
   exit 2
 }
 
-PROJECT="" CLUSTER="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
+PROJECT="" CLUSTER="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=()
 while [ "$#" -gt 0 ]; do
@@ -160,7 +177,7 @@ while [ "$#" -gt 0 ]; do
     --*=*) set -- "${flag#*=}" "$@"; flag="${flag%%=*}" ;;
   esac
   case "$flag" in
-    --project | --cluster | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
+    --project | --cluster | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
       --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
@@ -172,6 +189,7 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project) PROJECT="$value" ;;
     --cluster) CLUSTER="$value" ;;
+    --pool-project) POOL_PROJECT="$value" ;;
     --namespace) NAMESPACE="$value" ;;
     --service-account) KSA="$value" ;;
     --gsa) GSA="$value" ;;
@@ -190,6 +208,7 @@ while [ "$#" -gt 0 ]; do
     --report) REPORT="$value" ;;
   esac
 done
+[ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
 case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>, not $DB_SECRET" ;; esac
 case "$BROKER_WORKLOAD" in "" | */*) ;; *) usage_error "--broker-workload is <namespace>/<name>, not $BROKER_WORKLOAD" ;; esac
 case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>], not $BROKER_STATE" ;; esac
@@ -373,9 +392,11 @@ account_project "$GSA"
 GSA_PROJECT="$ACCOUNT_PROJECT"
 account_project "$BROKER"
 BROKER_PROJECT="$ACCOUNT_PROJECT"
-WI_MEMBER="serviceAccount:$PROJECT.svc.id.goog[$NAMESPACE/$KSA]"
+# The members a workload pool gives a Kubernetes ServiceAccount: <pool>.svc.id.goog[<ns>/<name>],
+# whatever cluster of the pool the ServiceAccount is on.
+WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$NAMESPACE/$KSA]"
 BROKER_WI_MEMBER=""
-[ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
+[ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
 
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
 # whether it is allowed: a person, a system component, a system namespace's ServiceAccount, the
@@ -758,7 +779,10 @@ fi
 
 # --- live: clusters ---
 step="live: clusters"
-CLUSTERS_OK=false
+CLUSTERS_OK=false CLUSTERS_COMPLETE=false OPERATOR_LOCATION=""
+# PROJECT_CLUSTERS: <project>/<location>/<name> of each cluster the project's list holds, which the
+# Workload Identity step reads, so its fleet part does not read one twice.
+declare -A PROJECT_CLUSTERS=()
 if [ -z "$PROJECT" ]; then
   unknown "$step" "no --project: the project that runs the operator's cluster is not named"
 elif [ -z "$CLUSTER" ]; then
@@ -767,28 +791,53 @@ elif ! have gcloud; then
   unknown "$step" "gcloud is not on PATH"
 elif ! gcloud container clusters list --project="$PROJECT" --format=json --quiet >"$WORK/clusters.json" 2>"$WORK/clusters.err"; then
   unknown "$step" "gcloud container clusters list was refused (it needs container.clusters.list): $(first_line "$WORK/clusters.err")"
-elif ! jq -r '.[] | [.name, .location] | @tsv' "$WORK/clusters.json" >"$WORK/clusters.tsv" 2>"$WORK/clusters.err"; then
-  unknown "$step" "gcloud container clusters list answered no JSON list: $(first_line "$WORK/clusters.err")"
+elif ! jq -r '.[] | [.name, .location] | @tsv' "$WORK/clusters.json" >"$WORK/clusters.tsv" 2>"$WORK/clusters.err.jq"; then
+  unknown "$step" "gcloud container clusters list answered no JSON list: $(first_line "$WORK/clusters.err.jq")"
 elif [ ! -s "$WORK/clusters.tsv" ]; then
   unknown "$step" "the project lists no cluster, so the operator's cluster cannot be read"
 elif ! grep -qxF -- "$CLUSTER" < <(cut -f1 "$WORK/clusters.tsv"); then
   unknown "$step" "--cluster $CLUSTER is not among the project's clusters ($(cut -f1 "$WORK/clusters.tsv" | paste -sd ' '))"
 else
   CLUSTERS_OK=true
-  pass "$step" "the project runs $(cut -f1 "$WORK/clusters.tsv" | paste -sd ' ' | sed 's/ /, /g')"
+  OPERATOR_LOCATION="$(awk -F'\t' -v c="$CLUSTER" '$1 == c { print $2; exit }' "$WORK/clusters.tsv")"
+  while IFS=$'\t' read -r name location; do
+    PROJECT_CLUSTERS["$PROJECT/$location/$name"]=1
+  done <"$WORK/clusters.tsv"
+  # gcloud lists what the zones that answered hold, and says on stderr which did not ("The following
+  # zones did not respond: ... List results may be incomplete."), exiting 0.
+  if grep -q 'did not respond' "$WORK/clusters.err"; then
+    unknown "$step" "gcloud container clusters list says its list is incomplete, so a cluster in a zone that did not answer is neither read nor counted: $(grep -m 1 'did not respond' "$WORK/clusters.err" | sed 's/[[:cntrl:]]/ /g')"
+  else
+    CLUSTERS_COMPLETE=true
+    pass "$step" "the project runs $(cut -f1 "$WORK/clusters.tsv" | paste -sd ' ' | sed 's/ /, /g')"
+  fi
 fi
 
-# kube_for NAME LOCATION: sets KUBE to a kubeconfig of this run's own for the cluster; returns 1
-# with KUBE_ERROR. The caller's own kubeconfig is never read or written.
+# kube_for NAME LOCATION PROJECT: sets KUBE to a kubeconfig of this run's own for the GKE cluster;
+# returns 1 with KUBE_ERROR. The caller's own kubeconfig is never read or written.
 kube_for() {
-  KUBE="$WORK/kube/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')" KUBE_ERROR=""
+  KUBE="$WORK/kube/$(printf 'gke_%s_%s_%s' "$3" "$2" "$1" | tr -c 'A-Za-z0-9._-' '_')" KUBE_ERROR=""
   if ! have kubectl; then
     KUBE_ERROR="kubectl is not on PATH"
     return 1
   fi
-  if ! KUBECONFIG="$KUBE" gcloud container clusters get-credentials "$1" --location="$2" --project="$PROJECT" --quiet \
+  if ! KUBECONFIG="$KUBE" gcloud container clusters get-credentials "$1" --location="$2" --project="$3" --quiet \
     ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"} >/dev/null 2>"$WORK/credentials.err"; then
-    KUBE_ERROR="gcloud container clusters get-credentials $1 was refused (it needs container.clusters.get): $(first_line "$WORK/credentials.err")"
+    KUBE_ERROR="gcloud container clusters get-credentials $1 --location $2 --project $3 was refused (it needs container.clusters.get): $(first_line "$WORK/credentials.err")"
+    return 1
+  fi
+}
+# kube_for_membership ID LOCATION: the same for a member of the pool project's fleet that is no GKE
+# cluster, through the Connect gateway.
+kube_for_membership() {
+  KUBE="$WORK/kube/$(printf 'membership_%s_%s' "$2" "$1" | tr -c 'A-Za-z0-9._-' '_')" KUBE_ERROR=""
+  if ! have kubectl; then
+    KUBE_ERROR="kubectl is not on PATH"
+    return 1
+  fi
+  if ! KUBECONFIG="$KUBE" gcloud container fleet memberships get-credentials "$1" --location="$2" --project="$POOL_PROJECT" --quiet \
+    >/dev/null 2>"$WORK/credentials.err"; then
+    KUBE_ERROR="gcloud container fleet memberships get-credentials $1 --location $2 --project $POOL_PROJECT was refused (it needs gkehub.gateway.get and gkehub.gateway.generateCredentials): $(first_line "$WORK/credentials.err")"
     return 1
   fi
 }
@@ -878,7 +927,7 @@ if [ "$CLUSTERS_OK" != true ]; then
   unknown "$step" "the operator's cluster could not be found (live: clusters)"
 elif [ "${#AGENT_NAMESPACES[@]}" -eq 0 ]; then
   unknown "$step" "no --agent-namespace: the namespaces whose ServiceAccounts agents run as are not named"
-elif ! kube_for "$CLUSTER" "$(awk -F'\t' -v c="$CLUSTER" '$1 == c { print $2; exit }' "$WORK/clusters.tsv")"; then
+elif ! kube_for "$CLUSTER" "$OPERATOR_LOCATION" "$PROJECT"; then
   unknown "$step" "$KUBE_ERROR"
 elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
   unknown "$step" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
@@ -1020,52 +1069,188 @@ live_iam gke
 live_iam gsa
 [ "${CHECK_MISSING[broker]:-}" = skip ] || live_iam broker
 
-# --- live: Workload Identity on the project's other clusters ---
+# --- live: Workload Identity: every other cluster that uses the pool ---
+
+# The two rights that make the operator's namespace and ServiceAccount, which no ServiceAccount
+# outside a cluster's system namespaces may hold on another cluster of the pool.
+OTHER_RIGHTS="$(jq -nc --arg ns "$NAMESPACE" '[
+    {verb: "create", group: "", resource: "namespaces", sub: "", ns: "", name: ""},
+    {verb: "create", group: "", resource: "serviceaccounts", sub: "", ns: $ns, name: ""}]
+  | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|")),
+             label: ("\(.verb) \(.resource)" + (if .ns != "" then " in " + .ns else " cluster-wide" end))})')"
+pool_name="the workload pool's project"
+[ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
+
+# read_other_cluster STEP PRINCIPAL WHERE: on the cluster KUBE names, the namespace --namespace
+# must not exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
+# cluster's system namespaces may make a namespace or a ServiceAccount in it (each a finding, its
+# right followed by WHERE). The reviews carry the witness. PASS when it recorded neither a finding
+# nor an UNKNOWN.
+read_other_cluster() {
+  local cstep="$1" principal="$2" where="$3" ns name accounts=0
+  mark
+  if kubectl --kubeconfig "$KUBE" get namespace "$NAMESPACE" -o name >/dev/null 2>"$WORK/namespace.err"; then
+    finding "$principal" "namespace $NAMESPACE exists there, so its ServiceAccount $NAMESPACE/$KSA acts as $operator_account through the workload pool $POOL_PROJECT.svc.id.goog"
+  elif ! grep -q '(NotFound)' "$WORK/namespace.err"; then
+    unknown "$cstep" "the API server refused the read of namespace $NAMESPACE (it needs get on namespaces, container.namespaces.get on GKE): $(first_line "$WORK/namespace.err")"
+  fi
+  if ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
+    unknown "$cstep" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
+    return
+  fi
+  jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
+  printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
+  while IFS="$US" read -r -u 3 ns name; do
+    ! system_namespace "$ns" || continue
+    accounts=$((accounts + 1))
+    printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
+      "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
+  done 3<"$WORK/serviceaccounts.rec"
+  if [ "$accounts" -eq 0 ]; then
+    unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, so there is no principal to review"
+  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$OTHER_RIGHTS"; then
+    unknown "$cstep" "$REVIEW_ERROR"
+  elif judge_reviews "$cstep" "$where" && unchanged; then
+    pass "$cstep" "no namespace $NAMESPACE, and none of its $accounts ServiceAccounts outside the system namespaces may make a namespace or a ServiceAccount in $NAMESPACE"
+  fi
+}
+
+# The project's other clusters.
 step="live: Workload Identity"
 if [ "$CLUSTERS_OK" != true ]; then
   unknown "$step" "the project's clusters could not be listed (live: clusters)"
-elif [ "$(wc -l <"$WORK/clusters.tsv")" -eq 1 ]; then
-  pass "$step" "the project runs the operator's cluster $CLUSTER alone"
 else
-  others="$(jq -nc --arg ns "$NAMESPACE" '[
-      {verb: "create", group: "", resource: "namespaces", sub: "", ns: "", name: ""},
-      {verb: "create", group: "", resource: "serviceaccounts", sub: "", ns: $ns, name: ""}]
-    | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|")),
-               label: ("\(.verb) \(.resource)" + (if .ns != "" then " in " + .ns else " cluster-wide" end))})')"
+  [ "$CLUSTERS_COMPLETE" = true ] ||
+    unknown "$step" "the project's cluster list is incomplete (live: clusters), so a cluster it leaves out is not read"
+  if [ "$CLUSTERS_COMPLETE" = true ] && [ "$(wc -l <"$WORK/clusters.tsv")" -eq 1 ]; then
+    pass "$step" "the project runs the operator's cluster $CLUSTER alone"
+  fi
   while IFS=$'\t' read -r -u 5 cluster location; do
     [ "$cluster" != "$CLUSTER" ] || continue
     cstep="live: Workload Identity on $cluster"
-    mark
-    if ! kube_for "$cluster" "$location"; then
+    if ! kube_for "$cluster" "$location" "$PROJECT"; then
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    if kubectl --kubeconfig "$KUBE" get namespace "$NAMESPACE" -o name >/dev/null 2>"$WORK/namespace.err"; then
-      finding "cluster:$cluster" "namespace $NAMESPACE exists there, so its ServiceAccount $NAMESPACE/$KSA acts as $operator_account through the workload pool $PROJECT.svc.id.goog"
-    elif ! grep -q '(NotFound)' "$WORK/namespace.err"; then
-      unknown "$cstep" "the API server refused the read of namespace $NAMESPACE (it needs get on namespaces, container.namespaces.get on GKE): $(first_line "$WORK/namespace.err")"
+    read_other_cluster "$cstep" "cluster:$cluster" " on cluster $cluster"
+  done 5<"$WORK/clusters.tsv"
+fi
+
+# fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
+# page, as records in $WORK/fleet.rec: `unreachable` and the locations the listing could not reach,
+# when there are any, then one `member` per membership, with its id and location and, for a GKE
+# cluster, the cluster's project, location and name. Returns 1 with FLEET_ERROR when the listing
+# was refused or its answer cannot be read. The call is the API's own, not `gcloud container fleet
+# memberships list`: that command's list drops the answer's `unreachable` field, so a listing
+# that missed a location would read as complete.
+fleet_memberships() {
+  local token page="" pages=0 status why
+  local -a query
+  FLEET_ERROR=""
+  if ! have curl; then
+    FLEET_ERROR="curl is not on PATH"
+    return 1
+  fi
+  if ! token="$(gcloud auth print-access-token --quiet 2>"$WORK/token.err")" || [ -z "$token" ]; then
+    FLEET_ERROR="gcloud auth print-access-token gave no access token for the running identity: $(last_line "$WORK/token.err")"
+    return 1
+  fi
+  : >"$WORK/fleet-pages.json"
+  while :; do
+    pages=$((pages + 1))
+    if [ "$pages" -gt 1000 ]; then
+      FLEET_ERROR="the listing did not end within 1000 pages"
+      return 1
     fi
-    if ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
-      unknown "$cstep" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
+    query=(--data-urlencode pageSize=100)
+    [ -z "$page" ] || query+=(--data-urlencode "pageToken=$page")
+    status=0
+    # The token goes in through curl's configuration on stdin, never on a command line.
+    printf 'header = "Authorization: Bearer %s"\n' "$token" |
+      curl -sS --fail-with-body --max-time 60 -G -K - "${query[@]}" \
+        "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/memberships" >"$WORK/fleet-page.json" 2>"$WORK/fleet.err" || status=$?
+    if [ "$status" -ne 0 ]; then
+      why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/fleet-page.json" 2>/dev/null |
+        sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
+      [ -n "$why" ] || why="$(last_line "$WORK/fleet.err")"
+      FLEET_ERROR="the GKE Hub API refused the listing of projects/$POOL_PROJECT/locations/-/memberships (it needs gkehub.memberships.list there): $why"
+      return 1
+    fi
+    if ! jq -c . "$WORK/fleet-page.json" >>"$WORK/fleet-pages.json" 2>"$WORK/fleet.err"; then
+      FLEET_ERROR="the GKE Hub API's answer is not JSON: $(first_line "$WORK/fleet.err")"
+      return 1
+    fi
+    page="$(jq -r '.nextPageToken // ""' "$WORK/fleet-page.json")"
+    [ -n "$page" ] || break
+  done
+  if ! jq -r -s "$JQ_REC"'
+      ([.[].unreachable[]?] | unique) as $unreachable
+      | (if ($unreachable | length) > 0 then ["unreachable", ($unreachable | join(", "))] | rec else empty end),
+        (.[].resources[]? as $m
+         | (($m.name // "") | capture("/locations/(?<l>[^/]+)/memberships/(?<id>[^/]+)$") // {l: "", id: ($m.name // "")}) as $n
+         | (($m.endpoint.gkeCluster.resourceLink // "")
+            | capture("^//container\\.googleapis\\.com/projects/(?<p>[^/]+)/(locations|zones)/(?<l>[^/]+)/clusters/(?<c>[^/]+)$")
+            // {p: "", l: "", c: ""}) as $g
+         | ["member", $n.id, $n.l, $g.p, $g.l, $g.c] | rec)' "$WORK/fleet-pages.json" >"$WORK/fleet.rec" 2>"$WORK/fleet.err"; then
+    FLEET_ERROR="the GKE Hub API's answer holds no list of memberships: $(first_line "$WORK/fleet.err")"
+    return 1
+  fi
+}
+
+# The pool project's fleet: every member cluster shares the workload pool, so a ServiceAccount
+# envoy-operator/envoy-operator there is the operator's member too. The operator's own cluster,
+# and a cluster the project's list held, are read above.
+step="live: Workload Identity: the fleet of $pool_name"
+if [ -z "$POOL_PROJECT" ]; then
+  unknown "$step" "no --project or --pool-project: the workload pool's project is not named"
+elif ! have gcloud; then
+  unknown "$step" "gcloud is not on PATH"
+elif ! fleet_memberships; then
+  unknown "$step" "$FLEET_ERROR"
+else
+  fleet_f="${#FINDINGS[@]}" fleet_u="${#UNKNOWNS[@]}" members=0 own=0 above=0 here=0
+  while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
+    if [ "$what" = unreachable ]; then
+      unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
       continue
     fi
-    jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
-    printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
-    accounts=0
-    while IFS="$US" read -r -u 3 ns name; do
-      ! system_namespace "$ns" || continue
-      accounts=$((accounts + 1))
-      printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
-        "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
-    done 3<"$WORK/serviceaccounts.rec"
-    if [ "$accounts" -eq 0 ]; then
-      unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, so there is no principal to review"
-    elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$others"; then
-      unknown "$cstep" "$REVIEW_ERROR"
-    elif judge_reviews "$cstep" " on cluster $cluster" && unchanged; then
-      pass "$cstep" "no namespace $NAMESPACE, and none of its $accounts ServiceAccounts outside the system namespaces may make a namespace or a ServiceAccount in $NAMESPACE"
+    members=$((members + 1))
+    if [ -n "$gke_cluster" ]; then
+      if [ "$gke_project" = "$PROJECT" ] && [ "$gke_cluster" = "$CLUSTER" ] &&
+        { [ -z "$OPERATOR_LOCATION" ] || [ "$gke_location" = "$OPERATOR_LOCATION" ]; }; then
+        own=$((own + 1))
+        continue
+      fi
+      if [ -n "${PROJECT_CLUSTERS["$gke_project/$gke_location/$gke_cluster"]:-}" ]; then
+        above=$((above + 1))
+        continue
+      fi
+      here=$((here + 1))
+      label="$gke_project/$gke_location/$gke_cluster"
+      cstep="live: Workload Identity on fleet member $id (cluster $label)"
+      if ! kube_for "$gke_cluster" "$gke_location" "$gke_project"; then
+        unknown "$cstep" "$KUBE_ERROR"
+        continue
+      fi
+      read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
+    else
+      here=$((here + 1))
+      label="$POOL_PROJECT/$location/$id"
+      cstep="live: Workload Identity on fleet member $id"
+      if ! kube_for_membership "$id" "$location"; then
+        unknown "$cstep" "$KUBE_ERROR"
+        continue
+      fi
+      read_other_cluster "$cstep" "membership:$label" " on fleet member $label"
     fi
-  done 5<"$WORK/clusters.tsv"
+  done 6<"$WORK/fleet.rec"
+  if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
+    if [ "$members" -eq 0 ]; then
+      pass "$step" "the GKE Hub API lists no membership in the fleet, and no location it could not reach"
+    else
+      pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here"
+    fi
+  fi
 fi
 
 # --- live: hold writers ---

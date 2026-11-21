@@ -78,10 +78,10 @@ const (
 	// to the next one. Three intervals cover those.
 	Lookback = maxBackoff + 3*Interval
 
-	// retention is the bucket's TTL, GitHub's own horizon: past three days GitHub neither lists
+	// Retention is the bucket's TTL, GitHub's own horizon: past three days GitHub neither lists
 	// nor redelivers an attempt, so nothing older is worth remembering, and a delivery still
 	// failing that long after its first failed attempt is expired.
-	retention = 72 * time.Hour
+	Retention = 72 * time.Hour
 	// cursorOverlap is how far before its cursor a sweep starts, and it covers two things. One is
 	// the clock skew between sweepers, the margin claimDeadline's comment calls far above it. The
 	// other is the most an entry nothing has acted on can fall behind the cursor of the sweep that
@@ -113,7 +113,7 @@ type GitHub interface {
 // replicas copies, the deployment's ENVOY_NATS_REPLICAS, and raising a bucket found with fewer
 // (bus.EnsureKeyValue), for as long as ctx, the sweep's, lasts.
 func OpenState(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
-	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: retention, Storage: nats.FileStorage, Replicas: replicas})
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: Retention, Storage: nats.FileStorage, Replicas: replicas})
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.WebhookRedeliveryBucket, err)
 	}
@@ -346,9 +346,9 @@ func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 	continuous := opts.Since.IsZero()
 	since := opts.Since
 	// floor is where the running sweep's index read starts (openDue), clamped to the oldest the
-	// bucket holds: nothing older than retention is worth reading, and a wider window would cost
+	// bucket holds: nothing older than Retention is worth reading, and a wider window would cost
 	// more filters than maxPendingFilters.
-	floor := now.Add(-retention)
+	floor := now.Add(-Retention)
 	var cursorRevision uint64
 	// olderBuild is a cursor a build without the index wrote, which is what a rollback leaves:
 	// the records that build created have no index entry, so the back-fill runs whatever its
@@ -363,7 +363,7 @@ func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 		}
 		cursorRevision = revision
 		if revision == 0 {
-			since = now.Add(-retention)
+			since = now.Add(-Retention)
 		} else {
 			olderBuild = !cursor.Indexed
 			if resume := cursor.At.Add(-cursorOverlap); resume.After(floor) {
@@ -602,7 +602,7 @@ func (s *Sweeper) decide(ctx context.Context, guid string, attempts []githubapp.
 		}
 		return decision, false, nil
 	}
-	if !now.Before(first.Add(retention)) {
+	if !now.Before(first.Add(Retention)) {
 		decision.Outcome = Expired
 		if !dryRun {
 			next := current

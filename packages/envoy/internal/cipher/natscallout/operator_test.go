@@ -389,10 +389,23 @@ func answered(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	return answer
 }
 
+// notFoundRetry bounds succeeds's retry of a 10059, "stream not found", for a stream the test made.
+// Twice in about ten runs, on this package's three members of nats-server v2.15.1,
+// STREAM.MSG.GET.KV_envoy_session_consumers was answered so just after the same stream's
+// STREAM.INFO was answered, with no meta leader change logged in the run; nats-server's
+// jsMsgGetRequest answers it only from a meta leader with no assignment for the stream, or from
+// the stream leader's failed lookup. The cause is not found, so each retry is logged.
+const notFoundRetry = 5 * time.Second
+
 // succeeds requires a request on subject to be answered with no error, and returns the answer.
 func succeeds(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	t.Helper()
 	answer := answered(t, nc, subject, body)
+	for first := time.Now(); answer.Error != nil && answer.Error.ErrCode == 10059 && time.Since(first) < notFoundRetry; {
+		t.Logf("%s answered %s; asking again", subject, answer.raw)
+		time.Sleep(250 * time.Millisecond)
+		answer = answered(t, nc, subject, body)
+	}
 	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
 	return answer
 }
@@ -446,7 +459,7 @@ const snapshotChunk = 4096
 // v0.5.0 requires antithesis-sdk-go v0.8.0, which would turn the Antithesis SDK nats-server links
 // from no-op to enabled in every module of the workspace.
 func backupStream(nc *nats.Conn, stream string) (streamBackup, error) {
-	info, err := nc.Request("$JS.API.STREAM.INFO."+stream, nil, 10*time.Second)
+	info, err := nc.Request("$JS.API.STREAM.INFO."+stream, nil, answerWait)
 	if err != nil {
 		return streamBackup{}, fmt.Errorf("load stream %s (STREAM.INFO): %w", stream, err)
 	}
@@ -479,7 +492,7 @@ func backupStream(nc *nats.Conn, stream string) (streamBackup, error) {
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 	request, _ := json.Marshal(map[string]any{"deliver_subject": inbox, "no_consumers": true, "chunk_size": snapshotChunk, "window_size": snapshotChunk})
-	reply, err := nc.Request("$JS.API.STREAM.SNAPSHOT."+stream, request, 10*time.Second)
+	reply, err := nc.Request("$JS.API.STREAM.SNAPSHOT."+stream, request, answerWait)
 	if err != nil {
 		return streamBackup{}, fmt.Errorf("snapshot %s (STREAM.SNAPSHOT): %w", stream, err)
 	}
@@ -540,7 +553,7 @@ func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced fun
 		DeliverSubject string `json:"deliver_subject"`
 	}
 	for first := time.Now(); ; time.Sleep(100 * time.Millisecond) {
-		reply, err := nc.Request("$JS.API.STREAM.RESTORE."+b.stream, request, 10*time.Second)
+		reply, err := nc.Request("$JS.API.STREAM.RESTORE."+b.stream, request, answerWait)
 		if err != nil {
 			return 0, fmt.Errorf("restore %s (STREAM.RESTORE): %w", b.stream, err)
 		}
@@ -1041,7 +1054,7 @@ func TestNoOneButTheOperatorGetsTheOperatorGrant(t *testing.T) {
 	r.makeStreams(t, 1, 16, 0)
 	listener := connectService(t, r.cluster.URL(), hourLong(listenerAccount), "")
 	decided := r.decisions.after(t, listenerName, 0)
-	require.Equal(t, natsgrant.Listener("example-hub"), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
+	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
 	listener.refused(t, "$JS.API.STREAM.DELETE."+kvBucket(bus.SessionBucket), nil)
 
 	_, err := connectSession(t, r.cluster.URL(), a, nil)
@@ -1089,10 +1102,10 @@ func tE3Rows(t *testing.T, now time.Time, a *session) []tE3Row {
 	t.Helper()
 	return []tE3Row{
 		{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}, ""},
-		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)}, ""},
-		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}, ""},
-		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)}, ""},
-		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)}, ""},
+		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: natsgrant.ForCallout(natsgrant.Dispatch("example-dispatch")), Expires: now.Add(time.Hour)}, ""},
+		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: natsgrant.ForCallout(natsgrant.Listener("example-hub")), Expires: now.Add(time.Hour)}, ""},
+		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: natsgrant.ForCallout(natsgrant.Daemon()), Expires: now.Add(30 * time.Minute)}, ""},
+		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.ForCallout(natsgrant.Measure()), Expires: now.Add(time.Hour)}, ""},
 		{"no credential", Request{UserNkey: "UUSER", ServerID: "NSERVER"}, Decision{}, labelNoCredential},
 		{"an unlisted service", serviceRequest("unlisted-token"), Decision{}, labelServiceNotListed},
 		{"a two-hour token", serviceRequest("two-hours-token"), Decision{}, labelTokenTooLong},

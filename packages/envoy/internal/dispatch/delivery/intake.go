@@ -269,6 +269,14 @@ func deliveryConsumerConfig() natsgo.ConsumerConfig {
 	}
 }
 
+// ConsumerConfigs are the durables of the notification stream Dispatch's intakes create, the
+// delivery intake's and the job intake's (bus.DispatchDurables), each as a take-over creates it. The
+// operator's census keeps a consumer of either name only while its configuration has their shape
+// (packages/envoy/infra/streams, DeclaredConsumers).
+func ConsumerConfigs() []natsgo.ConsumerConfig {
+	return []natsgo.ConsumerConfig{deliveryConsumerConfig(), jobConsumerConfig()}
+}
+
 // consumerConfigGeneration is the generation of the intakes' consumer configs
 // (deliveryConsumerConfig, jobConsumerConfig), stamped on each durable as its
 // consumerGenerationKey metadata. A take-over that finds a durable of a higher generation

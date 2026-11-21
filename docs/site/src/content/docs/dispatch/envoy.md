@@ -113,8 +113,13 @@ every agent session on a machine logged in to the broker. The app needs the
 for approval, or denied, posts nothing, and the tool says which; Slack's own refusal comes back as
 Slack's error code, such as `not_in_channel`. A reply is at most 4,000 characters, and the tool
 sends each one once, since a post whose answer was lost may already be in the thread. A session
-posts into any channel the app has been added to: the tool does not know which project a channel
-belongs to.
+whose credential names no private Dispatch project posts into any channel the app has been added
+to: the tool does not know which project a channel belongs to. Once the token carries the tag
+`project-channels=slack`, a session whose credential names a private project gets it only behind
+the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's
+owner named and on nothing else, so such a session posts only to its project's channels and cannot
+read a thread with the token
+([A private project's secrets](/legion/broker/concepts/#a-private-projects-secrets)).
 
 ## How Dispatch's events arrive
 
@@ -462,8 +467,8 @@ path, and the key is missing altogether on a listener older than the field.
 
 Legion's daemon reads Dispatch, GitHub and listener events from the stream through a durable
 consumer per project for each: `legion-go-<project>-dispatch` (filtering
-`notifications.dispatch.issue.>` and the project's repository-mapping subject),
-`legion-go-<project>-github` (filtering each of the project's repositories) and
+`notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
+the project works in) and
 `legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.

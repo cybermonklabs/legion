@@ -2,8 +2,10 @@
 // secret store and checks and verifies the one stored there (package seed); render prints what the
 // AWS components register, for a program that needs it outside Pulumi (package render); buckets
 // creates and recreates the KV buckets a listener copies (package buckets); hold sets, proves and
-// releases the NATS writer hold on the clustered hub (package writerhold); and
-// `envoy-infra --version` prints the release it was built as.
+// releases the NATS writer hold on the clustered hub (package writerhold); streams check reads the
+// JetStream streams Envoy declares beside the NATS auth service, and streams ensure makes and
+// repairs ENVOY_MEASURE (package streams), while streams update and streams census are the writer
+// hold's held commands; and `envoy-infra --version` prints the release it was built as.
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/infra/buckets"
 	"github.com/sjawhar/envoy/infra/render"
 	"github.com/sjawhar/envoy/infra/seed"
+	"github.com/sjawhar/envoy/infra/streams"
 	"github.com/sjawhar/envoy/infra/writerhold"
 )
 
@@ -49,6 +52,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "hold" {
 		return writerhold.Command(ctx, args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "streams" {
+		return streams.Command(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 1 && args[0] == "--version" {
 		if _, err := fmt.Fprintln(stdout, version); err != nil {
 			fmt.Fprintf(stderr, "envoy-infra: could not print the version: %v\n", err)
@@ -59,13 +65,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	help := len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help")
 	if !help {
 		// The words given are not echoed: a seed pasted there must not reach the terminal.
-		fmt.Fprintln(stderr, "envoy-infra: the command is seed, render, buckets or hold, or --version alone")
+		fmt.Fprintln(stderr, "envoy-infra: the command is seed, render, streams, buckets or hold, or --version alone")
 	}
 	fmt.Fprintln(stderr, "usage: envoy-infra --version")
 	seed.Command(ctx, []string{"--help"}, stdout, stderr, stores)
 	render.Command([]string{"--help"}, stdout, stderr)
 	buckets.Command(ctx, []string{"--help"}, stdout, stderr)
 	writerhold.Command(ctx, []string{"--help"}, stdout, stderr)
+	streams.Command(ctx, []string{"--help"}, stdout, stderr)
 	if help {
 		return 0
 	}

@@ -5,7 +5,7 @@ authorization {
     # example-hub
     {"nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "permissions": {"publish": {"allow": ["notifications.>", "$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS"], "deny": ["notifications.envoy.deliver.>"]}, "subscribe": {"allow": ["_INBOX.>", "notifications.role.> notifications-role", "notifications.café.>"]}}}
     # example-dispatch
-    {"nkey": "UAUK2YFQ7SM5YNV4VH6NPEKN3UZVY43S4JUE5767FR4CX76R7E7JTWYJ", "permissions": {"publish": {"allow": ["notifications.dispatch.>", "$JS.API.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    {"nkey": "UAUK2YFQ7SM5YNV4VH6NPEKN3UZVY43S4JUE5767FR4CX76R7E7JTWYJ", "permissions": {"publish": {"allow": ["notifications.dispatch.>", "$JS.API.>"], "deny": ["$JS.API.STREAM.CREATE.>", "$JS.API.STREAM.UPDATE.>", "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.RESTORE.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
     # example-daemon
     {"nkey": "UBHS7ZOUV24G5LDHYM4H4PBRLBEYK62JIFJVBMFBRCY63D3XC45MCRKF", "permissions": {"publish": {"allow": ["$JS.API.CONSUMER.>", "$JS.ACK.ENVOY_NOTIFICATIONS.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
     # example-sessions

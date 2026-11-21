@@ -1052,6 +1052,49 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	return update.sent.Subjects, nil
 }
 
+// ErrStreamNotMade is a stream or a bucket a start beside the auth service
+// (StreamsOperatorMadeEnvVar) found missing: such a start makes no stream, since the auth service
+// answers no client but the operator with a stream create (natsgrant.ForCallout), and the
+// operator makes it at deploy time. The error wrapping it names the stream.
+var ErrStreamNotMade = errors.New("the operator makes every stream: run envoy-infra streams update")
+
+// streamNotMade is the error of a start beside the auth service that found stream missing: it
+// names the stream and the setting, and wraps ErrStreamNotMade, which names the operator's
+// command, and answer, the server's own.
+func streamNotMade(stream string, answer error) error {
+	return fmt.Errorf("%s is missing, and a start beside the auth service (%s=1) makes no stream: %w (%w)", stream, StreamsOperatorMadeEnvVar, ErrStreamNotMade, answer)
+}
+
+// readOperatorMadeStream is ensureStreamWithConfig for a client beside the auth service
+// (StreamsOperatorMadeEnvVar): it reads the stream, sent again while the server leaves the read
+// unanswered (readAgain), and returns the subjects it carries, and a stream it finds missing is
+// streamNotMade. It writes nothing: no create, no reconcile, no role-lane migration. The stream's
+// configuration is the operator's (envoy-infra streams update), so cfg and defaultsAnUnsetCap,
+// which decide what a reconcile writes, are not read. A start (atStart) that finds the stream with
+// no leader, as a raise the deploy just made leaves it, waits for one, as ensureStreamWithConfig
+// does, since a write sent now draws no answer.
+func readOperatorMadeStream(ctx context.Context, js nats.JetStreamContext, _ *nats.StreamConfig, _ bool, at streamEnsure) ([]string, error) {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	ctx = withReadLimit(ctx)
+	read := Stream + " STREAM.INFO"
+	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+	switch {
+	case errors.Is(err, nats.ErrStreamNotFound):
+		return nil, streamNotMade(Stream, err)
+	case unanswered(err) || ctx.Err() != nil:
+		return nil, namedRequest(read, err)
+	case err != nil:
+		return nil, err
+	}
+	if leaderless(info) && at == atStart {
+		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			return nil, err
+		}
+	}
+	return info.Config.Subjects, nil
+}
+
 // newerBuild reports whether info's stream carries the settings of a newer build, one that stamped
 // a generation above this build's (streamGenerationKey), which this build leaves exactly as they
 // are: its start (ensureStreamWithConfig) and its keeper (keepStream) ask it of every read they

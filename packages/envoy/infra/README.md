@@ -271,6 +271,7 @@ pod starts on them.
 | `natsImage`, `reloaderImage`, `exporterImage` | required | nats-server, the chart's config reloader and its Prometheus exporter, each pinned by digest: `<name>@sha256:<64 lowercase hex digits>`. Chart 2.15.1 runs `nats:2.15.1-alpine`, `natsio/nats-server-config-reloader:0.24.0` and `natsio/prometheus-nats-exporter:0.20.2` by default, the versions the `natslive` tests run; pin those versions' digests. |
 | `natsReplicas` | unset | Only with a session listener (`listener` or `tailnet.listener`): its `ENVOY_NATS_REPLICAS`, the copies JetStream keeps of every stream and bucket the listener creates, 1 to 3, since the hub runs three servers and JetStream refuses a stream with more copies than it has servers. Unset, the variable is unset and the listener keeps one copy. |
 | `streamMaxBytes` | unset | The byte limit of the listener's notification stream, at least 1, rendered as the session listener's `ENVOY_STREAM_MAX_BYTES`. With or without `tailnet` it sizes `maxFileStoreGb`, `diskSizeGb` and `natsMemory` (see [Sizing](#sizing)). Unset, the variable is unset and the listener sets no limit, so a deployed stream keeps the one it has. |
+| `streamsOperatorMade` | `false` | Only with a session listener: `true` renders `ENVOY_STREAMS_OPERATOR_MADE=1` on it, for a hub behind the NATS auth service, which answers no client but the operator with a stream create or update; the listener's start then reads its streams and makes none, and `envoy-infra streams update` makes them ([`envoy-infra streams`](#envoy-infra-streams)). `false` or unset renders nothing, the render it always had. The deployment sets it together with `authCallout`. |
 | `maxFileStoreGb` | see [Sizing](#sizing) | JetStream's `max_file_store`, in whole GiB, below `diskSizeGb`. |
 | `diskSizeGb` | see [Sizing](#sizing) | Each hub pod's claim, in whole GiB, above `maxFileStoreGb`. It is the StatefulSet's claim template: [The protected StatefulSet](#the-protected-statefulset) says how to grow it. |
 | `storageClassName` | the cluster's default class | The claims' StorageClass, a DNS subdomain. |
@@ -1319,6 +1320,13 @@ copies NATS keeps, and `streamMaxBytes` below 1. Set no more copies than the hub
 Each unset renders nothing, and the binaries then keep one copy and set no byte limit, a deployed
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
+
+`streamsOperatorMade`, `false` by default, renders `ENVOY_STREAMS_OPERATOR_MADE=1` on the same two
+containers, for a hub behind the NATS auth service, which answers no client but the operator with
+a stream create or update: each start then reads `ENVOY_NOTIFICATIONS` and its buckets and makes or
+raises none, and `envoy-infra streams update` makes them
+([`envoy-infra streams`](#envoy-infra-streams)). Unset or `false` renders nothing. The deployment
+sets it together with the hub's callout.
 
 `senderMessagesPerMinute` and `senderMessageBurst` are the listener's sender limit
 ([The listener's sender limit](#the-listeners-sender-limit)): `ENVOY_SENDER_MESSAGES_PER_MINUTE`
@@ -3329,6 +3337,70 @@ envoy-infra buckets create --break-glass --operator <you> --nats nats://127.0.0.
 - It is refused with `recreate` or `restore`, beside a hold flag, without `--operator`,
   `--bucket` or `--connz`, and without exactly one `--nats`.
 
+## `envoy-infra streams`
+
+Behind the NATS auth service no client but the operator may make or change a stream: the service
+answers every other connection without a stream create, update, delete or restore
+(`natsgrant.ForCallout`), and a create or an update would carry a configuration of the caller's
+choosing, whose source or republish reads every stream of the account. Every stream Envoy declares
+is therefore made at deploy time, by the operator, and every program beside the auth service
+starts with `ENVOY_STREAMS_OPERATOR_MADE=1`, reads its streams and makes none, stopping, naming the
+stream and `envoy-infra streams update`, when one is missing.
+
+The declared set is built from the code's own names, never written as a list:
+`ENVOY_NOTIFICATIONS`, each listener bucket, the webhook redelivery bucket, `ENVOY_MEASURE` and the
+writer hold's barrier stream, each with the configuration the program that owns it makes it with.
+Every stream but `ENVOY_MEASURE` is protected: only the operator, under a hold, makes or changes
+one. `ENVOY_MEASURE` too is the operator's alone, made by `ensure` outside a hold: the measurement
+user's grant holds no stream create, update or delete, since a create carries a configuration of
+the caller's choosing. Its copies are held to the deployment's count like every other stream's.
+
+```text
+envoy-infra streams check  --nats-url <urls> (--token-file <file> | --nkey-seed-file <file>) [settings]
+envoy-infra streams ensure --nats-url <urls> --token-file <file> --broker-url <url> --hold-verify-keys <keys> [settings]
+```
+
+`streams update` and `streams census` are the writer hold's held commands. It registers them
+under those names and runs each inside a hold of its own workflow (`streams-update`; `streams-census`,
+the cutover and `hub-restore`), around the `Update` and `Census` functions of this package, and
+writes the hold journal's intent, done and stop entries. The census is the final command of its
+workflows, so its done entry completes the record that `hold release` needs.
+
+- `check`, run by each deploy, unattended, as the measurement job: it reads each declared stream
+  and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,
+  and each other setting that differs from the build's, and sends no create and no update. Its
+  reads ask for no stored subjects.
+- `ensure`, as the operator while the hold row is `released`: it makes `ENVOY_MEASURE` when it is
+  missing, and brings an existing `ENVOY_MEASURE` that drifts to its declared settings, copies
+  included, with one update, so the shortfall `check` reports has a repair. It touches no other
+  stream. The update of `ENVOY_MEASURE` is in the operator's `released` grant alone.
+- `update` (the writer hold's, inside a `streams-update` hold): it makes each missing protected
+  stream with the build's configuration and raises each by a start's own rules (subjects only
+  added, limits only raised, copies raised, `envoy_stream_id` kept), and stops, naming the stream
+  and the setting, at any other difference.
+- `census` (the writer hold's, inside a hold whose workflow names it), once every family has a
+  cutover row in state `done`: it lists every stream and consumer, removes a stream outside the
+  declared set and a consumer that matches no declared shape by its whole configuration, and puts a
+  declared stream's source, mirror, republish or subject transform back to the build's
+  configuration. A sealed stream, or one that allows per-message TTLs or message schedules, stops
+  it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
+  after the hold's barrier on their bucket.
+
+`ensure` reads the hold row through the broker's `/v1/nats-hold` routes first, verified
+with `--hold-verify-keys` (entries as `BROKER_NATS_HOLD_SIGNING_KEYS` writes them), and refuse any
+other phase by name. The token file holds the identity's platform token, presented as user `service`;
+the operator's is also its token at the broker's routes. The settings are `--replicas`,
+`--stream-max-bytes` and `--session-max-age`, which default to `ENVOY_NATS_REPLICAS`,
+`ENVOY_STREAM_MAX_BYTES` and `ENVOY_SESSION_MAX_AGE`, as every program of the deployment reads them.
+Each word prints one line per change, failure and unknown read, then `CLEAN`, `FAIL` or `UNKNOWN`,
+and exits 0, 1 or 2; a refused phase exits 1 and a usage error 2.
+
+**The ordering this needs.** No hub turns its callout on before its static listener and Dispatch
+users start with `ENVOY_STREAMS_OPERATOR_MADE=1`, their streams made by `envoy-infra streams
+update`, or are removed: beside a callout those users are rendered without their stream creates
+(see [NATS authorization](#nats-authorization)), so a start that would make a stream is refused.
+`gcp:ClusteredNatsHub` and `gcp:Dispatch` render the setting with `streamsOperatorMade`.
+
 ## The listener's sender limit
 
 Each component that runs a listener takes two optional inputs, `senderMessagesPerMinute` and
@@ -3854,6 +3926,15 @@ unexpected first protocol response during connection initialization (`nats.go:29
 1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before callouts existed. With a
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
+With a callout, every keyed user but the auth service's is rendered as the auth service answers a
+client (`natsgrant.ForCallout`): an allow entry a stream create, update, delete or restore
+contains is not written, and a wider entry that reaches one, such as `$JS.API.>`, stays beside a
+`deny` of each call it reaches. A user that would then publish nothing is refused by name, since
+nats-server reads an empty allow list as every subject. So no static user beside a callout makes,
+changes or removes a stream, and every stream is the operator's to make
+([`envoy-infra streams`](#envoy-infra-streams)). Without a callout every user is written exactly
+as it is given.
+
 With a callout, the text then ends with three top-level lines, after the authorization block and
 after `no_auth_user`. Without a callout, none of them is rendered.
 
@@ -4166,12 +4247,12 @@ a subject nothing else uses, so the probe only shows whether the hub admits a co
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists every principal that is not a person and can
 mint the operator ServiceAccount's token, run or enter a pod as it, mint its Google service
-account's token, make a namespace of the same name on another cluster of the project, or write the
-writer hold's tables beside the broker's routes. It reads code first (`--rbac-render`,
-`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
-right, or 2 naming each step it could not read. `--report <file>` writes the same as JSON.
-`scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
-`gcloud` and `agent-secrets`.
+account's token, make a namespace of the same name on another cluster of the project or of the
+workload pool's fleet, or write the writer hold's tables beside the broker's routes. It reads code
+first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1
+naming each principal and right, or 2 naming each step it could not read. `--report <file>` writes
+the same as JSON. `scripts/operator-token-minters.test.sh` runs every plant and control against a
+fake `kubectl`, `gcloud`, `curl` and `agent-secrets`.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

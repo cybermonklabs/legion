@@ -219,7 +219,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
 	// written as the empty object rather than refused.
 	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
-	if err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
+	if _, err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
 	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != "" {
@@ -308,7 +308,7 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 					t.Fatalf("the person deciding after the judge = %+v, %v; want ErrTerminal", dec, err)
 				}
 			} else {
-				if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+				if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
 					t.Fatalf("the hand-over: %v", err)
 				}
 				if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator); err != nil || dec.GrantID == "" {
@@ -436,7 +436,7 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 
 	// The run that met the refusal hands the request to its person, who may grant it, as they
 	// always could.
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "withheld"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "withheld"}); err != nil {
 		t.Fatalf("the hand-over: %v", err)
 	}
 	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)

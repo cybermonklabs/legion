@@ -230,8 +230,8 @@ nats-server versions the daemon refuses, for the same reason.
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
 The daemon-go job: what its two Go steps read together — the plain step, which
-tests every package of packages/daemon but the three concurrent ones, and the race
-step, which tests those three — so the filter covers the whole module's closure,
+tests every package of packages/daemon but the five concurrent ones, and the race
+step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read

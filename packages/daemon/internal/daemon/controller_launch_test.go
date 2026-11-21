@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -154,6 +155,60 @@ func TestTheOperatorsDaemonLaunchesNoController(t *testing.T) {
 		if call.Spec.Role == claim.RoleController {
 			t.Fatalf("the operator's daemon launched a controller: %+v", call.Spec)
 		}
+	}
+}
+
+// reviewAppInstalledNowhere is the workflow's token source of a project whose review App, the App
+// the controller runs as, is installed on no account: the boot's proof of its key reads no
+// installation (proveAppKeys), while the implement App is installed on acme, as the recorder's is.
+type reviewAppInstalledNowhere struct{ *workflowTokenRecorder }
+
+func (reviewAppInstalledNowhere) InstalledOwners(_ context.Context, role appauth.AppRole) ([]string, error) {
+	if role == appauth.Review {
+		return nil, nil
+	}
+	return []string{"acme"}, nil
+}
+
+// A controller the daemon launches (`controller: daemon`) for a project whose review App is
+// installed on no account is told that it has no GitHub owner, under either runtime: the runtime
+// launches it on an empty gh bundle (runtime.ErrNoGitHubOwner), and its launch's addressing says
+// so, from the owners the boot's proof of the review App's key read (proveAppKeys,
+// plan.appOwners: under tmux the App's own, under Kubernetes the controller pod's), so it never
+// acts as nobody without a word (dispatch://INFRA-4401 A3, check a-go, item 12). Controls: with
+// the sentence taken out of the controller's addressing (controllerSpawnSpec's addressing without
+// RepositoriesSentence), or with its owners replaced by a non-empty list (RepositoriesSentence
+// given acme), the launch is not told.
+func TestADaemonLaunchedControllerWhoseReviewAppIsInstalledOnNoAccountIsToldItHasNoGitHubOwner(t *testing.T) {
+	const told = "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	for _, tc := range []struct {
+		name string
+		// runtime is the configuration's runtime block; nil keeps testConfig's, tmux.
+		runtime func(t *testing.T) config.Runtime
+	}{
+		{name: "tmux"},
+		{name: "kubernetes", runtime: func(t *testing.T) config.Runtime { return kubernetesConfig(t, "https://127.0.0.1:1").Runtime }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := workflowConfig(t, workflowNATS(t))
+			if tc.runtime != nil {
+				cfg.Runtime = tc.runtime(t)
+			}
+			cfg.ControllerLaunch = config.ControllerLaunchDaemon
+			rt := fake.NewRuntime()
+			o := fakeRuntime(rt, &built{})
+			o.workflowTokens = reviewAppInstalledNowhere{&workflowTokenRecorder{}}
+			startDaemon(t, cfg, o)
+			project, err := claim.ProjectToken(cfg.Project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			launch := controllerLaunched(t, rt, claim.ControllerToken(project))
+			if !strings.Contains(launch.Prompt.Addressing, told) {
+				t.Fatalf("the controller's addressing under %s is %q, want it to say %q: its review App is installed on no account",
+					cfg.Runtime.Name, launch.Prompt.Addressing, told)
+			}
+		})
 	}
 }
 

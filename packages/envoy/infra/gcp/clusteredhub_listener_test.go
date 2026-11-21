@@ -45,6 +45,18 @@ func TestClusteredNatsHubListenerPodMatchesGolden(t *testing.T) {
 	t.Logf("%d objects rendered, %d container(s) in the listener pod", len(m.Registrations()), len(containers))
 }
 
+// With streamsOperatorMade the session listener's pod matches its golden, which differs from the
+// committed one by the one ENVOY_STREAMS_OPERATOR_MADE line alone.
+func TestClusteredNatsHubListenerPodWithStreamsOperatorMadeMatchesGolden(t *testing.T) {
+	const golden = "clustered-hub-listener-pod-with-streams-operator-made.golden"
+	args := clusteredArgs()
+	args.StreamsOperatorMade = pulumi.BoolRef(true)
+	m := runClusteredHub(t, args)
+	requirePodGolden(t, m, clusteredListenerName, golden)
+	require.Equal(t, []string{`"name": "ENVOY_STREAMS_OPERATOR_MADE",`, `"value": "1"`},
+		addedLines(readGolden(t, "clustered-hub-listener-pod.golden"), readGolden(t, golden)))
+}
+
 // The Deployment runs one listener, wearing the listener's selector labels, in the hub's
 // namespace; it surges the new pod in before it stops the old one, so the durable the old pod
 // holds is free by the time the new one has waited its bind deadline out; the pod has 40 s to

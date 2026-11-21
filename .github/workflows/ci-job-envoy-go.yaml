@@ -44,11 +44,11 @@ jobs:
     # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
     # bounds the step); after that step's seconds, the skip counter's test's own timeout-minutes
     # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
-    # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
-    # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
+    # 34 is 90 (its -timeout bounds each package, not the step, so the step has a limit of its
+    # own, and its comment below says why 34); after that step's 34 at most, natslive's default
+    # 10, the bus matrix's own 5 and the auth service's own 5 are 110, the integration step's 5 is
     # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 110
+    timeout-minutes: 114
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -214,12 +214,16 @@ jobs:
       # limit falls: cmd/cipherd took 580 s in the unit step in CI on 2026-11-18 (job
       # 135007706189), and the broker's packages had 15 minutes here. That -timeout bounds each
       # package's test binary, and the packages run several at a time, so one that starts late
-      # ends up to 20 minutes after its own start: the step's own limit of 30 minutes leaves a
-      # package that starts within the first 10 its whole -timeout, and so its dump. Measured in
-      # that same job, before cmd/cipherd joined this step: 355 s for the step. Its --skip leaves
-      # out the backend count's test of ./internal/cipher/api/, which the count step above runs.
+      # ends up to 20 minutes after its own start: the step's limit leaves a package that starts
+      # within the first 10 minutes of the step's work its whole -timeout, and so its dump. Measured
+      # in that same job, before cmd/cipherd joined this step: 355 s for the step. natscallout and
+      # internal/holdrecord joined it later: on a dev box at a load average of 700 to 970, with -p 4,
+      # they took 147 s and 50 s of package time (and natscallout 109 s alone), so they move a
+      # late package's start by at most 197 s, about 3.3 minutes, even run one after the other:
+      # 30 minutes then, 34 now. Its --skip leaves out the backend count's test of
+      # ./internal/cipher/api/, which the count step above runs.
       - name: Count the database broker suites' skips
-        timeout-minutes: 30
+        timeout-minutes: 34
         run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.

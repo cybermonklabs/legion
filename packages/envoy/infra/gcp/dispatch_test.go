@@ -1839,7 +1839,7 @@ func dispatchNatsEnvs(t *testing.T, m *pulumitest.Mocks) map[string]map[string]a
 // empty value, so a key one side does not render never matches the other side's empty one.
 func dispatchNatsSettings(env map[string]any) map[string]any {
 	settings := map[string]any{}
-	for _, key := range []string{"NATS_URLS", "ENVOY_ALLOW_REMOTE_NATS", "ENVOY_NATS_SOCKS5_PROXY", "ENVOY_NATS_REPLICAS", "ENVOY_STREAM_MAX_BYTES"} {
+	for _, key := range []string{"NATS_URLS", "ENVOY_ALLOW_REMOTE_NATS", "ENVOY_NATS_SOCKS5_PROXY", "ENVOY_NATS_REPLICAS", "ENVOY_STREAM_MAX_BYTES", "ENVOY_STREAMS_OPERATOR_MADE"} {
 		if value, ok := env[key]; ok {
 			settings[key] = value
 		}
@@ -1881,6 +1881,35 @@ func TestDispatchInClusterNatsRendersNoNumbersWhenUnset(t *testing.T) {
 	}
 }
 
+// streamsOperatorMade reaches both NATS clients, the app's envoy-dispatch and the listener's
+// envoy-listener: true renders ENVOY_STREAMS_OPERATOR_MADE=1 on each, so each start beside the auth
+// service reads its streams and makes none, and unset or false renders nothing on either.
+func TestDispatchStreamsOperatorMadeReachesBothNatsClients(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		set  *bool
+		want bool
+	}{
+		{"unset", nil, false},
+		{"false", pulumi.BoolRef(false), false},
+		{"true", pulumi.BoolRef(true), true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.StreamsOperatorMade = row.set
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			for container, env := range dispatchNatsEnvs(t, m) {
+				if row.want {
+					require.Equal(t, "1", env["ENVOY_STREAMS_OPERATOR_MADE"], container)
+				} else {
+					require.NotContains(t, env, "ENVOY_STREAMS_OPERATOR_MADE", container)
+				}
+			}
+		})
+	}
+}
+
 // The two numbers are inputs of their own: with natsInCluster unset they reach both containers
 // beside ENVOY_NATS_SOCKS5_PROXY, the hub still being dialled through the front door's Service.
 func TestDispatchNatsNumbersKeepTheProxyPath(t *testing.T) {
@@ -1908,6 +1937,7 @@ func TestDispatchAppAndListenerAgreeOnNats(t *testing.T) {
 	}{
 		{"through the front door's proxy", func(*gcp.DispatchArgs) {}, 5},
 		{"dialling the hub in the cluster", setInClusterNats, 4},
+		{"beside the auth service", func(a *gcp.DispatchArgs) { a.StreamsOperatorMade = pulumi.BoolRef(true) }, 6},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -2178,6 +2208,55 @@ func TestDispatchPodMatchesGolden(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 	requirePodGolden(t, m, "example-dispatch", "dispatch-pod.golden")
+}
+
+// The goldens of Dispatch's two NATS clients beside the NATS auth service: the app's pod and the
+// listener's, each with ENVOY_STREAMS_OPERATOR_MADE=1 last among its NATS settings, every other
+// line as the committed goldens without it.
+const (
+	dispatchStreamsOperatorMadeGolden         = "dispatch-pod-with-streams-operator-made.golden"
+	dispatchListenerStreamsOperatorMadeGolden = "dispatch-listener-pod-with-streams-operator-made.golden"
+)
+
+// setStreamsOperatorMade sets streamsOperatorMade, as the deployment's apply does together with
+// the hub's callout.
+func setStreamsOperatorMade(a *gcp.DispatchArgs) { a.StreamsOperatorMade = pulumi.BoolRef(true) }
+
+// With streamsOperatorMade the app's pod and the listener's pod each match their golden, and those
+// goldens differ from the committed ones by the one ENVOY_STREAMS_OPERATOR_MADE line alone.
+func TestDispatchPodsWithStreamsOperatorMadeMatchGolden(t *testing.T) {
+	m, err := runDispatch(t, dispatchArgsWith(setStreamsOperatorMade)(), true)
+	require.NoError(t, err)
+	requirePodGolden(t, m, "example-dispatch", dispatchStreamsOperatorMadeGolden)
+	requirePodGolden(t, m, "example-dispatch-listener", dispatchListenerStreamsOperatorMadeGolden)
+	for golden, base := range map[string]string{
+		dispatchStreamsOperatorMadeGolden:         "dispatch-pod.golden",
+		dispatchListenerStreamsOperatorMadeGolden: "dispatch-listener-pod.golden",
+	} {
+		require.Equal(t, []string{`"name": "ENVOY_STREAMS_OPERATOR_MADE",`, `"value": "1"`},
+			addedLines(readGolden(t, base), readGolden(t, golden)), "%s against %s", golden, base)
+	}
+}
+
+// addedLines are the lines of b, trimmed, that a lacks, counting repeats: what b adds to a when a
+// rendering adds an entry and changes nothing else.
+func addedLines(a, b string) []string {
+	count := map[string]int{}
+	for _, line := range strings.Split(a, "\n") {
+		count[strings.TrimSpace(line)]++
+	}
+	var added []string
+	for _, line := range strings.Split(b, "\n") {
+		line = strings.TrimSpace(line)
+		if count[line] > 0 {
+			count[line]--
+			continue
+		}
+		if line != "{" && line != "}," && line != "}" {
+			added = append(added, line)
+		}
+	}
+	return added
 }
 
 // A front-door pod is a tailnet node of its own hosting the Tailscale Service, in a pod labelled
