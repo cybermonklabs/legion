@@ -22,10 +22,17 @@ const PoolPing = "-- ping"
 // SentStatements records every statement the connections of the store SentStore opens send to the
 // server. It reads the bytes each connection writes before they leave, so a statement shows
 // whatever sent it: a query, a batch or pipeline, a statement prepared and then run by its name,
-// or a call on the pgconn under a pgx connection. A pgx tracer sees only some of these: a
-// QueryTracer misses a batch's statements, and no tracer sees a call on the pgconn. A statement is
-// one execution: a simple query's text, or the Bind of a prepared statement, with the SQL that
-// statement was prepared from on its connection and the values bound to it.
+// a portal bound in one round trip and run in a later one, or a call on the pgconn under a pgx
+// connection. A pgx tracer sees only some of these: a QueryTracer misses a batch's statements, and
+// no tracer sees a call on the pgconn. A statement is one execution, as the server runs it: a
+// simple query's text, an Execute of a portal with the SQL and values the portal was bound with,
+// or a function call. A Bind that no Execute follows runs nothing and records nothing.
+//
+// Its boundary is the store's own connections: those of its pool, the lease and listener
+// connections opened from its configuration, and any connection opened from a copy of that
+// configuration, since each dials through the same recorder. A connection the code under test
+// opens itself from a connection string dials past it, and what that connection sends is not
+// recorded.
 type SentStatements struct {
 	mu    sync.Mutex
 	sent  []SentStatement
@@ -88,9 +95,9 @@ func (r *SentStatements) Statements() []SentStatement {
 }
 
 // Blind is each thing the recorder could not read: a connection that asked for encryption, a
-// message it could not decode, or a statement run by a name its connection never prepared. A test
-// that reads Statements must fail on any of them, since a statement the recorder could not read
-// may be the one the test looks for.
+// message it could not decode, a Bind of a statement its connection never prepared, or an Execute
+// of a portal its connection has not bound. A test that reads Statements must fail on any of them,
+// since a statement the recorder could not read may be the one the test looks for.
 func (r *SentStatements) Blind() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -130,7 +137,7 @@ func SentStore(t testing.TB, database *store.Store, sent *SentStatements) *store
 			if err != nil {
 				return nil, err
 			}
-			return &sendingConn{Conn: conn, sent: sent, prepared: map[string]string{}}, nil
+			return &sendingConn{Conn: conn, sent: sent, prepared: map[string]string{}, portals: map[string]boundPortal{}}, nil
 		}
 	})}
 }
@@ -145,48 +152,72 @@ const (
 	messageHeaderBytes = 5
 )
 
-// sendingConn is a connection whose writes its SentStatements reads before they leave. pending
-// holds the bytes of a message not yet whole; prepared holds this connection's prepared statements,
-// by name.
+// boundPortal is a portal a Bind made: the statement an Execute of it runs, and how many sync
+// points (syncs) the connection had written before the Bind.
+type boundPortal struct {
+	statement SentStatement
+	after     int
+}
+
+// sendingConn is a connection whose writes its SentStatements reads before they leave, and whose
+// reads it reads for the server's ReadyForQuery messages, which say when a transaction ended and
+// with it every portal bound in it. written and answered hold the bytes of a message not yet
+// whole each way; prepared holds this connection's prepared statements and portals its portals,
+// by name. syncs counts the sync points written - a Sync, a simple query, a function call - each
+// of which the server answers with one ReadyForQuery; ready counts those answers read, after the
+// one that ends the startup (greeted).
 type sendingConn struct {
 	net.Conn
 	sent     *SentStatements
 	mu       sync.Mutex
-	pending  []byte
+	written  []byte
+	answered []byte
 	started  bool
+	greeted  bool
 	lost     bool
 	prepared map[string]string
+	portals  map[string]boundPortal
+	syncs    int
+	ready    int
 }
 
 func (c *sendingConn) Write(p []byte) (int, error) {
-	c.read(p)
+	c.readWritten(p)
 	return c.Conn.Write(p)
 }
 
-// read reads the whole messages the bytes written so far hold. A packet before the startup packet
-// has no type byte: its length, then a code. Every message after it has a type byte, then its
-// length, which counts itself and not the type byte.
-func (c *sendingConn) read(p []byte) {
+func (c *sendingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.readAnswered(p[:n])
+	}
+	return n, err
+}
+
+// readWritten reads the whole messages the bytes written so far hold. A packet before the startup
+// packet has no type byte: its length, then a code. Every message after it has a type byte, then
+// its length, which counts itself and not the type byte.
+func (c *sendingConn) readWritten(p []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.lost {
 		return
 	}
-	c.pending = append(c.pending, p...)
+	c.written = append(c.written, p...)
 	for {
 		if !c.started {
-			if len(c.pending) < startupHeaderBytes {
+			if len(c.written) < startupHeaderBytes {
 				return
 			}
-			length := int(binary.BigEndian.Uint32(c.pending))
+			length := int(binary.BigEndian.Uint32(c.written))
 			if length < startupHeaderBytes {
 				c.lose(fmt.Sprintf("a startup packet of length %d", length))
 				return
 			}
-			if len(c.pending) < length {
+			if len(c.written) < length {
 				return
 			}
-			switch code := binary.BigEndian.Uint32(c.pending[4:8]); code {
+			switch code := binary.BigEndian.Uint32(c.written[4:8]); code {
 			case sslRequestCode, gssEncRequestCode:
 				c.lose(fmt.Sprintf("a connection asked for encryption (code %d), and what it sends after cannot be read", code))
 				return
@@ -194,38 +225,71 @@ func (c *sendingConn) read(p []byte) {
 			default:
 				c.started = true
 			}
-			c.pending = c.pending[length:]
+			c.written = c.written[length:]
 			continue
 		}
-		if len(c.pending) < messageHeaderBytes {
+		kind, body, length, whole := c.next(c.written)
+		if !whole {
 			return
 		}
-		length := int(binary.BigEndian.Uint32(c.pending[1:5])) + 1
-		if length < messageHeaderBytes {
-			c.lose(fmt.Sprintf("a %q message of length %d", c.pending[0], length-1))
-			return
-		}
-		if len(c.pending) < length {
-			return
-		}
-		c.message(c.pending[0], c.pending[messageHeaderBytes:length])
-		c.pending = c.pending[length:]
+		c.sentMessage(kind, body)
+		c.written = c.written[length:]
 	}
+}
+
+// readAnswered reads the whole messages the bytes read so far hold, every one of which, from the
+// server, has a type byte.
+func (c *sendingConn) readAnswered(p []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lost {
+		return
+	}
+	c.answered = append(c.answered, p...)
+	for {
+		kind, body, length, whole := c.next(c.answered)
+		if !whole {
+			return
+		}
+		if kind == 'Z' {
+			c.readyForQuery(body)
+		}
+		c.answered = c.answered[length:]
+	}
+}
+
+// next is the first message pending holds: its type, its body and its whole length, or false when
+// pending does not yet hold all of it. A length too short to be one loses the connection.
+func (c *sendingConn) next(pending []byte) (kind byte, body []byte, length int, whole bool) {
+	if len(pending) < messageHeaderBytes {
+		return 0, nil, 0, false
+	}
+	length = int(binary.BigEndian.Uint32(pending[1:5])) + 1
+	if length < messageHeaderBytes {
+		c.lose(fmt.Sprintf("a %q message of length %d", pending[0], length-1))
+		return 0, nil, 0, false
+	}
+	if len(pending) < length {
+		return 0, nil, 0, false
+	}
+	return pending[0], pending[messageHeaderBytes:length], length, true
 }
 
 // lose records what could not be read and reads nothing more of this connection, whose later
 // bytes no longer start on a message.
 func (c *sendingConn) lose(what string) {
 	c.lost = true
-	c.pending = nil
+	c.written, c.answered = nil, nil
 	c.sent.blindTo(what)
 }
 
-// message reads one whole message: a simple query and the Bind of a prepared statement are
-// statements the server runs, and a Parse or a Close changes what a later Bind's name stands for.
-// The other messages - Describe, Execute, Sync, Flush, the copy and authentication messages -
-// carry no statement.
-func (c *sendingConn) message(kind byte, body []byte) {
+// sentMessage reads one whole message the connection sent. A simple query, an Execute and a
+// function call are statements the server runs. A Parse, a Bind and a Close change what a later
+// Bind's statement name or Execute's portal name stands for, and a Sync, a simple query and a
+// function call are each a sync point, which the server answers with one ReadyForQuery. A simple
+// query also drops the unnamed statement and the unnamed portal. The other messages - Describe,
+// Flush, the copy and authentication messages - neither run a statement nor change one.
+func (c *sendingConn) sentMessage(kind byte, body []byte) {
 	switch kind {
 	case 'Q':
 		var query pgproto3.Query
@@ -233,6 +297,9 @@ func (c *sendingConn) message(kind byte, body []byte) {
 			c.sent.blindTo(fmt.Sprintf("a simple query that does not decode: %v", err))
 			return
 		}
+		delete(c.prepared, "")
+		delete(c.portals, "")
+		c.syncs++
 		c.sent.record(SentStatement{SQL: query.String})
 	case 'P':
 		var parse pgproto3.Parse
@@ -258,22 +325,68 @@ func (c *sendingConn) message(kind byte, body []byte) {
 				values[index] = append([]byte{}, value...)
 			}
 		}
-		c.sent.record(SentStatement{SQL: query, formats: append([]int16(nil), bind.ParameterFormatCodes...), values: values})
+		c.portals[bind.DestinationPortal] = boundPortal{
+			statement: SentStatement{SQL: query, formats: append([]int16(nil), bind.ParameterFormatCodes...), values: values},
+			after:     c.syncs,
+		}
+	case 'E':
+		var execute pgproto3.Execute
+		if err := execute.Decode(body); err != nil {
+			c.sent.blindTo(fmt.Sprintf("an Execute that does not decode: %v", err))
+			return
+		}
+		portal, bound := c.portals[execute.Portal]
+		if !bound {
+			c.sent.blindTo(fmt.Sprintf("an Execute of the portal %q, which its connection has not bound", execute.Portal))
+			return
+		}
+		c.sent.record(portal.statement)
 	case 'C':
 		var closing pgproto3.Close
 		if err := closing.Decode(body); err != nil {
 			c.sent.blindTo(fmt.Sprintf("a Close that does not decode: %v", err))
 			return
 		}
-		if closing.ObjectType == 'S' {
+		switch closing.ObjectType {
+		case 'S':
 			delete(c.prepared, closing.Name)
+		case 'P':
+			delete(c.portals, closing.Name)
 		}
+	case 'S':
+		c.syncs++
 	case 'F':
 		var call pgproto3.FunctionCall
 		if err := call.Decode(body); err != nil {
 			c.sent.blindTo(fmt.Sprintf("a function call that does not decode: %v", err))
 			return
 		}
+		c.syncs++
 		c.sent.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", call.Function)})
+	}
+}
+
+// readyForQuery reads the server's answer to a sync point. The first ReadyForQuery ends the
+// startup and answers none. Each after it answers the next sync point the connection wrote, and
+// says whether a transaction is still open there: when none is ('I'), the transaction that held
+// every portal bound before that sync point has ended, and those portals with it. A portal bound
+// after it belongs to the next transaction and stays.
+func (c *sendingConn) readyForQuery(body []byte) {
+	if !c.greeted {
+		c.greeted = true
+		return
+	}
+	c.ready++
+	if len(body) != 1 {
+		c.sent.blindTo(fmt.Sprintf("a ReadyForQuery of %d bytes", len(body)))
+		return
+	}
+	if body[0] != 'I' {
+		return
+	}
+	for name, portal := range c.portals {
+		if portal.after < c.ready {
+			delete(c.portals, name)
+		}
 	}
 }

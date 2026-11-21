@@ -341,18 +341,26 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 // reads the rule at most once for each row it claims; it claims a row only once the row is due;
 // and it writes a row that waits due again 2 s or more after that write. A trigger records, beside
 // each value of next_attempt_at written, the now() of the statement that wrote it: a row's claim
-// and its record. The test reads every statement a pass's connections send off the bytes they
+// and its record. The test reads every statement a pass's connections run off the bytes they
 // write (SentStatements), so a statement shows however it was sent - on its own, in a batch,
-// prepared and run by name - and each must be, byte for byte, one of the statements a pass sends
-// (passStatements): any other fails the test, whatever it reads. Each read of the rule is bound to
-// one row's event and destination, and no row may be read for more than once in a pass, nor read
-// for at all unless the pass claims it. Fifty rows wait behind an earlier event no record has
-// written. The first pass claims all fifty, reading the rule at least once to hold them. Half the
-// rows are then written due an hour on, on the database's clock, and a second pass runs: it must
-// claim none of those, however long after the first it starts, and claims whichever of the others
-// are due by then. The control is a third pass once the rows are made due, which claims all fifty
-// again. In each, no row is claimed before it is due, no row due at the pass's start is left, and
-// each row claimed is written due again at least 2 s on.
+// prepared and run by name, bound in one round trip and run in a later one - and each must be,
+// byte for byte, one of the statements a pass sends (passStatements): any other fails the test,
+// whatever it reads. Each read of the rule is bound to one row's event and destination, and no row
+// may be read for more than once in a pass, nor read for at all unless the pass claims it. Fifty
+// rows wait behind an earlier event no record has written. The first pass claims all fifty,
+// reading the rule at least once to hold them. Half the rows are then written due an hour on, on
+// the database's clock, and a second pass runs: it must claim none of those, however long after
+// the first it starts, and claims whichever of the others are due by then. The control is a third
+// pass once the rows are made due, which claims all fifty again. In each, no row is claimed before
+// it is due, no row due at the pass's start is left, and each row claimed is written due again at
+// least 2 s on.
+//
+// The test sees what the test store's own connections send, and a connection the outbox opened
+// from a copy of their configuration; a read on a connection the code opens itself from a
+// connection string is outside it. The outbox reads the rule only through copyrule.Holder, on the
+// pool it is given, which TestOnlyHolderReadsTheCopyRule (internal/dispatch/outbox/copyrule) keeps
+// so, and a pass whose only reads of the rule moved to such a connection fails the floor of one
+// read when it holds rows.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
 	const readEvery = 2 * time.Second

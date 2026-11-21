@@ -1,0 +1,232 @@
+package storetest
+
+import (
+	"context"
+	"encoding/binary"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgproto3"
+)
+
+// newSendingConn is a sendingConn on no network connection, which a test feeds bytes directly.
+func newSendingConn(sent *SentStatements) *sendingConn {
+	return &sendingConn{sent: sent, prepared: map[string]string{}, portals: map[string]boundPortal{}}
+}
+
+// encoded is the wire bytes of messages, in order.
+func encoded(t *testing.T, messages ...pgproto3.FrontendMessage) []byte {
+	t.Helper()
+	var bytes []byte
+	for _, message := range messages {
+		var err error
+		if bytes, err = message.Encode(bytes); err != nil {
+			t.Fatalf("encode %T: %v", message, err)
+		}
+	}
+	return bytes
+}
+
+// The recorder reads a statement whatever the writes cut its bytes into: here a startup packet,
+// a statement prepared by name, a portal bound to it and a second bound and never run, an Execute
+// of the first, a Sync and a ping, written a few bytes at a time at every width. It records the
+// Execute, with the values its portal was bound with, and the ping - not the Bind that nothing
+// ran. An Execute of a portal never bound and a Bind of a statement never prepared are each
+// something it cannot read, which it reports rather than passing over.
+func TestSentStatementsReadEveryWriteWhateverItsCut(t *testing.T) {
+	startup := make([]byte, startupHeaderBytes)
+	binary.BigEndian.PutUint32(startup, startupHeaderBytes)
+	binary.BigEndian.PutUint32(startup[4:], 196608)
+	const query = "select $1::bigint, $2::text"
+	stream := append(startup, encoded(t,
+		&pgproto3.Parse{Name: "rule", Query: query},
+		&pgproto3.Bind{DestinationPortal: "named", PreparedStatement: "rule", Parameters: [][]byte{[]byte("42"), []byte("destination")}},
+		&pgproto3.Bind{DestinationPortal: "unused", PreparedStatement: "rule", Parameters: [][]byte{[]byte("7"), []byte("elsewhere")}},
+		&pgproto3.Execute{Portal: "named"},
+		&pgproto3.Sync{},
+		&pgproto3.Query{String: PoolPing},
+	)...)
+	for width := 1; width <= len(stream); width++ {
+		sent := &SentStatements{}
+		conn := newSendingConn(sent)
+		for start := 0; start < len(stream); start += width {
+			conn.readWritten(stream[start:min(start+width, len(stream))])
+		}
+		got := sent.Statements()
+		if len(got) != 2 || got[0].SQL != query || got[1].SQL != PoolPing || len(sent.Blind()) != 0 {
+			t.Fatalf("written %d bytes at a time: recorded %+v, blind %v; want the Execute and the ping", width, got, sent.Blind())
+		}
+		event, readEvent := got[0].Int8(0)
+		destination, readDestination := got[0].Text(1)
+		if !readEvent || !readDestination || event != 42 || destination != "destination" {
+			t.Fatalf("written %d bytes at a time: the Execute's values read %d %q, want 42 and destination", width, event, destination)
+		}
+	}
+
+	sent := &SentStatements{}
+	conn := newSendingConn(sent)
+	conn.started = true
+	conn.readWritten(encoded(t, &pgproto3.Execute{Portal: "never bound"}, &pgproto3.Bind{PreparedStatement: "never prepared"}))
+	if blind := sent.Blind(); len(blind) != 2 || len(sent.Statements()) != 0 {
+		t.Fatalf("an Execute of a portal never bound and a Bind of a statement never prepared: blind %v, recorded %+v; want both reported and nothing recorded",
+			blind, sent.Statements())
+	}
+}
+
+// drain reads the server's messages up to its next ReadyForQuery, failing on an error unless
+// refused, and answers whether it refused one.
+func drain(t *testing.T, frontend *pgproto3.Frontend, refused bool) bool {
+	t.Helper()
+	failed := false
+	for {
+		message, err := frontend.Receive()
+		if err != nil {
+			t.Fatalf("read the server's answer: %v", err)
+		}
+		switch message := message.(type) {
+		case *pgproto3.ErrorResponse:
+			if !refused {
+				t.Fatalf("the server refused: %s %s", message.Code, message.Message)
+			}
+			failed = true
+		case *pgproto3.ReadyForQuery:
+			return failed
+		}
+	}
+}
+
+// counted is how many recorded statements since the before'th one have the SQL query.
+func counted(sent *SentStatements, before int, query string) int {
+	count := 0
+	for _, statement := range sent.Statements()[before:] {
+		if statement.SQL == query {
+			count++
+		}
+	}
+	return count
+}
+
+// The recorder counts what the server runs, which a sequence it advances counts too: each
+// statement is recorded when its Execute is sent, so a portal bound in one round trip of a
+// transaction and run in a later one is recorded in the later, and a Bind nothing runs is not
+// recorded at all. A portal ends with its transaction: once the server says none is open, an
+// Execute of it is one the recorder reports it cannot read, as the server refuses it. Every way
+// pgx sends a statement shows - each of its four modes of running a query, a statement prepared
+// and run by name, a batch - and so does the pool's ping, with nothing the recorder could not read.
+func TestSentStatementsCountWhatTheServerRuns(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	sent := &SentStatements{}
+	recorded := SentStore(t, database, sent)
+	conn, err := recorded.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	defer conn.Release()
+	for _, statement := range []string{"create sequence sent_runs", "create sequence sent_bound", "begin"} {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	const run, bound = "select nextval('sent_runs')", "select nextval('sent_bound')"
+	frontend := conn.Conn().PgConn().Frontend()
+	before := len(sent.Statements())
+	frontend.Send(&pgproto3.Parse{Name: "runs", Query: run})
+	frontend.Send(&pgproto3.Bind{DestinationPortal: "later", PreparedStatement: "runs"})
+	frontend.Send(&pgproto3.Parse{Name: "bound", Query: bound})
+	frontend.Send(&pgproto3.Bind{DestinationPortal: "never run", PreparedStatement: "bound"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("bind the portals: %v", err)
+	}
+	drain(t, frontend, false)
+	boundOnly := counted(sent, before, run) + counted(sent, before, bound)
+	before = len(sent.Statements())
+	frontend.Send(&pgproto3.Execute{Portal: "later"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("run the portal: %v", err)
+	}
+	drain(t, frontend, false)
+	ranLater := counted(sent, before, run)
+	if _, err := conn.Exec(ctx, "commit"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var runs int64
+	var boundCalled bool
+	if err := database.Pool.QueryRow(ctx, `select (select last_value from sent_runs), (select is_called from sent_bound)`).Scan(&runs, &boundCalled); err != nil {
+		t.Fatalf("read the sequences: %v", err)
+	}
+	if runs != 1 || boundCalled || boundOnly != 0 || ranLater != 1 {
+		t.Fatalf("the server ran the bound-then-run portal %d times and the never-run one %v; recorded %d at the Binds and %d at the later Execute; want 1, false, 0 and 1",
+			runs, boundCalled, boundOnly, ranLater)
+	}
+
+	frontend.Send(&pgproto3.Execute{Portal: "later"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("run the portal after its transaction: %v", err)
+	}
+	if !drain(t, frontend, true) {
+		t.Fatal("control: the server ran a portal whose transaction had ended")
+	}
+	blind := sent.Blind()
+	if len(blind) != 1 || !strings.Contains(blind[0], `an Execute of the portal "later"`) {
+		t.Fatalf("an Execute of a portal whose transaction ended: blind %v, want it reported", blind)
+	}
+
+	sent = &SentStatements{}
+	recorded = SentStore(t, database, sent)
+	const read = "select $1::bigint"
+	ways := 0
+	for _, mode := range []pgx.QueryExecMode{pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe, pgx.QueryExecModeDescribeExec, pgx.QueryExecModeExec} {
+		for range 2 {
+			var value int64
+			if err := recorded.Pool.QueryRow(ctx, read, mode, int64(42)).Scan(&value); err != nil {
+				t.Fatalf("run the read in mode %v: %v", mode, err)
+			}
+			ways++
+		}
+	}
+	named, err := recorded.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	if _, err := named.Conn().Prepare(ctx, "named", read); err != nil {
+		t.Fatalf("prepare the read by name: %v", err)
+	}
+	for range 2 {
+		var value int64
+		if err := named.QueryRow(ctx, "named", int64(42)).Scan(&value); err != nil {
+			t.Fatalf("run the read by name: %v", err)
+		}
+		ways++
+	}
+	if err := named.Conn().PgConn().Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	named.Release()
+	batch := &pgx.Batch{}
+	batch.Queue(read, int64(42))
+	batch.Queue(read, int64(42))
+	if err := recorded.Pool.SendBatch(ctx, batch).Close(); err != nil {
+		t.Fatalf("run the batch: %v", err)
+	}
+	ways += 2
+	reads, pings := 0, 0
+	for _, statement := range sent.Statements() {
+		switch statement.SQL {
+		case read:
+			reads++
+			if value, readValue := statement.Int8(0); !readValue || value != 42 {
+				t.Errorf("a read was recorded with the value %d (read %v), want 42", value, readValue)
+			}
+		case PoolPing:
+			pings++
+		}
+	}
+	if reads != ways || pings == 0 || len(sent.Blind()) != 0 {
+		t.Fatalf("recorded %d reads and %d pings, blind %v; want %d reads, the ping and nothing it could not read", reads, pings, sent.Blind(), ways)
+	}
+}

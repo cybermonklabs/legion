@@ -33,16 +33,23 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
 // reads the rule at most once and sends nothing else: the test steps the lane one try at a time,
 // holding each park's timer and running it itself, and reads every statement the server's
-// connections send between one park and the next off the bytes they write (SentStatements), so a
-// statement shows however it was sent - on its own, in a batch, prepared and run by name. Each
-// must be, byte for byte, the rule's own statement (model.MentionCopyRuleSQL) bound to this send's
-// event and destination, at most one a try, or the pool's idle-connection check (PoolPing); any
-// other statement fails the test, whatever it reads. The send was decided held on a read of the
-// rule: at least one, for this send, is sent between the comment and the first WARN, and none for
-// any other send. Once the topic family is captured again the send lands, the gauges read none and
-// no second WARN comes. The controls are the scrape before the comment and the one after the send
-// landed. The test's waits for the lane are its liveness alone (heldLiveness), never the bound
-// under test.
+// connections run between one park and the next off the bytes they write (SentStatements), so a
+// statement shows however it was sent - on its own, in a batch, prepared and run by name, bound in
+// one round trip and run in a later one. Each must be, byte for byte, the rule's own statement
+// (model.MentionCopyRuleSQL) bound to this send's event and destination, at most one a try, or the
+// pool's idle-connection check (PoolPing); any other statement fails the test, whatever it reads.
+// The send was decided held on a read of the rule: at least one, for this send, is sent between
+// the comment and the first WARN, and none for any other send. Once the topic family is captured
+// again the send lands, the gauges read none and no second WARN comes. The controls are the scrape
+// before the comment and the one after the send landed. The test's waits for the lane are its
+// liveness alone (heldLiveness), never the bound under test.
+//
+// The test sees what the test store's own connections send, and a connection the server opened
+// from a copy of their configuration; a read on a connection the code opens itself from a
+// connection string is outside it. The code reads the rule only through copyrule.Holder, on the
+// pool it is given, which TestOnlyHolderReadsTheCopyRule (internal/dispatch/outbox/copyrule) keeps
+// so, and a road whose only read of the rule moved to such a connection fails the floor of one
+// read before the send is held.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
