@@ -110,10 +110,11 @@ func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // whoamiSignIn is what GET /auth/whoami's 401 names as the way req's origin signs a person in:
-// "passkey" at the outside origin where passkey sign-in is on, and nothing elsewhere, so the answer
-// at the canonical origin is what it always was.
+// "passkey" at the outside origin, with passkey sign-in on or off, since that origin serves no
+// Google sign-in either way (googleSignInHere) and its page must offer no Google link that answers
+// 404 there; nothing elsewhere, so the answer at the canonical origin is what it always was.
 func (r *router) whoamiSignIn(req *http.Request) string {
-	if r.ctx.Passkeys != nil && r.atOutside(req) {
+	if r.atOutside(req) {
 		return passkeySignIn
 	}
 	return ""

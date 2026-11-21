@@ -4620,6 +4620,7 @@ Each item below names a path with its method and identity, then its purpose.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   That 401 is `{"code":"NO_IDENTITY","error":"unauthorized"}`, except for a person from outside the domain whose sign-in the hourly confirmation ended, whose 401 here and on every route adds `reason` (`NOT_LISTED`, `OUTSIDE_SIGNIN_OFF` or `WORKSPACE_ADDRESS`) and `login`, their address, and says why in `error` (Identity, above).
+  At `DISPATCH_OUTSIDE_ORIGIN` that 401 also carries `sign_in: "passkey"`, with passkey sign-in on or off, so the page there offers the passkey and no Google sign-in, which that origin does not serve (`routes.whoamiSignIn`).
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)

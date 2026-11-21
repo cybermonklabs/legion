@@ -199,9 +199,10 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet (R5): with DISPATCH_SIGNIN_PASSKEY
 // never set, a deployment that answers at an outside origin too serves Google's sign-in at its
 // canonical origin alone. At the outside origin GET /auth/start and GET /auth/callback answer 404,
-// as a path no route serves does. At the canonical origin the Google sign-in of outsiderEmail, whom
-// PRIV's access list names directly, gets the 403 page saying it is not in the domain, no session
-// cookie and no people row, and alice, an account of example.com, signs in.
+// as a path no route serves does, and the whoami 401 names the passkey sign-in, so its page offers
+// no Google link. At the canonical origin the Google sign-in of outsiderEmail, whom PRIV's access
+// list names directly, gets the 403 page saying it is not in the domain, no session cookie and no
+// people row, and alice, an account of example.com, signs in.
 // With passkey sign-in on, TestTheOutsideOriginServesNoGoogleSignIn holds the outside origin's 404s
 // and the canonical start, and TestAGoogleSignInOfAListedOutsiderIsRefusedWithPasskeysOn the
 // refusal; TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff holds the 404s with the setting
@@ -226,6 +227,9 @@ func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet(t *testing.T) 
 	})
 	for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
 		wantCode(t, "GET "+path+" at the outside origin", call(handler, outside, http.MethodGet, path, nil), http.StatusNotFound, "NOT_FOUND")
+	}
+	if whoami := call(handler, outside, http.MethodGet, "/auth/whoami", nil); whoami.Code != http.StatusUnauthorized || !strings.Contains(whoami.Body.String(), `"sign_in":"passkey"`) {
+		t.Errorf("whoami at the outside origin with no cookie: %d %s, want 401 naming the passkey sign-in", whoami.Code, whoami.Body.String())
 	}
 	refused := codeFlowSignInAt(t, handler, s.pool, "dispatch.example.com", map[string]any{"sub": "google-outsider", "email": outsiderEmail, "email_verified": true})
 	if refused.Code != http.StatusForbidden || sessionCookieSet(refused) ||

@@ -730,6 +730,24 @@ func TestPasskeyWhoamiNamesThePasskeySignIn(t *testing.T) {
 	requirePlainNoIdentity(t, "whoami at the canonical origin with no cookie", call(r.handler, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
 }
 
+// TestTheOutsideOriginsWhoamiNamesThePasskeySignInWithPasskeysOff: the outside origin serves no
+// Google sign-in whatever the passkey setting (googleSignInHere), so its whoami 401 names the
+// passkey sign-in with DISPATCH_SIGNIN_PASSKEY turned off on a database that had it on, as with it
+// on, and its page offers no Google link that answers 404 there; at the canonical origin the 401 is
+// the one Dispatch always answered.
+//
+// Control: name the passkey sign-in only while passkey sign-in is on (whoamiSignIn reading
+// Passkeys), and the outside origin's 401 names no sign-in and the row fails.
+func TestTheOutsideOriginsWhoamiNamesThePasskeySignInWithPasskeysOff(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	outside := call(off, passkeyOrigin, http.MethodGet, "/auth/whoami", nil)
+	if outside.Code != http.StatusUnauthorized || !strings.Contains(outside.Body.String(), `"sign_in":"passkey"`) {
+		t.Fatalf("whoami at the outside origin with passkeys off and no cookie: %d %s, want 401 naming the passkey sign-in", outside.Code, outside.Body.String())
+	}
+	requirePlainNoIdentity(t, "whoami at the canonical origin with passkeys off and no cookie", call(off, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
+}
+
 // TestPasskeyCeremonyRefusesAnotherOriginsPage: a ceremony posted by a page of another origin,
 // the canonical one included, is 403 at the outside origin and begins nothing.
 //
