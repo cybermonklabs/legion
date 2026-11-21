@@ -17,6 +17,7 @@ symptoms:
   - "A cache warm-up on a bucket a test just deleted and created again reports entries and delete_markers it never wrote"
   - "TestSessionList_CacheOnlyAfterNATSShutdown: expected ses_cache from cache after shutdown, got [... ses_wt ...]"
   - "error creating store for stream"
+  - "legion-go-CAPTURE-dispatch was created with 1 messages of history pending, want 0"
 root_cause: race_condition
 resolution_type: test_fix
 severity: medium
@@ -126,6 +127,26 @@ followed by a bare create failed 73 creates, every one `error creating store for
 `CreateStream`'s retry none of 1,000 failed, 89 of them passing on a later attempt. The daemon's
 `internal/intake` tests on that server failed 6 of 10 runs before, each on that answer, and none of
 10 after. On the stock `nats:2.10` the daemon's helper runs, the bare create failed none of 2,000.
+
+The same failed rename keeps the state of the stream's consumers too, and emptying the stream does
+not remove it. A durable on a single server writes its position to
+`streams/<stream>/obs/<consumer>/o.dat` when it is created, unless it or its stream uses memory
+storage (v2.15.1 `server/consumer.go` 6481-6488, `SetStarting`), and a consumer deleted with its
+stream leaves that file to the stream's removal (`server/filestore.go` 14607-14612). A durable of
+the same name created on the next stream of that name finds the file and restores it instead of
+choosing its start (`server/consumer.go` 1350-1353), so it starts where the earlier durable stood,
+whatever deliver policy it asked for; v2.10.29 does the same (`server/consumer.go` 962-965). On
+2026-11-21 the daemon's `TestAFreshConsumerStartsAtTheNextMessage`, run after a test that made the
+same durables, found them "created with 1 messages of history pending, want 0" and committed 3
+facts where it wanted 1. The daemon's `URL(t)` therefore deletes each stream's consumers before it
+purges and deletes the stream: a consumer delete removes the consumer's directory before it
+answers (`server/jetstream_api.go` 5835, `server/filestore.go` 14582-14583), so a stream directory
+a failed rename keeps holds no consumer's state. With a non-empty `.ENVOY_NOTIFICATIONS` planted
+before each delete the reset makes, against a host `nats-server -js -sd <store>` v2.15.1, the
+directory the delete kept held the earlier test's `o.dat` files and that test failed with the same
+three lines before the change; after it the directory held none and the test passed.
+`testnats`' `TestADurableOfAnEarlierTestDoesNotReachTheNextTest` plants such a directory itself,
+and fails without the consumer deletes.
 
 One test still deletes a name twice, and the double-delete race cannot fail it:
 `internal/kvwatch`'s `TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache` deletes
