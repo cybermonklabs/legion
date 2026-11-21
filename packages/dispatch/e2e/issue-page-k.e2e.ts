@@ -23,6 +23,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusThePage,
@@ -272,6 +273,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     // The focus is moved to the page only after that, or the first focus could land after the
     // move and keep the focus off the page.
     const question = blockNodeId(await primarySlug(seeded.key), seeded.openQuestion.blockId);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), {
         message: "the conversation does not open on the question that waits on the reader",
@@ -719,9 +721,11 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         .toBe(id);
     };
 
-    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row.
+    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row. The
+    // page's opening puts the focus on a row first, and the focus leaves for the page after it.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
@@ -855,6 +859,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // Under an address that names a step, a press of the switch is the reader taking over: the
     // focus stays on the button pressed.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.first}`));
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: `#b-${T.first} does not focus its row` })
       .toBe(step(T.first));
@@ -884,6 +889,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // An address naming a task of a cycle puts the focus on the cycle's row, which stands for
     // that task, and the arrow goes on to the step after it.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.knotA}`));
+    await expectOpeningLanded(page);
     await expect(
       planChart(page).locator("[data-plan-cycle-row]"),
       `#b-${T.knotA} does not put the focus on the cycle's row`

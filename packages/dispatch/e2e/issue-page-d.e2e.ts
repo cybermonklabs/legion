@@ -33,6 +33,7 @@ import {
   presetToggles,
   presetToolbar,
 } from "./issue-page";
+import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -108,11 +109,6 @@ async function stageWidth(page: Page): Promise<number> {
       Number.parseFloat(style.paddingRight)
     );
   });
-}
-
-/** Leaves the focus on no control, so a key reaches the page's own bindings. */
-async function focusNothing(page: Page): Promise<void> {
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
 /** `locator`'s box once it is drawn, failing the row where it is never drawn. */
@@ -194,7 +190,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(navigation).toBeHidden();
     // `Shift+S`, which folds today's sidebar, does nothing in the frame: no sidebar, the rail, and
     // the reader's stored sidebar unchanged, which the Inbox, in today's shell, draws open.
-    await focusNothing(page);
+    await focusThePage(page);
     await page.keyboard.press("Shift+S");
     await expect(
       page.getByRole("complementary", { exact: true, name: "Navigation" }),
@@ -378,7 +374,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         { message: "the frame draws today's compact bar at 390 px" }
       )
       .toBe(0);
-    await focusNothing(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
     await expect(phoneDetails, "Details is no dialog on the phone").toBeVisible();
@@ -400,7 +397,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.keyboard.press("Escape");
     await expect(phoneDetails).toBeHidden();
     // `Shift+M` opens it and closes it on the phone too.
-    await focusNothing(page);
+    await focusThePage(page);
     await page.keyboard.press("Shift+M");
     await expect(phoneDetails).toBeVisible();
     await expect(detailsClose(page)).toBeFocused();
@@ -589,7 +586,7 @@ test("the five controls are toggles with an address each, one line at every widt
       ["d", "decisions"],
       ["c", "conversation"],
     ] as const) {
-      await focusNothing(page);
+      await focusThePage(page);
       await page.keyboard.press("t");
       await page.keyboard.press(second);
       await expect(page, `t ${second} did not open ${PRESET_NAMES[view]}`).toHaveURL(
@@ -598,11 +595,11 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(presetToggle(page, view)).toHaveAttribute("aria-pressed", "true");
     }
     // A chord on the view that is on turns it off: `t s` twice comes back to Conversation.
-    await focusNothing(page);
+    await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");
     await expect(page).toHaveURL(addressOf(key, "spec"));
-    await focusNothing(page);
+    await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");
     await expect(page, "t s on Spec did not turn it off").toHaveURL(addressOf(key, "conversation"));
@@ -1002,7 +999,7 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
     // back from what holds the outline until the reader acts, so the opening is
     // waited out and the reader acts first - a Shift, which no key of the page binds - or the
     // page would take the focus from the project link below.
-    await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);
+    await expectOpeningLanded(page);
     await page.keyboard.press("Shift");
     const holder = iconRail(page).getByRole("link", { exact: true, name: key.split("-")[0] });
     await holder.focus();
@@ -1042,7 +1039,8 @@ test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift
   await phase(browser, seedFrame, async (page, { key }) => {
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
-    await focusNothing(page);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
     await expect(phoneDetails, "Shift+M did not open the phone's Details").toBeVisible();
@@ -1092,7 +1090,9 @@ test("a reader with the preference off keeps today's shell on the issue page", a
     await expect(marginShell(page).getByRole("tab", { name: "Comments" })).toBeVisible();
     await expect(marginResizeHandle(page)).toHaveCount(1);
     // `Shift+M` folds the margin to its rail, and back.
-    await focusNothing(page);
+    // no opening focus: today's issue page, which the preference off keeps, has no outline and
+    // places no focus of its own.
+    await focusThePage(page);
     await page.keyboard.press("Shift+M");
     await expect(page.getByTestId("margin-rail"), "Shift+M did not fold the margin").toBeVisible();
     await page.keyboard.press("Shift+M");

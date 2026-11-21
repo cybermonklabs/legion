@@ -33,6 +33,7 @@ import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
   DESKTOP,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusThePage,
   longWords,
   nodeRows,
@@ -823,6 +824,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
     await expectIssuePageDrawn(page);
     const loaded = new Set(traffic.requests.map((request) => request.path));
     traffic.reset();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("k");
@@ -1006,6 +1008,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
 
     // The view's own address, opened with nothing focused, leaves the focus on the issue's row.
     await gotoIssue(page, presetPath(seeded.key, "verification"));
+    await expectOpeningLanded(page);
     await expect(
       verificationIssueRow(page),
       "the view's own address leaves the focus elsewhere than on the issue's row"
@@ -1226,6 +1229,7 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
   };
   await phase(browser, seed, async (page, seeded) => {
     await openPreset(page, seeded.key, "verification");
+    await expectOpeningLanded(page);
     const card = verificationCardBoxes(page).first();
     const words = card.locator("[data-node-words]").first();
     const more = card.locator("[data-node-more]");
@@ -1298,6 +1302,9 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
+    // no opening focus: the view's take (`slots/stage.tsx`) focuses the refused read's Retry, not
+    // a row, as the Retry is drawn, which the count below waits for; it gives that focus once more
+    // a frame later, which the frames `focusThePage` waits before its blur cover.
     await openPreset(page, seeded.key, "verification");
     const body = verificationBody(page);
     const retry = verificationUnreadable(page, "blocks").getByRole("button", {
