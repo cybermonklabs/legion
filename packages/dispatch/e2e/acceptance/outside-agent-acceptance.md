@@ -19,6 +19,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; and that the tailnet leg's own judgments hold against stand-ins. |
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
 | `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
+| `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
 
 ## What each leg prints
 
