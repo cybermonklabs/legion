@@ -1231,11 +1231,14 @@ func (c *call) says(t *testing.T, line string, times int, when string) {
 	}
 }
 
-// end waits for the call to exit, under the package's shared wait (a guard against a call that
-// hangs), and returns its exit code.
+// end waits for the call to exit and returns its exit code. The wait is testwait.Receive on the
+// call's exit (docs/testing.md): it sets no span of its own, so a call that is merely slow on a
+// loaded machine still ends the row, and one that never exits fails it by name 30 s before the
+// test binary's deadline. A row whose verdict needs the call to end within a span waits for that
+// itself, before it calls end.
 func (c *call) end(t *testing.T) int {
 	t.Helper()
-	testwait.Eventually(t, "the call to end", c.ended)
+	testwait.Receive(t, "the call to end", c.exited)
 	return c.cmd.ProcessState.ExitCode()
 }
 
@@ -1393,12 +1396,15 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 // call says that it waits before it reads its deadline (awaitEnrollment), so the row requires that
 // line however late a loaded machine runs the call. The refusal says how long the call waited,
 // from the moment it set its deadline, and its bound: "(waited 1.004s, its bound 1s, while ...)".
-// The row requires that time to be at least the bound. A span the row read itself would hold
-// the call's late start on a loaded machine too, so a call whose deadline came early would pass it
-// whenever it started late; the call's own time holds only its wait. Load can only lengthen that
-// wait, so the row reads no upper limit, which load could pass; only the shared wait
-// (runExecForm) stands against a call whose bound never ends its wait. The two things that end a
-// wait earlier are checked absent: the marker is still fresh, and key.pem never came.
+// The row requires two spans each to be at least the bound, and neither can fail a correct call,
+// since load only lengthens them. The call's own time holds only its wait, so a call whose
+// deadline came early fails it however late it started. The row's own span, from before it starts
+// the call to the call's end, holds the call's start too, so it passes such a call that started
+// late; it is there for a call that cuts its wait short and reports its bound as the time it
+// waited, which the call's own time cannot see. The row reads no upper limit, which load could
+// pass; the call's end (call.end) stands against a call whose bound never ends its wait. The two
+// things that end a wait earlier are checked absent: the marker is still fresh, and key.pem never
+// came.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1406,7 +1412,9 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	keyDir := t.TempDir()
 	marker := writePendingMarker(t, keyDir, 0)
 
+	start := time.Now()
 	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
+	spanned := time.Since(start)
 	if exit != 1 || !strings.Contains(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
 		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 saying it waits, naming the launcher's marker and the wait, and no later source", exit, stderr)
@@ -1419,6 +1427,9 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	}
 	if waited < 1*time.Second {
 		t.Fatalf("the call says it waited %s, under its 1s bound: stderr = %q", waited, stderr)
+	}
+	if spanned < 1*time.Second {
+		t.Fatalf("the call ended %s after the row started it, under its 1s bound, though it says it waited %s: stderr = %q", spanned, waited, stderr)
 	}
 	if !freshMarker(keyDir) {
 		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
