@@ -1198,32 +1198,17 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 	return a.recordObservation(ctx, tx, *stored, o)
 }
 
-// unrecordedSummaryStale says whether summary, of an issue admission does not record, is older
-// than an issue fact of it the daemon has already applied — an event, or a view intake let
-// through — and so must record and queue nothing. A listing is read before the transaction that
-// applies it, and such a fact can apply between the two: a recovery's listing waits on its GitHub
-// reads, and a summary Reconcile held waits for the consumer to reach its stream position. When
-// that fact recorded nothing — its repository was unread, it moved the issue out of todo, or it
-// took the label off — nothing else stands between the older summary and a record: a person's
-// edit of the issue's repository would be lost, the issue recorded on the repository it named
-// before, and no note would say the edit was not applied, since the record would be made without
-// it. So the summary applies nothing, and the issue stands as the fact left it. A fact whose
-// repository was unread noted the issue for that repository's recovery
-// (workflow.Config.NoteUnread), whose listing, at the fact's sequence or later, records the issue
-// where Dispatch then resolves it once GitHub answers. A fact that recorded nothing only because of
-// what the daemon held then — a child's event applied while its parent had no record — leaves no
-// such note, so Reconcile answers each key this refused, and the recovery keeps it in the scope of
-// its next pass.
+// unrecordedSummaryStale rejects a listing older than an issue fact already applied to an
+// unrecorded issue, even when that fact created no record. The fact may have applied while the
+// listing waited for GitHub or for the consumer, so admitting it could lose a repository edit.
 //
-// How far the daemon has applied the issue's facts is the copy's applied sequence
-// (record.Store.DispatchIssueApplied), the rule intake's settleObserved holds a view of an
-// unrecorded issue to: blockers.Mirror, the first handler of every fact, raises it for each applied
-// issue fact in the fact's own transaction, recorded issue or not, and both callers of
-// applySummary hold the lock every fact applies under. A reading that decides nothing leaves it as
-// it stands: the listing itself (blockers.Reconcile), and the periodic turn's re-read, which takes
-// Dispatch's last sequence of the issue, which a comment, a document edit, an ask or a claim
-// raises too. So a summary is never stale against itself or against a reading that came after it.
-// A summary with no sequence orders against nothing and applies, as it does against a record.
+// Compare the applied sequence, not dispatch_seq: blockers.Mirror raises it only for an issue fact
+// (an event or a view intake accepted), in the fact's own transaction. Listings and tick reads do
+// not move it. Both callers of applySummary hold the fact lock; intake.settleObserved uses the
+// same sequence for views. A summary without a sequence cannot be ordered.
+//
+// Reconcile returns stale keys so recovery retains them for a later listing. A child's event can
+// record nothing because its parent is not yet recorded, without leaving a recovery note.
 func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue) (bool, error) {
 	if summary.Seq <= 0 {
 		return false, nil
