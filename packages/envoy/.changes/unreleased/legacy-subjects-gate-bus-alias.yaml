@@ -16,7 +16,9 @@ body: |-
   serves as the machine of a listener the reading read makes the reading `UNKNOWN`, naming both,
   since that machine's durable can be either's; so does one whose `ENVOY_MACHINE_ID` is no literal
   value (`valueFrom`, a `$(VAR)` reference, `envFrom` or none), since its machine cannot be read.
-  A literal machine is read trimmed, as the listener reads it.
+  A literal machine is read trimmed, as the listener reads it, and a listener container that lists
+  `ENVOY_MACHINE_ID` or `NATS_URLS` more than once is `UNKNOWN`, naming every value, since the
+  kubelet takes the last entry of a name.
 time: 2026-11-21T17:56:22Z
 custom:
     Issue: legacy-subjects-gate

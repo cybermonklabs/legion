@@ -348,6 +348,15 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
     (($in.other_bus // [])[]
       | select(.machine | type != "string")
       | {unknown: ("listener pod \(.ns)/\(.pod) container \(.container), on another bus (NATS_URLS \(.urls // "unset" | masked_urls)) and not read, \(if .machine_from == "valueFrom" then "sets ENVOY_MACHINE_ID through valueFrom" elif .machine_from == "reference" then "sets ENVOY_MACHINE_ID with a $(VAR) reference, which Kubernetes expands" elif .machine_from == "envFrom" then "sets no ENVOY_MACHINE_ID of its own and takes envFrom, which may set it" else "sets no ENVOY_MACHINE_ID" end), so its machine cannot be read and whether a listener this reading read serves as that machine cannot be told; set ENVOY_MACHINE_ID on it as a literal value" | printable)}),
+    # A listener container, on the bus or on another, that lists ENVOY_MACHINE_ID or NATS_URLS more
+    # than once: the kubelet takes the last entry of a name and the gate reads the first, so the
+    # machine it runs as, or the bus it dials, is not the one the gate read. UNKNOWN, naming every
+    # value (a NATS_URLS masked).
+    ((($in.pods // []) + ($in.other_bus // []))[]
+      | . as $l
+      | ($l.duplicates // [])
+      | select(length > 0)
+      | {unknown: ("listener pod \($l.ns)/\($l.pod) container \($l.container) lists \(map("\(.name) \(.values | length) times (\(if .name == "NATS_URLS" then (.values | map(masked_urls)) else .values end | join(", ")))") | join(" and ")): the kubelet takes the last entry of a name and this reading the first, so what it runs as cannot be read; list each name once" | printable)}),
 
     # The stream's subjects.
     ($subjectpages[] | select(.page.problem) | {unknown: "the stream's subjects under \(.family | printable): \(.page.problem)"}),

@@ -84,11 +84,13 @@
 # listener on another bus that serves as the machine of a listener read (that machine's durable can
 # be either's) or whose ENVOY_MACHINE_ID is no literal value (set through valueFrom or envFrom,
 # holding a $(VAR) reference, or not set: its machine cannot be read; a literal one is read trimmed,
-# as the listener reads it), a start-time gauge served at one reading only, a record that cannot be
-# written, and at a second reading: a first reading that did not read every surface, a stream that
-# is not the first reading's (its envoy_stream_id changed), a stream that does not hold the whole
-# window (its first message is younger than the window, less an hour), and readings further apart
-# than a listener's durable outlives its listener.
+# as the listener reads it), a listener container that lists ENVOY_MACHINE_ID or NATS_URLS more than
+# once (the kubelet takes the last entry, the gate would read the first), a start-time gauge served
+# at one reading only, a record that cannot be written, and at a second reading: a first reading
+# that did not read every surface, a stream that is not the first reading's (its envoy_stream_id
+# changed), a stream that does not hold the whole window (its first message is younger than the
+# window, less an hour), and readings further apart than a listener's durable outlives its
+# listener.
 #
 # The Job: namespace envoy, the ServiceAccount, NATS URL and credential of the listener Deployment
 # envoy/envoy-listener as it is deployed (read at each run, so the Job connects with whatever
@@ -306,6 +308,11 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
         elif ($v | reference) then "reference"
         elif ($v | gsub("^\\s+|\\s+$"; "")) == "" and ((.envFrom // []) | length > 0) then "envFrom"
         else null end;
+    # The names this gate reads that the container lists more than once, with every value in the
+    # order listed: the kubelet takes the last entry of a name, and this reading the first.
+    def duplicates: [.env[]? | select(.name == "ENVOY_MACHINE_ID" or .name == "NATS_URLS")]
+      | group_by(.name) | map(select(length > 1)
+        | {name: .[0].name, values: map(if .valueFrom != null then "(valueFrom)" else (.value // "") end)});
     [.items[] | . as $p | ($p.status.containerStatuses // []) as $statuses
       | $p.spec.containers[]
       | listener_container
@@ -314,7 +321,7 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
       | {ns: $p.metadata.namespace, pod: $p.metadata.name, uid: $p.metadata.uid, container: $c.name,
          running: ($s.state.running != null), state: ((($s.state // {}) | keys | first) // "not started"),
          restarts: ($s.restartCount // null),
-         machine: ($c | machine), machine_from: ($c | machine_from),
+         machine: ($c | machine), machine_from: ($c | machine_from), duplicates: ($c | duplicates),
          urls: ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null)}]
     | {bus: map(select(on_bus)), other: map(select(on_bus | not))}' \
     "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err" &&

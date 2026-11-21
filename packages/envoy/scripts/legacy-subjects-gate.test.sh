@@ -23,9 +23,10 @@
 # address, and is then held to its restarts as any listener is, while a listener on another bus
 # stays skipped, its NATS_URLS printed with any credential masked, and makes the reading UNKNOWN
 # when it serves as the machine of a listener read (its machine read trimmed, as the listener reads
-# it), or sets its machine as no literal value (a $(VAR) reference among them). Every case runs
-# from the same clean fixture with one thing changed, so each fails for its own reason. The
-# old-form rule itself is held row by row. The summary counts cases.
+# it), or sets its machine as no literal value (a $(VAR) reference among them), and a container that
+# lists ENVOY_MACHINE_ID or NATS_URLS twice makes it UNKNOWN too. Every case runs from the same
+# clean fixture with one thing changed, so each fails for its own reason. The old-form rule itself
+# is held row by row. The summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -1626,6 +1627,36 @@ for form in ' envoy-hub' '$(HUB_MACHINE)'; do
   else
     expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener, on another bus (NATS_URLS $hub_service_url) and not read, sets ENVOY_MACHINE_ID with a \$(VAR) reference, which Kubernetes expands, so its machine cannot be read"
   fi
+done
+done_case
+
+# A container that lists ENVOY_MACHINE_ID or NATS_URLS twice: the kubelet takes the last entry and
+# the gate the first. With the machine listed as hub-old then envoy-hub, the hub's session
+# listener runs as envoy-hub while the gate skipped it as hub-old, and the load-test listener read
+# as envoy-hub stood in for it (the tester's M3); with NATS_URLS listed twice, the bus it dials is
+# not the one the gate placed it on. Each is UNKNOWN, naming every value.
+new_case "a listener that lists ENVOY_MACHINE_ID or NATS_URLS twice is UNKNOWN, naming both values"
+for name in ENVOY_MACHINE_ID NATS_URLS; do
+  rm -f "$FAKE/record.json"
+  moved_cluster
+  if [ "$name" = ENVOY_MACHINE_ID ]; then
+    update='map(if .name == "ENVOY_MACHINE_ID" then .value = "hub-old" else . end) + [{name: "ENVOY_MACHINE_ID", value: "envoy-hub"}]'
+    want="lists ENVOY_MACHINE_ID 2 times (hub-old, envoy-hub)"
+  else
+    # shellcheck disable=SC2016 # $lt is the jq program's variable, not the shell's
+    update='. + [{name: "NATS_URLS", value: $lt}]'
+    want="lists NATS_URLS 2 times ($hub_service_url, $loadtest_url)"
+  fi
+  jq --arg lt "$loadtest_url" --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running envoy-hub "$loadtest_url")" "
+    .items += [\$p]
+    | (.items[] | select(.metadata.name == \"envoy-nats-listener-5c7d\") | .spec.containers[0].env) |= ($update)" \
+    "$FAKE/pods.json" >"$FAKE/pods.json.new"
+  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+  metrics 5 0 "$listener_start" 0 envoy-hub >"$FAKE/metrics/loadtest.envoy-listener-lt1"
+  moved_reading --bus-alias "$loadtest_url"
+  expect_status 3
+  expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener $want: the kubelet takes the last entry of a name and this reading the first"
+  expect_no_line "FIRST READING"
 done
 done_case
 

@@ -1005,7 +1005,9 @@ What it reads, all of it read-only:
   so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
   literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
   expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
-  machine is read trimmed of white space, as the listener reads it.
+  machine is read trimmed of white space, as the listener reads it. A listener container that lists
+  `ENVOY_MACHINE_ID` or `NATS_URLS` more than once prints `UNKNOWN`, naming every value: the
+  kubelet takes the last entry of a name, and the gate would read the first.
 - **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
   does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
   (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
