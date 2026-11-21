@@ -4,8 +4,8 @@ import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer
 import { natsAuthOptions } from "../nats-auth";
 import {
   NATS_START_HOOK_MS,
-  NATS_STOP_MS,
   type NatsServer,
+  natsStopHookMs,
   startNatsServerWithConfig,
   useNatsServerDirectory,
 } from "./nats-server";
@@ -28,7 +28,7 @@ const token = () =>
  *  `<inbox>.<session id>.<token>`. */
 const sessionReply = () => `${createInbox()}.${SESSION}.${token()}`;
 
-/** The row's bound, as the row writes it. Its waits give up 5 s inside it, so a wait that gives up
+/** The row's bound, passed to the row. Its waits give up 5 s inside it, so a wait that gives up
  *  fails naming what it waited for rather than as the row's timeout. */
 const ROW_MS = 60_000;
 
@@ -81,107 +81,114 @@ authorization {
   afterAll(async () => {
     for (const connection of open) await connection.close();
     server?.stop();
-  }, 60_000 + NATS_STOP_MS);
+  }, 60_000 + natsStopHookMs(1));
 
-  test("answers a frame and a probe asked on its own reply prefix, and nothing else gets out", async () => {
-    const deadline = performance.now() + ROW_MS - 5_000;
-    const session = await connect({
-      servers: [server.url],
-      name: "session-reply-grant",
-      ...natsAuthOptions({
-        kind: "seed",
-        seed: { value: seed, source: "the test's session user" },
-      }),
-      reconnect: false,
-    });
-    open.push(session);
-    const refusals: string[] = [];
-    void (async () => {
-      for await (const status of session.status()) {
-        if (status.type === Events.Error) refusals.push(String(status.data));
-      }
-    })();
-    const requester = await connect({
-      servers: [server.url],
-      ...natsAuthOptions({
-        kind: "seed",
-        seed: { value: requesterSeed, source: "the test's requester user" },
-      }),
-      reconnect: false,
-    });
-    open.push(requester);
-    const heard: Array<readonly [string, string]> = [];
-    requester.subscribe("_INBOX.>", {
-      callback: (_error, message) => heard.push([message.subject, message.string()]),
-    });
-    await requester.flush();
-
-    const delivery = createConsumerDelivery({
-      sessionID: SESSION,
-      ledger: { delivered: () => false, liveFailed: async () => true },
-      host: {
-        deliver: (frame) => frame.done(),
-        gap: () => undefined,
-        log: () => undefined,
-      },
-      publish: (reply, body) => session.publish(reply, new TextEncoder().encode(body)),
-      persist: () => true,
-    });
-    session.subscribe(delivery.subject, {
-      callback: (_error, message: Msg) => delivery.receive(message),
-    });
-    await session.flush();
-
-    const frame = (seq: number, reply: string) => {
-      const h = headers();
-      h.set(RelayHeader.subject, AGENT);
-      h.set(RelayHeader.streamSeq, String(seq));
-      h.set(RelayHeader.streamID, "stream-reply-grant");
-      h.set(RelayHeader.delivered, "1");
-      h.set(RelayHeader.storedAt, new Date().toISOString());
-      const body = JSON.stringify({ event_id: `evt-reply-grant-${seq}`, source: "agent" });
-      requester.publish(deliverSubject(SESSION), new TextEncoder().encode(body), {
-        reply,
-        headers: h,
+  test(
+    "answers a frame and a probe asked on its own reply prefix, and nothing else gets out",
+    async () => {
+      const deadline = performance.now() + ROW_MS - 5_000;
+      // nats.js gives a first connect its own 20 s by default; the row's deadline is its bound.
+      const session = await connect({
+        servers: [server.url],
+        name: "session-reply-grant",
+        ...natsAuthOptions({
+          kind: "seed",
+          seed: { value: seed, source: "the test's session user" },
+        }),
+        reconnect: false,
+        timeout: Math.max(1, deadline - performance.now()),
       });
-    };
-    const probe = (reply: string) => {
-      const h = headers();
-      h.set(RelayHeader.probe, "1");
-      requester.publish(deliverSubject(SESSION), new Uint8Array(), { reply, headers: h });
-    };
-    const answersOn = (subject: string) =>
-      heard.filter(([to]) => to === subject).map(([, body]) => body);
+      open.push(session);
+      const refusals: string[] = [];
+      void (async () => {
+        for await (const status of session.status()) {
+          if (status.type === Events.Error) refusals.push(String(status.data));
+        }
+      })();
+      const requester = await connect({
+        servers: [server.url],
+        ...natsAuthOptions({
+          kind: "seed",
+          seed: { value: requesterSeed, source: "the test's requester user" },
+        }),
+        reconnect: false,
+        timeout: Math.max(1, deadline - performance.now()),
+      });
+      open.push(requester);
+      const heard: Array<readonly [string, string]> = [];
+      requester.subscribe("_INBOX.>", {
+        callback: (_error, message) => heard.push([message.subject, message.string()]),
+      });
+      await requester.flush();
 
-    const ownFrame = sessionReply();
-    const ownProbe = sessionReply();
-    frame(1, ownFrame);
-    probe(ownProbe);
-    await waitFor(
-      () => answersOn(ownFrame).length === 2 && answersOn(ownProbe).length === 1,
-      deadline,
-      `received and done on ${ownFrame} and done on ${ownProbe}`
-    );
-    expect(answersOn(ownFrame)).toEqual(["received", "done"]);
-    expect(answersOn(ownProbe)).toEqual(["done"]);
-    expect(refusals).toEqual([]);
+      const delivery = createConsumerDelivery({
+        sessionID: SESSION,
+        ledger: { delivered: () => false, liveFailed: async () => true },
+        host: {
+          deliver: (frame) => frame.done(),
+          gap: () => undefined,
+          log: () => undefined,
+        },
+        publish: (reply, body) => session.publish(reply, new TextEncoder().encode(body)),
+        persist: () => true,
+      });
+      session.subscribe(delivery.subject, {
+        callback: (_error, message: Msg) => delivery.receive(message),
+      });
+      await session.flush();
 
-    // The control: the reply shapes the listener asked on before this change.
-    const inbox = createInbox();
-    const counterFrame = `${inbox}.2`;
-    const plainProbe = createInbox();
-    frame(2, counterFrame);
-    probe(plainProbe);
-    await waitFor(() => refusals.length === 3, deadline, "the server's three refusals");
-    await session.flush();
-    await requester.flush();
-    expect(refusals).toEqual([
-      "PERMISSIONS_VIOLATION",
-      "PERMISSIONS_VIOLATION",
-      "PERMISSIONS_VIOLATION",
-    ]);
-    expect(answersOn(counterFrame)).toEqual([]);
-    expect(answersOn(plainProbe)).toEqual([]);
-    expect(heard.map(([to]) => to).sort()).toEqual([ownFrame, ownFrame, ownProbe].sort());
-  }, 60_000);
+      const frame = (seq: number, reply: string) => {
+        const h = headers();
+        h.set(RelayHeader.subject, AGENT);
+        h.set(RelayHeader.streamSeq, String(seq));
+        h.set(RelayHeader.streamID, "stream-reply-grant");
+        h.set(RelayHeader.delivered, "1");
+        h.set(RelayHeader.storedAt, new Date().toISOString());
+        const body = JSON.stringify({ event_id: `evt-reply-grant-${seq}`, source: "agent" });
+        requester.publish(deliverSubject(SESSION), new TextEncoder().encode(body), {
+          reply,
+          headers: h,
+        });
+      };
+      const probe = (reply: string) => {
+        const h = headers();
+        h.set(RelayHeader.probe, "1");
+        requester.publish(deliverSubject(SESSION), new Uint8Array(), { reply, headers: h });
+      };
+      const answersOn = (subject: string) =>
+        heard.filter(([to]) => to === subject).map(([, body]) => body);
+
+      const ownFrame = sessionReply();
+      const ownProbe = sessionReply();
+      frame(1, ownFrame);
+      probe(ownProbe);
+      await waitFor(
+        () => answersOn(ownFrame).length === 2 && answersOn(ownProbe).length === 1,
+        deadline,
+        `received and done on ${ownFrame} and done on ${ownProbe}`
+      );
+      expect(answersOn(ownFrame)).toEqual(["received", "done"]);
+      expect(answersOn(ownProbe)).toEqual(["done"]);
+      expect(refusals).toEqual([]);
+
+      // The control: the reply shapes the listener asked on before this change.
+      const inbox = createInbox();
+      const counterFrame = `${inbox}.2`;
+      const plainProbe = createInbox();
+      frame(2, counterFrame);
+      probe(plainProbe);
+      await waitFor(() => refusals.length === 3, deadline, "the server's three refusals");
+      await session.flush();
+      await requester.flush();
+      expect(refusals).toEqual([
+        "PERMISSIONS_VIOLATION",
+        "PERMISSIONS_VIOLATION",
+        "PERMISSIONS_VIOLATION",
+      ]);
+      expect(answersOn(counterFrame)).toEqual([]);
+      expect(answersOn(plainProbe)).toEqual([]);
+      expect(heard.map(([to]) => to).sort()).toEqual([ownFrame, ownFrame, ownProbe].sort());
+    },
+    ROW_MS
+  );
 });

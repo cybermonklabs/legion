@@ -8,8 +8,8 @@ import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 import {
   NATS_START_HOOK_MS,
-  NATS_STOP_MS,
   type NatsServer,
+  natsStopHookMs,
   startNatsServer,
   useNatsServerDirectory,
 } from "./nats-server";
@@ -67,11 +67,18 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
       startNatsServer(serverDirectory, user.publicKey),
     ]);
   }, NATS_START_HOOK_MS);
-  // Two removals, one after the other.
+  // Two removals, one after the other; a removal that runs out does not stop the other's.
   afterAll(() => {
-    open?.stop();
-    authorized?.stop();
-  }, 2 * NATS_STOP_MS);
+    const failures: string[] = [];
+    for (const server of [open, authorized]) {
+      try {
+        server?.stop();
+      } catch (error) {
+        failures.push(String(error));
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }, natsStopHookMs(2));
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});

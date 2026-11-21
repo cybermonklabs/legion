@@ -24,8 +24,8 @@ import { natsBrokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubBroker } = natsBrokerStandIns("nats-credential-deadlines");
 
-/** The bound of the row whose authenticator trades on its own: the package's `--timeout 30000`,
- *  written on the row so its waits can give up inside it. */
+/** The bound of the row whose authenticator trades on its own, passed to it: the package's
+ *  `--timeout 30000`, written so its waits can give up inside it. */
 const SELF_TRADE_ROW_MS = 30_000;
 
 // A fake clock left behind stops the timers of every file the same worker runs after this one.
@@ -176,38 +176,42 @@ describe("renew", () => {
     }
   }, 15_000);
 
-  test("a CONNECT with no live token presents nothing, trades, and presents the token next", async () => {
-    // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
-    // presents, so a connection whose token lapsed comes back on its own. The trade is a real HTTP
-    // trade at the stub broker, so its waits are on the facts, bounded only by the row's own bound
-    // less 5 s, so that one that gives up names what it waited for.
-    const deadline = performance.now() + SELF_TRADE_ROW_MS - 5_000;
-    const until = async (holds: () => boolean, what: string) => {
-      while (!holds()) {
-        if (performance.now() > deadline) {
-          throw new Error(
-            `timed out waiting for ${what}, ${SELF_TRADE_ROW_MS / 1000 - 5} s into the row`
-          );
+  test(
+    "a CONNECT with no live token presents nothing, trades, and presents the token next",
+    async () => {
+      // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
+      // presents, so a connection whose token lapsed comes back on its own. The trade is a real HTTP
+      // trade at the stub broker, so its waits are on the facts, bounded only by the row's own bound
+      // less 5 s, so that one that gives up names what it waited for.
+      const deadline = performance.now() + SELF_TRADE_ROW_MS - 5_000;
+      const until = async (holds: () => boolean, what: string) => {
+        while (!holds()) {
+          if (performance.now() > deadline) {
+            throw new Error(
+              `timed out waiting for ${what}, ${SELF_TRADE_ROW_MS / 1000 - 5} s into the row`
+            );
+          }
+          await Bun.sleep(20);
         }
-        await Bun.sleep(20);
-      }
-    };
-    const broker = stubBroker(600);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
-    expect(credential.authenticator("nonce-1")).toBeUndefined();
-    await until(
-      () => broker.state.minted.length > 0,
-      "the stub broker to mint the authenticator's trade"
-    );
-    // The trade has landed once the authenticator presents its token.
-    let auth: { auth_token?: string } | undefined;
-    await until(() => {
-      auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
-      return auth !== undefined;
-    }, "the authenticator to present the traded token");
-    expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
-    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
-  }, 30_000);
+      };
+      const broker = stubBroker(600);
+      const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
+      expect(credential.authenticator("nonce-1")).toBeUndefined();
+      await until(
+        () => broker.state.minted.length > 0,
+        "the stub broker to mint the authenticator's trade"
+      );
+      // The trade has landed once the authenticator presents its token.
+      let auth: { auth_token?: string } | undefined;
+      await until(() => {
+        auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
+        return auth !== undefined;
+      }, "the authenticator to present the traded token");
+      expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
+      expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
+    },
+    SELF_TRADE_ROW_MS
+  );
 });
 
 describe("followNatsCredential", () => {

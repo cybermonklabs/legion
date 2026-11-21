@@ -86,16 +86,28 @@ export const NATS_START_MS = 230_000;
 
 /**
  * How long one container's removal (`docker rm -f -v`) may take: 133.1 s, 26.1 s and 8.9 s after
- * those same three starts. Twice the slowest, rounded up to 10 s, is 270 s.
+ * those same three starts. Twice the slowest, rounded up to 10 s, is 270 s. A removal that runs
+ * past it is killed, and `stop` throws naming the container.
  */
 export const NATS_STOP_MS = 270_000;
 
 /**
- * The bound of a hook that starts servers side by side: one start, and the removal of its
- * container when that start runs out, so a start that runs out fails by its own name rather than
- * as the hook's timeout. It is a hang guard: no row's verdict is its time.
+ * The room a hook keeps beside its docker calls' bounds, for its own steps and for a call killed
+ * at its bound to return and throw, so that a call that runs out fails by its own message rather
+ * than as the hook's timeout.
  */
-export const NATS_START_HOOK_MS = NATS_START_MS + NATS_STOP_MS;
+const HOOK_ROOM_MS = 10_000;
+
+/**
+ * The bound of a hook that starts servers side by side: one start, and the removal of its
+ * container when that start runs out. It is a hang guard: no row's verdict is its time.
+ */
+export const NATS_START_HOOK_MS = NATS_START_MS + NATS_STOP_MS + HOOK_ROOM_MS;
+
+/** The bound of a hook that removes `servers` containers one after another. A hang guard too. */
+export function natsStopHookMs(servers: number): number {
+  return servers * NATS_STOP_MS + HOOK_ROOM_MS;
+}
 
 /**
  * Runs a NATS server container as {@link startNatsServer} does, whose whole configuration is
@@ -103,8 +115,8 @@ export const NATS_START_HOOK_MS = NATS_START_MS + NATS_STOP_MS;
  *
  * The whole start, `docker run` until the server logs that it is ready, is bounded by
  * {@link NATS_START_MS}; a start that runs out throws naming the container and the step it was
- * in, after removing the container. `stop` removes the container, which can take up to
- * {@link NATS_STOP_MS}.
+ * in, after removing the container. `stop` removes the container, bounded by
+ * {@link NATS_STOP_MS}, and throws naming it when the removal runs out.
  */
 export async function startNatsServerWithConfig(
   directory: string,
@@ -116,8 +128,18 @@ export async function startNatsServerWithConfig(
   const stop = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
-    Bun.spawnSync(["docker", "rm", "-f", "-v", name], { stdout: "ignore", stderr: "ignore" });
+    const removal = Bun.spawnSync(["docker", "rm", "-f", "-v", name], {
+      stdout: "ignore",
+      stderr: "ignore",
+      timeout: NATS_STOP_MS,
+      killSignal: "SIGKILL",
+    });
     rmSync(config, { force: true });
+    if (removal.exitedDueToTimeout) {
+      throw new Error(
+        `NATS container ${name}: its docker rm had not returned within ${NATS_STOP_MS / 1000} s`
+      );
+    }
   };
   const deadline = performance.now() + NATS_START_MS;
   // Each step's failure names the container and the step; the error it wraps says whether the
@@ -166,7 +188,11 @@ export async function startNatsServerWithConfig(
     ).stdout.split("\n")[0];
     return { url: `nats://${port}`, stop };
   } catch (error) {
-    stop();
+    try {
+      stop();
+    } catch (removal) {
+      throw new Error(`${error}; and then ${removal}`);
+    }
     throw error;
   }
 }
