@@ -640,9 +640,11 @@ check "names both lines" \
 dollar='$'
 write_pr_text "fix(dispatch): keep the inbox order" \
   "$(printf '%s\n' "${dollar}{GCE_METADATA_HOST:-metadata.google.$internal}" "set nats.${internal}_url first" \
-    "import Std.${internal^}.UV.System" "it ends with Std.${internal^}.")" "fix: keep the order"
+    "import Std.${internal^}.UV.System" "it ends with Std.${internal^}." "see -metadata.google.$internal:80")" \
+  "fix: keep the order"
 run_pr_text
-check "a shell default naming the metadata server, an identifier and two namespaces pass" "$(is "$status" 0)"
+check "a shell default and a lone hyphen before the metadata server, an identifier and two namespaces pass" \
+  "$(is "$status" 0)"
 bare_edges=(
   "see _${bare}_ there"
   "see -$bare:80 there"

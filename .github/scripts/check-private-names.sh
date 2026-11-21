@@ -33,16 +33,20 @@
 #      line refuses it, since that text is pasted where no reader stands between. Each label of
 #      such a host starts with a letter or a digit, and `.internal` ends it when what follows is
 #      any character but a letter, a digit, a `.` or a `_` (a port's `:`, a path's `/`, a blank,
-#      a quote, a bracket, a hyphen), a full stop or a run of `_` with no letter or digit after
-#      it, or the end of the line. So `nats.internal_url` passes. The namespace above passes there
-#      too, with its full stop (`Std.Internal.`), and `Std.Internal` with no full stop after it is
-#      refused there. Only the GCE metadata server's and Docker's host name of that shape pass,
-#      with no label or `-` in front of them (a `_` is no part of a label, as no DNS name holds
-#      one, so a `_` in front leaves them whole). A run over a tree reads no such ending: the
-#      tree holds those two names and its tests' own hosts of that shape, which name no private
-#      network. The bare reading is the CI check's alone, on purpose: the daemon's leak guard,
-#      which runs this script's port over every `legion gh` call and every text handed to
-#      `legion leak-check text`, does not read it, since it would refuse agents' own writes;
+#      a quote, a bracket, a hyphen), a full stop with no letter or digit after it, one `_` with
+#      no letter or digit after it or two or more `_` whatever follows, or the end of the line. So
+#      `nats.internal_url` passes and `db.internal__url` is refused. The namespace above passes
+#      there too, with one label in front and its full stop (`Std.Internal.`); with no full stop
+#      after it, or with two or more labels in front at a sentence's end, it is refused there.
+#      Only the GCE metadata server's and Docker's host name of that shape pass, with no label
+#      joined in front: a letter or digit then a `-` joins one, so `x-metadata.google.internal`
+#      is refused, while a `-` after no letter or digit, and any `_`, leave them whole
+#      (`-metadata.google.internal:80` and `x_metadata.google.internal` pass; no DNS name holds a
+#      `_`). A run over a tree reads no such ending: the tree holds those two names and its tests'
+#      own hosts of that shape, which name no private network. The bare reading is the CI check's
+#      alone, on purpose: the daemon's leak guard, which runs this script's port over the
+#      `legion gh` calls it checks and every text handed to `legion leak-check text`, does not
+#      read it, since it would refuse agents' own writes;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;

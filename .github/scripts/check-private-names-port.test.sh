@@ -24,11 +24,11 @@
 # each one recording what the engine does instead of the frozen script's own path handling, which
 # the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
 # and so does the third rule's reading of a pull request's own text, which check-pr-text.sh alone
-# turns on (PRIVATE_NAME_BARE_HOSTS). The engine reads text too, every `legion gh` call's arguments
-# and standard input (leakguard's GhCall) and every text `legion leak-check text` is handed, but
-# with the tree run's reading: the bare reading is CI's alone on purpose, since porting it would
-# refuse agents' own writes, and that is not asked for. Its term-list cases belong to a rule with no
-# port (below).
+# turns on (PRIVATE_NAME_BARE_HOSTS). The engine reads text too, the arguments and standard input
+# of the `legion gh` calls it checks (leakguard's GhCall) and every text `legion leak-check text`
+# is handed, but with the tree run's reading: the bare reading is CI's alone on purpose, since
+# porting it would refuse agents' own writes, and that is not asked for. Its term-list cases
+# belong to a rule with no port (below).
 # Beyond the corpus the five rules are driven over a file's content and over a file's path, the
 # conditional allow-list with each half holding alone, and the frozen script's own selection rules
 # one by one.
