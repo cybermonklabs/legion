@@ -17,4 +17,4 @@ body: |-
     `20261121170714_dispatch_issue_applied_seq` adds.
 time: 2026-11-21T15:47:50Z
 custom:
-    Issue: recovery-repo-edit
+    Issue: pr4903
