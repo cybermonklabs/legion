@@ -80,6 +80,10 @@ export interface PublishedReferences {
   readonly gone: ReadonlySet<string>;
   /** How the read names each target that has a name, by its reference. */
   readonly readings: ReadonlyMap<string, ReferenceNameReading>;
+  /** Each issue's status the read answered, by the issue's reference: what the mark beside a
+   *  reference to the issue draws (INFRA-4009 R2). A page whose read names no issue may leave it
+   *  out. */
+  readonly statuses?: ReadonlyMap<string, string>;
   /** The references the read answered with no words to name them by - another issue's block it
    *  sent no reading of - which is no answer that the target has no name: a surface reads each
    *  one itself, as a link to it does (`RefLink`, R8). */
@@ -100,6 +104,7 @@ export interface KnownReferences {
    *  (`issue-page/row-references.ts`). None for a target that is no block. */
   readonly lines: ReadonlyMap<string, string>;
   readonly names: ReadonlyMap<string, string>;
+  readonly statuses: ReadonlyMap<string, string>;
   readonly unnamed: ReadonlySet<string>;
 }
 
@@ -107,6 +112,7 @@ export interface KnownReferences {
 const NO_REFERENCES: ReadonlySet<string> = new Set();
 const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
+const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 
 /** What the store holds while no page publishes. */
 const NOTHING_PUBLISHED: PublishedReferences = {
@@ -114,6 +120,7 @@ const NOTHING_PUBLISHED: PublishedReferences = {
   asked: NO_REFERENCES,
   gone: NO_REFERENCES,
   readings: NO_READINGS,
+  statuses: NO_STATUSES,
   unnamed: NO_REFERENCES,
 };
 
@@ -124,6 +131,7 @@ const NOTHING_KNOWN: KnownReferences = {
   gone: NO_REFERENCES,
   lines: NO_NAMES,
   names: NO_NAMES,
+  statuses: NO_STATUSES,
   unnamed: NO_REFERENCES,
 };
 
@@ -195,6 +203,24 @@ function readingsOf(
   return same ? kept : joined;
 }
 
+/** The issues' statuses of every value still published, by the rule `readingsOf` joins the
+ *  readings by: the last publisher stands, and `kept` is handed on where it holds the same. */
+function statusesOf(
+  published: readonly PublishedReferences[],
+  kept: ReadonlyMap<string, string>
+): ReadonlyMap<string, string> {
+  const held = published.flatMap((value) =>
+    value.statuses === undefined || value.statuses.size === 0 ? [] : [value.statuses]
+  );
+  const joined =
+    held.length > 1 ? new Map(held.flatMap((map) => [...map])) : (held[0] ?? NO_STATUSES);
+  const same =
+    joined === kept ||
+    (joined.size === kept.size &&
+      [...joined].every(([reference, status]) => kept.get(reference) === status));
+  return same ? kept : joined;
+}
+
 /** Every value still published as the one value readers see, each part the one `previous`
  *  holds where it holds the same, so a part readers are handed changes only where what it holds
  *  does (`ReferenceNamesProvider`). */
@@ -218,6 +244,7 @@ function merged(
       previous.gone
     ),
     readings: readingsOf(published, previous.readings),
+    statuses: statusesOf(published, previous.statuses ?? NO_STATUSES),
     unnamed: union(
       published.map((value) => value.unnamed),
       previous.unnamed
@@ -360,7 +387,7 @@ export function ReferenceNamesProvider({ children }: { children: ReactNode }): R
       names: names.size === 0 ? NO_NAMES : names,
     };
   }, [version]);
-  const { ambiguous, asked, gone, unnamed } = value;
+  const { ambiguous, asked, gone, statuses = NO_STATUSES, unnamed } = value;
   const known = useMemo<KnownReferences>(
     () => ({
       ambiguous,
@@ -368,9 +395,10 @@ export function ReferenceNamesProvider({ children }: { children: ReactNode }): R
       gone,
       lines: projected.lines,
       names: projected.names,
+      statuses,
       unnamed: including(unnamed, projected.blank),
     }),
-    [ambiguous, asked, gone, projected, unnamed]
+    [ambiguous, asked, gone, projected, statuses, unnamed]
   );
   // Drawn again only where the readings do, so a publisher that publishes the same readings
   // again projects none of them again.
@@ -421,10 +449,10 @@ export function usePublishReferenceNames(published: PublishedReferences | undefi
  * reference the page is asking for before the page's answer reached it. So a row drawn with the
  * page's read waits on that read for every reference the page asks it for, from its first
  * render, and mounts no read of its own for one (`plain-text.tsx`). A name is the store's alone,
- * since only its projection names one. What the subtree reads changes only where a part of it
- * does, so a page that publishes the same references again, in sets made anew, draws no row
- * again: the one value this hands on is the store's own wherever the store already holds every
- * reference the page's holds.
+ * since only its projection names one, and so is a status, which names nothing without it. What
+ * the subtree reads changes only where a part of it does, so a page that publishes the same
+ * references again, in sets made anew, draws no row again: the one value this hands on is the
+ * store's own wherever the store already holds every reference the page's holds.
  */
 export function PublishedReferenceNames({
   children,
@@ -442,6 +470,7 @@ export function PublishedReferenceNames({
       gone: including(known.gone, gone),
       lines: known.lines,
       names: known.names,
+      statuses: known.statuses,
       unnamed: including(known.unnamed, unnamed),
     };
     const kept =
