@@ -2381,11 +2381,13 @@ What you do depends on how the database came to hold another file:
   means: add the line the refusal names, alone on a line of its own and outside every quoted
   string or function body, to the file, after the replaces lines it has, and ship it. The next
   start accepts the row as it is. The first replaces line names the identity the version first
-  shipped with; a later edit of the same file keeps it first and adds one naming the edit before
-  it. The line names a file of the same version and 64 lower-case hex digits; a line that begins
-  `-- replaces:` and is written any other way, or that sits inside a quoted string or a function
-  body, stops every start, naming the file and the line. A pull request that edits a migration
-  main already holds without such lines fails CI's `envoy-go-checks` job before it merges.
+  shipped with; a later edit of the same file keeps every replaces line it has, in their order,
+  and adds one after them naming the edit before it, its file name and checksum. The line names a
+  file of the same version and 64 lower-case hex digits; a line that begins `-- replaces:` and is
+  written any other way, or that sits inside a quoted string or a function body, stops every start,
+  naming the file and the line. A pull request that edits a migration main already holds without
+  such lines, or whose lines do not begin with main's file's lines, in their order, then the one
+  naming main's file itself, fails CI's `envoy-go-checks` job before it merges.
 
 An image cannot accept a text it has never seen, so it refuses a database whose migration a later
 image applied from an edited text: one that an image with the edit created from empty, and a
