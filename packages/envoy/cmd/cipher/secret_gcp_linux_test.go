@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -276,19 +277,16 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // moment of its gcloud call (onGcloudStep): gcloudStarted or gcloudWaited.
 const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 
-// TestGcloudSignInSignalHelper is the process TestGcloudSignInEndedByASignalKillsGcloudsChild
-// signals: `secret list` against a fake broker serving the GCP store, with no other source of a
-// Google credential, so its sign-in runs `gcloud auth list` through the stub gcloud of
-// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, which never
-// answers. The deadline on each store call stays 60s, so the signal comes while the call runs. It
-// prints RETURNED <exit code> should the form return. With gcloudSignalAt set, it sends itself
-// SIGINT from onGcloudStep at that step, once the stub's child has named itself; at gcloudWaited
-// the stub exits at once, leaving its child holding its output
-// (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild). At gcloudStarted the hook
-// then returns, since runRecorded holds runningGcloud's lock there and the signal's handler
-// waits on it. At gcloudWaited it never returns, so the kill of what gcloud left
-// (killGroupLeft), which comes next, cannot reach the child while a process the signal's default
-// action ends is still ending.
+// TestGcloudSignInSignalHelper is the process the gcloud sign-in signal rows signal: `secret list`
+// against a fake broker serving the GCP store, with no other source of a Google credential, so
+// its sign-in runs `gcloud auth list` through the stub gcloud of gcloudStubIn, written beside the
+// pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names. It prints RETURNED <exit code> should the
+// form return. Without gcloudSignalAt the stub never answers and the deadline on each store call
+// stays 60s, so TestGcloudSignInEndedByASignalKillsGcloudsChild's signal comes while the call
+// runs. With gcloudSignalAt set, it sends SIGINT to the thread that runs onGcloudStep at that
+// step, once the stub's child has named itself, so the signal is handled on that thread before
+// runRecorded goes on; at gcloudWaited the stub exits at once, leaving its child holding its
+// output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
@@ -313,10 +311,9 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 			for child.pid() == 0 {
 				time.Sleep(testwait.Poll)
 			}
-			_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
-			if step == gcloudWaited {
-				select {}
-			}
+			runtime.LockOSThread()
+			_ = syscall.Tgkill(os.Getpid(), syscall.Gettid(), syscall.SIGINT)
+			runtime.UnlockOSThread()
 		}
 	}
 	t.Setenv("PATH", filepath.Dir(gcloud.path)+":/usr/bin:/bin")
