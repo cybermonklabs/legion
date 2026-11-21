@@ -28,9 +28,13 @@ const (
 	tlsControlHost = "control.legion-tls-probe.test"
 )
 
-// tlsServerConnLimit bounds one connection to the probe's server: the longest a client of the
-// probe may run (tlsChromiumProbeTimeout), so a client the probe has stopped holds no connection
-// past it.
+// tlsServerConnLimit bounds one connection to the probe's server, counted from its accept: the
+// longest a client's first run at a site may last (tlsChromiumProbeTimeout), so a client the probe
+// has stopped holds no connection long past its run. A run with no verdict runs once more within
+// two times its client's limit (tlsRunTerms.limit), up to 180 s for Chromium and 120 s for bq, and
+// such a run may outlast this bound; but the bound counts from each connection's own accept, not
+// from the run's start, so it cuts only a connection that has itself been open that long, which no
+// client's handshake and answer need.
 const tlsServerConnLimit = tlsChromiumProbeTimeout
 
 // tlsServedSite is one host one of the probe's listeners answers for: its site, its chain, the page
@@ -285,8 +289,10 @@ func (l *tlsListener) connect(conn net.Conn, reader *bufio.Reader) (string, erro
 }
 
 // serveHTTP answers a request with its host's fixture page: the host the client named in its TLS
-// server name, else in its Host header. Only a fixture chain's handshake completes, since the server
-// cannot sign for a vendored one.
+// server name, else in its Host header. A vendored chain's handshake completes only for a client
+// that does not check the server's handshake signature against the chain's leaf, since the server
+// signs with a key of its own; such a client gets the page of the fixture of the same host, the
+// page the compromised site gives, which reads as an acceptance.
 func (s *tlsServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	name := r.TLS.ServerName
 	if name == "" {
