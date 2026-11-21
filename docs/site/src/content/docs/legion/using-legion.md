@@ -176,14 +176,22 @@ resumes.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 
-A status written by an agent session on a running issue is set back by the daemon, and the
-architect is told who wrote it; only a person's move in the dashboard, the controller's
-`set_status`, or an operator's `legion issue status`, takes a running tree out. A move of your own
-between the workflow's own statuses — `in_progress`, `testing`, `needs_review`, `retro`, and
-`todo` on a root (on a child, `todo` reruns it) — on a running issue does not stay either: the
-daemon's status repair writes back the status of the phase the issue stands in, at each boot and
-then every `controller_wake_interval_seconds` (an hour by default). `backlog` or `icebox` is how
-you stop the work.
+The daemon sets back a status that an agent session of the tree writes on a running issue, with
+one exception. The architect that owns a child can write `done`, `backlog`, `icebox` or `triage`
+on that child, and the daemon takes that write as it takes a person's move: the child leaves the
+workflow. The root's architect owns every issue of its tree, and a child's architect owns the issues
+under its own issue. Every other status that a session of the tree writes is set back: a status
+that moves the workflow, `todo`, any status on the root, any status that a phase worker writes, and
+an architect's status on an issue that it does not own. A root keeps its own rule. Only a person's
+move in the dashboard, the controller's `set_status`, or an operator's `legion issue status` takes
+a running tree out, and the controller moves a root whose work is folded into another issue or no
+longer needed to `backlog` or `icebox`, because it cannot close a running root `done`. When a
+session outside the tree writes a status on a running root, the daemon sets it back and tells the
+root's architect who wrote it. A move of your own between the workflow's own statuses —
+`in_progress`, `testing`, `needs_review`, `retro`, and `todo` on a root (on a child, `todo` reruns
+it) — on a running issue does not stay either: the daemon's status repair writes back the status
+of the phase the issue stands in, at each boot and then every `controller_wake_interval_seconds`
+(an hour by default). `backlog` or `icebox` is how you stop the work.
 
 ## What each status means
 
@@ -191,10 +199,10 @@ you stop the work.
 | --- | --- | --- |
 | `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
-| `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work is done, folded into another issue or no longer needed. Legion does not run it. |
+| `backlog` | a person, the controller, or the architect that owns a child | Should not run now: a person asked for that, for example while it waits on a decision or a deploy. A root also goes here when its work is done, folded into another issue or no longer needed. The architect that owns a child writes `backlog` on it only when a person asked for that, or as the first step of a restart (`backlog`, then `rerun_child`), and it closes a child whose work is done, folded or no longer needed with `done`. Legion does not run it. |
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
 | `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
 | `retro` | the daemon | The architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
-| `done` | the daemon at the merge, or a person | Finished: the pull request merged. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |
+| `done` | the daemon at the merge, a person, or the architect that owns a child | Finished: the pull request merged, or, for a child, the architect that owns it closed it because its work is done, folded into another issue or no longer needed. A root whose tree is still running waits in `retro` until the last of it is done or out of the workflow, then closes. The production check that your project's `production_check` opens after a merge — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

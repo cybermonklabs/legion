@@ -3,9 +3,11 @@ package events
 import "context"
 
 // horizonFlight is one observation that concurrent callers share. h.inFlight holds it while it
-// runs. Once it has ended, h.ended holds it as the newest ended observation, unless its runner's
-// cancellation abandoned it. Its fields are written by the caller running it, under h.mu, before
-// done closes, and read by the others after done closes or, through h.ended, under h.mu.
+// runs. Once it has ended, h.ended holds it as the newest ended observation, until a newer one
+// takes its place or a Reset clears it, unless its runner's cancellation abandoned it or a Reset
+// came between its start and its end. Its fields are written by the caller running it, under
+// h.mu, before done closes, and read by the others after done closes or, through h.ended, under
+// h.mu.
 type horizonFlight struct {
 	number     uint64
 	generation uint64
@@ -30,24 +32,26 @@ func (h *Horizon) observationBoundary() uint64 {
 }
 
 // observe returns once an observation numbered above after has ended, recorded or failed, and
-// answers that observation's number. It takes the newest that has ended (h.ended) when that one is
-// numbered above after; otherwise it joins the one in flight, or runs one itself (run) when none
-// is. Observations run one at a time, so one numbered above after started after the count after
-// was read. One in flight numbered at or below after started before the caller needed it, so the
-// caller waits it out and looks again; so does one abandoned by its runner's context while the
-// caller's is live, which h.ended never holds.
+// answers that observation's number and the generation it started in; if a Reset came since, it
+// discarded the observation, which Safe checks. It takes the newest that has ended (h.ended) when
+// that one is numbered above after; otherwise it joins the one in flight, or runs one itself
+// (run) when none is. Observations run one at a time, so one numbered above after started after
+// the count after was read. One in flight numbered at or below after started before the caller
+// needed it, so the caller waits it out and looks again; so does one abandoned by its runner's
+// context while the caller's is live, which h.ended never holds.
 //
 // Callers that read the count while one observation ran, or that wait out the same one, therefore
-// run at most one more between them, unless that one is abandoned, however the scheduler wakes
-// them: the first back at h.mu runs it, and each of the others joins it in flight or, once it has
-// ended, takes it. Each that found it already ended would otherwise run one of its own.
-func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, error) {
+// run at most one more between them, unless that one is abandoned or a Reset discards it, however
+// the scheduler wakes them: the first back at h.mu runs it, and each of the others joins it in
+// flight or, once it has ended, takes it. Each that found it already ended would otherwise run one
+// of its own.
+func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, uint64, error) {
 	for {
 		h.mu.Lock()
 		if ended := h.ended; ended != nil && ended.number > after {
-			number, err := ended.number, ended.err
+			number, generation, err := ended.number, ended.generation, ended.err
 			h.mu.Unlock()
-			return number, err
+			return number, generation, err
 		}
 		flight := h.inFlight
 		run := flight == nil
@@ -66,12 +70,12 @@ func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, error) {
 			select {
 			case <-flight.done:
 			case <-ctx.Done():
-				return 0, ctx.Err()
+				return 0, 0, ctx.Err()
 			}
 		}
 		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
 			continue
 		}
-		return flight.number, flight.err
+		return flight.number, flight.generation, flight.err
 	}
 }

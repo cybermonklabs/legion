@@ -270,8 +270,9 @@ removes it.
 A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
 names its Dispatch projects as that person's session does: `enroll --pod` sends the list
 `AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when
-Dispatch says the person may see every project on it, and a restricted member's pod must name at
-least one. Any other pod names no project: the broker refuses its list `PROJECTS_NEED_A_PERSON`.
+Dispatch says the person may see every project on it. A restricted member's pod enrols nothing,
+whatever it names (`RESTRICTED_MEMBER_ENROLLS_NOTHING`). Any other pod names no project: the
+broker refuses its list `PROJECTS_NEED_A_PERSON`.
 
 **Nothing in the pod ends its enrollment.** `unenroll` goes through the machine's
 `agent-secrets-helper`, which a pod has not, so a pod cannot end its own; and the broker is never

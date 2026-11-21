@@ -95,7 +95,7 @@ func standaloneListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerAr
 func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 	type A = gcp.ClusteredNatsHubArgs
 	str := pulumi.StringRef
-	// limit is INFRA-546's streamMaxBytes, for the sizing rows.
+	// limit is the measured streamMaxBytes, for the sizing rows.
 	limit := func(a *A) *A {
 		a.StreamMaxBytes = pulumi.IntRef(infra546StreamMaxBytes)
 		return a
@@ -134,7 +134,7 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"diskSizeGb 0", func(a *A) { a.DiskSizeGb = pulumi.IntRef(0) }, "diskSizeGb", []string{"diskSizeGb 0 must be above maxFileStoreGb 1"}},
 		{"diskSizeGb at an explicit store", func(a *A) { a.DiskSizeGb, a.MaxFileStoreGb = pulumi.IntRef(5), pulumi.IntRef(5) }, "maxFileStoreGb",
 			[]string{"maxFileStoreGb 5 must be below diskSizeGb 5"}},
-		// INFRA-546's limit needs S = 46.1 GiB of store and F ≈ 4.31 GiB (4409.4 MiB) of memory
+		// The measured limit needs S = 46.1 GiB of store and F ≈ 4.31 GiB (4409.4 MiB) of memory
 		// (TestClusteredNatsHubSizingFollowsStreamMaxBytes, whose acceptance rows at 47, 4410Mi
 		// and 4.5Gi these rows bound).
 		{"maxFileStoreGb below S", func(a *A) { limit(a).MaxFileStoreGb = pulumi.IntRef(46) }, "maxFileStoreGb",
@@ -183,6 +183,23 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a metrics namespace with a dot", func(a *A) { a.MetricsNamespaces = []string{"gmp.system"} }, "metricsNamespaces", []string{`metricsNamespaces[0] "gmp.system"`}},
 		{"a repeated metrics namespace", func(a *A) { a.MetricsNamespaces = []string{"gmp-system", "gmp-system"} }, "metricsNamespaces",
 			[]string{"repeats metricsNamespaces[0]"}},
+
+		{"a route secret name with an underscore", func(a *A) {
+			a.RouteAuthorization = routeAuthorization("env")
+			a.RouteAuthorization.SecretName = "route_secret"
+		}, "routeAuthorization.secretName", []string{`routeAuthorization.secretName "route_secret" must be a DNS subdomain, the name of a Secret in namespace envoy`}},
+		{"no route secret key", func(a *A) {
+			a.RouteAuthorization = routeAuthorization("env")
+			a.RouteAuthorization.SecretKey = ""
+		}, "routeAuthorization.secretKey", []string{`routeAuthorization.secretKey ""`}},
+		{"a route secret key with a slash", func(a *A) {
+			a.RouteAuthorization = routeAuthorization("routes")
+			a.RouteAuthorization.SecretKey = "a/b"
+		}, "routeAuthorization.secretKey", []string{`routeAuthorization.secretKey "a/b"`}},
+		{"no route stage", func(a *A) { a.RouteAuthorization = routeAuthorization("") }, "routeAuthorization.stage",
+			[]string{`routeAuthorization.stage "" must be one of env, routes, authorization, in that order, one apply each`}},
+		{"a route stage of another case", func(a *A) { a.RouteAuthorization = routeAuthorization("Authorization") }, "routeAuthorization.stage",
+			[]string{`routeAuthorization.stage "Authorization"`}},
 
 		{"tailnet without tailnetAuthKey", func(a *A) { a.TailnetAuthKey = nil }, "tailnetAuthKey", []string{"tailnetAuthKey is required with tailnet"}},
 		{"tailnetAuthKey without tailnet", func(a *A) { a.Tailnet = nil }, "tailnetAuthKey", []string{"tailnetAuthKey is given without tailnet"}},
@@ -376,6 +393,18 @@ func clusteredSeedRows() []clusteredSeedRow {
 			a.AuthCallout = authCallout()
 			a.AuthCallout.ServiceUser = splitSeed(s, "-")
 		}},
+		{"routeAuthorization.secretName", "routeAuthorization.secretName", func(a *A, s string) {
+			a.RouteAuthorization = routeAuthorization("env")
+			a.RouteAuthorization.SecretName = strings.ToLower(s)
+		}},
+		{"routeAuthorization.secretKey", "routeAuthorization.secretKey", func(a *A, s string) {
+			a.RouteAuthorization = routeAuthorization("env")
+			a.RouteAuthorization.SecretKey = s
+		}},
+		{"routeAuthorization.stage", "routeAuthorization.stage", func(a *A, s string) {
+			a.RouteAuthorization = routeAuthorization("env")
+			a.RouteAuthorization.Stage = s
+		}},
 		// core's refusals, passed on: a seed in a name names the user; a seed as an nkey is refused
 		// as no public key, without quoting it.
 		{"a user's name", "users", func(a *A, s string) { a.Users[1].Name = s }},
@@ -422,7 +451,8 @@ func TestClusteredNatsHubHasASeedRowForEveryStringInput(t *testing.T) {
 			switch f.Type {
 			case reflect.TypeFor[int](), reflect.TypeFor[*int](), reflect.TypeFor[bool](), reflect.TypeFor[*bool]():
 				continue
-			case reflect.TypeFor[*gcp.ClusteredHubTailnetArgs](), reflect.TypeFor[*gcp.ClusteredHubListenerArgs](), reflect.TypeFor[*nats.AuthCalloutArgs]():
+			case reflect.TypeFor[*gcp.ClusteredHubTailnetArgs](), reflect.TypeFor[*gcp.ClusteredHubListenerArgs](), reflect.TypeFor[*nats.AuthCalloutArgs](),
+				reflect.TypeFor[*gcp.ClusteredHubRouteAuthorizationArgs]():
 				names = append(names, stringFields(f.Type.Elem(), prefix+name+".")...)
 				continue
 			}

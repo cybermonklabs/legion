@@ -111,7 +111,13 @@ type Session struct {
 	// ready closes when the session enrolls. A lapse (markLapsed) puts an open one in its place,
 	// which the next enrollment closes, so `register --wait` waits for the re-enrollment too.
 	ready chan struct{}
-	stop  chan struct{} // closed when the session is removed
+	// refused closes when the broker answers an enroll of this session with a refusal no retry
+	// can mend (refuse): 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, the machine login's person being
+	// one Dispatch calls a restricted member. enrollLoop then asks no more, the session reads
+	// "refused", and a `register --wait` waiting on ready wakes on this instead of waiting out its
+	// whole wait for an enrollment that cannot come.
+	refused chan struct{}
+	stop    chan struct{} // closed when the session is removed
 	// wake ends the renew wait at once when something OUTSIDE the loops lapses the enrollment —
 	// today only a rename. markLapsed alone does not reach renewLoop, which otherwise waits a
 	// third of the lease and acts only on a refused renew, so without this a renamed session
@@ -214,7 +220,7 @@ func newSession(pid int, ticks uint64, runtimeID, sessionID string, key *ecdsa.P
 	close(settled)
 	return &Session{
 		PID: pid, StartTicks: ticks, runtimeID: runtimeID, sessionID: sessionID, key: key, thumbprint: tp,
-		RegisteredAt: time.Now(), ready: make(chan struct{}), stop: make(chan struct{}),
+		RegisteredAt: time.Now(), ready: make(chan struct{}), refused: make(chan struct{}), stop: make(chan struct{}),
 		confirmSettled: settled, wake: make(chan struct{}, 1), peer: peer,
 	}, nil
 }
@@ -291,13 +297,19 @@ type enrollmentState struct {
 // one moment's id with another's state or error, however a lapse or an enrollment interleaves.
 // The state is "enrolled" only for an id the broker itself answered with (confirmed); an id
 // inherited from a record reads "enrolling" until confirmInherited's renew confirms it, since
-// nothing has shown the broker still honours it.
+// nothing has shown the broker still honours it. A session the broker refused for good (refuse)
+// and that holds no confirmed enrollment reads "refused".
 func (s *Session) snapshot() enrollmentState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := "enrolled"
 	if s.enrollmentID == "" || !s.confirmed {
 		state = "enrolling"
+		select {
+		case <-s.refused:
+			state = "refused"
+		default:
+		}
 	}
 	return enrollmentState{EnrollmentID: s.enrollmentID, State: state, LastError: s.lastError}
 }
@@ -389,6 +401,19 @@ func (s *Session) setError(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastError = msg
+}
+
+// refuse records a refusal of this session's enrollment no retry can mend, with reason as its last
+// error, and closes the refused channel, which a `register --wait` waits on beside ready.
+func (s *Session) refuse(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = reason
+	select {
+	case <-s.refused:
+	default:
+		close(s.refused)
+	}
 }
 
 // markLapsed is what a refused renew does: the broker no longer honours this enrollment (its lease

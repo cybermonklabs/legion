@@ -83,7 +83,8 @@ func TestSchemaTypes(t *testing.T) {
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
 		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
-		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:DispatchCluster",
+		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:ClusteredHubRouteAuthorization",
+		"envoy-infra:gcp:DispatchCluster",
 	}, slices.Collect(maps.Keys(s.Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
 	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
@@ -168,7 +169,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"authCallout", "privateProjects", "listener", "tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "routeAuthorization", "listener", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",
@@ -202,6 +203,15 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The route credential is a Secret's name and key, never a value, so no property of it is a
+	// secret and the schema holds no password field.
+	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubRouteAuthorization", hub.InputProperties["routeAuthorization"].Ref)
+	route := s.Types["envoy-infra:gcp:ClusteredHubRouteAuthorization"]
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, slices.Collect(maps.Keys(route.Properties)))
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, route.Required)
+	for name, in := range route.Properties {
+		require.False(t, in.Secret, "routeAuthorization.%s is no secret", name)
+	}
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))
