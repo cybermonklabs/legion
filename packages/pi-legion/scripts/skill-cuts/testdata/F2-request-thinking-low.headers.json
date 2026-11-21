@@ -1,0 +1,18 @@
+{
+  "method": "POST",
+  "path": "/v1/messages",
+  "headers": {
+    "accept": "text/event-stream",
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "anthropic-beta": "effort-2025-11-24,mid-conversation-system-clear-at-2026-08-21,mid-conversation-tool-changes-2026-07-01,mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,context-management-2025-06-27",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-length": "33248",
+    "content-type": "application/json",
+    "host": "127.0.0.1:18431",
+    "user-agent": "omp/18.18.6",
+    "x-app": "cli",
+    "x-claude-code-session-id": "01a1f6b4-9e06-7770-ace2-2dcc357fcd22"
+  }
+}

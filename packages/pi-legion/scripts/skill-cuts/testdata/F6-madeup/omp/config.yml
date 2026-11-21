@@ -1,0 +1,6 @@
+# Made-up Oh My Pi settings of a fixture; installers/skills.sh links this file to
+# ~/.omp/agent/config.yml.
+skills:
+  ignoredSkills:
+    - beta
+    - "gamma-*"

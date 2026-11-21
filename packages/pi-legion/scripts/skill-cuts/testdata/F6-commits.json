@@ -1,0 +1,84 @@
+[
+  {
+    "sha": "63b3a613feb15cb191f87f4239467cdd37b62c82",
+    "node_id": "C_kwDORFy7dtoAKDYzYjNhNjEzZmViMTVjYjE5MWY4N2Y0MjM5NDY3Y2RkMzdiNjJjODI",
+    "commit": {
+      "author": {
+        "name": "acme-agent[bot]",
+        "email": "acme-agent[bot]@users.noreply.github.com",
+        "date": "2026-11-19T23:43:33Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-19T23:43:33Z"
+      },
+      "message": "feat(envoy): the release gate reads the clients that deliver to a session (#4449)\n\nCo-authored-by: Example Owner <owner@example.com>",
+      "tree": {
+        "sha": "91e3130724f514213d1ec2d536627c5fe9cefb1b",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/91e3130724f514213d1ec2d536627c5fe9cefb1b"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/63b3a613feb15cb191f87f4239467cdd37b62c82",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/63b3a613feb15cb191f87f4239467cdd37b62c82",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/63b3a613feb15cb191f87f4239467cdd37b62c82",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/63b3a613feb15cb191f87f4239467cdd37b62c82/comments",
+    "author": {
+      "login": "acme-agent[bot]",
+      "id": 0,
+      "node_id": "BOT_example",
+      "avatar_url": "https://avatars.githubusercontent.com/u/0?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/acme-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/acme-agent",
+      "followers_url": "https://api.github.com/users/acme-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/acme-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/acme-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/acme-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/acme-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/acme-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/acme-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/acme-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/acme-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "9a8fe5f9187ff1930da2a42e6608ace859eca3a8",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/9a8fe5f9187ff1930da2a42e6608ace859eca3a8",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/9a8fe5f9187ff1930da2a42e6608ace859eca3a8"
+      }
+    ]
+  }
+]

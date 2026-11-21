@@ -1,0 +1,7 @@
+                                                                                                                                                    total                                                                                                                                                    
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {"row" : "count", "store" : "store_a", "day" : "2026-11-20", "skill" : "alpha", "copy" : "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills/alpha/SKILL.md", "kind" : "read", "files" : 1, "hashes" : ["2e8fca5c3950db03"], "unpaired" : 0, "unpaired_hashes" : []}
+ {"row" : "count", "store" : "store_a", "day" : "2026-11-20", "skill" : "alpha", "copy" : "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills/alpha/references/x.md", "kind" : "reference", "files" : 1, "hashes" : ["2e8fca5c3950db03"], "unpaired" : 0, "unpaired_hashes" : []}
+ {"row" : "summary", "store" : "store_a", "mtime_from" : 1795219200000, "mtime_to" : 1795305600000, "files" : 1, "parts" : 2, "bytes" : 19716, "lines_parsed" : 10, "bad_lines" : 0, "shared_call_ids" : 0}
+(3 rows)
+

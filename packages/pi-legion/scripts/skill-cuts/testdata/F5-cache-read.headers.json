@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "text/event-stream; charset=utf-8",
+    "llm_provider-request-id": "req_011ChDNpp7oWzZ63a7q5QUr6",
+    "request-id": "req_011ChDNpp7oWzZ63a7q5QUr6"
+  }
+}

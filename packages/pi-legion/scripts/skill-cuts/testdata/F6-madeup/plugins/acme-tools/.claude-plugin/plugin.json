@@ -1,0 +1,7 @@
+{
+  "name": "acme-tools",
+  "version": "0.3.0",
+  "description": "A made-up Claude Code plugin of a fixture: the tool-loop-alpha and alpha skills.",
+  "author": { "name": "Acme Fixtures" },
+  "skills": ["./skills/tool-loop-alpha", "./skills/alpha"]
+}

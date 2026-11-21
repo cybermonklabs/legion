@@ -1,0 +1,18 @@
+{
+  "name": "package.json",
+  "path": "packages/pi-legion/package.json",
+  "sha": "371e2da1e0dadf72c1a80f1c97e93ccd20609970",
+  "size": 1144,
+  "url": "https://api.github.com/repos/cybermonklabs/legion/contents/packages/pi-legion/package.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+  "html_url": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/packages/pi-legion/package.json",
+  "git_url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/371e2da1e0dadf72c1a80f1c97e93ccd20609970",
+  "download_url": "https://raw.githubusercontent.com/cybermonklabs/legion/d7c7c531438468c93b8b77038ace48315c01bd59/packages/pi-legion/package.json",
+  "type": "file",
+  "content": "ewogICJuYW1lIjogIkBhY21lL3BpLWxlZ2lvbiIsCiAgInZlcnNpb24iOiAi\nMTguMTQuMSIsCiAgImxpY2Vuc2UiOiAiQXBhY2hlLTIuMCIsCiAgInR5cGUi\nOiAibW9kdWxlIiwKICAib21wIjogewogICAgImV4dGVuc2lvbnMiOiBbCiAg\nICAgICJleHRlbnNpb25zL2xlZ2lvbi50cyIKICAgIF0sCiAgICAic2tpbGxz\nIjogWwogICAgICAiZGlzdC9za2lsbHMiCiAgICBdCiAgfSwKICAibGVnaW9u\nIjogewogICAgImRhZW1vbkFwaVZlcnNpb24iOiAxNjgKICB9LAogICJyZXBv\nc2l0b3J5IjogewogICAgInR5cGUiOiAiZ2l0IiwKICAgICJ1cmwiOiAiaHR0\ncHM6Ly9naXRodWIuY29tL2N5YmVybW9ua2xhYnMvbGVnaW9uIgogIH0sCiAg\nImZpbGVzIjogWwogICAgImRpc3QiLAogICAgImFnZW50cyIKICBdLAogICJz\nY3JpcHRzIjogewogICAgImJ1aWxkIjogImJ1biBidWlsZCBleHRlbnNpb25z\nL2xlZ2lvbi50cyAtLW91dGRpciBkaXN0IC0tdGFyZ2V0IGJ1biAtLWZvcm1h\ndCBlc20gLS1leHRlcm5hbCBAb2gtbXktcGkvcGktY29kaW5nLWFnZW50IC0t\nZXh0ZXJuYWwgQG9oLW15LXBpL3BpLXR1aSAtLWV4dGVybmFsIEBvaC1teS1w\naS9waS11dGlscyIsCiAgICAicHJlcGFjayI6ICIuLi8uLi9zY3JpcHRzL3Bp\nLXBsdWdpbi1wcmVwYWNrLnNoIiwKICAgICJwb3N0cGFjayI6ICJybSAtcmYg\nZGlzdC9za2lsbHMiLAogICAgInR5cGVjaGVjayI6ICJidW54IHRzYyAtLW5v\nRW1pdCIsCiAgICAidGVzdCI6ICJidW4gdGVzdCIsCiAgICAibGludCI6ICJi\ndW54IGJpb21lIGxpbnQgZXh0ZW5zaW9ucy8gc3JjLyIKICB9LAogICJkZXZE\nZXBlbmRlbmNpZXMiOiB7CiAgICAiQGJpb21lanMvYmlvbWUiOiAiXjIuMy4x\nNCIsCiAgICAiQGxlZ2lvbi9jb250cmFjdHMiOiAid29ya3NwYWNlOioiLAog\nICAgIkBsZWdpb24vZW52b3ktY2xpZW50IjogIndvcmtzcGFjZToqIiwKICAg\nICJAbGVnaW9uL3BpLXNoYXJlZCI6ICJ3b3Jrc3BhY2U6KiIsCiAgICAiQGxl\nZ2lvbi90ZXN0LWZpeHR1cmVzIjogIndvcmtzcGFjZToqIiwKICAgICJAb2gt\nbXktcGkvcGktdXRpbHMiOiAiXjE4LjYuMCIsCiAgICAiQHR5cGVzL2J1biI6\nICJsYXRlc3QiLAogICAgInR5cGVzY3JpcHQiOiAiXjUuMy4wIiwKICAgICJ6\nb2QiOiAiNC4zLjYiCiAgfQp9Cg==\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/cybermonklabs/legion/contents/packages/pi-legion/package.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+    "git": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/371e2da1e0dadf72c1a80f1c97e93ccd20609970",
+    "html": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/packages/pi-legion/package.json"
+  }
+}

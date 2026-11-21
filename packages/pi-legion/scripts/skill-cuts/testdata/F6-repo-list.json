@@ -1,0 +1,27 @@
+[
+  {
+    "defaultBranchRef": {
+      "name": "main"
+    },
+    "isArchived": false,
+    "isFork": false,
+    "nameWithOwner": "cybermonklabs/legion",
+    "parent": null
+  },
+  {
+    "defaultBranchRef": {
+      "name": "main"
+    },
+    "isArchived": false,
+    "isFork": true,
+    "nameWithOwner": "cybermonklabs/oh-my-pi",
+    "parent": {
+      "id": "R_kgDOQxs0bQ",
+      "name": "oh-my-pi",
+      "owner": {
+        "id": "U_upstream_owner",
+        "login": "upstream-owner"
+      }
+    }
+  }
+]

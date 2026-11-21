@@ -1,0 +1,7 @@
+                                                                                          total                                                                                          
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {"row" : "model", "store" : "store_a", "hash" : "6bf367db484f59de", "model" : null, "source" : null}
+ {"row" : "model", "store" : "store_a", "hash" : "cf863e47a559fcca", "model" : "anthropic/claude-sonnet-5-5", "source" : "session_init"}
+ {"row" : "summary", "store" : "store_a", "mtime_from" : 1795132800000, "mtime_to" : 1795219200000, "files" : 2, "with_model" : 1, "bytes" : 20639, "lines_parsed" : 1, "bad_lines" : 0}
+(3 rows)
+

@@ -1,0 +1,75 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-5-5","id":"msg_011ChDTDHWevnv4y6QSUkhhp","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":105,"cache_creation_input_tokens":710,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":710},"output_tokens":4,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}             }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQSgQcKEAgUGAI4AUIIdGhpbmtpbmcSDBTrS8BsCqlpZaoz0RoM+hJqMfQYhownCU9+IjDI5hgNjy/HJDUGWJLp8GJRZT+c8A3WRDdhULmBSPQutvOfitrUH0GG2XOnsIQFu8MqngbMvmKImitpICLZhxSAq/Jo8d7AP2CBZVxfOWNEDE+Q+LY4Sh9m8qK0AODMSJpXOaaUxu4mq2KQi1PJ4lXTncaBidvCpC5yJ672NyTdWYfrjlcEVVLpRq4qOnEc1PniZUEb7zi+vjMcFlZA0X3OfsjMTOk79qR36chrIvoIryDOmMoRc/I6/i3c+D/KYzLZZ8NIV3tMTSW6rI7dpzszRBAIV6DH5e5AV94tLygj4XulECV1c3w6tXMytHGWO4+9/ZP2TL+3nGyFypyoSFXMmZRx/Mea5qur1vNPC9H0g/YJAjM78O/TR2ZeR3j1MGTXe1I8gvBGbhKsZHP6EmnnkTTVGlWr8LCc+pOkWWmS0MzkOEGvg3XitBfO02956dDsNQK2DmggYl1VCSaawcWrVzd0XkQEjPgmb88xNEvncpJOmhClI3sPSCfqnyNDM0Hj/hXFJtjA60mtHJpT1Ux2it+RmYaA8qsizx05lk1ZZ0enuXLCnVcU2PPr1Fz7icUf2uJwSQM3e05ogEtIdEO83RJk6VqIGQD2nBhRm0Xur6h32a5nLCEn+emChOeqC1Kjec/uW5fvQxMB+tdM82as3OWLVmzxjDK+cbrLV0heVjO0cOAgdhUggAGfkovOrS5YFK0XK+3jB9mVE0kXq5hh9bFq3Ktd98aXyt345mOCzA+Vd+zE7b5l8DbfXkqJGhk09MFyHBy9pVu5clYYcbSX6V88jB79F6FH4pohEpIRKErjkAfZzwYPdZG+GjRiJrDgkwZSBhlWKS+SifVJO368pOhig7c1bJDewqciGrHRqTV+oe2/aH1jchyt/Dtir3j95yq8/0Lmn++u3Th3AKAiqkE3uhh6g+kDk6Z2ZB+h8hkV0vgfQ16q+DblBdk8k5yNas2zg7uV6Rox3ICPovBol4Dn7FFn1HkKyLkKZwF8VcK5vFwmMobVHHL1vl9hw2D6TQbYB2gP/allOo1MAJD2EAprx0thsTrzj/aFJFCCInewudUbJEMA5q+2e/VFh593owIYroqy08mV4CWzA3fizC65Hk+hggizw6/pLey7Zc0YAQ=="}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"{\"verdict\": \"f"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ail\", \"reason\": \"The"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" step makes no tool call to"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" read sk"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ill://alpha/references/"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"x.md. It"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" writ"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"es out the al"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"pha sk"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ill's three steps anyway"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":", which me"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ets the fail statement: writ"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ing the alpha steps without"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" reading references/x.md first"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".\"}"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1       }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":105,"cache_creation_input_tokens":710,"cache_read_input_tokens":0,"output_tokens":174,"output_tokens_details":{"thinking_tokens":88}} }
+
+event: message_stop
+data: {"type":"message_stop"  }
+

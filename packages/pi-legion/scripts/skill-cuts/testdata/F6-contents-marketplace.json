@@ -1,0 +1,18 @@
+{
+  "name": "marketplace.json",
+  "path": ".claude-plugin/marketplace.json",
+  "sha": "8f87f14570e4ca8a4f4fca806dd0396faf8fbb57",
+  "size": 388,
+  "url": "https://api.github.com/repos/cybermonklabs/legion/contents/.claude-plugin/marketplace.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+  "html_url": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/.claude-plugin/marketplace.json",
+  "git_url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/8f87f14570e4ca8a4f4fca806dd0396faf8fbb57",
+  "download_url": "https://raw.githubusercontent.com/cybermonklabs/legion/d7c7c531438468c93b8b77038ace48315c01bd59/.claude-plugin/marketplace.json",
+  "type": "file",
+  "content": "ewogICJuYW1lIjogImxlZ2lvbi1wbHVnaW5zIiwKICAib3duZXIiOiB7CiAg\nICAibmFtZSI6ICJFeGFtcGxlIE93bmVyIgogIH0sCiAgImRlc2NyaXB0aW9u\nIjogIkNsYXVkZSBDb2RlIHBsdWdpbnMgZm9yIExlZ2lvbi4iLAogICJwbHVn\naW5zIjogWwogICAgewogICAgICAibmFtZSI6ICJjbGF1ZGUtZW52b3kiLAog\nICAgICAic291cmNlIjogewogICAgICAgICJzb3VyY2UiOiAibnBtIiwKICAg\nICAgICAicGFja2FnZSI6ICJAYWNtZS9jbGF1ZGUtZW52b3kiLAogICAgICAg\nICJ2ZXJzaW9uIjogIj49MS4wLjAiCiAgICAgIH0sCiAgICAgICJkZXNjcmlw\ndGlvbiI6ICJEZWxpdmVycyBFbnZveSBOQVRTIG5vdGlmaWNhdGlvbnMgaW50\nbyBDbGF1ZGUgQ29kZS4iCiAgICB9CiAgXQp9Cg==\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/cybermonklabs/legion/contents/.claude-plugin/marketplace.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+    "git": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/8f87f14570e4ca8a4f4fca806dd0396faf8fbb57",
+    "html": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/.claude-plugin/marketplace.json"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "enabledPlugins": {
+    "acme-tools@acme-market": true,
+    "beta-pack@acme-market": false
+  },
+  "extraKnownMarketplaces": {
+    "acme-market": {
+      "source": {
+        "source": "github",
+        "repo": "acme/skills"
+      }
+    }
+  }
+}

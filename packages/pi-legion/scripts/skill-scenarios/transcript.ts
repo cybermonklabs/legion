@@ -1,42 +1,45 @@
-// The Oh My Pi session transcript shapes score.ts and seed.ts both read, so a run's own JSONL has
-// one parser and one notion of what a tool result says, never two that can drift.
+// The Oh My Pi session transcript shapes score.ts, seed.ts and the skill-cuts runner read, so a
+// run's own JSONL has one parser and one notion of what a tool result says, never two that drift.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
-/** An Oh My Pi session transcript line: a message, whose assistant content holds each tool call
- * whole (`toolCall`: id, tool name, arguments) and whose tool results name the call they answer,
+/** An Oh My Pi message, as a transcript line holds it: its assistant content holds each tool call
+ * whole (`toolCall`: id, tool name, arguments) and its tool results name the call they answer,
  * whether the tool refused it (`isError`) and the tool's own record (`details`; a `bash` result's
- * holds its `exitCode`). Its `tool_execution_start` entries keep only the first 200 characters of
- * the arguments, so nothing here reads them. The first line is the header, `{"type":"session",
- * "id":"<session id>"}`. A background task's report arrives as a line of its own
- * (`"type":"custom_message"`, `"customType":"async-result"`) whose `content` is its text. */
+ * holds its `exitCode`). Fields it does not name are kept as they are. */
+export const SessionMessage = z.looseObject({
+  role: z.string().optional(),
+  toolName: z.string().optional(),
+  toolCallId: z.string().optional(),
+  isError: z.boolean().optional(),
+  details: z.unknown().optional(),
+  content: z
+    .array(
+      z.looseObject({
+        type: z.string(),
+        text: z.string().optional(),
+        id: z.string().optional(),
+        name: z.string().optional(),
+        arguments: z.unknown().optional(),
+      })
+    )
+    .optional(),
+});
+export type SessionMessage = z.infer<typeof SessionMessage>;
+
+/** An Oh My Pi session transcript line: a message (SessionMessage), or an entry of its own. Its
+ * `tool_execution_start` entries keep only the first 200 characters of the arguments, so nothing
+ * here reads them. The first line is the header, `{"type":"session", "id":"<session id>"}`. A
+ * background task's report arrives as a line of its own (`"type":"custom_message"`,
+ * `"customType":"async-result"`) whose `content` is its text. */
 export const SessionEntry = z.looseObject({
   type: z.string().optional(),
   id: z.unknown().optional(),
   timestamp: z.string().optional(),
   customType: z.string().optional(),
   content: z.unknown().optional(),
-  message: z
-    .looseObject({
-      role: z.string().optional(),
-      toolName: z.string().optional(),
-      toolCallId: z.string().optional(),
-      isError: z.boolean().optional(),
-      details: z.unknown().optional(),
-      content: z
-        .array(
-          z.looseObject({
-            type: z.string(),
-            text: z.string().optional(),
-            id: z.string().optional(),
-            name: z.string().optional(),
-            arguments: z.unknown().optional(),
-          })
-        )
-        .optional(),
-    })
-    .optional(),
+  message: SessionMessage.optional(),
 });
 export type SessionEntry = z.infer<typeof SessionEntry>;
 
@@ -101,6 +104,73 @@ export function toolResults(entries: SessionEntry[]): string[] {
     if (message?.role !== "toolResult") return [];
     return [(message.content ?? []).map((part) => part.text ?? "").join("")];
   });
+}
+
+/** Every tool call the session made, in order: its id, its tool, and its whole arguments as JSON
+ * and their `path` and `command`. */
+export function toolCalls(entries: SessionEntry[]) {
+  return entries.flatMap((entry) =>
+    entry.message?.role !== "assistant"
+      ? []
+      : (entry.message.content ?? [])
+          .filter((part) => part.type === "toolCall")
+          .map((part) => {
+            const args = part.arguments;
+            const fields: Record<string, unknown> =
+              typeof args === "object" && args !== null ? { ...args } : {};
+            return {
+              id: part.id ?? "",
+              tool: part.name ?? "",
+              path: typeof fields.path === "string" ? fields.path : "",
+              command: typeof fields.command === "string" ? fields.command : "",
+              args: JSON.stringify(args ?? null),
+            };
+          })
+  );
+}
+
+/** Every `read` call the session made whose `path` is a string, in order: its id and the path or
+ * URL it read. */
+export function readCalls(entries: SessionEntry[]): { id: string; target: string }[] {
+  const reads: { id: string; target: string }[] = [];
+  for (const entry of entries) {
+    if (entry.message?.role !== "assistant") continue;
+    for (const part of entry.message.content ?? []) {
+      if (part.type !== "toolCall" || part.name !== "read") continue;
+      const args = part.arguments;
+      const target =
+        typeof args === "object" && args !== null ? Reflect.get(args, "path") : undefined;
+      if (typeof target === "string") reads.push({ id: part.id ?? "", target });
+    }
+  }
+  return reads;
+}
+
+/** The `read` calls of `messages` (`readCalls`), by call id: the path or URL each one read. */
+export function readTargets(messages: readonly SessionMessage[]): Map<string, string> {
+  return new Map(
+    readCalls(messages.map((message) => ({ message }))).map((call) => [call.id, call.target])
+  );
+}
+
+/** The line the pinned Oh My Pi puts before the text of a file it read by a `skill://` URL,
+ * `[Skill file: <absolute path>]`, then a newline. That line is not the file's. */
+export function skillFileHeader(file: string): string {
+  return `[Skill file: ${file}]`;
+}
+
+/** The `[Skill file: <absolute path>]` line a read result's text starts with, then a newline. */
+const SKILL_HEADER = /^\[Skill file: (\/[^\n]*)\]\n/;
+
+/** A read result's text less its `[Skill file: <absolute path>]` line. Any other first line stays. */
+export function stripSkillHeader(text: string): string {
+  return text.replace(SKILL_HEADER, "");
+}
+
+/** The absolute path a read result's `[Skill file: <absolute path>]` line names, or undefined when
+ * its text starts with no such line. */
+export function skillHeaderPath(text: string): string | undefined {
+  return SKILL_HEADER.exec(text)?.[1];
 }
 
 /** Dispatch's answer when `dispatch issue` creates an issue, whatever reached it: the command in a

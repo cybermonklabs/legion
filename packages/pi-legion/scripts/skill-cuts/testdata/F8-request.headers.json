@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "path": "/v1/responses",
+  "headers": {
+    "accept": "text/event-stream",
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "connection": "keep-alive",
+    "content-length": "35701",
+    "content-type": "application/json",
+    "host": "127.0.0.1:41171",
+    "session_id": "01a1f80e-09d7-75c5-b4ae-a3831a485a57",
+    "x-client-request-id": "01a1f80e-09d7-75c5-b4ae-a3831a485a57"
+  }
+}

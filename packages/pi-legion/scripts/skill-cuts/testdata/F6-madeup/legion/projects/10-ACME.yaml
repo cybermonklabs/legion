@@ -1,0 +1,8 @@
+# A made-up Legion project file of a fixture.
+key: ACME
+instructions: acme.md
+replicas: 1
+memory: "on"
+# verificationSkillsLeaveOut: the verification-skills plugins that this project's roles do not
+# install at their start.
+verificationSkillsLeaveOut: [plugin-gamma, plugin-delta]

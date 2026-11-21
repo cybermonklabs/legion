@@ -1,0 +1,12 @@
+{
+  "owners": ["acme"],
+  "stores": [{ "name": "store_a", "context": "devbox" }],
+  "psqlCommand": "/usr/bin/psql",
+  "gatewayBaseUrl": "http://127.0.0.1:4000",
+  "servedModels": ["anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"],
+  "excludePaths": [{ "repo": "acme/skills", "prefix": "pipeline/candidates/" }],
+  "targets": ["acme/skills"],
+  "cuts": [{ "id": "skills-1", "repo": "acme/skills", "pr": 1 }],
+  "windowStart": "2026-11-20T00:00:00Z",
+  "windowEnd": "2026-11-22T00:00:00Z"
+}

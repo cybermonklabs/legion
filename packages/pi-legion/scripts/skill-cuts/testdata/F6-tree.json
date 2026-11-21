@@ -1,0 +1,820 @@
+{
+  "sha": "d7c7c531438468c93b8b77038ace48315c01bd59",
+  "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/d7c7c531438468c93b8b77038ace48315c01bd59",
+  "tree": [
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8f87f14570e4ca8a4f4fca806dd0396faf8fbb57",
+      "size": 389,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/8f87f14570e4ca8a4f4fca806dd0396faf8fbb57"
+    },
+    {
+      "path": "packages/claude-envoy/scripts/build.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "70dc8e71d27fececb1fc6ba453a33d14a7adb687",
+      "size": 26426,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/70dc8e71d27fececb1fc6ba453a33d14a7adb687"
+    },
+    {
+      "path": "packages/daemon/docker/omp-plugins/package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "760e942cfe64bd19e53a564b563047f345e06ecb",
+      "size": 508,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/760e942cfe64bd19e53a564b563047f345e06ecb"
+    },
+    {
+      "path": "packages/pi-envoy/package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e31113201c3ef4af90c92f5a812219c01ba31b39",
+      "size": 1300,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e31113201c3ef4af90c92f5a812219c01ba31b39"
+    },
+    {
+      "path": "packages/pi-legion/agents/deep-worker.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "22801ed3a2112a9233bc7f97e152b6ec8be181f7",
+      "size": 3942,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/22801ed3a2112a9233bc7f97e152b6ec8be181f7"
+    },
+    {
+      "path": "packages/pi-legion/agents/design-outsider.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "56229123c46e4d46cab2768f5cea70e089014620",
+      "size": 2331,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/56229123c46e4d46cab2768f5cea70e089014620"
+    },
+    {
+      "path": "packages/pi-legion/agents/goal-red-team.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e1c5cc06e182754a56bdf314c8b28e285aa0a0d",
+      "size": 1370,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/3e1c5cc06e182754a56bdf314c8b28e285aa0a0d"
+    },
+    {
+      "path": "packages/pi-legion/agents/oracle.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "582ac942cce46155c3e78b8b712e28f2710cf7cd",
+      "size": 2075,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/582ac942cce46155c3e78b8b712e28f2710cf7cd"
+    },
+    {
+      "path": "packages/pi-legion/agents/plan-gap-analyst.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "183cadbe1a6a6dc6394f9569dbb28bada294860e",
+      "size": 4601,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/183cadbe1a6a6dc6394f9569dbb28bada294860e"
+    },
+    {
+      "path": "packages/pi-legion/agents/plan-reviewer.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e05742d3044a887e5ed81627e3fd1ece61a43282",
+      "size": 7355,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e05742d3044a887e5ed81627e3fd1ece61a43282"
+    },
+    {
+      "path": "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "73790fbde2c9dd13d9299d8fa6ca06e6e593ceb7",
+      "size": 2893,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/73790fbde2c9dd13d9299d8fa6ca06e6e593ceb7"
+    },
+    {
+      "path": "packages/pi-legion/agents/thermonuclear-deep-review.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f9704e3613b314e1fc5fbf93c3eb3bd149916b1d",
+      "size": 3049,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/f9704e3613b314e1fc5fbf93c3eb3bd149916b1d"
+    },
+    {
+      "path": "packages/pi-legion/package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "371e2da1e0dadf72c1a80f1c97e93ccd20609970",
+      "size": 1147,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/371e2da1e0dadf72c1a80f1c97e93ccd20609970"
+    },
+    {
+      "path": "scripts/pi-plugin-prepack.sh",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "ec8d6611df20879f8064bad559cf31503cd61e65",
+      "size": 5022,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ec8d6611df20879f8064bad559cf31503cd61e65"
+    },
+    {
+      "path": "skills/AGENTS.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7c7b698c8656cd00cf6a7b16514d00b8d98caefb",
+      "size": 2681,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/7c7b698c8656cd00cf6a7b16514d00b8d98caefb"
+    },
+    {
+      "path": "skills/agent-secrets",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "05a0fef13f1ef757e5a342af76bf1af052c020b9",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/05a0fef13f1ef757e5a342af76bf1af052c020b9"
+    },
+    {
+      "path": "skills/agent-secrets/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "be5cb6e1851d8195460dbfaa020fe01a9afc1d0a",
+      "size": 7713,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/be5cb6e1851d8195460dbfaa020fe01a9afc1d0a"
+    },
+    {
+      "path": "skills/agent-secrets/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "2743fd0c9417296b5c44731b57c9f01090daad48",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/2743fd0c9417296b5c44731b57c9f01090daad48"
+    },
+    {
+      "path": "skills/agent-secrets/references/store-a-secret.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0f6d82c237cf4cd831889fd0d52966a7d5b7dbda",
+      "size": 775,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/0f6d82c237cf4cd831889fd0d52966a7d5b7dbda"
+    },
+    {
+      "path": "skills/approval-review",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "389e7fd46e0802dfa61195e9724df5b2aebe91b3",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/389e7fd46e0802dfa61195e9724df5b2aebe91b3"
+    },
+    {
+      "path": "skills/approval-review/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5675c16a2d42fa42b275425cdb5dc0a079e4cdd6",
+      "size": 2876,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/5675c16a2d42fa42b275425cdb5dc0a079e4cdd6"
+    },
+    {
+      "path": "skills/approval-review/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c3deacd7a6d3b6020470b91292ffede02ccebd07",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/c3deacd7a6d3b6020470b91292ffede02ccebd07"
+    },
+    {
+      "path": "skills/approval-review/references/never-decide.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bf256d59e722a12da93a3d01c750a2bd3dae33c1",
+      "size": 7951,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/bf256d59e722a12da93a3d01c750a2bd3dae33c1"
+    },
+    {
+      "path": "skills/asd-ste100",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "ab069dfdb987887f5901839cce259f5007fdc65c",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/ab069dfdb987887f5901839cce259f5007fdc65c"
+    },
+    {
+      "path": "skills/asd-ste100/LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cf3b9052d36f05227a3e3c364910b9f96c86cc5f",
+      "size": 1075,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/cf3b9052d36f05227a3e3c364910b9f96c86cc5f"
+    },
+    {
+      "path": "skills/asd-ste100/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "47e59df6521105f7ec21d550f7260036f9a4b6e3",
+      "size": 5796,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/47e59df6521105f7ec21d550f7260036f9a4b6e3"
+    },
+    {
+      "path": "skills/asd-ste100/examples",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "860d327b9fc9e477eef95026ccccdc4b92b9aab8",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/860d327b9fc9e477eef95026ccccdc4b92b9aab8"
+    },
+    {
+      "path": "skills/asd-ste100/examples/before-after.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7d39d120fd0108a8871fdd43c5fefcbae93699cf",
+      "size": 4106,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/7d39d120fd0108a8871fdd43c5fefcbae93699cf"
+    },
+    {
+      "path": "skills/dispatch-first",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f174252ebef49b3403ad9ef184c297a3772d02a6",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/f174252ebef49b3403ad9ef184c297a3772d02a6"
+    },
+    {
+      "path": "skills/dispatch-first/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2000a82ca66b11d77d380fec980406c61364a0df",
+      "size": 3106,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/2000a82ca66b11d77d380fec980406c61364a0df"
+    },
+    {
+      "path": "skills/dispatch-writing-specs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "349c0fe78e0dfb9c5f23aee46c00b802a987e736",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/349c0fe78e0dfb9c5f23aee46c00b802a987e736"
+    },
+    {
+      "path": "skills/dispatch-writing-specs/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e8cbd930f0121325fe8ed32fec99fbb402d6939b",
+      "size": 5628,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e8cbd930f0121325fe8ed32fec99fbb402d6939b"
+    },
+    {
+      "path": "skills/dispatch",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f167ce8492d7873733bfa5d852c284de04903cd6",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/f167ce8492d7873733bfa5d852c284de04903cd6"
+    },
+    {
+      "path": "skills/dispatch/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae25003c13f590146692fadabecc8fa3e2e93bd7",
+      "size": 5587,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ae25003c13f590146692fadabecc8fa3e2e93bd7"
+    },
+    {
+      "path": "skills/envoy",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "cf31dd46f560bd9b6f02f01ff93bad808fcb4b49",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/cf31dd46f560bd9b6f02f01ff93bad808fcb4b49"
+    },
+    {
+      "path": "skills/envoy/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fc29e667af43e5f70a7434f6dd196c9d9e89e159",
+      "size": 7534,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/fc29e667af43e5f70a7434f6dd196c9d9e89e159"
+    },
+    {
+      "path": "skills/envoy/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d8b9cebce449ce11eec4876a3c853a5899abec33",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/d8b9cebce449ce11eec4876a3c853a5899abec33"
+    },
+    {
+      "path": "skills/envoy/references/check-settlement.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e51f44e6432ec63c0f92fb057926ad040b16f133",
+      "size": 4406,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e51f44e6432ec63c0f92fb057926ad040b16f133"
+    },
+    {
+      "path": "skills/envoy/references/deliveries.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "81829772e71f634d2469e1e45a392bd254ebff71",
+      "size": 2716,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/81829772e71f634d2469e1e45a392bd254ebff71"
+    },
+    {
+      "path": "skills/envoy/references/legion.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4ebd27f9fb4f9b44767024ac2e6e04a4b496f669",
+      "size": 1989,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/4ebd27f9fb4f9b44767024ac2e6e04a4b496f669"
+    },
+    {
+      "path": "skills/envoy/references/roles.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0d63383776e8e7f0a2f509b0669a84ae40ecf0d1",
+      "size": 1692,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/0d63383776e8e7f0a2f509b0669a84ae40ecf0d1"
+    },
+    {
+      "path": "skills/envoy/references/sources.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7530cd527594dcd141254d6b00650566fcd5db4c",
+      "size": 2093,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/7530cd527594dcd141254d6b00650566fcd5db4c"
+    },
+    {
+      "path": "skills/legion-architect",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d9861d745fbf478243779b38863b64f2bba0eb2d",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/d9861d745fbf478243779b38863b64f2bba0eb2d"
+    },
+    {
+      "path": "skills/legion-architect/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ce118e3c7d17637e1ddd610f8a4f83655b6ff177",
+      "size": 7917,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ce118e3c7d17637e1ddd610f8a4f83655b6ff177"
+    },
+    {
+      "path": "skills/legion-architect/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "52014e2c9dc92772220efe34025e77bb955871d7",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/52014e2c9dc92772220efe34025e77bb955871d7"
+    },
+    {
+      "path": "skills/legion-architect/references/acceptance.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "996de564467d031668f25bb374475f04133687b7",
+      "size": 7196,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/996de564467d031668f25bb374475f04133687b7"
+    },
+    {
+      "path": "skills/legion-architect/references/decomposition.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b798ac2fdc9df843820858483e4534c836113699",
+      "size": 7522,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/b798ac2fdc9df843820858483e4534c836113699"
+    },
+    {
+      "path": "skills/legion-architect/references/design-gate.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "06cd5e6d078532d33297b0fe71d0a06431cfa6ba",
+      "size": 7879,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/06cd5e6d078532d33297b0fe71d0a06431cfa6ba"
+    },
+    {
+      "path": "skills/legion-architect/references/wake-routing.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9b16910dae330afa23b8f8fa569bba970e5f2f00",
+      "size": 8008,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/9b16910dae330afa23b8f8fa569bba970e5f2f00"
+    },
+    {
+      "path": "skills/legion-controller",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "00fc5b4d5bdfd669907f25b61f9ed9e757d96d1e",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/00fc5b4d5bdfd669907f25b61f9ed9e757d96d1e"
+    },
+    {
+      "path": "skills/legion-controller/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d0f272b573829607c6c9b1b87191ffa31e03a742",
+      "size": 7704,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/d0f272b573829607c6c9b1b87191ffa31e03a742"
+    },
+    {
+      "path": "skills/legion-controller/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3da072a4d97d8a0215881ab54363521c19b5a2c8",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/3da072a4d97d8a0215881ab54363521c19b5a2c8"
+    },
+    {
+      "path": "skills/legion-controller/references/admission.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "edf94bb484d427ff22894e229d492187b57868b1",
+      "size": 3916,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/edf94bb484d427ff22894e229d492187b57868b1"
+    },
+    {
+      "path": "skills/legion-controller/references/backlog-stewardship.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "46aa770ab34a1e3d32435bb45c6365ca252a36c3",
+      "size": 5687,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/46aa770ab34a1e3d32435bb45c6365ca252a36c3"
+    },
+    {
+      "path": "skills/legion-controller/references/consolidation.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a3b71ce2fb0fb0d99eb7ae3d1fa2e60c8c78d95d",
+      "size": 3176,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/a3b71ce2fb0fb0d99eb7ae3d1fa2e60c8c78d95d"
+    },
+    {
+      "path": "skills/legion-controller/references/daily-report.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c32571aec77af960bdf49195cdb9ccb6c8647e8c",
+      "size": 5414,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/c32571aec77af960bdf49195cdb9ccb6c8647e8c"
+    },
+    {
+      "path": "skills/legion-controller/references/escalation.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ecdbd7ec7202769180ad432de32a0557ba46f915",
+      "size": 4127,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ecdbd7ec7202769180ad432de32a0557ba46f915"
+    },
+    {
+      "path": "skills/legion-controller/references/finding-asks.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea6ed4ccba7b81f2dc58f58f63742634bbbf10c3",
+      "size": 7787,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ea6ed4ccba7b81f2dc58f58f63742634bbbf10c3"
+    },
+    {
+      "path": "skills/legion-controller/references/park-asks.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e6b3eb1e937709917a126c22d6d17a8f72143365",
+      "size": 3825,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e6b3eb1e937709917a126c22d6d17a8f72143365"
+    },
+    {
+      "path": "skills/legion-controller/references/parked-decisions.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4b0aa4cf2da4d03ca210a5194cab4d8971a80abc",
+      "size": 6774,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/4b0aa4cf2da4d03ca210a5194cab4d8971a80abc"
+    },
+    {
+      "path": "skills/legion-controller/references/session.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "48032a3ccfc1c3aed8e7e1aeed4496d60359055c",
+      "size": 5071,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/48032a3ccfc1c3aed8e7e1aeed4496d60359055c"
+    },
+    {
+      "path": "skills/legion-controller/references/slack-mentions.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d39411a67e7286ea881d7584ea9b367ba74e97e1",
+      "size": 4509,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/d39411a67e7286ea881d7584ea9b367ba74e97e1"
+    },
+    {
+      "path": "skills/legion-controller/references/triage.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e95afee15a785eb496d2798f99edca71626817fc",
+      "size": 4785,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e95afee15a785eb496d2798f99edca71626817fc"
+    },
+    {
+      "path": "skills/legion-controller/references/wakes.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "89678627acafc5b3de05646f7efa13fe99dbe093",
+      "size": 5313,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/89678627acafc5b3de05646f7efa13fe99dbe093"
+    },
+    {
+      "path": "skills/legion-controller/references/weekly-audit.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cefa46390ac70d752b37de60c6d5b8d95647acd1",
+      "size": 2802,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/cefa46390ac70d752b37de60c6d5b8d95647acd1"
+    },
+    {
+      "path": "skills/legion-oracle",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "6177711452291e81231154c74ae2543cac7bb559",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/6177711452291e81231154c74ae2543cac7bb559"
+    },
+    {
+      "path": "skills/legion-oracle/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "38aaff1f9f55532379ea072774aaf3e8809995a2",
+      "size": 2566,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/38aaff1f9f55532379ea072774aaf3e8809995a2"
+    },
+    {
+      "path": "skills/legion-retro",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "0d02e7a019bea23fdd09cc06f0a186f262321900",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/0d02e7a019bea23fdd09cc06f0a186f262321900"
+    },
+    {
+      "path": "skills/legion-retro/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a1b9326709d30e58298cad8101e4930adc36415a",
+      "size": 5764,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/a1b9326709d30e58298cad8101e4930adc36415a"
+    },
+    {
+      "path": "skills/legion-retro/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "b0915bf4347cfa07ddd772177113eef9c2ddad04",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/b0915bf4347cfa07ddd772177113eef9c2ddad04"
+    },
+    {
+      "path": "skills/legion-retro/references/learnings.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e6ff06af923ce4538af978dc95091a07aa91a97",
+      "size": 2004,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/8e6ff06af923ce4538af978dc95091a07aa91a97"
+    },
+    {
+      "path": "skills/legion-retro/references/pr-body-content.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f8fe50508506652ff2afc6c9405295c1bdd11d68",
+      "size": 2392,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/f8fe50508506652ff2afc6c9405295c1bdd11d68"
+    },
+    {
+      "path": "skills/legion-worker",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "b15b9bc29324fb7894397aedb3160194f0eefce5",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/b15b9bc29324fb7894397aedb3160194f0eefce5"
+    },
+    {
+      "path": "skills/legion-worker/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6eb3ade74195aded3805ae5ced28d50609cc811",
+      "size": 8145,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/b6eb3ade74195aded3805ae5ced28d50609cc811"
+    },
+    {
+      "path": "skills/legion-worker/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c9acee6555eeb6c0d8f2574f829b96389d57420",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/3c9acee6555eeb6c0d8f2574f829b96389d57420"
+    },
+    {
+      "path": "skills/legion-worker/references/ci-checks.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9d7747d950cfb77024159436668207769955901a",
+      "size": 3189,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/9d7747d950cfb77024159436668207769955901a"
+    },
+    {
+      "path": "skills/legion-worker/references/conflicts-and-rewrites.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "31d0b55b25ce4d812b749b173769562c471905c2",
+      "size": 5128,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/31d0b55b25ce4d812b749b173769562c471905c2"
+    },
+    {
+      "path": "skills/legion-worker/references/default-branch-check.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9a1f8c5692d77ef5ea06ffb738e4f57b46ab0f5c",
+      "size": 2354,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/9a1f8c5692d77ef5ea06ffb738e4f57b46ab0f5c"
+    },
+    {
+      "path": "skills/legion-worker/references/findings.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bddd1622334aaa4045bc8625f4cd5c3b1d6aab2d",
+      "size": 6877,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/bddd1622334aaa4045bc8625f4cd5c3b1d6aab2d"
+    },
+    {
+      "path": "skills/legion-worker/references/foreign-path.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cb23e2d5ee5d8499c880e221badd5b9c874fad0b",
+      "size": 1297,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/cb23e2d5ee5d8499c880e221badd5b9c874fad0b"
+    },
+    {
+      "path": "skills/legion-worker/references/gvisor.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f75d1977c34bdd780cf19ff40e6f7606759f9f4",
+      "size": 1645,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/4f75d1977c34bdd780cf19ff40e6f7606759f9f4"
+    },
+    {
+      "path": "skills/legion-worker/references/merge-gate.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d16b52e209321da253655faf654b208027fa6d89",
+      "size": 7741,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/d16b52e209321da253655faf654b208027fa6d89"
+    },
+    {
+      "path": "skills/legion-worker/references/plan-tests.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4066e58bc41b0cd93922f188783cba19480152b7",
+      "size": 1794,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/4066e58bc41b0cd93922f188783cba19480152b7"
+    },
+    {
+      "path": "skills/legion-worker/references/pr-body.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1485f24d32abc2dd66d2e879304b5a28cd724146",
+      "size": 8191,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/1485f24d32abc2dd66d2e879304b5a28cd724146"
+    },
+    {
+      "path": "skills/legion-worker/references/review-threads.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d38a3ff20654a07c3ac8552d19754963c459758f",
+      "size": 2019,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/d38a3ff20654a07c3ac8552d19754963c459758f"
+    },
+    {
+      "path": "skills/legion-worker/references/tools.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b53a858d26538e1532cd5ba76b561aca64656a23",
+      "size": 7894,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/b53a858d26538e1532cd5ba76b561aca64656a23"
+    },
+    {
+      "path": "skills/legion-worker/references/withheld-capability.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6f6df0e126c02866f06efb57a5a58ee78064e7d",
+      "size": 3460,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/b6f6df0e126c02866f06efb57a5a58ee78064e7d"
+    },
+    {
+      "path": "skills/outside-message",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "26413623d982a693cdf6a8cfc4422c268c30bb5d",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/26413623d982a693cdf6a8cfc4422c268c30bb5d"
+    },
+    {
+      "path": "skills/outside-message/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6fe762c438fcaf755e638764a2714c7b024f5cf6",
+      "size": 3814,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/6fe762c438fcaf755e638764a2714c7b024f5cf6"
+    },
+    {
+      "path": "skills/plain-words",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "60553396e794554dffb6d833b6dbd19fb1b78544",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/60553396e794554dffb6d833b6dbd19fb1b78544"
+    },
+    {
+      "path": "skills/plain-words/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "27f6ef828cffbfec52b29d6dbf42a16797b772e1",
+      "size": 3459,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/27f6ef828cffbfec52b29d6dbf42a16797b772e1"
+    },
+    {
+      "path": "skills/simplify-settled-diff",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "174c020e8882d911eb50044937f652a529308aa2",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/174c020e8882d911eb50044937f652a529308aa2"
+    },
+    {
+      "path": "skills/simplify-settled-diff/LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "959dd283c510cfac6fd912555f99b14613ee9018",
+      "size": 1062,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/959dd283c510cfac6fd912555f99b14613ee9018"
+    },
+    {
+      "path": "skills/simplify-settled-diff/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f97daacfa032eaab0cf18d2586da2793980693aa",
+      "size": 4474,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/f97daacfa032eaab0cf18d2586da2793980693aa"
+    },
+    {
+      "path": "skills/simplify-settled-diff/references",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8d384b7b26c11f2be37e03a0ae4e0e390ab2c9af",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/8d384b7b26c11f2be37e03a0ae4e0e390ab2c9af"
+    },
+    {
+      "path": "skills/simplify-settled-diff/references/personas",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "cf0a3d021e4ff5721a7ab70635b0e2abeb411098",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/cf0a3d021e4ff5721a7ab70635b0e2abeb411098"
+    },
+    {
+      "path": "skills/simplify-settled-diff/references/personas/code-quality-reviewer.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e3eb27e7b2958a5bfed9327fbf628200716ef13d",
+      "size": 2628,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/e3eb27e7b2958a5bfed9327fbf628200716ef13d"
+    },
+    {
+      "path": "skills/simplify-settled-diff/references/personas/code-reuse-reviewer.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "93aad9edc0472ee55eaf017e3d4b08f86bb68e85",
+      "size": 1586,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/93aad9edc0472ee55eaf017e3d4b08f86bb68e85"
+    },
+    {
+      "path": "skills/simplify-settled-diff/references/personas/efficiency-reviewer.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "060139a3c20fc9b6c36e0429a5787e1e4c71ae93",
+      "size": 1481,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/060139a3c20fc9b6c36e0429a5787e1e4c71ae93"
+    },
+    {
+      "path": "skills/thermonuclear-code-quality",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "4618df4c358ff2a48f3c3677642bb58bedcebdb4",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/4618df4c358ff2a48f3c3677642bb58bedcebdb4"
+    },
+    {
+      "path": "skills/thermonuclear-code-quality/LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ca2bba771cd39dbef6acf96b52481133983451f3",
+      "size": 1063,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ca2bba771cd39dbef6acf96b52481133983451f3"
+    },
+    {
+      "path": "skills/thermonuclear-code-quality/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "21f99e9330c72d8cfb7f91f4690eb11fdc5a2b05",
+      "size": 7068,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/21f99e9330c72d8cfb7f91f4690eb11fdc5a2b05"
+    },
+    {
+      "path": "skills/thermonuclear-deep-review",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "6c0bf38616c82cd76d1e3b99bf6f43df05615e34",
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/6c0bf38616c82cd76d1e3b99bf6f43df05615e34"
+    },
+    {
+      "path": "skills/thermonuclear-deep-review/LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ca2bba771cd39dbef6acf96b52481133983451f3",
+      "size": 1063,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/ca2bba771cd39dbef6acf96b52481133983451f3"
+    },
+    {
+      "path": "skills/thermonuclear-deep-review/SKILL.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dd93ce22290a1dcaff30339b5ce3ac8201acfb45",
+      "size": 6866,
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/dd93ce22290a1dcaff30339b5ce3ac8201acfb45"
+    }
+  ],
+  "truncated": false
+}

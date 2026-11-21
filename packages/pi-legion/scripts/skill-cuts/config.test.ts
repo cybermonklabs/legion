@@ -1,0 +1,140 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
+
+// The one loader of `skill-cuts.json` (config.ts): every key is checked, and a missing or unknown
+// key is refused by name. Every value here is made up; testdata/F7-skill-cuts.json is the made-up
+// configuration F7's capture used.
+
+/** A configuration with every key, each a made-up value. */
+function valid(): Record<string, unknown> {
+  return {
+    owners: ["acme", "acme-labs"],
+    stores: [
+      { name: "store_a", context: "devbox" },
+      { name: "store_b", context: "legion:ACME" },
+    ],
+    psqlCommand: "/opt/acme/bin/read-store",
+    gatewayBaseUrl: "http://127.0.0.1:4000",
+    servedModels: ["anthropic/claude-alpha", "openai/gpt-alpha"],
+    excludePaths: [{ repo: "acme/skills", prefix: "pipeline/candidates/" }],
+    targets: ["acme/skills", "acme-labs/tools"],
+    cuts: [{ id: "skills-1", repo: "acme/skills", pr: 1 }],
+    windowStart: "2026-10-23T00:00:00Z",
+    windowEnd: "2026-11-20T00:00:00Z",
+  };
+}
+
+/** The refusal `parseConfig` gives for `value`, or a failure when it gives none. */
+function refusal(value: unknown): string {
+  try {
+    parseConfig(value);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error("the configuration was not refused");
+}
+
+test("a configuration with every key loads", () => {
+  const config = parseConfig(valid());
+  expect(config.stores.map((store) => store.name)).toEqual(["store_a", "store_b"]);
+  expect(config.windowEnd).toBe("2026-11-20T00:00:00Z");
+});
+
+test.each(
+  Object.keys(SkillCutsConfig.shape).filter((key) => key !== "devboxClaudeConfigDir")
+)("a configuration without %s is refused by name", (key) => {
+  const value = valid();
+  delete value[key];
+  expect(refusal(value)).toContain(`${key}: missing`);
+});
+
+test("devboxClaudeConfigDir is the one optional key, and an absolute path when given", () => {
+  expect(parseConfig(valid()).devboxClaudeConfigDir).toBeUndefined();
+  expect(
+    parseConfig({ ...valid(), devboxClaudeConfigDir: "/srv/acme/dotfiles/.claude" })
+      .devboxClaudeConfigDir
+  ).toBe("/srv/acme/dotfiles/.claude");
+  expect(refusal({ ...valid(), devboxClaudeConfigDir: "acme-dotfiles/.claude" })).toContain(
+    "devboxClaudeConfigDir: an absolute path"
+  );
+});
+
+test("an unknown key is refused by name", () => {
+  expect(refusal({ ...valid(), gatewayKey: "/some/file" })).toContain(
+    'the top level: unknown key "gatewayKey"'
+  );
+});
+
+test("a store without its context, or with a key of its own, is refused by name", () => {
+  const missing = valid();
+  missing.stores = [{ name: "store_a" }];
+  expect(refusal(missing)).toContain("stores[0].context: missing");
+  const extra = valid();
+  extra.stores = [{ name: "store_a", context: "devbox", host: "db.example" }];
+  expect(refusal(extra)).toContain('stores[0]: unknown key "host"');
+});
+
+test.each([
+  [
+    "a store name that is no database name",
+    { stores: [{ name: "Store-A", context: "devbox" }] },
+    "stores[0].name",
+  ],
+  [
+    "a context that is neither devbox nor legion:<PROJECT>",
+    { stores: [{ name: "store_a", context: "pod" }] },
+    "stores[0].context",
+  ],
+  [
+    "a psqlCommand that is not absolute",
+    { psqlCommand: "read-store" },
+    "psqlCommand: an absolute path",
+  ],
+  ["a gateway that is no URL", { gatewayBaseUrl: "gateway:4000" }, "gatewayBaseUrl"],
+  [
+    "a served model that is not provider/model",
+    { servedModels: ["claude-alpha"] },
+    "servedModels[0]: a model as provider/model",
+  ],
+  [
+    "a cut whose pr is not a number",
+    { cuts: [{ id: "skills-1", repo: "acme/skills", pr: "1" }] },
+    "cuts[0].pr",
+  ],
+  ["a target that is not owner/name", { targets: ["skills"] }, "targets[0]"],
+  ["a window end that is no instant", { windowEnd: "2026-11-20" }, "windowEnd"],
+  [
+    "a window that ends before it starts",
+    { windowEnd: "2026-10-01T00:00:00Z" },
+    "windowEnd: windowEnd must be after windowStart",
+  ],
+  ["no store", { stores: [] }, "stores"],
+])("%s is refused", (_name, change, fault) => {
+  expect(refusal({ ...valid(), ...change })).toContain(fault);
+});
+
+test("loadConfig reads a file, and refuses one that is not JSON, naming the file", () => {
+  const config = loadConfig(path.join(import.meta.dir, "testdata", "F7-skill-cuts.json"));
+  expect(config.stores).toEqual([{ name: "store_a", context: "devbox" }]);
+  const dir = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "skill-cuts-config-"));
+  try {
+    const file = path.join(dir, "skill-cuts.json");
+    writeFileSync(file, "{ owners: [] }");
+    expect(() => loadConfig(file)).toThrow(`the configuration ${file} is not JSON`);
+    writeFileSync(file, JSON.stringify({ ...valid(), owners: undefined }));
+    expect(() => loadConfig(file)).toThrow("owners: missing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("storeNamed finds a store the configuration names and refuses any other", () => {
+  const config = parseConfig(valid());
+  expect(storeNamed(config, "store_b").context).toBe("legion:ACME");
+  expect(() => storeNamed(config, "store_c")).toThrow(
+    'names no store "store_c"; it names store_a, store_b'
+  );
+});

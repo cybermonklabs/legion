@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "text/event-stream; charset=utf-8",
+    "llm_provider-openai-processing-ms": "455",
+    "llm_provider-openai-version": "2020-10-01",
+    "llm_provider-x-request-id": "req_5542a27f0cee414cb1c756fb5aac9e83",
+    "request-id": "req_5542a27f0cee414cb1c756fb5aac9e83"
+  }
+}

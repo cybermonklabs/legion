@@ -1,0 +1,18 @@
+{
+  "name": "package.json",
+  "path": "packages/daemon/docker/omp-plugins/package.json",
+  "sha": "760e942cfe64bd19e53a564b563047f345e06ecb",
+  "size": 508,
+  "url": "https://api.github.com/repos/cybermonklabs/legion/contents/packages/daemon/docker/omp-plugins/package.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+  "html_url": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/packages/daemon/docker/omp-plugins/package.json",
+  "git_url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/760e942cfe64bd19e53a564b563047f345e06ecb",
+  "download_url": "https://raw.githubusercontent.com/cybermonklabs/legion/d7c7c531438468c93b8b77038ace48315c01bd59/packages/daemon/docker/omp-plugins/package.json",
+  "type": "file",
+  "content": "ewogICJuYW1lIjogImxlZ2lvbi13b3JrZXItb21wLXBsdWdpbnMiLAogICJw\ncml2YXRlIjogdHJ1ZSwKICAiZGVzY3JpcHRpb24iOiAiVGhlIE9oIE15IFBp\nIHBsdWdpbnMgdGhlIHdvcmtlciBpbWFnZSBsaW5rcyBpbnRvIGl0cyBgbGVn\naW9uYCBwcm9maWxlLCBpbnN0YWxsZWQgZnJvbSB0aGlzIGRpcmVjdG9yeSdz\nIGJ1bi5sb2NrIHdpdGggYGJ1biBpbnN0YWxsIC0tZnJvemVuLWxvY2tmaWxl\nYCAod29ya2VyLkRvY2tlcmZpbGUncyBwbHVnaW4gc3RhZ2UpLiBAYm9wc3Rh\nY2svcGktY29kZWdyYXBoIGlzIHBpbm5lZCB0byB0aGUgdmVyc2lvbiB0aGUg\nZGV2Ym94IHJ1bnMgKG9tcC9wbHVnaW5zL3BhY2thZ2UuanNvbik7IGl0cyBw\nZWVyIGRlcGVuZGVuY2llcywgd2hpY2ggQnVuIGluc3RhbGxzIGJlc2lkZSBp\ndCwgYXJlIHBpbm5lZCBieSB0aGUgbG9ja2ZpbGUgYWxvbmUuIiwKICAiZGVw\nZW5kZW5jaWVzIjogewogICAgIkBib3BzdGFjay9waS1jb2RlZ3JhcGgiOiAi\nMC4xLjEiCiAgfQp9Cg==\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/cybermonklabs/legion/contents/packages/daemon/docker/omp-plugins/package.json?ref=d7c7c531438468c93b8b77038ace48315c01bd59",
+    "git": "https://api.github.com/repos/cybermonklabs/legion/git/blobs/760e942cfe64bd19e53a564b563047f345e06ecb",
+    "html": "https://github.com/cybermonklabs/legion/blob/d7c7c531438468c93b8b77038ace48315c01bd59/packages/daemon/docker/omp-plugins/package.json"
+  }
+}

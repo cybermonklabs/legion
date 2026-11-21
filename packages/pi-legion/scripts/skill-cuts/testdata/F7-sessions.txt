@@ -1,0 +1,7 @@
+                                                                   session                                                                   
+---------------------------------------------------------------------------------------------------------------------------------------------
+ {"path" : "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl", "hash" : "83af4b8e0c75a050"}
+ {"path" : "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80/ProductiveChicken.jsonl", "hash" : "0da7427e81182998"}
+ {"path" : "F4/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl", "hash" : "1e93689d7698bd6a"}
+(3 rows)
+

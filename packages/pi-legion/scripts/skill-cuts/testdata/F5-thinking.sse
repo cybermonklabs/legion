@@ -1,0 +1,174 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChDNpZB84eckHCG8rKRVp","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":606,"cache_creation_input_tokens":12913,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":12913},"output_tokens":5,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null,"context_management":null} }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}  }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" skill says to read references/x"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".md before the first step, but"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the user as"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ked me not"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to call"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" any tools, so I can't"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" open"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" that file. The three"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" steps are the numbered items"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" in the skill it"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"self, so I'll l"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ay those out and"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" say pl"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ainly that I haven't read"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" references/x.md."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS9gcKEAgUGAI4AUIIdGhpbmtpbmcSDALl4Kt41t/AfoPJWxoMNBrutxBwGkh2RXghIjCapbTbM9Z/d/8Vj0PCCqw51AzwvuQH0qvnw3WC6q7TWfAHGsNnOYzwW1tiA5hk20Qqkwd43EGwC8iEKE2qoK7NjiRC7tFDavbnvNAe8SPn6SfMjgYPn7LuZS8+8JVDpZCkit9/ET4QWGxra5PIeKsJdIy4ElX6W4n5KpfdHE0pigxvrxz0xHtJJDI45pabbTwgYgndWm4IaHUa/h5E+QnzdGlIc6HtBk71MDvl7W68NfnmAl5F+kkW4AJiAKjVRvIIhKVdm/FyzbXK4Dvleu8D0i6Flwke//UKq8eSqK2loKwmvOdSed8V5xVhn9WZ0pMPBt1O2Q9HxH9QH8/mYLY6N3Hml7El1s2QbnGt86THHnpVUUKZ1v912NiFVVS2TqPPpb7GevFBPafZJRdCR2TtD/ENbzsBCd8BrBB8UCPzFcbQHIScM/mJ3Pi9K+VjEDBQ7PRDACGRTUVSXveorZQ8KERUNDW6IHBjBfTtofnEkB+P1OcF6whWbUVq0zOG1vVFF/rUr8RT/PSf1kpd5wIFZleN5/Yk80YYT7tK6YoleFeSPdK8m288LO9Q3AaD/OH0iTUZa5C2ZOvvk7WJxWE1HnvI+7WwLDv9U0dUTk7sOAyU1xkJ1JIUJMtt8dGsvdeuPGggWmljtH3OZy0etiuXpgk8AgoFwKM3ylcI1Tu8pCDSCHEO4oFqXKpI8ZsbXsfpqdeEnmmDJKbA1uEuw8U4Aq46MZUW7OMurIA4NRDfGYVxpac7NBLSxdyWAp5jow4dieFjMcvWcU+WUdLVWWv1L3n/em8MM/EbApzhsiqVnSLhVbuGpkj7YDwqOsUmbntggA3GLWB2BVBth8+TY6K8MFQJn1KJ1EalJHMdal8jDOvmzVWLSMtoDuamv0e1T8GCFLZSslovjLy6HAY8+xP4xhX2YlL0joA09KLoSHxC0tigLo6RxCO3bNZUuHDQ5Q00bswGPAlfGauN2bcw71w2fpdpOsGPVd9IlwZ7YVmkHSAW69FwXcRiiJM8uSZH5OG7pHG2GVv5CE/mooHW3DFw9s9J8jlQA/aK7JGOPY/QwdrUtU294M2LHKz5ryuMeQX6E7hxKXQ7g+yYygk0zYs1Zwd8qlob6YqiqRyFi+iiVMiZtOqamlPdoIbe2QwH2COSjmz31smFh+grPrSZWdA6G+bsmcaoyxOksrUAbRC9lHhpP4CxhTUlM0985lKN3osiZ7c7J/WVcajrOmL93K9N9scJxuKV41pyq0f/4+1yHtnZK1HJQXtt/crf0xyfF6LP/tt/wG8YAQ=="}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":". Read `"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"references/x.md` before the"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" first step."}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" haven't read it,"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" because you asked for no tool"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" cal"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ls."}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n2. Write each step's"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" result on one line.\n3."}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Stop after the third step."}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nThese three"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" lines are the ste"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ps ex"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"actly as `"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"SKILL.md` l"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ists them. If"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" `"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"references/x.md` chang"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"es or"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" adds to"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" them"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":", this"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" checklist is incomplete"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"."}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I can read that"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" file and rev"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ise if"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" you all"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ow a"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" tool call."} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1            }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":606,"cache_creation_input_tokens":12913,"cache_read_input_tokens":0,"output_tokens":235,"output_tokens_details":{"thinking_tokens":107}},"context_management":{"applied_edits":[]}             }
+
+event: message_stop
+data: {"type":"message_stop"   }
+

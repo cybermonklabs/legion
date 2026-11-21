@@ -41,10 +41,13 @@ import {
 import { byCreatedAt, parseInstant } from "./production-dispatch";
 import {
   CREATED,
+  readCalls,
   SessionEntry,
   session,
   sessionId,
+  stripSkillHeader,
   subagentSessions,
+  toolCalls,
   toolResults,
 } from "./transcript";
 
@@ -157,35 +160,6 @@ function json<T>(file: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(file, "utf8")));
 }
 
-/** Every tool call the session made, in order: its id, its tool, and its whole arguments as JSON
- * and their `path` and `command`. */
-function toolCalls(entries: SessionEntry[]) {
-  return entries.flatMap((entry) =>
-    entry.message?.role !== "assistant"
-      ? []
-      : (entry.message.content ?? [])
-          .filter((part) => part.type === "toolCall")
-          .map((part) => {
-            const args = part.arguments;
-            const fields: Record<string, unknown> =
-              typeof args === "object" && args !== null ? { ...args } : {};
-            return {
-              id: part.id ?? "",
-              tool: part.name ?? "",
-              path: typeof fields.path === "string" ? fields.path : "",
-              command: typeof fields.command === "string" ? fields.command : "",
-              args: JSON.stringify(args ?? null),
-            };
-          })
-  );
-}
-/** Every `read` call the session made, in order. */
-function readCalls(entries: SessionEntry[]): { id: string; target: string }[] {
-  return toolCalls(entries)
-    .filter((call) => call.tool === "read")
-    .map((call) => ({ id: call.id, target: call.path }));
-}
-
 function liveRead(runDir: string, skillsDir: string, logsDir: string) {
   const entries = session(runDir);
   const calls = new Map(readCalls(entries).map((call) => [call.id, call.target]));
@@ -197,11 +171,12 @@ function liveRead(runDir: string, skillsDir: string, logsDir: string) {
     // The pinned Oh My Pi starts a skill read's result with one line, `[Skill file: <absolute
     // path>]`, and then gives the file's text. That line is not the file's. Any other first line
     // stays in the count.
-    const got = (message.content ?? [])
-      .filter((part) => part.type === "text")
-      .map((part) => part.text ?? "")
-      .join("")
-      .replace(/^\[Skill file: \/[^\n]*\]\n/, "");
+    const got = stripSkillHeader(
+      (message.content ?? [])
+        .filter((part) => part.type === "text")
+        .map((part) => part.text ?? "")
+        .join("")
+    );
     const match = /^skill:\/\/([^/]+)(?:\/(.+))?$/.exec(target);
     const file = match ? path.join(skillsDir, match[1] ?? "", match[2] ?? "SKILL.md") : "";
     // Characters, as `wc -m` counts them, less the file's trailing newline, which a read drops.
