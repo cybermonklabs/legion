@@ -1198,3 +1198,62 @@ func TestANativeFirstCreateThatNeverLandedIsCreatedNativelyAgain(t *testing.T) {
 		check(t, h, sel, lost)
 	})
 }
+
+// countingServer counts, by name, the Info and Delete calls its fakeServer receives.
+type countingServer struct {
+	*fakeServer
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (c *countingServer) count(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls == nil {
+		c.calls = map[string]int{}
+	}
+	c.calls[name]++
+}
+
+func (c *countingServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	c.count(name)
+	return c.fakeServer.Info(ctx, name)
+}
+
+func (c *countingServer) Delete(ctx context.Context, name string) error {
+	c.count(name)
+	return c.fakeServer.Delete(ctx, name)
+}
+
+// A family whose server cannot delete (Config.NoDelete) answers a full cap with ErrConsumerLimit
+// and reads or deletes none of its retired names, which the server holds. The control is the same
+// cap without the option: the retired name is read and deleted, which frees its slot, and the create
+// is served.
+func TestAFamilyThatCannotDeleteAnswersAFullCapWithoutTouchingItsRetiredNames(t *testing.T) {
+	for _, noDelete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("NoDelete %t", noDelete), func(t *testing.T) {
+			h := newHarness()
+			ctx := context.Background()
+			if _, err := h.server.create("ses-1")(ctx, "session~retired", Start{Seq: 1}); err != nil {
+				t.Fatal(err)
+			}
+			h.store.put("ses-1", Record{Start: 5, Retired: []string{"session~retired"}})
+			h.server.capacity = 1
+			counting := &countingServer{fakeServer: h.server}
+			names := h.names("p1")
+			names.cfg.Server = counting
+			names.cfg.NoDelete = noDelete
+			_, _, err := names.Ensure(ctx, "ses-1", CreateRequest{Create: h.server.create("ses-1"), First: first(1)})
+			calls := counting.calls["session~retired"]
+			if noDelete {
+				if !errors.Is(err, ErrConsumerLimit) || calls != 0 || !h.server.holds("session~retired") {
+					t.Fatalf("Ensure = %v with %d calls on the retired name (held %t); want ErrConsumerLimit, no call and the name kept", err, calls, h.server.holds("session~retired"))
+				}
+				return
+			}
+			if err != nil || calls == 0 || h.server.holds("session~retired") {
+				t.Fatalf("control: Ensure = %v with %d calls on the retired name (held %t); want it read and deleted and the create served", err, calls, h.server.holds("session~retired"))
+			}
+		})
+	}
+}

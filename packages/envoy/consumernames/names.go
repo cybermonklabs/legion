@@ -93,6 +93,11 @@ type Config struct {
 	// that never landed is created natively again. Off, the default and the session family's, a
 	// native first create starts by start sequence at the boundary when one is set.
 	NativeFirstCreate bool
+	// NoDelete says the family's Server cannot delete: at the stream's max_consumers a create is
+	// answered ErrConsumerLimit at once, with none of the retired names read or deleted to free a
+	// slot. Such a family calls no Replace, Delete or Cleanup, each of which needs the server's
+	// delete: the daemon's durables, whose grant holds none.
+	NoDelete bool
 	// Reserved, when set, runs after each write that reserves a candidate (a create, a replace,
 	// and Step 0's or a retry's fresh candidate), before any server call or create of that
 	// operation, with the operation as written. An error ends the call with the operation open
@@ -625,8 +630,9 @@ func (n *Names) Replace(ctx context.Context, sel Selection, start uint64, create
 // create whose outcome is unknown is settled with an info: a candidate the server holds is
 // adopted, and one it does not is retired, with a fresh candidate tried once in its place, by
 // start sequence. At the stream's max_consumers the retired names the server holds are deleted
-// and a fresh candidate tried, then a replace's predecessor, whose start is saved. A refusal the
-// server answered leaves the operation open for Step 0.
+// and a fresh candidate tried, then a replace's predecessor, whose start is saved; a family that
+// cannot delete (Config.NoDelete) is answered the cap at once. A refusal the server answered leaves
+// the operation open for Step 0.
 func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, operation Operation) (Selection, error) {
 	predecessorDeleted, retried := false, false
 	for attempt := 0; ; attempt++ {
@@ -638,6 +644,9 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			return n.publish(ctx, sel, info, operation, OutcomeOK)
 		case errors.Is(err, ErrConsumerLimit):
 			switch {
+			case n.cfg.NoDelete:
+				n.observe(operation, OutcomeLimit)
+				return sel, stepError(sel.Logical, operation, op.Candidate, err)
 			case attempt == 0:
 				n.deleteRetiredHeld(ctx, sel)
 			case op.Kind == OpReplace && op.Old != "" && !predecessorDeleted:
