@@ -5509,6 +5509,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForeignChildOpenError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -20558,6 +20568,50 @@
         ],
         "type": "object"
       },
+      "ForeignChildOpen": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ForeignChildOpenError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ForeignChildOpen"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues"
+        ],
+        "type": "object"
+      },
       "GoingAction": {
         "properties": {
           "action": {
@@ -28190,6 +28244,9 @@
                 "type": "null"
               }
             ]
+          },
+          "refuse_open_foreign_children": {
+            "type": "boolean"
           },
           "repo": {
             "anyOf": [
