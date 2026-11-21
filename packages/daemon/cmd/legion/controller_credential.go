@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,11 +71,11 @@ func controllerCredentialSuperseded(err error) bool {
 // when the body parses as one (api.Failure), quoting its sentence through refusal otherwise.
 func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
-	status, body, answered, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
+	answered, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
-	if status/100 != 2 {
+	if answered.Status()/100 != 2 {
 		// The daemon's code is read as it came, where the rule prints it unchanged, and its
 		// sentence as the rule reads it (oauth2call.CodedRefusal, the shape of api.Failure).
 		var failure oauth2call.CodedRefusal
@@ -88,10 +87,10 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 				}
 			}
 		}
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(answered))
 	}
 	var answer api.ControllerCredentialResponse
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
