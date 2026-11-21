@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  The cluster load test's copy (`loadtest/cluster/cluster.sh`) starts again in a namespace whose
+  pods reach nothing outside it. Its listener verified Dispatch's projected token against the
+  cluster's own token issuer, which such a namespace cannot reach, and a listener that cannot read
+  its issuer's discovery document does not start. `cluster.sh up` now mints the copy's own issuer
+  with the new `loadgen oidc-mint -issuer <url> -audience <aud> -lifetime <duration> -sub
+  <subject>=<file> [-sub ...]`: one P-256 key that never leaves that process, one ES256 token of it
+  written to each `-sub`'s file (mode 600), and the key's public half printed as JSON. `up` mints
+  one token, for `system:serviceaccount:<namespace>:default` and the listener's audience. The issuer's
+  discovery document and key set are served inside the namespace (`manifests/oidc-issuer.yaml`,
+  `http://oidc-issuer.<namespace>.svc:8080`), and Dispatch reads the token from the run's Secret as
+  its `ENVOY_ACCOUNT_TOKEN_FILE`. Once the copy is up, `up` checks from Dispatch's pod that the
+  listener admits that token and, where its build reads role marks, takes a send's role mark from
+  it, and stops naming the listener's answer when it does not. Before it takes the lock, `up`
+  refuses a loadgen whose `oidc-mint -h` lists no `-sub`, so a loadgen from before `oidc-mint`
+  stops nothing half made.
+time: 2026-11-21T08:28:25Z
+custom:
+    Issue: loadtest-oidc-inside-namespace
