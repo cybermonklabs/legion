@@ -28,19 +28,6 @@ func echoed(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + "-" + redacttest.Code
 }
 
-// requireNoEcho captures text under capture and fails t where it holds a probe credential or any
-// run of 8 characters of bearer.
-func requireNoEcho(t *testing.T, capture, text, bearer string) {
-	t.Helper()
-	redacttest.RequireNone(t, capture, text)
-	for at := 0; at+8 <= len(bearer); at++ {
-		if strings.Contains(text, bearer[at:at+8]) {
-			t.Errorf("REDACT-ASSERT %s: the output prints the bearer the request carried: %q", capture, text)
-			return
-		}
-	}
-}
-
 // errorText is err's text, "" for none.
 func errorText(err error) string {
 	if err == nil {
@@ -82,14 +69,14 @@ func TestASeedKeepsNoKeyOrIDThatEchoesItsRequest(t *testing.T) {
 	issueKey := func(*http.Request) string { return "LGA-1" }
 	t.Run("comment", func(t *testing.T) {
 		_, err := seedIssueWith(context.Background(), stand(t, echoed, nil), "ses-seed-0", "LGA", 0, 0, 1)
-		requireNoEcho(t, "loadtest.answer-members/seed-comment", errorText(err), memberBearer)
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/seed-comment", errorText(err), memberBearer)
 		if !strings.Contains(errorText(err), "LGA-0") {
 			t.Errorf("seedIssueWith = %v, want a refusal naming the issue's placeholder LGA-0", err)
 		}
 	})
 	t.Run("route", func(t *testing.T) {
 		_, err := seed(context.Background(), stand(t, echoed, nil), 0, 1)
-		requireNoEcho(t, "loadtest.answer-members/seed-route", errorText(err), memberBearer)
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/seed-route", errorText(err), memberBearer)
 		if !strings.Contains(errorText(err), "LGA-0") {
 			t.Errorf("seed = %v, want a refusal naming the first issue's placeholder LGA-0", err)
 		}
@@ -97,7 +84,7 @@ func TestASeedKeepsNoKeyOrIDThatEchoesItsRequest(t *testing.T) {
 	t.Run("seed-file", func(t *testing.T) {
 		is, err := seedIssueWith(context.Background(), stand(t, issueKey, echoed), "ses-seed-0", "LGA", 0, 1, 1)
 		file, _ := json.Marshal(seedFile{Issues: []seedIssue{is}})
-		requireNoEcho(t, "loadtest.answer-members/seed-file", string(file)+" "+errorText(err), memberBearer)
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/seed-file", string(file)+" "+errorText(err), memberBearer)
 		if !strings.Contains(errorText(err), "seed comment on LGA-1") {
 			t.Errorf("seedIssueWith = %v, want a refusal naming the issue LGA-1", err)
 		}
@@ -123,7 +110,7 @@ func TestAReferenceTargetKeepsNoArtifactIDThatEchoesItsRequest(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	_, err := writeRefTargets(context.Background(), newAPI(srv.URL, memberBearer, 2), refPlan{targets: []refTarget{{n: 1, issue: "LGA-1", versions: 2, order: []int{0, 1}}}})
-	requireNoEcho(t, "loadtest.answer-members/ref-target", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/ref-target", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "ref-target-1.md version 1 on LGA-1") {
 		t.Errorf("writeRefTargets = %v, want a refusal naming the write of version 1", err)
 	}
@@ -138,7 +125,7 @@ func TestAReferenceTargetKeepsNoArtifactIDThatEchoesItsRequest(t *testing.T) {
 func TestAReplaySeedNamesNoCreatedKeyThatEchoesItsRequest(t *testing.T) {
 	s := &replaySeeder{}
 	err := s.mapIssue(context.Background(), seedIssuePlan{Key: "PRJ-1", Number: 1}, memberBearer+"-"+redacttest.Code, "")
-	requireNoEcho(t, "loadtest.answer-members/replay-key", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/replay-key", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "issue number 1 was created as") || !strings.Contains(errorText(err), "want PRJ-1") {
 		t.Errorf("mapIssue = %v, want a refusal naming issue number 1 and the key PRJ-1", err)
 	}

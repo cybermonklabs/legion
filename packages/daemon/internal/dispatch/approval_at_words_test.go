@@ -30,10 +30,5 @@ func TestAnApprovalWhoseTimeDoesNotParseIsRefusedWithoutItsText(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `artifact "artifact-6"`) || !strings.Contains(err.Error(), "RFC 3339") {
 		t.Fatalf("Approval = %v, want a refusal naming the artifact and its approval time", err)
 	}
-	oauth2calltest.RequireNone(t, "dispatch.answer-words/approval-at", err.Error())
-	for at := 0; at+8 <= len(bearer); at++ {
-		if strings.Contains(err.Error(), bearer[at:at+8]) {
-			t.Fatalf("the refusal prints the bearer the read carried: %v", err)
-		}
-	}
+	oauth2calltest.RequireNoPiece(t, "dispatch.answer-words/approval-at", err.Error(), bearer)
 }

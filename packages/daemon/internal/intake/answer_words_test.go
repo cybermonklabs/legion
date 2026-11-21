@@ -23,12 +23,7 @@ func TestAnOpenedReadsEventIDNamesNoCommitThatIsNotOne(t *testing.T) {
 		return id
 	}
 	echo := read("token " + token + " refused; " + oauth2calltest.Words)
-	oauth2calltest.RequireNone(t, "intake.answer-words/opened-read-echo", echo)
-	for at := 0; at+8 <= len(token); at++ {
-		if strings.Contains(echo, token[at:at+8]) {
-			t.Fatalf("the opened's event id %q names the token the read carried", echo)
-		}
-	}
+	oauth2calltest.RequireNoPiece(t, "intake.answer-words/opened-read-echo", echo, token)
 	if echo == read("token "+token+" refused again; "+oauth2calltest.Words) {
 		t.Errorf("two heads that are no sha share the event id %q", echo)
 	}

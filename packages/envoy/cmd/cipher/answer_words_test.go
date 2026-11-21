@@ -93,36 +93,22 @@ func (b *echoBroker) seen() (asked, proofs []string) {
 }
 
 // requireNoneEchoed is a row's assertion on out, what the form printed: none of the probe's
-// credentials (redacttest.RequireNone, captured as agent-secrets.answer-words/<capture>) and no run
-// of 8 characters of any of carried, the credentials the form's requests carried, which the rule
-// redacts; and each of shown, the member's place on its line, so the line still prints.
+// credentials and no run of 8 characters of any of carried, the credentials the form's requests
+// carried, which the rule redacts (redacttest.RequireNoPiece, captured as
+// agent-secrets.answer-words/<capture>); and each of shown, the member's place on its line, so the
+// line still prints.
 func requireNoneEchoed(t *testing.T, capture, out string, carried []string, shown ...string) {
 	t.Helper()
 	capture = "agent-secrets.answer-words/" + capture
-	redacttest.RequireNone(t, capture, out)
+	redacttest.RequireNoPiece(t, capture, out, carried...)
 	if len(carried) == 0 {
 		t.Fatal("control: the stand-in saw no credential, so the row is blind")
-	}
-	for _, credential := range carried {
-		if run := runOf(out, credential); run != "" {
-			t.Errorf("REDACT-ASSERT %s: the output prints %q, a run of a credential its request carried: %q", capture, run, out)
-		}
 	}
 	for _, place := range shown {
 		if !strings.Contains(out, place) {
 			t.Errorf("the output does not print %q, so the line no longer names the member's place: %q", place, out)
 		}
 	}
-}
-
-// runOf is the first run of 8 characters of credential that text holds, and "" for none.
-func runOf(text, credential string) string {
-	for at := 0; at+8 <= len(credential); at++ {
-		if strings.Contains(text, credential[at:at+8]) {
-			return credential[at : at+8]
-		}
-	}
-	return ""
 }
 
 // TestABrokerAnswerPrintsNoCredentialItsRequestCarried: the request, status and self forms, the
@@ -273,7 +259,7 @@ func TestABrokerAnswerPrintsNoCredentialItsRequestCarried(t *testing.T) {
 			// An id that echoes a proof is sent back in no request's path.
 			for _, request := range asked {
 				for _, proof := range proofs {
-					if run := runOf(request, proof); run != "" {
+					if redacttest.Piece(request, proof) != "" {
 						t.Errorf("the form sent back an id that echoes a proof its request carried: %s", request)
 					}
 				}

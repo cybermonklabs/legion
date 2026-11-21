@@ -49,19 +49,6 @@ const (
 	notALogin     = "(a login GitHub does not allow)"
 )
 
-// requireNoEcho is oauth2calltest.RequireNone of text under capture, and fails t where text holds
-// a run of eight characters of the token the read carried.
-func requireNoEcho(t *testing.T, capture, text string) {
-	t.Helper()
-	oauth2calltest.RequireNone(t, capture, text)
-	for at := 0; at+8 <= len(echoedToken); at++ {
-		if strings.Contains(text, echoedToken[at:at+8]) {
-			t.Errorf("%s: the output prints the token the read carried: %q", capture, text)
-			return
-		}
-	}
-}
-
 // requireHolds fails t for each of wants that text does not hold.
 func requireHolds(t *testing.T, text string, wants ...string) {
 	t.Helper()
@@ -105,7 +92,7 @@ func TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape(t *testing
 			if err != nil || canWrite {
 				t.Fatalf("the review's author can write = %v, %v; want false and no error", canWrite, err)
 			}
-			requireNoEcho(t, "daemon.answer-words/permission-"+c.name, logs.String())
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/permission-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), c.want...)
 		})
 	}
@@ -140,7 +127,7 @@ func TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape(t *testin
 			if err := r.mergeQueueRead(context.Background(), record.OutboxRow{ID: 7, Issue: "CAPTURE-1"}, record.MergeQueueRead{Number: 86, Head: "code"}); err != nil {
 				t.Fatalf("the merge-queue read: %v", err)
 			}
-			requireNoEcho(t, "daemon.answer-words/merge-queue-"+c.name, logs.String())
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/merge-queue-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), append([]string{dequeueReadLine}, c.want...)...)
 		})
 	}
@@ -181,7 +168,7 @@ func TestAFollowedHeadLogsGitHubsShaOnlyInItsShape(t *testing.T) {
 			w := reviewAppRuntime(pool, github.serve(t).URL, slog.New(slog.NewJSONHandler(&logs, nil)))
 			w.handlers = []intake.Handler{refusingHandler{}}
 			readCapture(t, w)
-			requireNoEcho(t, "daemon.answer-words/follow-head-"+c.name, logs.String())
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/follow-head-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), c.want...)
 		})
 	}
@@ -207,7 +194,7 @@ func TestAnOpenedReadLogsGitHubsShaOnlyInItsShape(t *testing.T) {
 			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
-			requireNoEcho(t, "daemon.answer-words/opened-read-"+c.name, logs.String())
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/opened-read-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), "GitHub holds an open pull request for an issue the daemon records none for", c.want)
 		})
 	}
@@ -241,7 +228,7 @@ func TestAnActivityItCannotFollowIsNamedOnlyInItsShape(t *testing.T) {
 			if chain != nil || unfollowed == "" {
 				t.Fatalf("followActivity = %v, %q; want no chain and a reason", chain, unfollowed)
 			}
-			requireNoEcho(t, "daemon.answer-words/activity-"+c.name, unfollowed)
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/activity-"+c.name, unfollowed, echoedToken)
 			requireHolds(t, unfollowed, c.want)
 		})
 	}
@@ -257,12 +244,12 @@ func TestAPushReadsEventIDNamesNoCommitThatIsNotOne(t *testing.T) {
 	pr := record.PullRequest{Repo: "acme/widgets", Number: 86}
 	before := strings.Repeat("1", 40)
 	id := w.pushReadEventID(pr, before, echoedWords)
-	requireNoEcho(t, "daemon.answer-words/push-read-echo", id)
+	oauth2calltest.RequireNoPiece(t, "daemon.answer-words/push-read-echo", id, echoedToken)
 	if id == w.pushReadEventID(pr, before, echoedWords+" again") {
 		t.Errorf("two pushes to commits that are no sha share the event id %q", id)
 	}
 	control := w.pushReadEventID(pr, before, realCommit)
-	requireNoEcho(t, "daemon.answer-words/push-read-control", control)
+	oauth2calltest.RequireNoPiece(t, "daemon.answer-words/push-read-control", control, echoedToken)
 	requireHolds(t, control, before+"..."+realCommit)
 }
 
@@ -295,7 +282,7 @@ func TestAListedReviewLogsItsAuthorOnlyInItsShape(t *testing.T) {
 			w := reviewAppRuntime(pool, github.serve(t).URL, slog.New(slog.NewJSONHandler(&logs, nil)))
 			w.repositories = servedAcme()
 			readCapture(t, w)
-			requireNoEcho(t, "daemon.answer-words/listed-review-"+c.name, logs.String())
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/listed-review-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), c.want...)
 		})
 	}

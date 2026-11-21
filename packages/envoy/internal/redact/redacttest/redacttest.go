@@ -79,6 +79,30 @@ func RequireNone(t testing.TB, capture, text string) {
 	}
 }
 
+// Piece is the first run of 8 characters (redact.TokenPiece, the shortest run the rule redacts
+// wherever it stands) of credential that text holds, and "" for none.
+func Piece(text, credential string) string {
+	for at := 0; at+8 <= len(credential); at++ {
+		if piece := credential[at : at+8]; strings.Contains(text, piece) {
+			return piece
+		}
+	}
+	return ""
+}
+
+// RequireNoPiece is RequireNone of text under capture that also fails t, naming capture, for each
+// of credentials - the values the request carried, which whatever answers in a server's place can
+// echo - that text holds a Piece of.
+func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
+	t.Helper()
+	RequireNone(t, capture, text)
+	for _, credential := range credentials {
+		if piece := Piece(text, credential); piece != "" {
+			t.Errorf("REDACT-ASSERT %s: the output prints %q, a run of a credential the request carried: %q", capture, piece, text)
+		}
+	}
+}
+
 // holder holds an error in an unexported field, as a value a caller formats may.
 type holder struct {
 	err error

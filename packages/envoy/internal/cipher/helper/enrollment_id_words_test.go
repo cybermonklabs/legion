@@ -41,10 +41,7 @@ func TestAnEnrollmentIDThatEchoesItsProofIsKeptAndLoggedNowhere(t *testing.T) {
 	}
 	logged := out.String()
 	const capture = "helper.answer-words/enrollment-id"
-	redacttest.RequireNone(t, capture, logged)
-	if run := proofRun(logged, echoed[0]); run != "" {
-		t.Errorf("REDACT-ASSERT %s: the log prints %q, a run of the proof the enrolment carried: %s", capture, run, logged)
-	}
+	redacttest.RequireNoPiece(t, capture, logged, echoed[0])
 	var retried bool
 	for _, rec := range logRecords(t, &out) {
 		if said, _ := rec["error"].(string); rec["msg"] == "enroll failed; retrying" && strings.Contains(said, "enrollment_id") && strings.Contains(said, "(not printed)") {
@@ -63,14 +60,4 @@ func TestAnEnrollmentIDThatEchoesItsProofIsKeptAndLoggedNowhere(t *testing.T) {
 	if len(deletes) != 0 {
 		t.Errorf("the helper revoked %q; want no revoke, of the echoed id least of all", deletes)
 	}
-}
-
-// proofRun is the first run of 8 characters of proof that text holds, and "" for none.
-func proofRun(text, proof string) string {
-	for at := 0; at+8 <= len(proof); at++ {
-		if strings.Contains(text, proof[at:at+8]) {
-			return proof[at : at+8]
-		}
-	}
-	return ""
 }

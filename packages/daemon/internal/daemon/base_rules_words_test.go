@@ -49,7 +49,7 @@ func TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem(t *testing.T) {
 	}
 	line := fmt.Sprint(lines[0]["required"])
 	requireHolds(t, line, "build", "refused;", "lint")
-	requireNoEcho(t, "daemon.answer-words/base-rules", line)
+	oauth2calltest.RequireNoPiece(t, "daemon.answer-words/base-rules", line, echoedToken)
 }
 
 // TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt: GitHub, or whatever answers in its place,
@@ -104,7 +104,7 @@ func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
 			}
 			line := fmt.Sprint(lines[0]["base"], " | ", lines[0]["unread"])
 			requireHolds(t, line, "refused;", "GET /rules/branches/token", tc.names)
-			requireNoEcho(t, "daemon.answer-words/base-"+tc.name, line)
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/base-"+tc.name, line, echoedToken)
 		})
 	}
 }

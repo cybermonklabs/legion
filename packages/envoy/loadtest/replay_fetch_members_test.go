@@ -39,7 +39,7 @@ func TestAnEventThatDoesNotDecodeNamesNoneOfIt(t *testing.T) {
 			"type": evIssueCreated, "actor": sess("s0"), "created_at": echoed(r), "payload": map[string]any{}}})
 	})
 	_, err := f.fetchLog(context.Background(), "PRJ-1", 1, tUntil)
-	requireNoEcho(t, "loadtest.answer-members/event-page", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/event-page", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "PRJ-1 events after 0") {
 		t.Errorf("fetchLog = %v, want an error naming PRJ-1's page after 0", err)
 	}
@@ -54,7 +54,7 @@ func TestAnEventPayloadThatDoesNotDecodeNamesNoneOfIt(t *testing.T) {
 	ev := mkEvent(t, 2, "PRJ-1", evPrefixIssue+redacttest.Code, mins(-50), sess("s0"),
 		map[string]any{"title": "t", "created_at": memberBearer + " " + redacttest.Words})
 	_, err := buildState("PRJ", tAt, tUntil, []issueLog{{Key: "PRJ-1", Number: 1, Events: []replayEvent{ev}}}, false)
-	requireNoEcho(t, "loadtest.answer-members/event-payload", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/event-payload", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "PRJ-1: event 2 (") {
 		t.Errorf("buildState = %v, want an error naming PRJ-1's event 2", err)
 	}
@@ -72,7 +72,7 @@ func TestACreatedIssuesListingNamesNoneOfItsWords(t *testing.T) {
 	key := memberBearer + "-" + redacttest.Code
 	window := []replayEvent{mkEvent(t, 1, key, evIssueCreated, mins(5), sess("s0"), issueSnap(key, "t", "open", map[string]any{"primary_artifact_id": nil}))}
 	_, err := f.createdSpecs(context.Background(), window)
-	requireNoEcho(t, "loadtest.answer-members/created-spec", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/created-spec", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "artifacts: ") {
 		t.Errorf("createdSpecs = %v, want an error naming the issue's artifact listing", err)
 	}
@@ -121,7 +121,7 @@ func TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords(t *testing.T) {
 				texts[id] = "A paragraph.\n"
 			}
 			_, err := f.fetchBlockMaps(context.Background(), st, nil, byID, texts)
-			requireNoEcho(t, "loadtest.answer-members/anchored-"+c.name, errorText(err), memberBearer)
+			redacttest.RequireNoPiece(t, "loadtest.answer-members/anchored-"+c.name, errorText(err), memberBearer)
 			if !strings.HasPrefix(errorText(err), "artifact ") || !strings.Contains(errorText(err), c.want) {
 				t.Errorf("fetchBlockMaps = %v, want an error naming the artifact's read (%q)", err, c.want)
 			}
@@ -141,7 +141,7 @@ func TestAListedKeyThatIsNotTheProjectsNamesNoneOfIt(t *testing.T) {
 		_, _ = w.Write(listing)
 	})
 	_, err := f.run(context.Background(), "PRJ", tAt, tUntil, t.TempDir(), nil)
-	requireNoEcho(t, "loadtest.answer-members/listed-key", errorText(err), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/listed-key", errorText(err), memberBearer)
 	if !strings.Contains(errorText(err), "is not PRJ-<number>") {
 		t.Errorf("replay-fetch = %v, want the refusal of a key not of PRJ", err)
 	}

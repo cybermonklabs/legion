@@ -87,12 +87,7 @@ func TestANextPageGitHubNamesPrintsNoTokenItEchoes(t *testing.T) {
 			if want := tc.names(server.URL); !strings.Contains(printed, want) {
 				t.Errorf("the read's error is %q, want it to name %q", printed, want)
 			}
-			oauth2calltest.RequireNone(t, "githubrest.answer-words/next-page-"+tc.name, printed)
-			for at := 0; at+8 <= len(token); at++ {
-				if strings.Contains(printed, token[at:at+8]) {
-					t.Fatalf("the read's error holds a run of the token the read carried: %q", printed)
-				}
-			}
+			oauth2calltest.RequireNoPiece(t, "githubrest.answer-words/next-page-"+tc.name, printed, token)
 		})
 	}
 }

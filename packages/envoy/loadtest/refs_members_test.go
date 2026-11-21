@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // TestAReferencesETagIsRecordedOnlyInDispatchsShape: Dispatch's references answer, or a
@@ -35,7 +37,7 @@ func TestAReferencesETagIsRecordedOnlyInDispatchsShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNoEcho(t, "loadtest.answer-members/refs-etag", string(tsv), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/refs-etag", string(tsv), memberBearer)
 	if !strings.Contains(string(tsv), "LGA-2\t200\t"+dispatchETag+"\t") {
 		t.Errorf("the TSV is %q, want LGA-2's ETag in Dispatch's shape recorded as it came", tsv)
 	}

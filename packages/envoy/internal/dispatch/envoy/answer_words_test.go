@@ -89,12 +89,7 @@ func TestAListenersSessionAnswerKeepsNoWordItEchoes(t *testing.T) {
 				t.Cleanup(listener.Close)
 				session, err := read.read(New(listener.URL, WithToken(bearer)))
 				printed := fmt.Sprintf("%v | %+v | %#v | %+v", session, session, session, err)
-				redacttest.RequireNone(t, "envoy.answer-words/"+read.name+"/"+c.name, printed)
-				for at := 0; at+8 <= len(bearer); at++ {
-					if strings.Contains(printed, bearer[at:at+8]) {
-						t.Fatalf("the %s read prints the bearer it carried: %s", read.name, printed)
-					}
-				}
+				redacttest.RequireNoPiece(t, "envoy.answer-words/"+read.name+"/"+c.name, printed, bearer)
 				if !c.kept {
 					want := read.route + " answered a " + read.member + " the rule does not print as it came"
 					if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), want) {

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // The rows of the files replay-fetch names after what Dispatch's answers name: a document id of a
@@ -111,7 +113,7 @@ func (run *namedFetch) files(t *testing.T) (all []string, outside int) {
 func (run *namedFetch) requireNamesNone(t *testing.T, capture, docID string) {
 	t.Helper()
 	files, outside := run.files(t)
-	requireNoEcho(t, capture, errorText(run.err)+"\n"+run.logged.String()+"\n"+strings.Join(files, "\n"), memberBearer)
+	redacttest.RequireNoPiece(t, capture, errorText(run.err)+"\n"+run.logged.String()+"\n"+strings.Join(files, "\n"), memberBearer)
 	if outside > 0 {
 		t.Errorf("replay-fetch wrote %d files outside the bundle %s", outside, run.out)
 	}

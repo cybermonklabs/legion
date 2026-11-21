@@ -38,7 +38,7 @@ func TestTheEmbeddingGatesRecordNamesTheEmbedderAsTheRuleReadsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNoEcho(t, "loadtest.answer-members/embed-record", string(written)+"\n"+logged.String(), memberBearer)
+	redacttest.RequireNoPiece(t, "loadtest.answer-members/embed-record", string(written)+"\n"+logged.String(), memberBearer)
 	record := readCoverageRecord(t, path)
 	if record.Identity == nil || !strings.Contains(*record.Identity, redacttest.CodeShown) || record.Place == nil || *record.Place != "azure" {
 		t.Errorf("the record is %s, want the embedder's identity as the rule reads it and its place", written)

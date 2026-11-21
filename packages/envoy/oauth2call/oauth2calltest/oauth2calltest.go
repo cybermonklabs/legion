@@ -6,7 +6,8 @@
 //     in that module's own package, as a holder of this module runs redacttest.PrintTest.
 //   - The status-line probe: a server whose reason phrase quotes a URL carrying made-up
 //     credentials, and the check's designated assertion, RequireNone, which a print-site row of
-//     that module calls as a row of this module calls redacttest.RequireNone.
+//     that module calls as a row of this module calls redacttest.RequireNone; RequireNoPiece is
+//     the same assertion for a row whose stand-in echoes the credential the request carried too.
 //
 // It is for tests: Said makes a box with no record of an answer, so the answer census lists every
 // call of it outside a test file (gate.answers.makers).
@@ -58,6 +59,14 @@ func CutServer(t testing.TB, status int, body string) string {
 func RequireNone(t testing.TB, capture, text string) {
 	t.Helper()
 	redacttest.RequireNone(t, capture, text)
+}
+
+// RequireNoPiece is redacttest.RequireNoPiece: RequireNone of text under capture that also fails
+// t, naming capture, for each of credentials, the values the request carried, that text holds a
+// run of 8 characters of.
+func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
+	t.Helper()
+	redacttest.RequireNoPiece(t, capture, text, credentials...)
 }
 
 // Said is s held as another party's words, for a test that builds the value a client would have

@@ -43,12 +43,7 @@ func TestAnUnknownMemberKindNamesDispatchsWordsAsTheRuleReadsThem(t *testing.T) 
 			if !errors.Is(err, projectaccess.ErrUnknownMemberKind) {
 				t.Fatalf("MemberKind = %v, want ErrUnknownMemberKind", err)
 			}
-			redacttest.RequireNone(t, "projectaccess.answer-words/"+c.name, err.Error())
-			for at := 0; at+8 <= len(account); at++ {
-				if strings.Contains(err.Error(), account[at:at+8]) {
-					t.Fatalf("MemberKind's error %q prints the account token the question carried", err)
-				}
-			}
+			redacttest.RequireNoPiece(t, "projectaccess.answer-words/"+c.name, err.Error(), account)
 			for _, want := range c.want {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("MemberKind's error is %q, want %q in it", err, want)
