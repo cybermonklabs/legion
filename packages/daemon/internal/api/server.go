@@ -289,9 +289,10 @@ type Options struct {
 	GateRegistrationRead func(ctx context.Context, issue string)
 	// AfterSignOffStatusWrite is told of each sign_off once its status write in Dispatch has
 	// landed and before its fact is applied: the issue it signs off, on the route's own context and
-	// goroutine, so the sign-off waits for it to return. It is a test's seam alone, to act on
-	// Dispatch and on another daemon while Dispatch shows the issue accepted and this daemon does
-	// not record it so yet; nil, the daemon's, tells no one.
+	// goroutine, so the sign-off waits for it to return, and holding the issue's acceptance lock, so
+	// a second sign_off or close_root of the issue on this daemon waits for it too. It is a test's
+	// seam alone, to act on Dispatch and on another daemon while Dispatch shows the issue accepted
+	// and this daemon does not record it so yet; nil, the daemon's, tells no one.
 	AfterSignOffStatusWrite func(ctx context.Context, issue string)
 	// Acceptance judges sign_off and close_root as the workflow records the issue (workflow.Engine),
 	// in a read-only transaction before either route writes its status in Dispatch, so a sign-off
@@ -419,6 +420,9 @@ type server struct {
 	signOffWritten func(ctx context.Context, issue string)
 	// acceptance is Options.Acceptance, nil for a server built with no workflow.
 	acceptance AcceptanceJudge
+	// acceptances holds one lock for each issue a sign_off or a close_root is under way on, from
+	// its read of Dispatch to its write back (acceptStatus).
+	acceptances issueLocks
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is

@@ -243,6 +243,27 @@ func TestASignOffRefusedInPlaceWritesBackTheStatusItReplaced(t *testing.T) {
 	}
 }
 
+// The admission pass can move the issue from accepting to awaiting_children between the judgement
+// and the fact, which the workflow then refuses. The record holds no acceptance, and a phase that
+// waits writes no status of its own (workflow.PhaseStatus), so only the write back takes Dispatch
+// off the retro that every other project's daemon reads as an acceptance.
+func TestASignOffRefusedAfterAnotherMoveWritesBackTheStatusItReplaced(t *testing.T) {
+	var h *harness
+	h, facts, statuses := newAcceptanceHarness(t, nil, func(ctx context.Context, issue string) {
+		if _, err := h.store.Pool().Exec(ctx, `update issues set phase = $2, children_wait_start = 'testing', children_wait_task = 'Run the tests.',
+			children_wait_reason = 'OTHR-5 is open', children_wait_since = now() where key = $1`, issue, string(phase.AwaitingChildren)); err != nil {
+			t.Fatalf("move %s to awaiting_children: %v", issue, err)
+		}
+	})
+	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "WAITING_ON_CHILDREN", Message: "LEGION-208 waits on its children"}
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "WAITING_ON_CHILDREN")
+	if want := []statusWrite{{"LEGION-208", "retro"}, {"LEGION-208", "needs_review"}}; !reflect.DeepEqual(statuses.writes, want) {
+		t.Fatalf("Dispatch writes = %+v, want retro and then needs_review written back: %+v", statuses.writes, want)
+	}
+}
+
 // A person closes the issue in Dispatch after the sign-off's retro write and before the event of
 // that close reaches the daemon, and the sign-off's fact is then refused. Dispatch no longer shows
 // the sign-off's own write, so nothing is written back over the person's done.

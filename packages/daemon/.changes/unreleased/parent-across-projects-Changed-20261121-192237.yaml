@@ -11,7 +11,12 @@ body: |-
   workflow records the issue (`workflow.Engine.SignOffRefusal`, `CloseRootRefusal`), so a refusal
   the workflow makes writes nothing in Dispatch; a fact that refuses or fails after the write
   writes back the status Dispatch showed before it, and records that write so the event of the
-  acceptance's own write changes nothing. The reason of a `close_root` is posted by the close's
+  acceptance's own write changes nothing. The write back lands only over the acceptance's own
+  write: on the sequence of a read that still shows that status (`expected_sequence`), so a
+  person's later move stays, and never while the record holds the issue in `retro` or `merging`,
+  so an acceptance another request recorded meanwhile keeps its `retro` in Dispatch. Two `sign_off` or
+  `close_root` requests of one issue run one after the other, and a caller that goes away does
+  not stop the write back. The reason of a `close_root` is posted by the close's
   status row after the status, which Dispatch takes on a closed issue; where the event of the
   route's own `done` write reaches the record before the close's fact, the fact posts the reason
   and is taken. The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch
