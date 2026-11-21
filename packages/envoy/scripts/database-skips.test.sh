@@ -175,7 +175,7 @@ judge "$([ "$(code empty)" = 1 ] && [ "$(out empty)" = 'database_skips=UNKNOWN' 
   "control 2: with BROKER_TEST_DATABASE_URL empty the counter prints UNKNOWN naming it and runs no test" "$(seen empty)"
 
 echo "database-skips.test.sh: control 3, reports" >&2
-# airlock_skips: a skip event of each test EXPECTED_SKIPS lists for the airlock package.
+# airlock_skips: a skip event of each test EXPECTED_SKIPS lists for the proxyrules package.
 airlock_skips() { table_tests "$airlock" | while IFS= read -r test; do ev skip "$airlock" "$test"; done; }
 brokerapi="$MODULE/internal/cipher/api"
 cmdbroker="$MODULE/cmd/cipherd"

@@ -58,7 +58,7 @@ const (
 	clusteredHubExporterMemory = "128Mi"
 )
 
-// The sizes INFRA-546 measured for the session listener's notification stream, from which the hub
+// The sizes measured for the session listener's notification stream, from which the hub
 // sizes JetStream's file store and nats-server's memory for a given streamMaxBytes (hubSizing):
 // sjawhar/legion#2362's description, section "Sizing of ENVOY_STREAM_MAX_BYTES", over the window
 // 2026-10-27 02:35:54Z to 03:55:54Z.
@@ -81,8 +81,7 @@ var (
 var (
 	// clusteredHubIdleMemory is nats-server's own memory beside the duplicate map: 38,486,016 B,
 	// nats-server v2.15.1's resident memory (/varz mem) after a three-server JetStream cluster
-	// formed on loopback with a meta leader, the largest of the three, measured 2026-10-27 by
-	// INFRA-549's implementer.
+	// formed on loopback with a meta leader, the largest of the three, measured 2026-10-27.
 	clusteredHubIdleMemory = new(big.Rat).SetInt64(38486016)
 	// clusteredHubGoMemLimitFraction is nats-server's GOMEMLIMIT as a fraction of its container's
 	// memory limit: 80%, as the nats chart 2.15.1's README recommends ("NATS Container Resources",
@@ -174,6 +173,11 @@ type ClusteredNatsHubArgs struct {
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
 	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// The credential the hub's servers present to one another on their routes, from a Kubernetes
+	// Secret the component names by reference and never reads, and how far the hub requires it
+	// (clusteredHubRoute). Unset, routes carry no credential and any server that reaches the route
+	// port joins the cluster, as before this input existed.
+	RouteAuthorization *ClusteredHubRouteAuthorizationArgs `pulumi:"routeAuthorization,optional"`
 	// The session listener the hub runs as a workload of its own, declared outside the tailnet
 	// entry: with tailnet the entry's hosts forward the Tailscale Service's port 9020 to it, as
 	// they do to tailnet.listener, and its render is tailnet.listener's but for the listener
@@ -270,6 +274,36 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 	a.SetToken("gcp", "ClusteredHubListener")
 }
 
+// ClusteredHubRouteAuthorizationArgs are the route credential of the hub's servers: the existing
+// Kubernetes Secret in the hub's namespace, and the key in it, holding the route password, which
+// the component names by reference (a secretKeyRef) and never reads, and the stage of its rollout,
+// env, routes or authorization, each one apply after the one before has finished
+// (clusteredHubRouteStageNames says what each renders and why the order holds). The password is
+// written into the route URLs whole, and nats-server types a variable's value as it types a
+// literal of nats.conf, so a password of digits alone is an integer it refuses, printing the value
+// in its error, one such as 1k is a size, and yes, on, true or False a boolean: the password holds
+// letters and digits only, a letter first, and at least 32 characters, which rules the boolean
+// words out. The component never sees it, so its minter holds it to that. Lowering stage below routes,
+// or removing routeAuthorization from routes or authorization, makes each server log every route
+// URL it removes, password included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"),
+// so the password must be changed after such a rollback. A new secretKey, or a new value under it,
+// reaches each pod as it starts, and at authorization a pod on a password its peers do not hold
+// has no route to them, so secretKey changes only with stage env in the same apply, and the
+// password's sync names a version, never the latest. Authorization fences no process that joined
+// as a route before it applied, which can then read the password, so after it the rollout runs
+// `envoy-infra routes check` (docs/nats-hub.md, Route authorization).
+type ClusteredHubRouteAuthorizationArgs struct {
+	SecretName string `pulumi:"secretName"`
+	SecretKey  string `pulumi:"secretKey"`
+	Stage      string `pulumi:"stage"`
+}
+
+// Annotate names the type gcp:ClusteredHubRouteAuthorization in the schema, for the reason
+// NATSUserArgs's gives.
+func (r *ClusteredHubRouteAuthorizationArgs) Annotate(a infer.Annotator) {
+	a.SetToken("gcp", "ClusteredHubRouteAuthorization")
+}
+
 // ClusteredNatsHub is NATS with JetStream as a three-server cluster on a Kubernetes cluster, with
 // an optional session listener and an optional tailnet entry.
 type ClusteredNatsHub struct {
@@ -307,8 +341,10 @@ type clusteredHubSettings struct {
 	// ping lines (core.Authorization.CalloutLines), "" without authCallout: the hub pods'
 	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
-	tailnet       *clusteredHubTailnet
-	listener      *clusteredHubListener
+	// route is the resolved route credential, nil without routeAuthorization.
+	route    *clusteredHubRoute
+	tailnet  *clusteredHubTailnet
+	listener *clusteredHubListener
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -316,6 +352,13 @@ type clusteredHubSettings struct {
 type clusteredHubSize struct {
 	diskSizeGb, maxFileStoreGb      int
 	natsCPU, natsMemory, goMemLimit string
+}
+
+// clusteredHubRoute is the resolved routeAuthorization: the Secret and key the nats container's
+// route password comes from, and the stage the rendering has reached.
+type clusteredHubRoute struct {
+	secretName, secretKey string
+	stage                 clusteredHubRouteStage
 }
 
 // clusteredHubTailnet is the resolved tailnet entry, nil without tailnet.
@@ -363,6 +406,10 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 				fields = append(fields, field{fmt.Sprintf("users[%d].%s", i, kind.input), *kind.id})
 			}
 		}
+	}
+	if r := args.RouteAuthorization; r != nil {
+		fields = append(fields, field{"routeAuthorization.secretName", r.SecretName},
+			field{"routeAuthorization.secretKey", r.SecretKey}, field{"routeAuthorization.stage", r.Stage})
 	}
 	listener := func(path string, l *ClusteredHubListenerArgs) {
 		if l == nil {
@@ -476,6 +523,9 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
 		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
 	}
+	if s.route, err = newClusteredHubRoute(args.RouteAuthorization, s.namespace); err != nil {
+		return clusteredHubSettings{}, err
+	}
 	listenerArgs, listenerPath, err := clusteredHubListenerArgs(args)
 	if err != nil {
 		return clusteredHubSettings{}, err
@@ -530,7 +580,7 @@ func monitorBesidePrivateProjects(namespaces []string) error {
 //
 // Without streamMaxBytes, the volume is 10 GiB, the store ⌊0.9 × diskSizeGb⌋ and at least 1, and
 // nats-server's memory 2Gi. With streamMaxBytes, which newClusteredHubSettings has checked is at
-// least 1, the sizes follow INFRA-546's measurement:
+// least 1, the sizes follow the measurement above:
 //   - the store holds S (clusteredHubStoreBytes), the stream at its limit, the KV buckets' budget
 //     and the Raft log's headroom: ⌈S⌉ GiB by default, and an explicit maxFileStoreGb below S is
 //     refused naming it and streamMaxBytes, since JetStream refuses to create a stream past
