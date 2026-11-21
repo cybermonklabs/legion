@@ -1674,9 +1674,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -5344,7 +5347,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueDuplicateError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueDuplicateError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -5515,7 +5525,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForeignChildOpenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForeignChildOpenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -5865,9 +5882,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -6278,7 +6298,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -6344,7 +6371,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -8834,7 +8868,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UserStateStaleError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserStateStaleError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -10649,9 +10690,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
