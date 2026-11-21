@@ -688,7 +688,9 @@ this job runs cmd/listener's alone.
 
 What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
 not, so listener_command, which is that build closure, leaves them to the jobs
-that run the tests: the chat client and the router.
+that run the tests: the chat client, the router, and the NATS auth service
+(internal/cipher/natscallout) with the secrets broker's packages it compiles, which
+relay_reply_callout_test.go runs in front of its hub.
 
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
