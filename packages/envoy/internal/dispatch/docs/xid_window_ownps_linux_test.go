@@ -29,7 +29,14 @@ import (
 // that CPU they made the window's thread queue for it outside the runtime's wait, where the rig
 // cannot place a queue and reads it as the code's (storetest.XidGap.Made): 2 of 20 runs broke D6
 // so, the thread queued up to 12.0 ms; kept off it, 0 of 20, at most 1.6 ms (a box load of
-// about 970, 2026-11-21).
+// about 970, 2026-11-21). Their threads are made, locked and pinned before the transaction begins,
+// and each spinner waits on a channel until the gap: made in the gap, the 577 threads' creation
+// ran on the window's thread too, which slept in the kernel while its goroutine read as running -
+// a sleep the rig counts as the code's - and 1 of 100 runs broke D6 so, its gap 10.573 ms made
+// (2026-11-21). The window's thread is pinned first, to the first CPU it may run on, so the
+// spinners know the CPU to keep off before the transaction pins it there (storetest's
+// lockTransaction pins a window's thread to the CPU it is on); and they are kept within the CPUs
+// the thread had, so a run confined to a set of CPUs stays in it.
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
@@ -38,46 +45,65 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 	report := tracer.Measure(t, database.Pool, func() {
 		ps = runtime.GOMAXPROCS(0)
 		workers = xidOwnPsPerP*ps + 1
+		var mine, here, away unix.CPUSet
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := unix.SchedGetaffinity(0, &mine); err != nil {
+			t.Fatalf("read the window thread's CPUs: %v", err)
+		}
+		defer unix.SchedSetaffinity(0, &mine)
+		for cpu := range len(mine) * 64 {
+			switch {
+			case !mine.IsSet(cpu):
+			case here.Count() == 0:
+				here.Set(cpu)
+			default:
+				away.Set(cpu)
+			}
+		}
+		if away.Count() == 0 {
+			t.Fatalf("the window's thread may run on %d CPU(s), so no spinner can be kept off its CPU", mine.Count())
+		}
+		if err := unix.SchedSetaffinity(0, &here); err != nil {
+			t.Fatalf("pin the window's thread: %v", err)
+		}
 		release := make(chan struct{})
-		var spinning sync.WaitGroup
+		var released sync.Once
+		let := func() { released.Do(func() { close(release) }) }
+		var ready, spinning sync.WaitGroup
 		var stop atomic.Bool
 		var failed atomic.Value
-		var away unix.CPUSet
 		for range workers {
+			ready.Add(1)
 			spinning.Add(1)
 			go func() {
 				defer spinning.Done()
-				<-release
 				// Never unlocked: the goroutine ends locked, and the runtime ends its thread with it.
 				runtime.LockOSThread()
 				if err := unix.SchedSetaffinity(0, &away); err != nil {
 					failed.Store(err)
 				}
+				ready.Done()
+				<-release
 				for !stop.Load() {
 				}
 			}()
 		}
+		// The spinners stop, are let go and are waited for on every way out, a t.Fatal's too.
 		defer spinning.Wait()
+		defer let()
 		defer stop.Store(true)
+		ready.Wait()
+		if err, _ := failed.Load().(error); err != nil {
+			t.Fatalf("keep the spinners off the window's CPU: %v", err)
+		}
 		runRigTransactionDoing(t, database, func() {
-			var mine unix.CPUSet
-			if err := unix.SchedGetaffinity(0, &mine); err != nil {
-				failed.Store(err)
-			}
-			for cpu := range len(mine) * 64 {
-				if !mine.IsSet(cpu) {
-					away.Set(cpu)
-				}
-			}
-			close(release)
+			let()
 			for until := time.Now().Add(xidOwnPsSpin); time.Now().Before(until); {
 				runtime.Gosched()
 			}
 			stop.Store(true)
 		})
-		if err, _ := failed.Load().(error); err != nil {
-			t.Fatalf("keep the spinners off the window's CPU: %v", err)
-		}
 	})
 	if len(report.Windows) != 1 {
 		t.Fatalf("the rig judged %d windows with problems %v, want the one transaction", len(report.Windows), report.Problems)
