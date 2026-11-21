@@ -9352,3 +9352,49 @@ func TestMemoryGuardKeepsTheFirstReadingsSizeOfAForkFirstReadAfterTheStaysFirstK
 			got, want, endedChoices(h), strings.Join(h.log.all(), "\n"))
 	}
 }
+
+// At an urgent reading of the wait after a kill, a process not new to the stay that the reads again
+// read and ended there is one the decision holds, so the urgent rule ends the stay's sets beside
+// it, though the full read after that kill leaves it out (watchUrgent, endKnown's history;
+// INFRA-3531 R1 of spec version 46; docs/kubernetes.md, "The processes of the three sets end so
+// only where the processes the guard may end at that decision ... hold one that is not new to the
+// stay"). As TestMemoryGuardEndsNoProcessForTheStayAtAnUrgentReadingOfTheWaitWhereTheOneNotNewToItHasEnded,
+// whose stay this is, but pid 300, python3 parent.py of 600 MiB and the one process not new to the
+// stay, grows 50 MiB after the reading at 3600 MiB instead of exiting, and pid 400 stays flat. At the
+// urgent reading, 3800 MiB, the reads again end pid 300, which grew since the kill. The full read
+// after that kill holds pids 400 and 401 alone, both new to the stay, and the guard ends them beside
+// pid 300 by rule=urgent, each started during the stay with memory of its own. Where the full read's
+// set alone decided, with no process not new to the stay left in it, the guard ended pid 300 alone.
+func TestMemoryGuardEndsTheStaysSetsAtAnUrgentReadingOfTheWaitWhereItsReadsAgainEndedTheOneNotNewToIt(t *testing.T) {
+	pod := newFakePod(t)
+	first := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	old := fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "parent.py"}, anon: 600 * mib}
+	pod.add(agent(2*gib), old, first)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	for _, r := range []uint64{3200, 3300, 3400} {
+		pod.resize(&first, first.anon+10*mib)
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	pod.resize(&first, first.anon+10*mib)
+	pod.setAnon(3523 * mib)
+	h.tick()
+	h.requireKilled(301)
+	pod.add(fakeProcess{pid: 400, ppid: 100, start: 7000, args: []string{"python3", "grow.py", "b"}, anon: 300 * mib},
+		fakeProcess{pid: 401, ppid: 100, start: 7100, args: []string{"python3", "worker.py"}, anon: 150 * mib})
+	pod.setAnon(3600 * mib)
+	h.tick()
+	h.requireKilled(301)
+	pod.resize(&old, old.anon+50*mib)
+	pod.setAnon(3800 * mib)
+	h.tick()
+	got := slices.Sorted(slices.Values(h.signal.kills()))
+	if !slices.Equal(got, []int{300, 301, 400, 401}) || h.signal.kills()[1] != 300 {
+		t.Fatalf("the guard killed %v, want 301, then 300 and beside it 400 and 401: at the urgent reading the reads again ended pid 300, not new to the stay, so the decision holds it and the urgent rule ends the stay's sets; it ended %+v; the log:\n%s",
+			h.signal.kills(), endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+}
