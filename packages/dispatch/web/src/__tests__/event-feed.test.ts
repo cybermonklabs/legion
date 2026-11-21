@@ -1699,6 +1699,7 @@ function accessWrite(change: string, principal: string): DispatchEvent {
       principal,
       project: "CORE",
       slack_channels: [],
+      slack_channels_changed_at: null,
       visibility: "public",
     },
     { actor: { id: "alice", kind: "user" }, issue_key: null, notify: false }

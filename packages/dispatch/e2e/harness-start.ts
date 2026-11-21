@@ -13,6 +13,12 @@
  *  before the first row starts until the harness stops, its port is in the environment of every
  *  row, and the server serves on it through the keeper's socket.
  *
+ *  A row that keeps a file a caller reads (`fileVariable` in e2e/harness-listeners.ts: the access
+ *  issuer's token file) is handed a path in the harness's own directory before the first row
+ *  starts, under that variable, which is in the environment of every row and in the `env` this
+ *  returns; the directory goes when the harness stops. The row writes the file before it
+ *  reports, so the file is there once the harness is up.
+ *
  *  This is the harness's one starter: `e2e/harness-pool.ts` (Playwright's own runner, through
  *  `e2e/global-setup.ts`), `e2e/local-instance.ts` (`bun run dispatch:local`) and the docs media
  *  harness (`docs/site/media/harness.ts`) call it, then set the ports it returns in the
@@ -70,7 +76,8 @@ export interface HarnessProcess {
 export interface Harness {
   /** The port each started listener serves on, by its variable (`DISPATCH_E2E_PORT`,
    *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, and in
-   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`): the environment a process
+   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`), and the path of each file
+   *  a row keeps, by its variable (`DISPATCH_E2E_ACCESS_TOKEN_FILE`): the environment a process
    *  that addresses the harness needs. */
   readonly env: Readonly<Record<string, string>>;
   readonly processes: readonly HarnessProcess[];
@@ -257,19 +264,23 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const interrupt = () => supervisor.interrupt();
   options.signal?.addEventListener("abort", interrupt, { once: true });
   if (options.signal?.aborted) interrupt();
-  let keeperDir: string | undefined;
+  let harnessDir: string | undefined;
+  const ownDir = () => (harnessDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-")));
   const stop = async () => {
     await supervisor.stop();
-    if (keeperDir !== undefined) rmSync(keeperDir, { force: true, recursive: true });
+    if (harnessDir !== undefined) rmSync(harnessDir, { force: true, recursive: true });
   };
   const env: Record<string, string> = {};
   const kept = new Map<HarnessListener, Kept>();
   const processes: Watched[] = [];
   try {
     for (const listener of listeners) {
+      if (listener.fileVariable === undefined) continue;
+      env[listener.fileVariable] = join(ownDir(), listener.id);
+    }
+    for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
-      keeperDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));
-      const held = await keepPort(listener, keeperDir, supervisor, environment);
+      const held = await keepPort(listener, ownDir(), supervisor, environment);
       kept.set(listener, held);
       env[harnessVariables[listener.key]] = String(held.port);
     }

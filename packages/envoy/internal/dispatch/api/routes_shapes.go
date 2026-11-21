@@ -620,6 +620,7 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
 	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
 	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
+	"GET /api/v1/access/private-projects":                 {Status: http.StatusOK, Response: privateProjectsAnswer{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},

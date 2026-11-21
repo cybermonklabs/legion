@@ -3,6 +3,7 @@ GET /api/v1/access-groups any
 DELETE /api/v1/access-groups/{name} any
 PUT /api/v1/access-groups/{name} any
 GET /api/v1/access/person any
+GET /api/v1/access/private-projects any
 GET /api/v1/access/projects/{key} any
 GET /api/v1/agents any
 GET /api/v1/agents/{session_id}/answers any

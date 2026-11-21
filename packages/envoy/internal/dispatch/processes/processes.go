@@ -70,11 +70,13 @@ const heartbeatTimeout = 2 * time.Second
 // two processes booting at once are serialised and the second one's read sees the first one's row.
 // Every heartbeat takes it too, so a process whose heartbeat lapsed and a process registering
 // meanwhile are serialised the same way (Registration.renew).
-// It is a single 64-bit key ("DPROCREG"): every other single-key advisory lock of the server is
-// either a hashtext, which Postgres widens from 32 bits and so never reaches this value, or one of
-// three fixed keys of their own (the migration runner's 8150001 in store/store.go, the events'
-// commit order "DISPATCH" in events/broker.go and the file backfill's "LEGION52" in
-// files/backfill.go), and the two-key form other locks take is a key space of its own.
+// It is a single 64-bit key ("DPROCREG"): every other single-key advisory lock of the server is a
+// hashtext, which Postgres widens from 32 bits and so never reaches this value, a group name's
+// 64-bit hashtextextended (access.LockGroupName), which reaches it only by a 64-bit hash
+// collision, or one of three fixed keys of their own (the migration runner's 8150001 in
+// store/store.go, the announcement passes' "DANNOUNC" in startup/started.go and the file
+// backfill's "LEGION52" in files/backfill.go), and the two-key form other locks take is a key
+// space of its own.
 const registryLock int64 = 0x4450524F43524547
 
 // pruneLease is the duty.Exclusive lease the prune loop runs under, so one process prunes per

@@ -47,7 +47,7 @@ func TestAProjectWriteTakesTheOwnerLockBeforeTheRow(t *testing.T) {
 			return err
 		}, writeProjectRow},
 		{"SetSlackChannels", "PUB", func(ctx context.Context, tx pgx.Tx, ev *events.Broker) error {
-			_, _, err := SetSlackChannels(ctx, tx, ev, "PUB", []string{"C012345678"}, by)
+			_, _, err := SetSlackChannels(ctx, tx, ev, "PUB", []string{"C012345678"}, by, by)
 			return err
 		}, writeProjectRow},
 		// The holder lists carol itself, so the write, reading the list after the lock, finds

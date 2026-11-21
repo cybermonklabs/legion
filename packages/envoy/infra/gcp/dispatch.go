@@ -314,12 +314,12 @@ type DispatchArgs struct {
 	// on, so it is refused without oidcAudience, as oidcIssuer is.
 	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
 	// AccessAccounts is DISPATCH_ACCESS_ACCOUNTS, comma-joined: the service-account subjects that
-	// may read Dispatch's membership answer (GET /api/v1/access/projects/{key} and GET
-	// /api/v1/access/person), the secrets broker's system:serviceaccount:dispatch:envoy-broker in
-	// production. Where oidcAccounts is set, Dispatch refuses to boot with an access account it
-	// leaves out; with oidcAccounts unset, every account is admitted and any may be an access
-	// account. Unset or empty renders nothing, and no account reads the answer. It is refused
-	// without oidcAudience, as oidcIssuer is.
+	// may read Dispatch's membership answer (GET /api/v1/access/projects/{key}, GET
+	// /api/v1/access/person and GET /api/v1/access/private-projects), the secrets broker's
+	// system:serviceaccount:dispatch:envoy-broker in production. Where oidcAccounts is set,
+	// Dispatch refuses to boot with an access account it leaves out; with oidcAccounts unset, every
+	// account is admitted and any may be an access account. Unset or empty renders nothing, and no
+	// account reads the answer. It is refused without oidcAudience, as oidcIssuer is.
 	AccessAccounts []string `pulumi:"accessAccounts,optional"`
 
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full

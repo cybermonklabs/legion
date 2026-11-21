@@ -143,6 +143,19 @@ cd packages/dispatch
 DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
 ```
 
+`DISPATCH_E2E_ACCESS_ISSUER=1` gives a run the secrets broker's service-account token, so a
+driver can read the membership answer (`GET /api/v1/access/projects/{key}`,
+`GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), which a harness without it
+refuses to every caller. The harness then starts one row more before the server,
+`e2e/run-access-issuer.sh`: `packages/envoy/cmd/dev-oidc-issuer`, which keeps the broker
+account's token in a file in the harness's own directory and reports its port as
+`DISPATCH_E2E_ACCESS_ISSUER_PORT`. The server verifies that issuer's tokens and lists the account
+in `DISPATCH_ACCESS_ACCOUNTS` (the account and the audience are in `e2e/access-account.sh`), and
+the harness exports the file's path as `DISPATCH_E2E_ACCESS_TOKEN_FILE`, so the command
+`e2e/acceptance/with-harness.sh` runs reads the token from it
+(`e2e/acceptance/membership-answer.sh`, below). Unset, or any other value, starts no issuer and
+sets nothing, which is how every spec runs (`e2e/harness-access.ts`).
+
 Run the local harness with its isolated database available:
 
 ```bash
@@ -780,7 +793,31 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+`e2e/acceptance/membership-answer.sh` drives the membership answer the secrets broker reads, its
+three routes `GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and
+`GET /api/v1/access/private-projects`, on a stack of its own that holds the broker's token
+(`DISPATCH_E2E_ACCESS_ISSUER=1`, above). With that token it reads alice's member kind and an
+unknown login's, a project of the run's own as bob sees it, and the private-projects list as
+exactly `{"projects":[]}`; it then makes its project private with SQL (nothing in this release
+switches one) and reads it listed with its Slack channel and the time its list changed, hidden
+from bob and seen by alice, its owner. Alice's own `dsp_` token and her cookie are each
+`403 ACCESS_ACCOUNT_REQUIRED` on all three routes. On exit it makes the project public again, and a
+run that cannot exits non-zero naming the project, since the next run's empty list would find it.
+Its inputs are what `with-harness.sh` exports: without the switch there is no
+`DISPATCH_E2E_ACCESS_TOKEN_FILE`, and the run stops with exit 2, naming the switch; a token file
+it cannot read stops it the same way, naming the file.
+It writes the database it is given, so it refuses a `DATABASE_URL` whose host is not loopback, or
+that carries a connection override such as `?host=`, with exit 1, naming `DATABASE_URL` without
+printing it.
+From `packages/dispatch`:
+
+```bash
+DATABASE_URL=<a PostgreSQL this run may truncate> DISPATCH_E2E_ACCESS_ISSUER=1 \
+  bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
+```
+
+Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh` and `outside-path-reach.sh`
+sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and

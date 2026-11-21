@@ -60,8 +60,25 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessPerson"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access/private-projects": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every private project's Slack channels and when they last changed, for the secrets broker's own service-account token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessPrivateProjects"];
     put?: never;
     post?: never;
     delete?: never;
@@ -77,7 +94,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. It names no repositories. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessProjectsByKey"];
     put?: never;
     post?: never;
@@ -2537,14 +2554,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -3365,6 +3382,8 @@ export interface components {
       person: string;
       project: string;
       slack_channels: string[] | null;
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
       /** @enum {string} */
       visibility: "public" | "private";
       visible: boolean;
@@ -6260,6 +6279,15 @@ export interface components {
       count: number;
       issues: components["schemas"]["PriorityIssue"][] | null;
     };
+    PrivateProjectChannels: {
+      project: string;
+      slack_channels: string[];
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
+    };
+    PrivateProjectsAnswer: {
+      projects: components["schemas"]["PrivateProjectChannels"][];
+    };
     ProgressCount: {
       done: number;
       total: number;
@@ -6280,6 +6308,8 @@ export interface components {
       people: string[] | null;
       project: string;
       slack_channels: string[] | null;
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
       /** @enum {string} */
       visibility: "public" | "private";
     };
@@ -7141,6 +7171,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PersonAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessPrivateProjects: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrivateProjectsAnswer"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15757,6 +15819,8 @@ export type PriorityIssue = components["schemas"]["PriorityIssue"];
 export type PriorityRow = components["schemas"]["PriorityRow"];
 export type PriorityWork = components["schemas"]["PriorityWork"];
 export type PriorityWorkParked = components["schemas"]["PriorityWorkParked"];
+export type PrivateProjectChannels = components["schemas"]["PrivateProjectChannels"];
+export type PrivateProjectsAnswer = components["schemas"]["PrivateProjectsAnswer"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
 export type ProjectAccess = components["schemas"]["ProjectAccess"];

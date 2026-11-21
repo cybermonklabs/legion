@@ -11,7 +11,7 @@ import (
 
 // TestTheAccessAnswerAdmitsOnlyItsAccounts (K3): only a service account DISPATCH_ACCESS_ACCOUNTS
 // names reads the membership answer; another verified account, a person and the shared token are
-// 403 ACCESS_ACCOUNT_REQUIRED on both routes.
+// 403 ACCESS_ACCOUNT_REQUIRED on both routes, and a caller with no credential is 401 NO_IDENTITY.
 func TestTheAccessAnswerAdmitsOnlyItsAccounts(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
@@ -32,6 +32,8 @@ func TestTheAccessAnswerAdmitsOnlyItsAccounts(t *testing.T) {
 			http.StatusForbidden, "ACCESS_ACCOUNT_REQUIRED", "the shared token", "GET "+path)
 		wantRefusal(t, dispatchRequest(t, handler, http.MethodGet, path, nil, "alice"),
 			http.StatusForbidden, "ACCESS_ACCOUNT_REQUIRED", "alice", "GET "+path)
+		wantRefusal(t, dispatchRequest(t, handler, http.MethodGet, path, nil, ""),
+			http.StatusUnauthorized, "NO_IDENTITY", "a caller with no credential", "GET "+path)
 	}
 	wantRefusal(t, agentRequest(t, handler, http.MethodGet, "/api/v1/access/person", nil, token(listedServiceAccount)),
 		http.StatusBadRequest, "INVALID_QUERY", listedServiceAccount, "GET /api/v1/access/person with no person")

@@ -29,6 +29,7 @@ var (
 	ErrGroupFull             = fmt.Errorf("a group holds at most %d members", MaxGroupMembers)
 	ErrSlackChannelInput     = errors.New("a Slack channel is named by its id, such as C0123456789")
 	ErrSlackChannelsFull     = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
+	ErrSlackChannelShared    = errors.New("a Slack channel belongs to one private project")
 )
 
 // The bounds of an access list and of a group.
@@ -134,14 +135,15 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 		select p.key, coalesce(p.owner, ''), p.visibility,
 			array(select principal from project_access where project_key = p.key and principal_kind = 'person' order by principal collate "C"),
 			array(select principal from project_access where project_key = p.key and principal_kind = 'group' order by principal collate "C"),
-			p.slack_channels,
+			p.slack_channels, p.slack_channels_changed_at,
 			array(select listed.principal from project_access listed
 				where listed.project_key = p.key and listed.principal_kind = 'person'
 					and not exists (select 1 from people where email = listed.principal)
 				order by listed.principal collate "C")
 		from projects p
 		where p.key = $1
-	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels, &access.NotSignedIn)
+	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups,
+		&access.SlackChannels, &access.SlackChannelsChangedAt, &access.NotSignedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -198,11 +200,23 @@ const MaxSlackChannels = 16
 var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 
 // SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
-// and with each id named once. The secrets broker is to release the Legion Slack bot token to a
-// private project's credentials for these channels alone (R14; no broker reads them yet), so only
-// the project's owner writes them: the caller makes that check first. It appends
+// and with each id named once. The secrets broker reads a private project's Slack channels to
+// release the Legion Slack bot token to that project's credentials for those channels alone (R14),
+// so only the project's owner writes them: the caller makes that check first, under the project's
+// owner lock (LockForAccessWrite). A list different from the one stored, compared sorted, sets
+// slack_channels_changed_at in the same update to statement_timestamp(), that update's own start:
+// it comes after the project's owner lock and the channel lock are held, so it never precedes a
+// lock wait, and two writes of one project are stamped in the order they wrote. The transaction's
+// now() would be its start, before those waits. The same list leaves the time.
+//
+// A Slack channel belongs to one private project. So every call takes the project's owner lock,
+// then the channel lock (lockSlackChannels), before it reads anything, and a private project's
+// write naming a channel another private project lists is refused with ErrSlackChannelShared,
+// which names that project only to a caller who sees it (refuseSharedSlackChannel); a public
+// project's write is never refused for it. by is the person the write records, and caller the
+// request's own caller as the API resolved it, whom the refusal is written for. It appends
 // project.access_changed in tx.
-func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor) (model.ProjectAccess, model.Event, error) {
+func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by, caller model.Actor) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
 	for _, channel := range channels {
 		id := strings.TrimSpace(channel)
@@ -216,10 +230,127 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 	if len(named) > MaxSlackChannels {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
 	}
-	if err := updateProject(ctx, tx, key, `update projects set slack_channels = $2 where key = $1`, named); err != nil {
+	if err := lockProject(ctx, tx, key); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
+	if err := lockSlackChannels(ctx, tx); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	var visibility string
+	err := tx.QueryRow(ctx, `select visibility from projects where key = $1`, key).Scan(&visibility)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the visibility of project %s: %w", key, err)
+	}
+	if visibility == model.ProjectPrivate {
+		if err := refuseSharedSlackChannel(ctx, tx, key, named, caller); err != nil {
+			return model.ProjectAccess{}, model.Event{}, err
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		update projects set slack_channels = $2,
+			slack_channels_changed_at = case
+				when array(select stored from unnest(slack_channels) stored order by stored collate "C") = $2::text[]
+					then slack_channels_changed_at
+				else statement_timestamp()
+			end
+		where key = $1
+	`, key, named)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("write the Slack channels of project %s: %w", key, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
+}
+
+// lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
+// channels takes before it reads any project's list, so two writes naming one channel for two
+// private projects cannot both read the other's list as it was and both commit. It comes after the
+// project's owner lock (lockProject, which LockForAccessWrite also takes) in the order every access
+// write takes its locks, and a project's row is written only under that project's owner lock.
+func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
+		return fmt.Errorf("lock the Slack channels: %w", err)
+	}
+	return nil
+}
+
+// refuseSharedSlackChannel answers ErrSlackChannelShared when a private project other than key
+// lists one of channels, and nil when none does. Sound only under lockSlackChannels. The refusal
+// names that project only when caller sees it by the read rule (Resolve), which is read only once
+// a share is found and under the lock: an agent credential that lists no project sees only public
+// ones, so it never reads a private project's name here, whoever its person is, and neither does
+// a caller with no person and no credential.
+func refuseSharedSlackChannel(ctx context.Context, tx pgx.Tx, key string, channels []string, caller model.Actor) error {
+	channel, other, err := SharedSlackChannel(ctx, tx, key, channels)
+	if err != nil || channel == "" {
+		return err
+	}
+	viewer, err := Resolve(ctx, tx, caller)
+	if err != nil {
+		return err
+	}
+	refusal := slackChannelShared{channel: channel}
+	if slices.Contains(viewer.Sees, other) {
+		refusal.other = other
+	}
+	return refusal
+}
+
+// slackChannelShared is ErrSlackChannelShared for one channel: naming other, the private project
+// that lists it, or, with other empty, no project, as a caller who does not see it reads it.
+type slackChannelShared struct{ channel, other string }
+
+func (refusal slackChannelShared) Error() string {
+	if refusal.other == "" {
+		return refusal.channel + " is listed by a private project you cannot see"
+	}
+	return refusal.channel + " is listed by " + refusal.other + ", a private project; " + ErrSlackChannelShared.Error()
+}
+
+func (slackChannelShared) Unwrap() error { return ErrSlackChannelShared }
+
+// SharedSlackChannel answers the first of channels, by id, that a private project other than key
+// lists, and that project, the first by key when several do; "" for both when none does.
+func SharedSlackChannel(ctx context.Context, q Querier, key string, channels []string) (channel, other string, err error) {
+	err = q.QueryRow(ctx, `
+		select key, c from projects, unnest(slack_channels) c
+		where visibility = 'private' and key <> $1 and c = any($2)
+		order by c, key limit 1
+	`, key, channels).Scan(&other, &channel)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("read the private projects listing the Slack channels of project %s: %w", key, err)
+	}
+	return channel, other, nil
+}
+
+// PrivateProjects answers every private project's Slack channels and when they last changed, by
+// key, read live: the list GET /api/v1/access/private-projects answers the secrets broker. It is
+// [] when no project is private, never nil, since a reader takes anything but an array for the
+// answer being down.
+func PrivateProjects(ctx context.Context, q Querier) ([]model.PrivateProjectChannels, error) {
+	rows, err := q.Query(ctx, `
+		select key, slack_channels, slack_channels_changed_at from projects where visibility = 'private' order by key
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list the private projects: %w", err)
+	}
+	projects, err := pgx.AppendRows(make([]model.PrivateProjectChannels, 0), rows, func(row pgx.CollectableRow) (model.PrivateProjectChannels, error) {
+		var project model.PrivateProjectChannels
+		err := row.Scan(&project.Project, &project.SlackChannels, &project.SlackChannelsChangedAt)
+		return project, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the private projects: %w", err)
+	}
+	return projects, nil
 }
 
 // updateProject writes one column of project key's row after the project's owner lock, the order

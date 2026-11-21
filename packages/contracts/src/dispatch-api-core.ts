@@ -396,6 +396,10 @@ export const ProjectAccessChangedEventPayloadSchema = z
     /** The Slack channel ids the project's credentials may post to, at most 16, sorted, and []
      *  for none. */
     slack_channels: z.array(z.string()),
+    /** When `slack_channels` last changed (RFC 3339, UTC), and null until a write changes the list.
+     *  Absent on an event a release appended before Dispatch stored that time; every event
+     *  written since carries it. */
+    slack_channels_changed_at: z.string().nullable().optional(),
     /** The people of `people` nobody has signed in as yet, sorted, and [] for none. */
     not_signed_in: z.array(z.string()),
     change: z.enum([

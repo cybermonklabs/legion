@@ -386,10 +386,13 @@ type ProjectAccess struct {
 	People     []string `json:"people"`
 	Groups     []string `json:"groups"`
 	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
-	// sorted, always present and [] for none. Its owner names them. The secrets broker is to
-	// release the Legion Slack bot token to a private project's credentials for these channels
-	// alone (R14); no broker reads them yet.
+	// sorted, always present and [] for none. Its owner names them. The secrets broker reads a
+	// private project's channels to release the Legion Slack bot token to its credentials for those
+	// channels alone (R14).
 	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until a
+	// write changes the list. A write of the list it already holds leaves it.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
 	NotSignedIn []string `json:"not_signed_in"`
@@ -420,6 +423,18 @@ type AccessAnswer struct {
 	Visible    bool   `json:"visible"`
 	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
 	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
+	// until a write changes the list.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+}
+
+// PrivateProjectChannels is one private project's Slack channels as the secrets broker reads
+// them (GET /api/v1/access/private-projects): the project's key, its channels, sorted and [] for
+// none, and when that list last changed, null until a write changes the list.
+type PrivateProjectChannels struct {
+	Project                string     `json:"project"`
+	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
@@ -438,9 +453,9 @@ const (
 )
 
 // ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
-// visibility or access list committed. It carries the project's access as that write left it,
-// which change it was, and the person or group it added or removed, so every reader that
-// resolved a viewer before it resolves again. It is owned by the project and never notifies.
+// visibility, access list or Slack channels committed. It carries the project's access as that
+// write left it, which change it was, and the person or group it added or removed, so every reader
+// that resolved a viewer before it resolves again. It is owned by the project and never notifies.
 type ProjectAccessEventPayload struct {
 	ProjectAccess
 	Change    string `json:"change"`

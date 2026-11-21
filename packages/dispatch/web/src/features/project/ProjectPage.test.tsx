@@ -348,6 +348,7 @@ test("the Access tab, at /access, shows the project's owner and the people and g
     project: "CORE",
     not_signed_in: [],
     slack_channels: [],
+    slack_channels_changed_at: null,
     visibility: "public",
   });
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([
@@ -391,6 +392,7 @@ test("a draft on one project's Access tab is not saved to the project the reader
     project: key,
     not_signed_in: [],
     slack_channels: stored[key] ?? [],
+    slack_channels_changed_at: null,
     visibility: "public",
   }));
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([]);
@@ -402,6 +404,7 @@ test("a draft on one project's Access tab is not saved to the project the reader
       project: key,
       not_signed_in: [],
       slack_channels: body.slack_channels ?? stored[key] ?? [],
+      slack_channels_changed_at: null,
       visibility: "public",
     })
   );

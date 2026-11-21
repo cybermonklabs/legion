@@ -88,6 +88,9 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 	`, hiddenEmail); err != nil {
 		t.Fatalf("seed the person: %v", err)
 	}
+	if _, err := database.Pool.Exec(ctx, `update projects set slack_channels = '{C0SHARED001}' where key = 'OTHER'`); err != nil {
+		t.Fatalf("name OTHER's channel: %v", err)
+	}
 	broker := events.NewBroker()
 	by := model.Actor{Kind: "user", ID: hiddenEmail}
 	steps := []struct {
@@ -112,9 +115,23 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"SetSlackChannels", func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by, by)
 			return err
 		}},
+		// OTHER lists C0SHARED001, so this write is refused once it has read who lists the channel:
+		// the refusal itself is this step succeeding.
+		{"SetSlackChannels of a channel another private project lists", func(tx pgx.Tx) error {
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, by)
+			if errors.Is(err, ErrSlackChannelShared) {
+				return nil
+			}
+			return err
+		}},
+		{"SharedSlackChannel", func(tx pgx.Tx) error {
+			_, _, err := SharedSlackChannel(ctx, tx, "PRIV", []string{"C0SHARED001"})
+			return err
+		}},
+		{"PrivateProjects", func(tx pgx.Tx) error { _, err := PrivateProjects(ctx, tx); return err }},
 		{"AddPrincipal of the person", func(tx pgx.Tx) error {
 			_, _, err := AddPrincipal(ctx, tx, broker, "PRIV", PrincipalPerson, hiddenEmail, by)
 			return err
