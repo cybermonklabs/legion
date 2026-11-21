@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { rowLimit } from "./bounded-subprocess";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 import type { Route } from "./outside-edge-refusals-edge";
 import {
   canaryBody,
@@ -45,7 +45,7 @@ import {
   visibleControls,
   withoutTools,
 } from "./outside-edge-refusals-fixtures";
-import { closedPort, verdict } from "./outside-path-reach-fixtures";
+import { closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
 const { check, httpsCurl, listFile, planLists, scratch } = edgeFixtures(import.meta.url);
 
@@ -174,37 +174,92 @@ describe(scriptName, () => {
     );
   }
 
-  // curl sends a path holding `%2e%2e` as written, and a route names a path as written, so the
-  // stand-in matches the path as it came on the wire. A stand-in that read a decoded path would
-  // read `/v1/%2e%2e/healthz` as `/healthz`, which no route of the table takes, and the planted
-  // route below would be missed: the line would read refused, the run PASS.
-  const encoded: Line = {
-    name: "broker-encoded-dots",
-    method: "GET",
-    sni: "secrets.edge.example",
-    host: "secrets.edge.example",
-    path: "/v1/%2e%2e/healthz",
-  };
+  // The stand-in matches a route on the path as it came on the wire, as an edge's route names it.
+  // The script refuses a line whose path holds `%2e%2e`, a dot segment (the input file's rows), so
+  // this row asks the stand-in itself, with the host's curl and `--path-as-is`, which sends the
+  // path as written on every curl the script takes. A stand-in that read the path decoded, as
+  // `Bun.serve`'s request URL has it, would read `/v1/%2e%2e/healthz` as `/healthz`, take no route,
+  // and answer 404.
   test.skipIf(withoutTools)(
-    "(b) fails naming a line whose path holds encoded dots when a route is planted for that path as written",
+    "the stand-in routes on the path as it came on the wire, encoded dots and all",
     async () => {
-      const edge = await standIn([planted(encoded), ...production]);
+      const path = "/v1/%2e%2e/healthz";
+      const host = "secrets.edge.example";
+      const edge = await standIn([
+        { host, path, status: 200, marker: "canary", body: canaryBody },
+        ...production,
+      ]);
       try {
-        const run = await check("b encoded dots", {
+        const { code, stdout } = await runBounded({
+          argv: [
+            curl,
+            "-q",
+            "--noproxy",
+            "*",
+            "-g",
+            "--path-as-is",
+            "-sS",
+            "-H",
+            `Host: ${host}`,
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            `${edge.address}${path}`,
+          ],
+          bound: "short",
+          env: { HOME: scratch, PATH: process.env.PATH ?? "" },
+          from: import.meta.url,
+        });
+        expect({ code, stdout }).toEqual({ code: 0, stdout: "200" });
+        expect(await edge.seen()).toEqual([{ method: "GET", host, path, contentLength: null }]);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The host's curl, a bounded child under the short bound.
+    rowLimit("short")
+  );
+
+  // The dot-segment rule reads only the path before any `?`, and only whole segments: a line whose
+  // dots stand in its query, or in a longer segment, `%2e` among them, is taken, and its request
+  // goes out with its path as written, for the line and its unrouted control. (The stand-in
+  // records the path up to any `?`.)
+  const dotted: Line[] = [
+    {
+      name: "dots-in-query",
+      method: "GET",
+      sni: "secrets.edge.example",
+      host: "secrets.edge.example",
+      path: "/v1/pending?next=/../x",
+    },
+    {
+      name: "dots-in-segment",
+      method: "GET",
+      sni: "secrets.edge.example",
+      host: "secrets.edge.example",
+      path: "/v1/..x/%2e%2ey",
+    },
+  ];
+  test.skipIf(withoutTools)(
+    "takes a line whose dots stand in its query or in a longer segment, and sends its path as written",
+    async () => {
+      const edge = await standIn(production);
+      try {
+        const run = await check("dots taken", {
           OUTSIDE_EDGE_ADDRESS: edge.address,
           OUTSIDE_EDGE_ROUTED: listFile(routedTable),
-          OUTSIDE_EDGE_REFUSALS: listFile([
-            ...refusalTable,
-            `${encoded.name} GET secrets.edge.example secrets.edge.example ${encoded.path}`,
-          ]),
+          OUTSIDE_EDGE_REFUSALS: listFile(
+            dotted.map((line) => `${line.name} GET ${line.sni} ${line.host} ${line.path}`)
+          ),
         });
-        expect(linesOf(run, "REACHED"), said(run)).toEqual([
-          probeLine("REACHED", encoded.name, 200, "canary", canaryBody),
-        ]);
-        expect(verdict(run), said(run)).toBe(`FAIL: reached ${encoded.name}`);
-        expect(run.code, said(run)).toBe(1);
-        // The stand-in saw the path as the line writes it, for the line and its unrouted control.
-        expect((await edge.seen()).slice(-2)).toEqual(sentFor([encoded]));
+        expect(linesOf(run, "refused"), said(run)).toEqual(dotted.map(refusedLine));
+        expect(verdict(run), said(run)).toBe(
+          "PASS: every one of the 2 refusal lines was refused (the edge's own 404 with no marker, or the answer its line names), after each of the 3 routed controls showed its marker"
+        );
+        expect(run.code, said(run)).toBe(0);
+        const recorded = dotted.map((line) => ({ ...line, path: line.path.split("?")[0] ?? "" }));
+        expect((await edge.seen()).slice(routed.length)).toEqual(sentFor(recorded));
       } finally {
         await edge.stop();
       }
@@ -213,12 +268,16 @@ describe(scriptName, () => {
     rowLimit("edgeRun")
   );
 
-  // A route that forwards a line without its marker to a backend that answers 404 gives that
-  // backend's 404, not the edge's own: its body differs from the one the line's unrouted control
-  // gets for the same path. Such a line reads UNKNOWN, never refused; so does a line whose unrouted
-  // control is not answered with the edge's own 404, since then nothing says what that 404 is.
-  const unclearVerdict = (name: string) =>
-    `UNKNOWN: no 404 with no marker could be told from a forward for ${name}: its body is not the edge's own 404 for its path`;
+  // A route that forwards a line without its marker to a backend that answers 404 may give that
+  // backend's 404, not the edge's own: then its body differs from the one the line's unrouted
+  // control gets for the same path. Such a line reads UNKNOWN, never refused. So does a line whose
+  // unrouted control is not answered with the edge's own 404, since then nothing says what that 404
+  // is, and one whose 404 and the edge's own are both empty, since a forward's could be too. The
+  // verdict names each cause.
+  const unlikeVerdict = (names: string) =>
+    `UNKNOWN: the 404 with no marker had another body than the edge's own 404 for its path, as a forward could, for ${names}`;
+  const uncontrolledVerdict = (names: string) =>
+    `UNKNOWN: no unrouted control got the edge's own 404, with no marker and read whole, for ${names}, so nothing says what that 404 is`;
   test.skipIf(withoutTools)(
     "(h) reads UNKNOWN, never refused, when a route forwards a line without a marker to a backend that answers 404",
     async () => {
@@ -237,7 +296,7 @@ describe(scriptName, () => {
           `${probeLine("UNKNOWN", pending.name, 404, "none", backend)}; another body than its unrouted control's 404`,
         ]);
         expect(linesOf(run, "refused").length, said(run)).toBe(15);
-        expect(verdict(run), said(run)).toBe(unclearVerdict(pending.name));
+        expect(verdict(run), said(run)).toBe(unlikeVerdict(pending.name));
         expect(run.code, said(run)).toBe(2);
       } finally {
         await edge.stop();
@@ -247,18 +306,37 @@ describe(scriptName, () => {
     rowLimit("edgeRun")
   );
 
-  const controlTaken: { name: string; answer: Partial<Route>; status: number; marker: string }[] = [
-    { name: "a route's 200, marked", answer: {}, status: 200, marker: "canary" },
+  // Each cause has its own note on the line and its own words in the verdict: a control answered
+  // by a route is no 404 of the edge's own, and a control's 404 with another body says the line's
+  // body is not that 404.
+  const controlTaken: {
+    name: string;
+    answer: Partial<Route>;
+    status: number;
+    marker: string;
+    note: string;
+    says: (names: string) => string;
+  }[] = [
+    {
+      name: "a route's 200, marked",
+      answer: {},
+      status: 200,
+      marker: "canary",
+      note: "its unrouted control did not answer 404 with no marker, read whole",
+      says: uncontrolledVerdict,
+    },
     {
       name: "a 404 with no marker and another body",
       answer: { status: 404, marker: undefined, body: "another 404\n" },
       status: 404,
       marker: "none",
+      note: "another body than its unrouted control's 404",
+      says: unlikeVerdict,
     },
   ];
-  for (const { name, answer, status, marker } of controlTaken) {
+  for (const { name, answer, status, marker, note, says } of controlTaken) {
     test.skipIf(withoutTools)(
-      `(h) reads UNKNOWN, never refused, when a line's unrouted control is answered ${name}`,
+      `(h) reads UNKNOWN, never refused, when a line's unrouted control is answered ${name}, naming that cause`,
       async () => {
         const body = answer.body ?? canaryBody;
         const edge = await standIn([
@@ -273,14 +351,10 @@ describe(scriptName, () => {
           expect(linesOf(run, "unrouted"), said(run)).toContain(
             probeLine("unrouted", pending.name, status, marker, body)
           );
-          const note =
-            status === 404
-              ? "another body than its unrouted control's 404"
-              : "its unrouted control did not answer 404 with no marker, read whole";
           expect(linesOf(run, "UNKNOWN"), said(run)).toEqual([
             `${probeLine("UNKNOWN", pending.name, 404, "none", notFound)}; ${note}`,
           ]);
-          expect(verdict(run), said(run)).toBe(unclearVerdict(pending.name));
+          expect(verdict(run), said(run)).toBe(says(pending.name));
           expect(run.code, said(run)).toBe(2);
         } finally {
           await edge.stop();
@@ -290,6 +364,42 @@ describe(scriptName, () => {
       rowLimit("edgeRun")
     );
   }
+
+  // An edge whose own 404 has an empty body gives the same digest as a forward to a backend whose
+  // 404 is empty too, so its lines of five fields read UNKNOWN, never refused, each named in the
+  // verdict; a line of six fields is read as ever.
+  test.skipIf(withoutTools)(
+    "(h) reads UNKNOWN, never refused, when the edge's own 404 and a line's are both empty, naming each line",
+    async () => {
+      const edge = await standIn(production, "");
+      try {
+        const run = await check("h empty 404", {
+          OUTSIDE_EDGE_ADDRESS: edge.address,
+          ...planLists(),
+        });
+        expect(linesOf(run, "unrouted"), said(run)).toEqual(
+          fiveFields.map((line) => unroutedLine(line, ""))
+        );
+        expect(linesOf(run, "UNKNOWN"), said(run)).toEqual(
+          fiveFields.map(
+            (line) =>
+              `${probeLine("UNKNOWN", line.name, 404, "none", "")}; its unrouted control's 404 had an empty body, as a forward's could`
+          )
+        );
+        expect(linesOf(run, "refused"), said(run)).toEqual(
+          refusals.filter((line) => line.expect !== undefined).map(refusedLine)
+        );
+        expect(verdict(run), said(run)).toBe(
+          `UNKNOWN: the edge's own 404 for its path had an empty body, which a forward could give too, for ${fiveFields.map((line) => line.name).join(" ")}`
+        );
+        expect(run.code, said(run)).toBe(2);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The script, a bounded child under the bound of a run that probes.
+    rowLimit("edgeRun")
+  );
 
   // A refusal line whose sixth field names its answer, `broker-token-get`'s `405:broker`: no route
   // of the edge matches on method, so a GET on the broker's token path reaches the broker, and its

@@ -149,18 +149,40 @@ describe(`${scriptName}: the inputs it refuses`, () => {
       },
       says: "line 1 of {refusals}: the path /x#y is not an absolute path of URL characters",
     },
-    // curl rewrites a dot segment (`/a/../blocked` goes out as `/blocked`), and the Gateway API
-    // refuses a route whose path holds one, `//` or an encoded slash, so no route can be planted
-    // for any of them: each is refused before any probe.
-    ...["/a/../blocked", "/a/./b", "/a//b", "/a%2fb", "/a%2Fb", "/a/.", "/a/..", "/..", "/."].map(
-      (path) => ({
-        name: `the path ${path}`,
-        env: {
-          OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example ${path}`,
-        },
-        says: `line 1 of {refusals}: the path ${path} holds a dot segment, '//' or an encoded slash, which curl rewrites or no route can name, so none could be planted for it`,
-      })
-    ),
+    // The Gateway API refuses a route whose path holds `//` or an encoded slash, so no route can be
+    // planted for such a line: each is refused before any probe.
+    ...["/a//b", "/a%2fb", "/a%2Fb"].map((path) => ({
+      name: `the path ${path}`,
+      env: {
+        OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example ${path}`,
+      },
+      says: `line 1 of {refusals}: the path ${path} holds '//' or an encoded slash, which no route can name, so none could be planted for it`,
+    })),
+    // A dot segment before any `?`, `.` or `..` with each `%2e` or `%2E` read as `.`: RFC 3986
+    // makes `%2e` the same as `.`, so an edge may read the path as the one it reduces to, and curl
+    // without `--path-as-is` sends it so (curl 8.14.1 sends `/v1/..?x=1` as `/?x=1`, `/a/.?q=1` as
+    // `/a/?q=1` and `/v1/%2e%2e/admin` as `/admin`). Each is refused before any probe, and the
+    // stand-in sees no request.
+    ...[
+      "/a/../blocked",
+      "/a/./b",
+      "/a/.",
+      "/a/..",
+      "/..",
+      "/.",
+      "/a/..?x",
+      "/a/.?x",
+      "/a/%2e%2e/b",
+      "/a/%2E%2e/b",
+      "/a/.%2E/b",
+      "/a/%2e?x",
+    ].map((path) => ({
+      name: `the path ${path}`,
+      env: {
+        OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example ${path}`,
+      },
+      says: `line 1 of {refusals}: the path ${path} holds a dot segment before any '?' ('.' or '..', '%2e' read as '.'), which an edge may read as another path, so none could be planted for it`,
+    })),
     {
       name: "two lines of one name",
       env: {

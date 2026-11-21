@@ -166,9 +166,10 @@ export function sha(text: string): string {
 }
 
 /** A stand-in edge that routes by `routes`, in a host of its own, and its
- *  `http://127.0.0.1:<port>` address. */
-export async function standIn(routes: Route[]) {
-  const { port, seen, stop } = await edgeHost({ routes, notFound });
+ *  `http://127.0.0.1:<port>` address. A request no route takes is answered 404 with no marker and
+ *  `ownNotFound` as its body, `notFound` unless given. */
+export async function standIn(routes: Route[], ownNotFound = notFound) {
+  const { port, seen, stop } = await edgeHost({ routes, notFound: ownNotFound });
   return { address: `http://127.0.0.1:${port}`, seen, stop };
 }
 
@@ -435,6 +436,7 @@ export function httpsArgv(
     "--noproxy",
     "*",
     "-g",
+    "--path-as-is",
     "-sS",
     "--http1.1",
     "--resolve",

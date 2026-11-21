@@ -15,7 +15,8 @@
 # first, as curl's manual says. No curl it runs reads the terminal (stdin is /dev/null), the
 # device's curl configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`, `resolve` or
 # `connect-to` lines could change a probe), a proxy (`--noproxy '*'`) or a pattern of several URLs
-# in its URL (`-g`).
+# in its URL (`-g`), and each sends its path exactly as the line writes it (`--path-as-is`): curl
+# otherwise removes a dot segment before it sends a path, `%2e` read as `.` in current releases.
 #
 # Inputs, each refused by name when missing:
 #   OUTSIDE_EDGE_ADDRESS   the edge's IPv4 address, written as four numbers of 0 to 255 with no
@@ -43,10 +44,13 @@
 # not HEAD, for which `curl -X HEAD` waits for a body that never comes. `sni` and `host` are host
 # names, never an address: a route's hostname cannot be an address, so no route could be planted
 # for one, and a refusal line that no planted route can reach has no control. `path` starts with
-# `/` and holds URL characters alone (RFC 3986's path and query), so no `#`; and no dot segment
-# (`/./`, `/../`, or `/.` or `/..` at its end), no `//` and no encoded slash (`%2f`, `%2F`): curl
-# rewrites a dot segment before it sends the path (`/a/../b` goes out as `/b`), and the Gateway
-# API refuses a route whose path holds any of them, so none could be planted for such a line.
+# `/` and holds URL characters alone (RFC 3986's path and query), so no `#`. It holds no `//` and
+# no encoded slash (`%2f`, `%2F`), and its part before any `?` holds no dot segment: no segment
+# that is `.` or `..` once each `%2e` or `%2E` in it is read as `.`. RFC 3986 makes `%2e` the same
+# as `.`, so an edge may read such a path as the one it reduces to (`/a/%2e%2e/b` as `/b`), and a
+# route planted for the line as written could not be shown to be what answered it; the Gateway API
+# refuses a route whose path holds `//`, `%2f` or a literal dot segment. So no route could be
+# planted for such a line.
 # OUTSIDE_EDGE_CONNECT_SECONDS and OUTSIDE_EDGE_READ_SECONDS bound each probe, as curl's
 # --connect-timeout and --max-time: 3 and 10 s when unset or empty. Each must be a whole number of
 # seconds from 2 to 999999, in digits, as outside-path-reach.sh's own bounds are, for the reasons
@@ -55,8 +59,8 @@
 # else, for this script's own tests: each probe then goes over HTTP to that port.
 #
 # Each probe is one HTTP/1.1 request, which keeps the Host it sends literal:
-#   curl --http1.1 --resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] \
-#     -D <headers> -o <body> -w '%{http_code}' --connect-timeout 3 --max-time 10 \
+#   curl --http1.1 --path-as-is --resolve <sni>:443:<address> -H 'Host: <host>' -X <method> \
+#     [-d ''] -D <headers> -o <body> -w '%{http_code}' --connect-timeout 3 --max-time 10 \
 #     --max-filesize 1048576 https://<sni><path>
 # with an empty body (`-d ''`) for POST, PUT and PATCH. The certificate is verified against the SNI.
 # curl stops reading a body at 1 MiB, with exit 63, whether or not the answer gave its length first
@@ -85,10 +89,11 @@
 #   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), when
 #            the named answer came and curl did not read it whole, its body past 1 MiB included,
 #            or when a line of five fields came 404 with no marker and its unrouted control did
-#            not answer the edge's own 404, or answered one with another body. A route that
-#            forwards without a marker to a backend that answers 404 gives another body; so may
-#            an edge whose own 404 differs by Host, and the run cannot tell the two apart, so it
-#            reads UNKNOWN, never refused.
+#            not answer 404 with no marker, read whole, so nothing says what the edge's own 404
+#            is; or did, with another body than the line's, as a route that forwards without a
+#            marker to a backend that answers 404 may give, and as an edge whose own 404 differs
+#            by Host may too (the run cannot tell the two apart); or did, with an empty body,
+#            which such a forward could give as well. The verdict names each cause and its lines.
 # Each probe prints its status (000 where none came), every marker of its answer in order and
 # separated by `,` (`none` where it had none), and the SHA-256 of its body (`none` where no answer
 # came), so two runs can be compared, and curl's exit code and first message where curl did not
@@ -273,7 +278,7 @@ read_whole() {
 # or six with the expected answer last.
 read_list() {
   local setting=$1 file=$2 kind=$3 shape='name method sni host path backend' number=0 ended row
-  local prefix
+  local prefix segments
   [ "$kind" = routed ] || shape='name method sni host path [405:marker]'
   read_whole "$setting" "$file"
   rest=$text
@@ -320,8 +325,15 @@ read_list() {
       unknown "line $number of $file: the host $4 is not a host name; no route can name an address, so none could be planted for it"
     is_path "$5" ||
       unknown "line $number of $file: the path $5 is not an absolute path of URL characters"
-    case $5 in */./* | */../* | */. | */.. | *//* | *%2[fF]*)
-      unknown "line $number of $file: the path $5 holds a dot segment, '//' or an encoded slash, which curl rewrites or no route can name, so none could be planted for it"
+    case $5 in *//* | *%2[fF]*)
+      unknown "line $number of $file: the path $5 holds '//' or an encoded slash, which no route can name, so none could be planted for it"
+      ;;
+    esac
+    # The path before any `?`, each `%2e` or `%2E` read as `.`, ended by a `/`.
+    segments=${5%%\?*}
+    segments=${segments//%2[eE]/.}/
+    case $segments in */./* | */../*)
+      unknown "line $number of $file: the path $5 holds a dot segment before any '?' ('.' or '..', '%2e' read as '.'), which an edge may read as another path, so none could be planted for it"
       ;;
     esac
     if [ "$kind" = routed ]; then
@@ -466,7 +478,7 @@ probe() {
   file=$work/$1${host:+.unrouted}
   [ -n "$host" ] || host=${hosts[row]}
   local headers="$file.headers" body="$file.body" errors="$file.errors"
-  set -- -q --noproxy '*' -g -sS --http1.1 --resolve "${snis[row]}:$port:$address" \
+  set -- -q --noproxy '*' -g --path-as-is -sS --http1.1 --resolve "${snis[row]}:$port:$address" \
     -H "Host: $host" -X "${methods[row]}"
   case ${methods[row]} in POST | PUT | PATCH) set -- "$@" -d '' ;; esac
   set -- "$@" -D "$headers" -o "$body" -w '%{http_code}' --connect-timeout "$connect" \
@@ -545,10 +557,16 @@ while [ "$row" -le "$routed" ]; do
 done
 [ -z "$missing" ] || unknown "the marker of $missing is not visible, so no refusal can be read"
 
-# unread: the lines whose answer came short; unclear: the lines of five fields answered 404 with
-# no marker whose body could not be told from a forward, as the header says.
+# unread: the lines whose answer came short. Of the lines of five fields answered 404 with no
+# marker that could not be told from a forward, as the header says: uncontrolled, whose unrouted
+# control got no such 404; unlike, whose body was not that 404's; bodiless, whose body and that
+# 404's were both empty.
 unread=''
-unclear=''
+uncontrolled=''
+unlike=''
+bodiless=''
+# The SHA-256 of an empty body.
+nothing=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 while [ "$row" -le "$total" ]; do
   # own: the body's SHA-256 of the edge's own 404 for this line, from its unrouted control; empty
   # for a line of six fields, and where the control did not answer 404 with no marker, read whole.
@@ -572,9 +590,11 @@ while [ "$row" -le "$total" ]; do
   elif [ "$status" = 000 ] || [ "$code" -ne 0 ]; then
     kind=unread
   elif [ -z "$own" ]; then
-    kind="; its unrouted control did not answer 404 with no marker, read whole"
+    kind=uncontrolled
   elif [ "$digest" != "$own" ]; then
-    kind="; another body than its unrouted control's 404"
+    kind=unlike
+  elif [ "$own" = "$nothing" ]; then
+    kind=bodiless
   else
     kind=refused
   fi
@@ -589,9 +609,17 @@ while [ "$row" -le "$total" ]; do
       report UNKNOWN "$row"
       unread="$unread ${names[row]}"
       ;;
-    *)
-      report UNKNOWN "$row" "$kind"
-      unclear="$unclear ${names[row]}"
+    uncontrolled)
+      report UNKNOWN "$row" "; its unrouted control did not answer 404 with no marker, read whole"
+      uncontrolled="$uncontrolled ${names[row]}"
+      ;;
+    unlike)
+      report UNKNOWN "$row" "; another body than its unrouted control's 404"
+      unlike="$unlike ${names[row]}"
+      ;;
+    bodiless)
+      report UNKNOWN "$row" "; its unrouted control's 404 had an empty body, as a forward's could"
+      bodiless="$bodiless ${names[row]}"
       ;;
   esac
   row=$((row + 1))
@@ -600,11 +628,15 @@ done
 # A reached line is a failure whatever else the run saw: an answer is evidence, while a probe
 # that came short only failed to look.
 [ -z "$reached" ] || verdict 1 "FAIL: reached$reached"
-if [ -n "$unread$unclear" ]; then
+if [ -n "$unread$uncontrolled$unlike$bodiless" ]; then
   message=''
   [ -z "$unread" ] || message="no answer could be read whole for$unread"
-  [ -z "$unclear" ] ||
-    message="${message:+$message; }no 404 with no marker could be told from a forward for$unclear: its body is not the edge's own 404 for its path"
+  [ -z "$uncontrolled" ] ||
+    message="${message:+$message; }no unrouted control got the edge's own 404, with no marker and read whole, for$uncontrolled, so nothing says what that 404 is"
+  [ -z "$unlike" ] ||
+    message="${message:+$message; }the 404 with no marker had another body than the edge's own 404 for its path, as a forward could, for$unlike"
+  [ -z "$bodiless" ] ||
+    message="${message:+$message; }the edge's own 404 for its path had an empty body, which a forward could give too, for$bodiless"
   unknown "$message"
 fi
 verdict 0 "PASS: every one of the $((total - routed)) refusal lines was refused (the edge's own 404 with no marker, or the answer its line names), after each of the $routed routed controls showed its marker"

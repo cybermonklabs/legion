@@ -38,12 +38,15 @@ Both lists split their fields on spaces and tabs, skip blank lines and lines who
 starts with `#`, and take LF or CRLF line endings; any other byte outside printable ASCII and tab
 refuses the run. Each name belongs to one line across both lists. `method` is one of `GET`, `POST`,
 `PUT`, `PATCH`, `DELETE` and `OPTIONS`; `sni` and `host` are host names, never an address, since a
-route's hostname cannot be an address and no route could be planted for one; `path` starts with `/`
-and holds URL characters alone, and no dot segment, `//` or encoded slash (`%2f`), since curl
-rewrites a dot segment before it sends the path (`/a/../b` goes out as `/b`) and the Gateway API
-refuses a route whose path holds any of them. `OUTSIDE_EDGE_CONNECT_SECONDS` and
-`OUTSIDE_EDGE_READ_SECONDS` bound each probe as curl's `--connect-timeout` and `--max-time`, 3 and
-10 s when unset or empty, on the rule `outside-path-reach.sh`'s two settings follow.
+route's hostname cannot be an address and no route could be planted for one. `path` starts with `/`
+and holds URL characters alone. It holds no `//` and no encoded slash (`%2f`), and its part before
+any `?` holds no dot segment: no segment that is `.` or `..` once each `%2e` or `%2E` in it is read
+as `.` (`/a/..?x`, `/a/.?x` and `/a/%2e%2e/b` are each refused). RFC 3986 makes `%2e` the same as
+`.`, so an edge may read such a path as the one it reduces to, and the Gateway API refuses a route
+whose path holds `//`, `%2f` or a literal dot segment, so no route could be planted for such a line.
+`OUTSIDE_EDGE_CONNECT_SECONDS` and `OUTSIDE_EDGE_READ_SECONDS` bound each probe as curl's
+`--connect-timeout` and `--max-time`, 3 and 10 s when unset or empty, on the rule
+`outside-path-reach.sh`'s two settings follow.
 `OUTSIDE_EDGE_ALLOW_HTTP=1` lets the address be `http://127.0.0.1:<port>`, and nothing else, for the
 script's own tests.
 
@@ -54,12 +57,14 @@ OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 
 ## How it reads an answer
 
-Each probe is one HTTP/1.1 request, which keeps the Host it sends literal: `curl --http1.1 --resolve
-<sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] --max-filesize 1048576
-https://<sni><path>`, with an empty body for `POST`, `PUT` and `PATCH`, and the certificate verified
-against the SNI; curl stops reading a body at 1 MiB, whether or not the answer gave its length
-first. Its curls ignore `~/.curlrc` and any proxy, and read no URL as a pattern. curl writes every
-header block of an answer, an informational `1xx` before the final one, and the status it prints is
+Each probe is one HTTP/1.1 request, which keeps the Host it sends literal: `curl --http1.1
+--path-as-is --resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] --max-filesize
+1048576 https://<sni><path>`, with an empty body for `POST`, `PUT` and `PATCH`, and the certificate
+verified against the SNI. `--path-as-is` sends the path exactly as the line writes it: without it,
+curl removes a dot segment before it sends a path, `%2e` read as `.` in current releases. curl stops
+reading a body at 1 MiB, whether or not the answer gave its length first. Its curls ignore
+`~/.curlrc` and any proxy, and read no URL as a pattern. curl writes every header block of an
+answer, an informational `1xx` before the final one, and the status it prints is
 the final answer's; an answer names a backend when its final block carries a marker and every
 marker of every block is that backend.
 
@@ -70,10 +75,12 @@ refusal line, since a 404 with no marker says nothing where no marker can be see
 Then each refusal line of five fields first has its unrouted control sent: the line's own method,
 SNI and path, with the Host `unrouted.outside-edge-refusals.invalid`, which no route names. Its
 answer must come whole, with no marker; the line is refused only on a 404 with no marker and that
-same body. A route that forwards a line without a marker to a backend that answers 404 gives
-another body; so may an edge whose own 404 differs by Host, and the run cannot tell the two apart,
-so such a line reads `UNKNOWN`, never refused. An `UNKNOWN` line that says "another body than its
-unrouted control's 404" is a possible forward: look into it before running the check again.
+same body. A route that forwards a line without a marker to a backend that answers 404 may give
+another body, and so may an edge whose own 404 differs by Host; the run cannot tell the two apart,
+so such a line reads `UNKNOWN`, never refused. An edge's own 404 with an empty body tells nothing
+either, since such a forward could give an empty body too, so it reads `UNKNOWN` as well. An
+`UNKNOWN` line that says "another body than its unrouted control's 404" is a possible forward: look
+into it before running the check again.
 
 The comparison rests on a rule this check cannot hold: every route of the edge sets the marker. A
 route with no hostname that forwards without a marker to a backend that answers 404 would give the
@@ -84,7 +91,7 @@ own 404. The deployment's own tests hold that rule, not this check.
 |---|---|
 | the one the line names, read whole: for a line of five fields, 404 with no marker in any block and its unrouted control's body; for a line of six, exactly 405, naming exactly the sixth field's marker | `refused` |
 | any other answer: for a line of five fields, a marker of any value in any block or a status other than 404, a redirect included | `REACHED` |
-| no status (a connect or TLS failure, a timeout), the named answer that curl did not read whole, its body past 1 MiB included, or a 404 with no marker whose body is not its unrouted control's, or whose unrouted control got no such 404 | `UNKNOWN` |
+| no status (a connect or TLS failure, a timeout), the named answer that curl did not read whole, its body past 1 MiB included, or a 404 with no marker whose unrouted control got no such 404, whose body is not its unrouted control's, or whose body and its unrouted control's are both empty; the verdict names each cause and its lines | `UNKNOWN` |
 
 Each line prints the status, every marker in order (`none` for none) and the SHA-256 of the body,
 so two runs can be compared, and curl's exit code and first message where curl did not exit 0; an
@@ -118,7 +125,8 @@ with their fixtures in `outside-edge-refusals-fixtures.ts`:
   refused on the broker's `405` marked `broker`, and fails naming it on a `404` with no marker, a
   `405` with another marker or none, a `200`, a `103` marked `broker` before a final answer marked
   otherwise or not at all, and a final `405` with a second marker. An unmarked `200`, `301`, `302`
-  or `403` is a line reached, and an unmarked `404` with a backend's own body is `UNKNOWN`.
+  or `403` is a line reached, and an unmarked `404` with a backend's own body, or with an empty
+  body where the edge's own 404 is empty too, is `UNKNOWN`.
 - `outside-edge-refusals-input.test.ts`, the inputs, tools and shells it refuses before any probe.
   Its rows that run the script under dash and zsh skip where either is missing; CI's `dispatch-ui`
   job installs zsh.
