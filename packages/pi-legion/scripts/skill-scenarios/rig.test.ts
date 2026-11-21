@@ -949,11 +949,14 @@ describe("judge-omp", () => {
   const skip = withoutDocker && !onActions;
   const rigSh = path.join(import.meta.dir, "rig.sh");
   /**
-   * The bound on one judge row (judgeRow): the pi-legion job's own budget, the `timeout-minutes`
-   * of .github/workflows/ci-job-pi-legion.yaml, which the row "the judge rows' guard is the
-   * pi-legion job's own budget" holds this equal to. Nothing in that job can wait longer.
+   * The bound on one judge row (judgeRow), a hang guard: a judge that never ends fails its row by
+   * name, with the phase it was in, inside the pi-legion job. So it is at most half the job's
+   * `timeout-minutes` (.github/workflows/ci-job-pi-legion.yaml), which the row "the judge rows'
+   * guard ends inside the pi-legion job's budget" holds: the other half is the job's setup and the
+   * rest of its test step, 71 s and 12 min in job 136638548606, the judge rows included. A correct
+   * judge took 206 s at most, on a runner whose disk-bound work had slowed 124 times.
    */
-  const JUDGE_GUARD_MS = 28 * 60_000;
+  const JUDGE_GUARD_MS = 10 * 60_000;
   // Staged in a hook: Bun runs this body even where the rows do not run, and a write here would
   // make the suite's work directory and leave it behind.
   let work = "";
@@ -1417,9 +1420,9 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
   });
 
-  // Catches: a judge rows' guard that drifted from the job's own budget it stands for, so a judge
-  // the job could still wait for fails its row, or one the job cannot wait for holds it.
-  test("the judge rows' guard is the pi-legion job's own budget", () => {
+  // Catches: a judge rows' guard the job cannot wait out, so a hung judge shows as the job's own
+  // cancellation, with no line naming the judge or its phase.
+  test("the judge rows' guard ends inside the pi-legion job's budget", () => {
     const workflow = readFileSync(
       path.join(root, ".github/workflows/ci-job-pi-legion.yaml"),
       "utf8"
@@ -1427,7 +1430,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     const minutes = [...workflow.matchAll(/^ {4}timeout-minutes: (\d+)$/gm)].map((m) =>
       Number(m[1])
     );
-    expect(minutes).toEqual([JUDGE_GUARD_MS / 60_000]);
+    expect(minutes).toHaveLength(1);
+    expect(JUDGE_GUARD_MS).toBeLessThanOrEqual((minutes[0] ?? 0) * 30_000);
   });
 });
 

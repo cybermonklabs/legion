@@ -311,4 +311,65 @@ check "the byte shows as U+FFFD" "$(contains "$out" $'^\xef\xbf\xbd$')"
 check "the line after it shows" "$(contains "$out" '^after$')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+echo "case: where the kernel lists no children, a sample finds the descendants with pgrep -P"
+# main as on a kernel built without CONFIG_PROC_CHILDREN (children_listed false), with pgrep given
+# 60 s (PGREP_SECONDS), so its own bound decides nothing here. The command is a shell whose child
+# holds 96 MiB until this case closes its stdin, under a 64 MiB limit: only a sample that sees the
+# child can fail the step. The case lets the child go once a sample has seen it past the limit,
+# or after three samples that did not. The same run with pgrep finding no child, as the sampler
+# was before it fell back to pgrep, passes after its three samples: the blindness the fallback
+# closes.
+no_lists='
+import sys, race_memory as r
+r.children_listed = lambda pid: False
+r.PGREP_SECONDS = 60.0
+if sys.argv[1] == "blind":
+    r.pgrep_children = lambda pid: []
+sys.exit(r.main(sys.argv[2:]))
+'
+big_child='
+import sys
+held = bytearray(96 * 1024 * 1024)
+for i in range(0, len(held), 4096):
+    held[i] = 1
+sys.stdin.read()
+'
+# on_child_line: a sample of the child past the limit lets it go, and so do three samples without.
+on_child_line() {
+  if [[ $line =~ \ s,\ VmRSS\ ([0-9]+)\ kB\ in\ python3 ]] && [ "${BASH_REMATCH[1]}" -gt 65536 ]; then
+    seen=true
+    close_run
+  elif [[ $line == 'race memory: at '* ]]; then
+    samples=$((samples + 1))
+    [ "$samples" -lt 3 ] || close_run
+  fi
+}
+seen=false samples=0
+drive_run on_child_line env RACE_MEM_LIMIT_KB=65536 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" \
+  python3 -c "$no_lists" pgrep sh -c 'python3 -c "$1"; :' sh "$big_child"
+check "says it finds the descendants with pgrep -P" "$(contains "$out" 'finds the command.s descendants with pgrep -P')"
+check "a sample saw the child past the limit" "$(is "$seen" true)"
+check "exits 1" "$(is "$status" 1)"
+check "says the peak passed the limit" "$(contains "$out" 'passed the limit of 65536 kB')"
+seen=false samples=0
+drive_run on_child_line env RACE_MEM_LIMIT_KB=65536 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" \
+  python3 -c "$no_lists" blind sh -c 'python3 -c "$1"; :' sh "$big_child"
+check "with pgrep finding no child, three samples and more never see it, and the same run passes" \
+  "$([ "$seen,$status" = false,0 ] && [ "$samples" -ge 3 ] && echo true || echo false)"
+
+echo "case: a pgrep that fails makes the step fail, naming the samples that missed the tree"
+failing_pgrep=$(mktemp -d)
+printf '#!/bin/sh\necho "pgrep: cannot read /proc" >&2\nexit 2\n' >"$failing_pgrep/pgrep"
+chmod +x "$failing_pgrep/pgrep"
+set +e
+out=$(env -u RACE_MEM_LIMIT_KB PATH="$failing_pgrep:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" \
+  python3 -c "$no_lists" pgrep sleep 1 2>&1)
+status=$?
+set -e
+rm -rf -- "$failing_pgrep"
+check "exits 1" "$(is "$status" 1)"
+check "names pgrep's failure" "$(contains "$out" 'a sample saw only part of the tree: pgrep -P [0-9]* exited 2')"
+check "says the limit was not checked against the whole tree" \
+  "$(contains "$out" 'samples could not read the command.s descendants')"
+
 summary "race_memory.py"

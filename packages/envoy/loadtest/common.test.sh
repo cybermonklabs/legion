@@ -160,6 +160,21 @@ names() { [[ $1 =~ pid\ $2([^0-9]|$) ]]; }
 # dead_pid: the pid of a process that has exited and been reaped.
 dead_pid() { bash -c 'echo $$'; }
 
+# own_proc_root NAME PID...: a proc root of the case's own processes for lock_root's look for the
+# lock's holders (lock_holders_walk reads ${proc_root:-/proc}), a link to /proc/<pid> for each PID,
+# so the look reads those processes alone and takes their time, not the machine's: on a loaded
+# machine a walk of every process ran past lock_root's 3 s, and which case it failed changed from
+# run to run. A process the case starts later links itself (ln -s /proc/$$ ROOT/$$).
+own_proc_root() {
+  local dir="${temporary_dir}/proc-$1" pid
+  shift
+  mkdir -p "$dir"
+  for pid in "$@"; do
+    ln -s "/proc/$pid" "$dir/$pid"
+  done
+  printf '%s\n' "$dir"
+}
+
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   [[ -z "${out:-}" ]] || printf '  caller output:\n%s\n' "$out" >&2
@@ -263,7 +278,7 @@ case_token_without_descriptor() {
 
 case_invisible_holder() {
   out=""
-  local root="${temporary_dir}/root-d" dead
+  local root="${temporary_dir}/root-d" dead proc
   mkdir -p "$root"
   dead="$(dead_pid)"
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-d" 300 >/dev/null 2>&1 &
@@ -271,7 +286,8 @@ case_invisible_holder() {
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-d" || { fail "(d) the holder on descriptor 7 did not take the lock"; return; }
 
-  try_lock "$root"
+  proc=$(own_proc_root d "$holder")
+  try_lock "$root" proc_root="$proc"
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
     fail "(d) a caller was admitted while a process that this PID namespace cannot see held the lock"
     return
@@ -293,7 +309,7 @@ case_holder_ended() {
   dead="$(dead_pid)"
   printf 'pid=%s\ncommand=an ended run\nstarted=2026-10-27T00:00:00Z\ntoken=0123456789abcdef0123456789abcdef\n' \
     "$dead" >"${root}/.run.lock"
-  try_lock "$root"
+  try_lock "$root" proc_root="$(own_proc_root e-none)"
   if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
     fail "(e) a caller was refused on a root whose record names a dead pid and whose lock no process holds"
     return
@@ -304,7 +320,7 @@ case_holder_ended() {
   local holder=$!
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-e" || { fail "(e) the holder on descriptor 7 did not take the lock"; return; }
-  try_lock "$root"
+  try_lock "$root" proc_root="$(own_proc_root e "$holder")"
   if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
     fail "(e) a caller was refused after the holder (pid $holder) ended during its wait"
     return
@@ -316,13 +332,14 @@ case_holder_ended() {
 
 case_waiting_callers() {
   out=""
-  local root="${temporary_dir}/root-f" dead
+  local root="${temporary_dir}/root-f" dead proc
   mkdir -p "$root"
   dead="$(dead_pid)"
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-f" 300 "$foreign_pidns" >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-f" || { fail "(f) the holder on descriptor 7 did not take the lock"; return; }
+  proc=$(own_proc_root f "$holder")
 
   # Caller 1 sits in its first flock for 4 s; caller 2 starts once caller 1 is in it, and waits its
   # whole 3 s while caller 1 has the lock file open.
@@ -330,9 +347,9 @@ case_waiting_callers() {
   for n in 1 2; do
     local path="$PATH"
     [[ $n == 2 ]] || path="${slow_flock}:${PATH}"
-    env -u LOADTEST_LOCK_TOKEN PATH="$path" LOADTEST_TEST_FLOCK_MARK="$mark" \
-      bash -c 'echo "$$" >"$3"; source "$1"; lock_root "$2"' caller \
-      "$helper" "$root" "${temporary_dir}/caller-f${n}.pid" >"${temporary_dir}/caller-f${n}.out" 2>&1 9>&- &
+    env -u LOADTEST_LOCK_TOKEN PATH="$path" LOADTEST_TEST_FLOCK_MARK="$mark" proc_root="$proc" \
+      bash -c 'echo "$$" >"$3"; ln -s "/proc/$$" "$4/$$"; source "$1"; lock_root "$2"' caller \
+      "$helper" "$root" "${temporary_dir}/caller-f${n}.pid" "$proc" >"${temporary_dir}/caller-f${n}.out" 2>&1 9>&- &
     waiters+=("$!")
     pids+=("$!")
     for ((i = 0; i < 100 && n == 1; i++)); do
@@ -385,7 +402,7 @@ case_foreign_record_live_pid() {
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-g" || { fail "(g) the holder on descriptor 7 did not take the lock"; return; }
 
-  try_lock "$root"
+  try_lock "$root" proc_root="$(own_proc_root g "$holder" "$$")"
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
     fail "(g) a caller was admitted while a process that this PID namespace cannot see held the lock"
     return
@@ -625,8 +642,9 @@ done
 # machine and reads each holder's command line, so it is held to lock_root's 3 s wait, and the
 # refusal names that bound when the look ends there. The holder holds the lock on descriptor 9
 # under a complete record whose pid cannot run (one above pid_max), so lock_root looks for it; the
-# caller's `tr` never answers. The caller runs under a 20 s timeout of its own: a look held by the
-# `tr` holds the refusal past it.
+# caller's `tr` never answers. The case decides by the refusal: it must come and name the bound.
+# The caller's 300 s timeout is a hang guard only, below the stub's 600 s: an unbounded look is
+# held by the `tr` past it, and a bounded one ends in about 7 s however loaded the machine.
 case_holder_look_bounded() {
   out=""
   local root="${temporary_dir}/root-bounded" holder ready="${temporary_dir}/bounded-ready" gone status=0
@@ -638,10 +656,10 @@ echo ready >"$3"; exec sleep 300' holder "$root" "$gone" "$ready" >/dev/null 2>&
   holder=$!
   pids+=("$holder")
   wait_for "$ready" || { fail "the holder wrote no record"; return; }
-  out=$(timeout 20 env -u LOADTEST_LOCK_TOKEN PATH="${stuck_tr}:$PATH" bash -c 'source "$1"; lock_root "$2"; echo ADMITTED' \
+  out=$(timeout 300 env -u LOADTEST_LOCK_TOKEN PATH="${stuck_tr}:$PATH" bash -c 'source "$1"; lock_root "$2"; echo ADMITTED' \
     caller "$helper" "$root" 2>&1 9>&-) || status=$?
   ((status != 124)) ||
-    { fail "lock_root's refusal did not come within 20 s: its look for the holders waited on a command line that never answers"; return; }
+    { fail "lock_root's refusal did not come within the case's 300 s hang guard: its look for the holders waited on a command line that never answers"; return; }
   [[ $out != *ADMITTED* ]] || { fail "a caller was admitted to a root another run holds"; return; }
   [[ $out =~ stopped\ at\ its\ [0-9.]+\ s\ bound ]] ||
     { fail "lock_root's refusal does not name the bound its look for the holders ended at"; return; }
@@ -649,12 +667,49 @@ echo ready >"$3"; exec sleep 300' holder "$root" "$gone" "$ready" >/dev/null 2>&
   printf 'PASS: lock_root'"'"'s look for the holders ends at its bound and the refusal names it\n'
 }
 
+# case_holder_look_cut_partial: a look inside lock_root's wait that the wait's bound cuts short has
+# found only some of the holders, so the refusal says others may hold the lock too. Two processes
+# hold the lock file on descriptor 9, the first under a complete record whose pid cannot run; the
+# caller's `tr` answers the first command line it is asked for and never another, so the look
+# finds one holder and is cut at the second. The look reads a proc root of the two (own_proc_root),
+# so neither is past the bound for the machine's size. The 300 s timeout is a hang guard, as above.
+case_holder_look_cut_partial() {
+  out=""
+  local root="${temporary_dir}/root-partial" ready="${temporary_dir}/partial-ready" opened="${temporary_dir}/partial-opened"
+  local once="${temporary_dir}/tr-once" gone real_tr status=0 first second
+  real_tr=$(command -v tr)
+  mkdir -p "$root" "$once"
+  printf '#!/usr/bin/env bash\nmkdir %q 2>/dev/null && exec %q "$@"\nexec sleep 600\n' "$once/answered" "$real_tr" >"$once/tr"
+  chmod +x "$once/tr"
+  gone=$(($(</proc/sys/kernel/pid_max) + 1))
+  bash -c 'exec 9>>"$1/.run.lock"; flock 9
+printf "pid=%s\npidns=%s\ncommand=a run that has ended\nstarted=2026-11-20T00:00:00Z\ntoken=0123456789abcdef0123456789abcdef\n" "$2" "$(readlink /proc/self/ns/pid)" >"$1/.run.lock"
+echo ready >"$3"; exec sleep 300' holder "$root" "$gone" "$ready" >/dev/null 2>&1 &
+  first=$!
+  pids+=("$first")
+  wait_for "$ready" || { fail "the holder wrote no record"; return; }
+  bash -c 'exec 9>>"$1/.run.lock"; echo opened >"$2"; exec sleep 300' opener "$root" "$opened" >/dev/null 2>&1 &
+  second=$!
+  pids+=("$second")
+  wait_for "$opened" || { fail "the second process did not open the lock file"; return; }
+  out=$(timeout 300 env -u LOADTEST_LOCK_TOKEN PATH="${once}:$PATH" proc_root="$(own_proc_root partial "$first" "$second")" \
+    bash -c 'source "$1"; lock_root "$2"; echo ADMITTED' caller "$helper" "$root" 2>&1 9>&-) || status=$?
+  ((status != 124)) ||
+    { fail "lock_root's refusal did not come within the case's 300 s hang guard"; return; }
+  [[ $out != *ADMITTED* ]] || { fail "a caller was admitted to a root another run holds"; return; }
+  [[ $out == *") holds its lock (the look for the processes with descriptor 9 on it stopped at its "* ]] ||
+    { fail "lock_root's refusal lists the holders a look cut at its bound found as if they were all"; return; }
+  out=""
+  printf 'PASS: a refusal whose look was cut says others may hold the lock too\n'
+}
+
 # case_port_look_bounded: port_holder's look for a listener reads a link of every descriptor of
 # every process of its proc root, so check_port holds it to PORT_HOLDER_SECONDS and names that bound
 # when the look ends there. The proc root is a listener's alone, as case_holder_names_escaped's is;
 # `readlink` and `find` never answer. check_port runs from stack.sh with its neighbours stubbed:
-# the port is open and none of the stack's. A 20 s timeout of the case's own catches a look that
-# waits on a link unbounded.
+# the port is open and none of the stack's. The case decides by the refusal naming the bound; its
+# 300 s timeout is a hang guard only, below the stubs' 600 s, which a look that waits on a link
+# unbounded is held past.
 case_port_look_bounded() {
   out=""
   local dir="${temporary_dir}/port-bounded" listener port status=0
@@ -675,7 +730,7 @@ time.sleep(300)
   ln -s /proc/net/tcp "$dir/proc/net/tcp"
   ln -s /proc/net/tcp6 "$dir/proc/net/tcp6"
   ln -s "/proc/$listener" "$dir/proc/$listener"
-  out=$(timeout 20 env proc_root="$dir/proc" PATH="${stuck_links}:$PATH" bash -c 'source "$1"
+  out=$(timeout 300 env proc_root="$dir/proc" PATH="${stuck_links}:$PATH" bash -c 'source "$1"
 eval "$(sed -n "/^port_holder() {/,/^}/p;/^port_holder_walk() {/,/^}/p;/^check_port() {/,/^}/p" "$2")"
 PORT_HOLDER_SECONDS=2
 declare -A PORT_VAR=([proxy]=LOADTEST_PROXY_PORT)
@@ -688,7 +743,7 @@ default_port() { echo 1; }
 die() { echo "DIE: $*"; exit 1; }
 check_port proxy proxy' check "$helper" "$here/stack.sh" "$port" 2>&1) || status=$?
   ((status != 124)) ||
-    { fail "check_port did not refuse within 20 s: port_holder waited on a descriptor's link that never answers"; return; }
+    { fail "check_port did not refuse within the case's 300 s hang guard: port_holder waited on a descriptor's link that never answers"; return; }
   [[ $out == *"stopped at its 2 s bound"* ]] ||
     { fail "check_port's refusal does not name the bound port_holder's look ended at"; return; }
   out=""
@@ -750,9 +805,10 @@ case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
 case_holder_names_escaped || failed=$((failed + 1))
 case_holder_look_bounded || failed=$((failed + 1))
+case_holder_look_cut_partial || failed=$((failed + 1))
 case_port_look_bounded || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 14 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 15 cases failed\n' "$failed" >&2
   exit 1
 fi

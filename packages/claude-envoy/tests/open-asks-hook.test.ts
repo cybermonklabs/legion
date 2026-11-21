@@ -1,20 +1,27 @@
 import { afterEach, expect, test } from "bun:test"
 import { closeSync, constants, openSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { refusingOrigin } from "@legion/test-fixtures/refused-port"
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories"
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-// Each row waits on its hooks' exits and on its stand-ins, and on no clock: a hook's wall time is
-// the CPU it needs over the share of a CPU the machine gives it. So no row has a bound of its own,
-// and the only one is the package's hang guard, `bun test --timeout=60000` (package.json), which
-// fires only if a hook never exits.
+// Each row waits on its hooks' exits and on its stand-ins, and on no clock. So no row has a bound
+// of its own, and the only one is the package's hang guard, `bun test --timeout=60000`
+// (package.json), which fires only if a hook never exits.
+//
+// A hook's time is its disk's as much as its CPU's: Bun writes its cache under the HOME each row
+// gives it. So every row's scratch, that HOME, is made on the memory root (`memoryRoot`). The
+// hook run alone 90 times with a fresh HOME on this dev box at a load of 1,085: under a TMPDIR on
+// its shared xfs disk 5 runs took over 5 s and the slowest 81.6 s; on /dev/shm none took over 5 s,
+// and the slowest 0.9 s.
+const scratchRoot = memoryRoot()
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment and `preload` given to
  * Bun first where set. The session's cwd is the test's scratch HOME unless the input names one:
@@ -47,7 +54,7 @@ const hookInput = {
 }
 
 test("summarises the session's open asks into context and records the session id for its Claude process", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-"))
   const requests: string[] = []
   const server = Bun.serve({
     port: 0,
@@ -108,7 +115,7 @@ test("summarises the session's open asks into context and records the session id
 })
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-down-"))
   // A port this row holds bound and never listens on (`refusingOrigin`), so the hook's request is
   // refused, and no other process can bind it to give an answer of its own.
   try {
@@ -140,7 +147,7 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
 // hook's fetch of that `.invalid` host is answered by a stand-in that fails as Bun's resolver does
 // (`unresolved-names.ts`), so the row asks no DNS server and does not wait on its answer.
 test("names an unreachable Dispatch whose password holds an '@' by no part of the password", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-at-"))
   const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
   try {
     const names = await unresolvedNames(scratch)
@@ -170,7 +177,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
 })
 
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-title-"))
   const pluginData = join(scratch, "plugin-data")
   const titleFile = join(pluginData, "titles", "s-1.txt")
   try {
@@ -193,7 +200,7 @@ test("a SessionStart carrying a session title records it, and one carrying none 
 })
 
 test("adds nothing to context when Dispatch is not configured", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-off-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-off-"))
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -214,7 +221,7 @@ test("adds nothing to context when Dispatch is not configured", async () => {
 })
 
 test("summarises a missing Claude profile file with where its unread old file belongs", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-profile-off-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-profile-off-"))
   const configDirectory = join(scratch, "claude-config")
   const old = join(scratch, ".config", "opencode", "envoy.json")
   await mkdir(configDirectory)
@@ -249,7 +256,7 @@ test("summarises a missing Claude profile file with where its unread old file be
 // A token file left without DISPATCH_URL names the lost variable, and the unread old file's advice
 // still ends the notice, which is what the hook looks for before it says anything.
 test("a DISPATCH_TOKEN_FILE with no DISPATCH_URL names the lost URL and still where the old file belongs", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-lost-url-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-lost-url-"))
   const configDirectory = join(scratch, "claude-config")
   const old = join(scratch, ".config", "opencode", "envoy.json")
   const tokenFile = join(scratch, "DISPATCH_TOKEN")
@@ -276,7 +283,7 @@ test("a DISPATCH_TOKEN_FILE with no DISPATCH_URL names the lost URL and still wh
 })
 
 test("says nothing of the unread old user file when a checkout's enabled: false turns Dispatch off", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-checkout-off-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-checkout-off-"))
   const checkout = join(scratch, "checkout")
   const old = join(scratch, ".config", "opencode", "envoy.json")
   await mkdir(join(checkout, ".envoy"), { recursive: true })
@@ -313,7 +320,7 @@ test("says nothing of the unread old user file when a checkout's enabled: false 
 })
 
 test("names a checkout's unread .opencode/envoy.json and still summarises the asks from the user file's server", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-old-checkout-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-old-checkout-"))
   const checkout = join(scratch, "checkout")
   const old = join(checkout, ".opencode", "envoy.json")
   /** The token in the checkout's old file, which the hook names and never reads. */
@@ -385,7 +392,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
 // ENVOY_CONFIG_FILE names; Claude Code sources CLAUDE_ENV_FILE into every later Bash command of the
 // session.
 test("names Claude Code as the dispatch host and hands on the session's envoy.json in CLAUDE_ENV_FILE, after whatever other hooks wrote", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-env-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-env-"))
   const envFile = join(scratch, "session-env.sh")
   await writeFile(envFile, "export FROM_ANOTHER_HOOK=1\n")
   try {
@@ -410,7 +417,7 @@ test("names Claude Code as the dispatch host and hands on the session's envoy.js
 })
 
 test("hands on the CLAUDE_CONFIG_DIR envoy.json, single-quoted so the shell reads the path as written", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-config-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-config-"))
   const configDirectory = join(scratch, "it's claude")
   await mkdir(configDirectory)
   const envFile = join(scratch, "session-env.sh")
@@ -443,7 +450,7 @@ test("hands on the CLAUDE_CONFIG_DIR envoy.json, single-quoted so the shell read
 // Swap the hook's harness for the `command` rule, or omp's, and it would hand on, and read open
 // asks from, a file an outer session or launcher left in the environment.
 test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FILE or omp profile it inherited", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-harness-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-harness-"))
   const requests: string[] = []
   const server = Bun.serve({
     port: 0,
@@ -500,7 +507,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
 })
 
 test("with a relative XDG_CONFIG_HOME, hands on no envoy.json, says why Dispatch is unavailable, and still exits 0", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-xdg-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-xdg-"))
   const envFile = join(scratch, "session-env.sh")
   try {
     const result = await runHook(hookInput, {
@@ -522,7 +529,7 @@ test("with a relative XDG_CONFIG_HOME, hands on no envoy.json, says why Dispatch
 
 // SessionStart fires on startup, resume, clear, compact and fork; the file keeps one of each line.
 test("writes the host and envoy.json lines once however many SessionStarts write the same env file", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-env-twice-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-env-twice-"))
   const envFile = join(scratch, "session-env.sh")
   await writeFile(envFile, "export FROM_ANOTHER_HOOK=1\n")
   try {
@@ -547,7 +554,7 @@ test("writes the host and envoy.json lines once however many SessionStarts write
 })
 
 test("writes no environment line anywhere when Claude Code names no env file", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-no-env-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-no-env-"))
   const envFile = join(scratch, "session-env.sh")
   await writeFile(envFile, "export FROM_ANOTHER_HOOK=1\n")
   try {
@@ -580,19 +587,22 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
   return bin
 }
 
-/** The FIFOs of `unansweringJjDirectory`'s stand-ins, for the afterEach below. */
+/** The FIFOs of `unansweringJjDirectory`'s stand-ins not yet let go. */
 const unansweringJjs: string[] = []
-// A stand-in still blocked on its FIFO when its row ends, which only a hook that waited on it
-// leaves, is let go here: opening the write end ends its read, so that hook exits and nothing of
-// the row outlives it. A FIFO with no reader left refuses the open (ENXIO), and one its row has
-// removed is gone (ENOENT); neither has anything to let go.
-afterEach(() => {
+/** Lets go of every stand-in still blocked on its FIFO: opening the write end ends its read, so a
+ *  hook that waited on it exits, and no `cat` outlives its row. A row calls it in its `finally`,
+ *  before it removes its scratch and the FIFO with it: a `cat` that a hook left blocked in `open()`
+ *  on a FIFO that is gone is out of every writer's reach. The afterEach below calls it for a row
+ *  that timed out, whose `finally` waits on the hook. A FIFO with no reader left refuses the open
+ *  (ENXIO), and one already removed is gone (ENOENT); neither has anything to let go. */
+function releaseUnansweringJjs(): void {
   for (const fifo of unansweringJjs.splice(0)) {
     try {
       closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
     } catch {}
   }
-})
+}
+afterEach(releaseUnansweringJjs)
 
 /** A directory holding a `jj` that never answers while its row runs, for `jjDirectory`'s place on
  * the hook's PATH: it reads a FIFO no writer opens before the row has ended. So a hook that waited
@@ -667,7 +677,7 @@ function unscopedTable(role?: string): string {
 // pane's own workspace, so a commit the same shell makes in another repository carries no issue
 // line. This pane has no LEGION_ROLE, so both tables carry the session line alone.
 test("writes the pane's attribution overlay and exports the chain layering it over jj's own config", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const workspace = join(scratch, "workspace")
@@ -709,7 +719,7 @@ test("writes the pane's attribution overlay and exports the chain layering it ov
 // A pane whose LEGION_ROLE names a role gets the role line after the session line. The scoped
 // table carries it too, before the issue line: a scoped commit_trailers replaces the unscoped one.
 test("writes the pane's role after the session line, in the unscoped table and the scoped one", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-role-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-role-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const workspace = join(scratch, "workspace")
@@ -747,7 +757,7 @@ test("writes the pane's role after the session line, in the unscoped table and t
 // Without a workspace there is nothing to scope the key to, and an unscoped key would reach every
 // jj repository the pane's shell commits in.
 test("writes the session line alone when the pane names no workspace", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-no-ws-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-no-ws-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const userConfig = join(scratch, "jj-user.toml")
@@ -771,7 +781,7 @@ test("writes the session line alone when the pane names no workspace", async () 
 })
 
 test("writes the session line alone when the daemon named no issue key", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-no-key-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-no-key-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const userConfig = join(scratch, "jj-user.toml")
@@ -800,7 +810,7 @@ test("writes the session line alone when the daemon named no issue key", async (
 // A Claude Code session that is no Legion pane commits as whoever runs it: no overlay, and no
 // JJ_CONFIG to replace whatever jj config that person's shell already has.
 test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-off-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-off-"))
   const bin = await jjDirectory(
     scratch,
     `printf '%s\\n' ${JSON.stringify(join(scratch, "jj-user.toml"))}`,
@@ -841,7 +851,7 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
 // wrote; the chain it resolves can differ between them. Two export lines in one sourced file
 // would leave which chain wins to the order they were written in.
 test("keeps one JJ_CONFIG export, naming the chain this run resolved, when the same id runs again", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-twice-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-twice-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const userConfig = join(scratch, "jj-user.toml")
@@ -883,7 +893,7 @@ test("keeps one JJ_CONFIG export, naming the chain this run resolved, when the s
 
 // An unquoted path holding a space or a quote would break every Bash command of the session.
 test("single-quotes the chain, so a shell sourcing the file reads a state directory path whole", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-quoted-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-quoted-"))
   const stateDir = join(scratch, "it's a state dir")
   await mkdir(stateDir)
   const userConfig = join(scratch, "jj-user.toml")
@@ -911,7 +921,7 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 // Attribution is worth nothing the session's own start: a jj that never answers costs the pane the
 // export, and neither the two lines the `dispatch` command needs nor the summary.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const bin = await unansweringJjDirectory(scratch)
@@ -941,6 +951,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     )
     expect(await readdir(stateDir)).toEqual([])
   } finally {
+    releaseUnansweringJjs()
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
   }
@@ -955,7 +966,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
 // from an inherited JJ_CONFIG and spawns no jj at all when it finds one, so both runs are given
 // an environment carrying none, as Claude Code's hook process is.
 test("keeps the session's own export when a later run of the same id has no jj to answer", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-resume-"))
+  const scratch = await mkdtemp(join(scratchRoot, "claude-envoy-hook-jj-resume-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const userConfig = join(scratch, "jj-user.toml")
@@ -993,6 +1004,25 @@ test("keeps the session's own export when a later run of the same id has no jj t
     )
     expect(await readdir(stateDir)).toEqual(["omp-attribution-s-1.toml"])
   } finally {
+    releaseUnansweringJjs()
     await rm(scratch, { recursive: true, force: true })
   }
+})
+
+// Claude Code kills the open-asks hook at the timeout hooks.json gives it, and the session then
+// loses its exports and its summary. The hook runs its jj wait and its Dispatch read one after the
+// other, so their bounds must end inside that timeout together: a fact of the two constants and
+// the file, which no clock of this machine's could show. The jj rows above hold only that the
+// hook gives up; this row holds when.
+test("the hook's jj and Dispatch bounds end inside the timeout hooks.json gives open-asks", async () => {
+  const config = JSON.parse(
+    await readFile(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
+  ) as { hooks: Record<string, { hooks: { args?: string[]; timeout?: number }[] }[]> }
+  const timeouts = Object.values(config.hooks)
+    .flat()
+    .flatMap((group) => group.hooks)
+    .filter((hook) => hook.args?.at(-1) === "open-asks")
+    .map((hook) => hook.timeout)
+  expect(timeouts).toHaveLength(1)
+  expect(JJ_BASE_CHAIN_TIMEOUT_MS + OPEN_ASKS_TIMEOUT_MS).toBeLessThan((timeouts[0] ?? 0) * 1000)
 })

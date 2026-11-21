@@ -295,10 +295,11 @@ LOCK_LOOK_SECONDS=3
 # otherwise. timeout signals its whole process group, so a program FUNCTION was waiting on ends
 # with it. The walks it bounds read a file of every process of the machine, and one such file can
 # answer slowly or never: a process's command line is whatever its process gave itself to read.
+# The shell gets this one's proc_root, set or not, as the walks read it.
 bounded() {
   local seconds=$1 status=0
   shift
-  timeout -k 1 "$seconds" bash -c "$(declare -f printable escape_bytes "$1"); \"\$@\"" bounded "$@" || status=$?
+  proc_root=${proc_root:-} timeout -k 1 "$seconds" bash -c "$(declare -f printable escape_bytes "$1"); \"\$@\"" bounded "$@" || status=$?
   case $status in
     124 | 137) return 3 ;;
   esac
@@ -318,13 +319,15 @@ lock_holders() {
 }
 
 # lock_holders_walk FILE: one "pid N (command)" line for each process whose descriptor 9 is open on
-# FILE, printed as it is found.
+# FILE, printed as it is found. It walks every process of `${proc_root:-/proc}`: the machine's, or
+# a test's proc root of its own processes (links to their /proc/<pid>), so the test's walk is as
+# long as its own processes and not the machine's.
 lock_holders_walk() {
   local file=$1 dir cmd
-  for dir in /proc/[0-9]*; do
+  for dir in "${proc_root:-/proc}"/[0-9]*; do
     [ "$dir/fd/9" -ef "$file" ] 2>/dev/null || continue
     cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-    printf 'pid %s (%s)\n' "${dir#/proc/}" "$(printable "${cmd% }")"
+    printf 'pid %s (%s)\n' "${dir##*/}" "$(printable "${cmd% }")"
   done
 }
 
@@ -366,10 +369,11 @@ lock_root() {
   # PID namespace. A complete record whose pid does not is a holder whose children still hold the
   # lock (stop when lock_holders names them), one that has just ended (the next try takes the lock),
   # or one in another PID namespace, which this one never sees. lock_holders walks every process of
-  # the machine, so a look inside the 3 s gets what is left of them, and one that ends there with
-  # no holder found only ends the wait sooner. A refusal that has found no holder looks once more,
-  # for at most LOCK_LOOK_SECONDS, and names that bound when its look ends there.
-  local record="" holders="" runs=false cut="" deadline left
+  # the machine (or proc_root's), so a look inside the 3 s gets what is left of them, and one that
+  # ends there with no holder found only ends the wait sooner. A refusal that has found no holder
+  # looks once more, for at most LOCK_LOOK_SECONDS, and names that bound when its look ends there;
+  # and the lock is tried once more after the looks, which a holder can end during.
+  local record="" holders="" runs=false cut="" deadline left look
   deadline=$(($(now_ms) + 3000))
   while :; do
     exec 8<>"$file"
@@ -388,7 +392,11 @@ lock_root() {
       fi
       left=$((deadline - $(now_ms)))
       ((left > 0)) || break
-      holders=$(lock_holders "$file" "$(ms_seconds "$left")") || true
+      # A look the wait's own bound cut short (3) found only part of the holders, which the
+      # refusal then says; a look that ran to its end clears what an earlier one left.
+      look=0 cut=""
+      holders=$(lock_holders "$file" "$(ms_seconds "$left")") || look=$?
+      ((look != 3)) || cut=$(ms_seconds "$left")
       [ -n "$holders" ] && break
     fi
     (($(now_ms) + 100 < deadline)) || break
@@ -408,11 +416,21 @@ lock_root() {
   # byte, prints with its control characters escaped.
   run=$(printable_field "$run")
   if ! $runs && [ -z "$holders" ]; then
+    cut=""
     holders=$(lock_holders "$file" "$LOCK_LOOK_SECONDS") || cut=$LOCK_LOOK_SECONDS
   fi
+  # The looks can take what was left of the wait and more, and a holder that ended while one ran
+  # has let the lock go: so it is tried once more before the refusal.
+  exec 8<>"$file"
+  if flock -n 8; then
+    exec 9<&8 8<&-
+    lock_take "$file"
+    return 0
+  fi
+  exec 8<&-
   if $runs; then
     printf '%s: LOADTEST_ROOT %s is in use by another run (%s)\n' "$me" "$root" "$run" >&2
-  elif [ -n "$holders" ] || [ -n "$cut" ]; then
+  elif [ -n "$holders" ]; then
     local taker="left no record in the lock file"
     if [ -n "$pid" ]; then
       case $ns in
@@ -422,17 +440,15 @@ lock_root() {
       esac
     fi
     local held="$holders holds its lock"
-    if [ -n "$cut" ] && [ -n "$holders" ]; then
+    [ -z "$cut" ] ||
       held+=" (the look for the processes with descriptor 9 on it stopped at its $cut s bound, so others may hold it too)"
-    elif [ -n "$cut" ]; then
-      held="the look for the processes with descriptor 9 on its lock stopped at its $cut s bound before it found one"
-    fi
     printf '%s: LOADTEST_ROOT %s is in use by another run: %s; the run that took it %s\n' \
       "$me" "$root" "$held" "$taker" >&2
   else
     # The lock is held, yet this PID namespace shows no holder: neither the record's pid nor a
-    # process with descriptor 9 on the file.
-    local named="the lock file holds no record of that run"
+    # process with descriptor 9 on the file that the look found. A look its bound cut short says
+    # so, as it may have missed a holder here.
+    local named="the lock file holds no record of that run" missed=""
     if [ -n "$pid" ]; then
       case $ns in
         here) named="the lock file names that run as $run, which has exited" ;;
@@ -440,8 +456,10 @@ lock_root() {
         *) named="the lock file names that run as $run, in a record without its PID namespace" ;;
       esac
     fi
-    printf '%s: LOADTEST_ROOT %s is locked by a process that is not visible in this PID namespace, such as a run in another PID namespace (another Legion role in this pod on a shared LOADTEST_ROOT); %s. Do not remove %s: that run still holds it, and a run that locked a new lock file would reset the stack under it\n' \
-      "$me" "$root" "$named" "$file" >&2
+    [ -z "$cut" ] ||
+      missed="; the look for the processes with descriptor 9 on it stopped at its $cut s bound before it found one, so one may run here unseen"
+    printf '%s: LOADTEST_ROOT %s is locked by a process that is not visible in this PID namespace, such as a run in another PID namespace (another Legion role in this pod on a shared LOADTEST_ROOT); %s%s. Do not remove %s: that run still holds it, and a run that locked a new lock file would reset the stack under it\n' \
+      "$me" "$root" "$named" "$missed" "$file" >&2
   fi
   die "one run at a time per root ($file): wait for that run to end, or use another LOADTEST_ROOT"
 }
