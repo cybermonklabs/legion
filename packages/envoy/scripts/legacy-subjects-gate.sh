@@ -42,7 +42,7 @@
 #   - at a second reading: a listener whose count rose since the first reading, a first reading
 #     that was not clean, or less than the retention between the two.
 #
-# The old form is the gate's own rule (lib/legacy-subjects-gate-judge.jq, old_form), so the gate
+# The old form is the gate's own rule (lib/legacy-subjects-gate-forms.jq, old_form), so the gate
 # stays right once the code that reads the old form is deleted.
 #
 # What it cannot see is UNKNOWN, by name, and UNKNOWN is never GATE OPEN: a surface it could not
@@ -120,6 +120,12 @@ readonly job_namespace=envoy
 readonly listener_deployment=envoy-listener
 readonly job_deadline=300
 
+# listener_container selects the containers that run the listener: an image whose path ends
+# legion/envoy, running the image's own entrypoint or a command of envoy-listener. The pods and the
+# listener Deployment are read by the one rule.
+readonly listener_container='def listener_container: select(.image | test("(^|/)legion/envoy([@:]|$)"))
+  | select(.command // [] | length == 0 or (.[0] | split("/") | last) == "envoy-listener");'
+
 earlier=null
 if [ -n "$since" ]; then
   [ -r "$since" ] || usage "--since $since cannot be read"
@@ -164,6 +170,7 @@ delete_job() {
 }
 
 # cleanup deletes the Job when the gate stops before its own deletion ran (an error, a signal).
+# shellcheck disable=SC2329 # cleanup runs through the EXIT trap below
 cleanup() {
   delete_job >&2 || true
   rm -rf "$work"
@@ -173,16 +180,12 @@ trap cleanup EXIT
 started_at=$(date -u +%s)
 
 # --- the listeners in the cluster -----------------------------------------------------------------
-pods_ok=1
-if ! kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err"; then
-  pods_ok=0
-fi
 pods_error=""
-if [ "$pods_ok" = 1 ]; then
-  jq -c '[.items[] | . as $p | ($p.status.containerStatuses // []) as $statuses
+if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err" &&
+  jq -c "$listener_container"'
+    [.items[] | . as $p | ($p.status.containerStatuses // []) as $statuses
       | $p.spec.containers[]
-      | select(.image | test("(^|/)legion/envoy([@:]|$)"))
-      | select((.command // []) as $c | ($c | length) == 0 or ($c[0] | split("/") | last) == "envoy-listener")
+      | listener_container
       | . as $c
       | (($statuses | map(select(.name == $c.name)) | first) // {}) as $s
       | {ns: $p.metadata.namespace, pod: $p.metadata.name, uid: $p.metadata.uid, container: $c.name,
@@ -190,9 +193,7 @@ if [ "$pods_ok" = 1 ]; then
          restarts: ($s.restartCount // null),
          machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null),
          port: ([$c.env[]? | select(.name == "PORT") | .value // empty] | first // "9020")}]' \
-    "$work/pods.json" >"$work/listeners.json" 2>"$work/pods.err" || pods_ok=0
-fi
-if [ "$pods_ok" = 0 ]; then
+    "$work/pods.json" >"$work/listeners.json" 2>"$work/pods.err"; }; then
   pods_error="the cluster's pods could not be listed: $(first_line "$work/pods.err")"
   echo '[]' >"$work/listeners.json"
 fi
@@ -238,9 +239,9 @@ job_error=""
 if ! kc -n "$job_namespace" get deployment "$listener_deployment" -o json >"$work/deployment.json" 2>"$work/deployment.err"; then
   job_error="the listener Deployment $job_namespace/$listener_deployment could not be read: $(first_line "$work/deployment.err")"
 else
-  jq -c '.spec.template.spec as $s
-    | [$s.containers[] | select(.image | test("(^|/)legion/envoy([@:]|$)"))
-        | select((.command // []) as $c | ($c | length) == 0 or ($c[0] | split("/") | last) == "envoy-listener")] as $listeners
+  jq -c "$listener_container"'
+    .spec.template.spec as $s
+    | [$s.containers[] | listener_container] as $listeners
     | ($listeners | first // {}) as $c
     | ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null) as $urls
     | ([$c.env[]? | select(.name == "NATS_NKEY_SEED_FILE") | .value // empty] | first // null) as $seed
@@ -296,19 +297,16 @@ else
         fi
         sleep 2
       done
-      if kc -n "$job_namespace" logs "job/$job" >"$work/job.log" 2>"$work/logs.err"; then
-        jq -R -c 'split("\t") | select(length == 5)
-          | {leg: .[0], arg: .[1], rc: (.[2] | tonumber? // -1), out: (.[3] | @base64d), err: (.[4] | @base64d)}' \
-          "$work/job.log" >"$work/job-lines.jsonl" 2>"$work/parse.err" || job_error="the Job's log could not be read: $(first_line "$work/parse.err")"
-        if [ -z "$job_error" ]; then
-          if [ "$outcome" = succeeded ]; then
-            job_ok=1
-          else
-            job_error="the Job $outcome; its log ends: $(tail -n 1 "$work/job.log" | cut -c1-200)"
-          fi
-        fi
-      else
+      if ! kc -n "$job_namespace" logs "job/$job" >"$work/job.log" 2>"$work/logs.err"; then
         job_error="the Job ($outcome) left no log that could be read: $(first_line "$work/logs.err")"
+      elif ! jq -R -c 'split("\t") | select(length == 5)
+          | {leg: .[0], arg: .[1], rc: (.[2] | tonumber? // -1), out: (.[3] | @base64d), err: (.[4] | @base64d)}' \
+        "$work/job.log" >"$work/job-lines.jsonl" 2>"$work/parse.err"; then
+        job_error="the Job's log could not be read: $(first_line "$work/parse.err")"
+      elif [ "$outcome" = succeeded ]; then
+        job_ok=1
+      else
+        job_error="the Job $outcome; its log ends: $(tail -n 1 "$work/job.log" | cut -c1-200)"
       fi
       delete_job
     fi
@@ -338,7 +336,7 @@ jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json"
 jq -r '.lines[]' "$work/judgement.json"
 if [ "$job" != "" ] && [ "$job_deleted" = 0 ]; then
   echo "UNKNOWN: the Job $job_namespace/$job was not shown deleted; delete it: kubectl --context $context -n $job_namespace delete job $job"
-  jq '.record.unknown += ["the Job was not shown deleted"] | .record.verdict = (if .record.verdict == "shut" then "shut" else "unknown" end) | .verdict = (if .verdict == "shut" then "shut" else "unknown" end)' \
+  jq '.record.unknown += ["the Job was not shown deleted"] | (.record.verdict, .verdict) |= (if . == "shut" then . else "unknown" end)' \
     "$work/judgement.json" >"$work/judgement.tmp" && mv "$work/judgement.tmp" "$work/judgement.json"
 fi
 jq '.record' "$work/judgement.json" >"$record"

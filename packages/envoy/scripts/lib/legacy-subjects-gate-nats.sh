@@ -47,7 +47,7 @@ next_page() {
       then (.offset + (\$items | length)) as \$next
         | if (.total | type) == \"number\" and (.offset | type) == \"number\" and (\$items | length) > 0 and \$next < .total
           then \$next else \"done\" end
-      else \"done\" end" "$work/out" 2>/dev/null || echo done
+      else \"done\" end" "$work/out" 2>/dev/null || echo "done"
 }
 
 request stream_info - "\$JS.API.STREAM.INFO.$stream" ""
@@ -56,7 +56,7 @@ offset=0
 while :; do
   request consumers "$offset" "\$JS.API.CONSUMER.LIST.$stream" "{\"offset\":$offset}"
   offset=$(next_page .consumers)
-  [ "$offset" = done ] && break
+  [ "$offset" = "done" ] && break
 done
 
 for family in \
@@ -68,7 +68,7 @@ for family in \
   while :; do
     request subjects "$family $offset" "\$JS.API.STREAM.INFO.$stream" "{\"subjects_filter\":\"$family\",\"offset\":$offset}"
     offset=$(next_page .state.subjects)
-    [ "$offset" = done ] && break
+    [ "$offset" = "done" ] && break
   done
 done
 

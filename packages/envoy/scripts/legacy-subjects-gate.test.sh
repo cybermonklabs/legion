@@ -228,7 +228,7 @@ jq -n '{spec: {template: {spec: {
   volumes: [{name: "nats-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true,
     volumeAttributes: {secretProviderClass: "envoy-listener-nats-seed"}}}]}}}}' >"$base/deployment.json"
 echo '{"status":{"succeeded":1}}' >"$base/job-status.json"
-job_log "$(consumers_page $(clean_consumers))" "$(clean_issue_subjects)" >"$base/job.log"
+job_log "$(consumers_page "$(clean_consumers)")" "$(clean_issue_subjects)" >"$base/job.log"
 
 # --- running a case -------------------------------------------------------------------------------
 # new_case NAME copies the clean fixture into a fresh case directory, sets FAKE to it and names the
@@ -280,8 +280,8 @@ done_case() {
   fi
 }
 
-# first_reading_of DIR HOURS_AGO takes a first reading of the case in DIR and writes it, moved
-# HOURS_AGO hours into the past, to $FAKE/earlier.json, as a reading taken then would read.
+# first_reading_of HOURS_AGO takes a first reading of the case and writes it, moved HOURS_AGO hours
+# into the past, to $FAKE/earlier.json, as a reading taken then would read.
 first_reading_of() {
   local hours=$1
   reading
@@ -439,7 +439,7 @@ expect_last "GATE SHUT"
 done_case
 
 new_case "a Legion daemon's consumer still on an old filter shuts the gate"
-job_log "$(consumers_page $(clean_consumers) "$(consumer legion-go-ZED-dispatch '["notifications.dispatch.issue.ZED-7.>"]')")" "$(clean_issue_subjects)" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers)" "$(consumer legion-go-ZED-dispatch '["notifications.dispatch.issue.ZED-7.>"]')")" "$(clean_issue_subjects)" >"$FAKE/job.log"
 reading
 expect_status 1
 expect_line "GATE SHUT: consumer legion-go-ZED-dispatch filters notifications.dispatch.issue.ZED-7.>, which only an old-form name matches"
@@ -454,12 +454,12 @@ new_case "a consumer list that cannot be read is UNKNOWN"
 } >"$FAKE/job.log"
 reading
 expect_status 3
-expect_line 'UNKNOWN: the stream'"'"'s consumers: no answer: nats: permissions violation: Permissions Violation for Publish to "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS"'
+expect_line "UNKNOWN: the stream's consumers: no answer: nats: permissions violation: Permissions Violation for Publish to \"\$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS\""
 expect_last "UNKNOWN"
 done_case
 
 new_case "a stream still holding an old-form subject shuts the gate"
-job_log "$(consumers_page $(clean_consumers))" "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers)")" "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" >"$FAKE/job.log"
 reading
 expect_status 1
 expect_line "GATE SHUT: the stream holds 1 old-form subject(s) under notifications.dispatch.issue.>: notifications.dispatch.issue.ACME-13.comment.created"
@@ -538,7 +538,7 @@ expect_line "the stream keeps 72 h, so read again at or after"
 done_case
 
 new_case "a first reading that was not clean cannot open the gate"
-job_log "$(consumers_page $(clean_consumers))" "$(subjects_page notifications.dispatch.issue.ACME-13.comment.created)" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers)")" "$(subjects_page notifications.dispatch.issue.ACME-13.comment.created)" >"$FAKE/job.log"
 : >"$FAKE/calls"
 reading
 expect_status 1
@@ -580,21 +580,21 @@ expect_line "UNKNOWN: the listeners in the cluster: the cluster's pods could not
 done_case
 
 new_case "no Legion daemon consumer on the stream is UNKNOWN"
-job_log "$(consumers_page $(clean_consumers | grep -v legion-go-ACME-dispatch))" "$(clean_issue_subjects)" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers | grep -v legion-go-ACME-dispatch)")" "$(clean_issue_subjects)" >"$FAKE/job.log"
 reading
 expect_status 3
 expect_line "UNKNOWN: the stream's consumers: no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream"
 done_case
 
 new_case "a stream with no issue subject at all is UNKNOWN"
-job_log "$(consumers_page $(clean_consumers))" "$(subjects_page)" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers)")" "$(subjects_page)" >"$FAKE/job.log"
 reading
 expect_status 3
 expect_line "UNKNOWN: the stream's subjects under notifications.dispatch.issue.>: the stream holds none"
 done_case
 
 new_case "an empty interest store is UNKNOWN"
-job_log "$(consumers_page $(clean_consumers))" "$(clean_issue_subjects)" "" >"$FAKE/job.log"
+job_log "$(consumers_page "$(clean_consumers)")" "$(clean_issue_subjects)" "" >"$FAKE/job.log"
 reading
 expect_status 3
 expect_line "UNKNOWN: the interest store lists no record"
