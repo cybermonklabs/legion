@@ -370,6 +370,35 @@ func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what 
 	})
 }
 
+// awaitGateWaitOrEnd is awaitGateWait for an arrival with a bound of its own on the gate, an
+// earlier build's registration (registrationGateBound): such an arrival stops waiting once that
+// bound has passed, so a test slower than the bound between starting it and reading pg_locks finds
+// it ended rather than waiting. It answers true and the arrival's result when the arrival ended
+// first, and false and nil once backend pid is seen waiting for the gate exclusively; the caller
+// judges an ended arrival by its result. Its one bound is the test binary's deadline less
+// testwait's margin (testwait.Until).
+func awaitGateWaitOrEnd(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) (bool, error) {
+	t.Helper()
+	type outcome struct {
+		ended bool
+		err   error
+		gate  string
+	}
+	got := testwait.Until(t, what+" to wait for the owner lock gate exclusively or to end", func() (outcome, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return outcome{}, true
+		}
+		select {
+		case err := <-ended:
+			return outcome{ended: true, err: err}, true
+		default:
+		}
+		return outcome{gate: fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted)}, false
+	})
+	return got.ended, got.err
+}
+
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,
 // ownerlock_fleet_mark_test.go) serialises: this build beside a process of an earlier build
 // (advisory lock, then the rows), this build in the advisory mode (advisory lock, the rows only in
@@ -390,14 +419,16 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front.
-func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end only
+// fleetLockMargin before the test binary's deadline (setFleetLockTimeout), so a writer that is
+// merely slow behind another is never counted a failure by the clock.
+func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return false, err
 	}
 	switch shape {
@@ -506,7 +537,7 @@ func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owne
 // build's writer as its fleet read answers, the mode it committed in.
 func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
 	subset, touch := randomOwners(all)
-	legacy, err := raceWriter(ctx, s, shape, subset, touch)
+	legacy, err := raceWriter(ctx, t, s, shape, subset, touch)
 	if err == nil && shape == fleetModeWriter {
 		l.mu.Lock()
 		l.modes[legacy]++

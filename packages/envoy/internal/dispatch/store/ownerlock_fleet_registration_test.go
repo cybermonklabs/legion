@@ -35,9 +35,12 @@ const registrationGateBound = 5 * time.Second
 //
 // No clock decides the bound. The row reads it from the function's settings (pg_proc.proconfig),
 // and requires the registration's refusal to be 55P03 raised inside that function while the
-// transaction it waits for still holds the gate. The registration's own transaction gives up only
-// fleetLockMargin before the test binary's deadline, after the row's wait gives up and names it,
-// so no bound but the function's can refuse it first.
+// transaction it waits for still holds the gate: that refusal, and not a sight of the registration
+// waiting, is what shows it waited for the gate and gave up at its own bound. A row slower than
+// the bound between starting the registration and reading pg_locks finds it already refused, and
+// judges that refusal the same way (awaitGateWaitOrEnd). The registration's own transaction gives
+// up only fleetLockMargin before the test binary's deadline, after the row's wait gives up and
+// names it, so no bound but the function's can refuse it first.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
@@ -69,10 +72,12 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	defer registrationConn.Release()
 	registered := make(chan error, 1)
 	go func() { registered <- arriveOn(ctx, t, registrationConn, registration, uuid.NewString()) }()
-	awaitGateWait(t, s, registrationConn.Conn().PgConn().PID(), registered, registration.name)
+	ended, err := awaitGateWaitOrEnd(t, s, registrationConn.Conn().PgConn().PID(), registered, registration.name)
 	beat := make(chan error, 1)
 	go func() { beat <- heartbeatAsThisBuild(ctx, t, s, mine) }()
-	err = testwait.Receive(t, registration.name+" to be refused at its bound on the gate", registered)
+	if !ended {
+		err = testwait.Receive(t, registration.name+" to be refused at its bound on the gate", registered)
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(pgErr.Where, "owner_lock_legacy_registration") {
 		t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v, want 55P03 lock_not_available inside owner_lock_legacy_registration", registration.name, err)

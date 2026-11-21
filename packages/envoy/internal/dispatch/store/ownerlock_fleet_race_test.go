@@ -41,7 +41,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 		for _, shape := range []writerShape{a, b} {
 			subset, touch := randomOwners(all)
 			wg.Go(func() {
-				_, err := raceWriter(ctx, s, shape, subset, touch)
+				_, err := raceWriter(ctx, t, s, shape, subset, touch)
 				mu.Lock()
 				defer mu.Unlock()
 				var pgErr *pgconn.PgError
