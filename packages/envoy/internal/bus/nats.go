@@ -22,10 +22,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithImmediateReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -176,9 +176,10 @@ func WithName(name string) ConnectOption {
 // of nats.go's _INBOX: every request it sends, a JetStream API call included, asks for its answer on
 // prefix.<token>. A NATS user whose grant subscribes prefix.> alone can then run the client, where
 // one granted _INBOX.> would receive every other client's replies under _INBOX - a session's push
-// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets.
-func WithInboxPrefix(prefix string) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.inboxPrefix = prefix })
+// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets, and the NATS auth
+// service's own connection (Dial) with _INBOX_envoy_auth.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,9 +32,36 @@ const (
 	// globalAccount is the account every admitted user is placed in: the hub keeps one, the
 	// global account, and its streams and every static user's grant live there.
 	globalAccount = "$G"
-	// connectionName is the name the service's own connection carries in the server's listings.
-	connectionName = "envoy-broker-callout"
+	// inboxPrefix is the prefix of the service's own connection's reply inboxes, which no other
+	// client of the hub takes.
+	inboxPrefix = "_INBOX_envoy_auth"
 )
+
+// connectionName is the name the service's own connection carries in the server's listings:
+// `envoy-auth <build> hold-aware`. The writer hold's report (envoy-infra hold) admits a connection
+// of the service's static user only under a name ending ` hold-aware`, the mark of a build whose
+// decision refuses every client but the operator while the hold row holds held (outsideTheHold); a
+// replica of an older build names its connection otherwise, and its connection stops the hold.
+func connectionName() string { return "envoy-auth " + buildName() + " hold-aware" }
+
+// buildName names the build the service runs, one word: the commit it was built from (the first 12
+// characters of vcs.revision, which go build records from the checkout), else the module's
+// version, else "dev".
+func buildName() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && len(setting.Value) >= 12 {
+			return setting.Value[:12]
+		}
+	}
+	if version := info.Main.Version; version != "" && version != "(devel)" && !strings.ContainsAny(version, " \t") {
+		return version
+	}
+	return "dev"
+}
 
 // concurrentDecisions bounds the decisions one replica makes at once: a reconnect storm after a
 // server restart sends every connection's request together. It is a var so a test can make
@@ -279,8 +307,9 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	// the service's own connection with theirs, and a client that comes back before the service
 	// has resubscribed is refused until it does, so the service retries at once where they wait a
 	// second (internal/bus).
-	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
-		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
+	conn, err := bus.Dial(connectionName(), settings.URLs, lookup,
+		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect(),
+		bus.WithInboxPrefix(inboxPrefix))
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}

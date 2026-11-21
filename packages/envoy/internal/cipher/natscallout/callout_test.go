@@ -2,7 +2,9 @@ package natscallout
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +137,38 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	if served, err := other.NextMsg(500 * time.Millisecond); err == nil {
 		t.Fatalf("ses_a received %q on session ses_b's channel", served.Data)
 	}
+}
+
+// The service's own connection is listed by the hub as `envoy-auth <version> hold-aware`, under
+// the service's static user, and takes its reply inboxes under _INBOX_envoy_auth: the writer
+// hold's report (envoy-infra hold) admits a connection of the service's user only with that name,
+// so a replica of a build without the hold rule, whose connection is named otherwise, stops a hold
+// rather than serving it. It fails when the service connects under any other name.
+func TestTheServicesConnectionIsNamedHoldAware(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	server, url := testnats.StartWithCalloutServer(t, keys)
+	service := startService(t, url, keys, Deps{}, Decide)
+	require.Equal(t, "_INBOX_envoy_auth", service.conn.Opts.InboxPrefix)
+
+	resp, err := http.Get(server.MonitorURL() + "/connz?auth=1")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var connz struct {
+		Connections []struct {
+			Name           string `json:"name"`
+			AuthorizedUser string `json:"authorized_user"`
+		} `json:"connections"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&connz))
+	var names []string
+	for _, c := range connz.Connections {
+		if c.AuthorizedUser == keys.ServicePublic {
+			names = append(names, c.Name)
+		}
+	}
+	require.Len(t, names, 1, "the hub lists %d connections of the service's user", len(names))
+	require.True(t, strings.HasPrefix(names[0], "envoy-auth ") && strings.HasSuffix(names[0], " hold-aware") &&
+		len(strings.Fields(names[0])) == 3, "the service's connection is named %q", names[0])
 }
 
 // Each authorization request the hub sends is sealed to the service's curve key: a second client

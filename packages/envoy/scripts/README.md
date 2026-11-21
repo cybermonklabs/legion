@@ -376,10 +376,11 @@ answer `natsprobe` exits 4 for; the hub lists the listener's connection authoriz
 `listener/<its machine id>`; and with one broker killed, three new sessions are each
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's
-authorization timeout, so the check opens the first session once the hub lists one
-`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
-how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
-assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+authorization timeout, so the check opens the first session once the hub lists one auth service
+connection fewer (each broker's is named `envoy-auth <build> hold-aware`, which the NATS writer
+hold's report also reads), and says how long the drop took. The last line is
+`all 6 assertions passed` (exit 0) or `<k> of 6 assertions failed` (exit 1); a probe that
+reports nothing reads `UNKNOWN` and fails.
 
 ```bash
 LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack

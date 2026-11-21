@@ -148,8 +148,9 @@ echo "refused: Permissions Violation for Subscription to \"$subject\""
 exit 3
 EOF
 
-# --- Fake curl: the hub's connection list, naming Dispatch's and the listener's service users and
-# one envoy-broker-callout connection for each broker the hub lists (two, or one with one-broker,
+# --- Fake curl: the hub's connection list, naming Dispatch's and the listener's service users, one
+# older replica's envoy-broker-callout connection, which the check must not count, and one
+# `envoy-auth <build> hold-aware` connection for each broker the hub lists (two, or one with one-broker,
 # and one fewer once the killed broker's is dropped); nothing with no-connections; no answer at all
 # once the second broker is gone with connz-down-after-kill, or after the first read since then
 # with connz-down-late. Each read takes 20 ms of the fake clock, the interval callout-check.sh polls
@@ -171,9 +172,9 @@ fi
 callouts=2
 [ -e "$control/one-broker" ] && callouts=1
 [ "$state" = dropped ] && callouts=$((callouts - 1))
-entries='{"name": "dispatch", "authorized_user": "dispatch/dev-stack-dispatch"}, {"name": "listener", "authorized_user": "listener/dev-stack-test"}'
+entries='{"name": "dispatch", "authorized_user": "dispatch/dev-stack-dispatch"}, {"name": "listener", "authorized_user": "listener/dev-stack-test"}, {"name": "envoy-broker-callout", "authorized_user": "UAUTHSERVICE"}'
 for _ in $(seq 1 "$callouts"); do
-  entries="$entries"', {"name": "envoy-broker-callout", "authorized_user": "UAUTHSERVICE"}'
+  entries="$entries"', {"name": "envoy-auth 0123456789ab hold-aware", "authorized_user": "UAUTHSERVICE"}'
 done
 echo "{\"connections\": [$entries]}"
 EOF
@@ -286,7 +287,7 @@ echo "PASS: an exported stack missing DEV_STACK_NATS_MONITOR_URL is refused with
 
 # (g) A hub that never drops the killed broker's connection.
 run_check no-drop
-[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 auth service connections "*" ms after the kill" ]] ||
   fail "a hub that never drops the killed broker's connection: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "a hub that never drops the killed broker's connection: exit $status"
 echo "PASS: a hub that never drops the killed broker's connection FAILs line 6"
@@ -300,7 +301,7 @@ echo "PASS: a connection list that cannot be read after the kill reads UNKNOWN o
 
 # (i) One auth service connection before the kill: the check cannot see a drop, so it kills nothing.
 run_check one-broker
-[ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub lists 1 connection named envoy-broker-callout before the kill, not one for each of the two brokers" ] ||
+[ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub lists 1 auth service connection before the kill, not one for each of the two brokers" ] ||
   fail "one auth service connection before the kill: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "one auth service connection before the kill: exit $status"
 [ "$("${fake_bin_dir}/hub-state")" = alive ] || fail "with one auth service connection listed the check killed the second broker anyway"
@@ -309,7 +310,7 @@ echo "PASS: a hub listing one auth service connection before the kill reads UNKN
 # (j) A list read once after the kill, naming both connections still, that then cannot be read:
 # the check saw the hub keep the killed broker, so it is a FAIL with that count, not an UNKNOWN.
 run_check no-drop connz-down-late
-[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 auth service connections "*" ms after the kill" ]] ||
   fail "a list read once after the kill and then unreadable: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "a list read once after the kill and then unreadable: exit $status"
 echo "PASS: a list read once after the kill and then unreadable FAILs line 6 with the count it last read"
