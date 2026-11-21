@@ -35,6 +35,7 @@ import {
   startDeviceLogin,
   withDeviceLoginLock,
 } from "../device-login";
+import { DEVICE_LOGIN_STALE_LOCK_MS } from "../device-login-lock";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
@@ -595,6 +596,68 @@ test("a login directory others may write is refused, as a file others may read i
   // envoy.json lives in, holds a login: its file is 0600, and no one else can replace it there.
   await chmod(dirname(path), 0o755);
   expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
+test("of two callers that find one stale lock, exactly one takes it", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that died holding it");
+  const old = new Date(Date.now() - DEVICE_LOGIN_STALE_LOCK_MS - 1_000);
+  await utimes(lock, old, old);
+
+  // B finds the lock stale and is held there, between its look and its take-over, while A finds
+  // it stale too, takes it and starts its work. Then B goes on. B must find A's lock live and
+  // wait for it, never take it from A: two holders would spend one refresh token twice.
+  const events: string[] = [];
+  let holders = 0;
+  let most = 0;
+  const work = (name: string, until: Promise<void>) => async () => {
+    holders += 1;
+    most = Math.max(most, holders);
+    events.push(`${name} starts`);
+    await until;
+    events.push(`${name} ends`);
+    holders -= 1;
+  };
+  const bFound = Promise.withResolvers<void>();
+  const bGoes = Promise.withResolvers<void>();
+  const aWorking = Promise.withResolvers<void>();
+  const aEnds = Promise.withResolvers<void>();
+  // B has decided once it either waits for A's lock or runs its own work.
+  const bDecided = Promise.withResolvers<void>();
+  const b = withDeviceLoginLock(
+    path,
+    async () => {
+      bDecided.resolve();
+      await work("B", Promise.resolve())();
+    },
+    {
+      at: async (step) => {
+        if (step !== "lock-stale") return;
+        bFound.resolve();
+        await bGoes.promise;
+      },
+      sleep: async () => {
+        bDecided.resolve();
+        await aEnds.promise;
+      },
+    }
+  );
+  await bFound.promise;
+  const a = withDeviceLoginLock(path, async () => {
+    aWorking.resolve();
+    await work("A", aEnds.promise)();
+  });
+  await aWorking.promise;
+  bGoes.resolve();
+  await bDecided.promise;
+  aEnds.resolve();
+  await Promise.all([a, b]);
+  expect(most, events.join(", ")).toBe(1);
+  expect(events).toEqual(["A starts", "A ends", "B starts", "B ends"]);
+  expect(await stat(lock).catch(() => null)).toBeNull();
+  expect(await stat(`${lock}.steal`).catch(() => null)).toBeNull();
 });
 
 test("a holder that lost its lock while it was stopped refreshes nothing, and keeps nothing", async () => {

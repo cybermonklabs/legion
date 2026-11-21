@@ -129,68 +129,6 @@ test("the lock tells its holder whether it still holds it, and its holder keeps 
   await Bun.file(lock).delete();
 });
 
-test("of two callers that find one stale lock, exactly one takes it", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-  await writeFile(lock, "a process that died holding it");
-  const old = staleTime();
-  await utimes(lock, old, old);
-
-  // B finds the lock stale and is held there, between its look and its take-over, while A finds
-  // it stale too, takes it and starts its work. Then B goes on. B must find A's lock live and
-  // wait for it, never take it from A: two holders would spend one refresh token twice.
-  const events: string[] = [];
-  let holders = 0;
-  let most = 0;
-  const work = (name: string, until: Promise<void>) => async () => {
-    holders += 1;
-    most = Math.max(most, holders);
-    events.push(`${name} starts`);
-    await until;
-    events.push(`${name} ends`);
-    holders -= 1;
-  };
-  const bFound = Promise.withResolvers<void>();
-  const bGoes = Promise.withResolvers<void>();
-  const aWorking = Promise.withResolvers<void>();
-  const aEnds = Promise.withResolvers<void>();
-  // B has decided once it either waits for A's lock or runs its own work.
-  const bDecided = Promise.withResolvers<void>();
-  const b = withDeviceLoginLock(
-    path,
-    async () => {
-      bDecided.resolve();
-      await work("B", Promise.resolve())();
-    },
-    {
-      at: async (step) => {
-        if (step !== "lock-stale") return;
-        bFound.resolve();
-        await bGoes.promise;
-      },
-      sleep: async () => {
-        bDecided.resolve();
-        await aEnds.promise;
-      },
-    }
-  );
-  await bFound.promise;
-  const a = withDeviceLoginLock(path, async () => {
-    aWorking.resolve();
-    await work("A", aEnds.promise)();
-  });
-  await aWorking.promise;
-  bGoes.resolve();
-  await bDecided.promise;
-  aEnds.resolve();
-  await Promise.all([a, b]);
-  expect(most, events.join(", ")).toBe(1);
-  expect(events).toEqual(["A starts", "A ends", "B starts", "B ends"]);
-  expect(await stat(lock).catch(() => null)).toBeNull();
-  expect(await stat(`${lock}.steal`).catch(() => null)).toBeNull();
-});
-
 test("a take-over waits while another caller takes over, and not for one that died doing so", async () => {
   const path = loginPath();
   await writeDeviceLoginFile(path, "http://127.0.0.1:1");
