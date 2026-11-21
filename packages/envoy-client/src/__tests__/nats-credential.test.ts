@@ -341,6 +341,10 @@ describe("natsConnectionOptions with the broker token", () => {
       credential: { kind: "broker", broker: credential },
     });
     expect(options.ignoreAuthErrorAbort).toBe(true);
+    // It redials on its own backoff, and sets no `reconnectTimeWait`, which nats.js reads only in
+    // the default handler this one replaces.
+    expect(options.reconnectDelayHandler).toBeFunction();
+    expect(options.reconnectTimeWait).toBeUndefined();
   });
 
   test("the option it sets is the one nats.js reads", () => {

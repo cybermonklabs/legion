@@ -104,6 +104,8 @@ import { machineID } from "@legion/envoy-client/machine";
 import {
   connectNats,
   NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  type NatsDialHooks,
   type NatsDialPlan,
   natsConnectionOptions,
   natsDialBudget,
@@ -331,6 +333,8 @@ const NATS_CONNECT = Symbol.for("legion.pi-envoy.nats-connect");
 interface NatsDialStandIn {
   readonly connect: typeof connect;
   readonly plan: NatsDialPlan;
+  /** How the stand-in's dials wait between them, where its test sets that. */
+  readonly waits: Pick<NatsDialHooks, "delay" | "random">;
 }
 
 interface GlobalNatsConnect {
@@ -343,8 +347,12 @@ const natsConnectStore = globalThis as unknown as GlobalNatsConnect;
  *  each pass's dial at once. */
 const DIAL_ONCE: NatsDialPlan = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
 
-export function setNatsConnectForTests(dial: typeof connect, plan: NatsDialPlan = DIAL_ONCE): void {
-  natsConnectStore[NATS_CONNECT] = { connect: dial, plan };
+export function setNatsConnectForTests(
+  dial: typeof connect,
+  plan: NatsDialPlan = DIAL_ONCE,
+  waits: Pick<NatsDialHooks, "delay" | "random"> = {}
+): void {
+  natsConnectStore[NATS_CONNECT] = { connect: dial, plan, waits };
 }
 
 // The slot outlives every instance of this entry in the process, so a file that set a stand-in
@@ -1240,16 +1248,17 @@ export default function envoyExtension(hostApi: PiApi): void {
       }),
       { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
       {
+        ...standIn?.waits,
         firstBoundMs: left,
         stopped: () => shuttingDown || limit?.stopped() === true,
-        // A broker token the hub refuses twice is dropped and another traded before the next
-        // dial, as the keeper does once the connection is open.
+        // A broker token the hub refuses twice is dropped and another trade started at once, once
+        // for the session until a dial is admitted, as the keeper does once the connection is open.
         credential: natsCredential,
         // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
         // so the line says the next dial waits on that.
-        onRetry: (error, delayMs, attempt) =>
+        onRetry: (error, delayMs, attempt, refusal) =>
           logger.warn(
-            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
+            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)})${refusal?.dropped === true ? `; ${NATS_DIAL_TOKEN_DROPPED}` : ""}; dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
           ),
       }
     );

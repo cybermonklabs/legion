@@ -15,6 +15,7 @@ import {
   brokerNatsCredential,
   followNatsCredential,
   keepNatsCredential,
+  natsAdmissions,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
 
@@ -641,11 +642,15 @@ describe("keepNatsCredential with a refused live token", () => {
       }
       expect(dropped.length).toBe(1);
       expect(broker.state.trades).toBe(2);
-      // The control: back, and refused twice again, is a new outage, with its one drop.
+      // The control: back, and refused twice again, is a new outage, with its one drop. The
+      // keeper notes the admission, which the session's redial handler reads too
+      // (`brokerRedialDelays`).
+      expect(natsAdmissions(credential).count).toBe(0);
       fake.push("reconnect");
       fake.push("error", "AUTHORIZATION_VIOLATION");
       fake.push("error", "AUTHORIZATION_VIOLATION");
       await readerAtRest(fake);
+      expect(natsAdmissions(credential).count).toBe(1);
       expect(dropped.length).toBe(2);
     } finally {
       stop();
