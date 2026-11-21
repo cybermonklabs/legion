@@ -386,14 +386,22 @@ type Config struct {
 	// credential's person; a project-channels secret asked for by a credential naming a private
 	// project, about that project's channels; the approval page, the pending lists and each
 	// decision, about the projects a request touches; the model judge, about whether a request is
-	// a private project's; and an edge listener, about its project's repositories. Set with
+	// a private project's; and an edge listener, about its project's repositories. Set, it also
+	// holds a restricted member's agents to no secret: an enrollment under a machine login or a
+	// pod login whose person Dispatch calls a restricted member is refused
+	// (enroll.Service.Projects), a session such a person already had is denied every secret
+	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
+	// every enrollment under that person's login and every secret request and release of their
+	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
+	// (the approval page says it could not decide the request). Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator
 	// entry's token, whose project that operator's own setting chose, are minted as before; a
 	// person's trade that names a project, and a session enrollment that names projects, are
-	// refused, since nothing could say that person may see them; and every edge listener's read
-	// of a project's repositories is 503 REPOSITORIES_UNKNOWN.
+	// refused, since nothing could say that person may see them; every edge listener's read of a
+	// project's repositories is 503 REPOSITORIES_UNKNOWN; and every other enrollment and secret
+	// request is decided as before.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience, which both of the

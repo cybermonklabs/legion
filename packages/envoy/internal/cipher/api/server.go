@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -759,6 +760,32 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 	slog.Error("broker: "+op+" failed", "error", err)
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether
+// Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
+// whether err was one: 503 MEMBER_KIND_UNCHECKABLE naming the person and why in fixed words, with
+// the failure itself, which can name Dispatch's address, in the log alone. what is the thing
+// refused, as the log line names it. The line is ERROR when Dispatch could not be asked. A read
+// that failed because its caller gave up (MemberKindUncheckable.CallerEnded), which says nothing
+// of Dispatch, writes no line and is counted as an answer the caller cancelled
+// (answer.Recorder.NoteCallerEnded), as every route counts a caller that hung up. The code is
+// projectaccess.UncheckableCode, spelled out here because the broker's generated HTTP reference
+// (cmd/cipher-refgen) reads each refusal's code from a literal;
+// TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
+func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) {
+		return false
+	}
+	if uncheckable.CallerEnded() {
+		answer.FromWriter(w).NoteCallerEnded()
+	} else {
+		slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
+			"person", uncheckable.Person, "error", uncheckable.Err)
+	}
+	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
+	return true
 }
 
 // writeJSON answers status with v, which is one of this package's named response types: the

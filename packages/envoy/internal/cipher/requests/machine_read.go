@@ -176,6 +176,13 @@ type grantRelease struct {
 // read in the last two hours is refused and not ended (policy.ReasonRequesterGroupUnread), and
 // releases again once a read lists the person.
 //
+// A session whose person Dispatch calls a restricted member (restrictedOperator, asked here
+// before anything is re-checked) has its grant ended for good there and then, before any name is
+// re-checked (restrictedMember, errRestrictedMember): such a person's agents are released no
+// secret, whoever approved the grant and whenever it was made, whatever its names now are. While
+// that cannot be asked of Dispatch, the release is refused (*projectaccess.MemberKindUncheckable)
+// and the grant left as it is, for the next release to try.
+//
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
 // that grant's placeholders, which AirlockConnection checked, and the session it belongs to is
@@ -230,6 +237,13 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	// a project-channels name is read every time too (anyChannelLimited): which channels its
 	// credential may post to is Dispatch's as well, and the airlock hands the pod that list.
 	set := m.Policy.Get()
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return grantRelease{}, err
+	}
+	if restricted {
+		return grantRelease{}, m.endGrant(ctx, grantID, restrictedMember())
+	}
 	names := make([]string, len(granted))
 	for i, g := range granted {
 		names[i] = g.name
@@ -493,6 +507,14 @@ func sourceMoved(name string) error {
 // session's person or its pod's service, which ends the grant for good (errRequesterNotListed).
 func requesterNotListed(name string) error {
 	return fmt.Errorf("%w: %w: %s no longer lists this requester", ErrGrantNotLive, errRequesterNotListed, name)
+}
+
+// restrictedMember is the refusal of a whole grant to a session whose person Dispatch calls a
+// restricted member, which ends the grant for good (errRestrictedMember) before any of its names
+// is re-checked: a release (checkRelease), a reuse (reuseLiveGrant) and an airlock connection
+// (AirlockConnection) alike.
+func restrictedMember() error {
+	return fmt.Errorf("%w: %w: this grant is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember)
 }
 
 // judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
@@ -794,6 +816,13 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
+// errRestrictedMember is the refusal of a grant to a session whose person Dispatch calls a
+// restricted member (restrictedMember): a grant such a session got before the broker asked, from
+// a broker that did not ask or while Dispatch called the person something else. A release, a
+// reuse and an airlock connection end it for good (endGrant), so nothing that person's agents
+// hold is released again.
+var errRestrictedMember = errors.New("restricted member")
+
 // errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret a person now
 // approves every release of under the live policy (policy.Secret.PersonApprovesEveryRelease): one
 // tagged as an administrator's (policy.TagAdmin) after the model judge decided the request, or one
@@ -831,7 +860,10 @@ var errJudgedAdminSecret = errors.New("judged administrator's secret")
 //
 // An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
 // pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
-// where a silent approval would grant a credential to a box that has gone.
+// where a silent approval would grant a credential to a box that has gone. The session's person is
+// asked of Dispatch first (restrictedOperator), so a restricted member's request is answered
+// deny, restricted-member, before the judge spends a model call on it, and one Dispatch cannot
+// be asked about is the *projectaccess.MemberKindUncheckable it returns, which decides nothing.
 func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, bool, error) {
 	enr, err := m.enrollment(ctx, enrollmentID)
 	if err != nil {
@@ -847,15 +879,21 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	// What Dispatch holds of a tagged name is read under the judge's bound on Dispatch, whatever
-	// ctx the caller passed (JudgeDispatch): this is the judge's first read of Dispatch, and it
-	// shares the judge's Dispatch phase when the judge asks.
+	// What Dispatch holds of the session's person and of a tagged name is read under the judge's
+	// bound on Dispatch, whatever ctx the caller passed (JudgeDispatch): these are the judge's first
+	// reads of Dispatch, and they share the judge's Dispatch phase when the judge asks.
 	reads, cancel := JudgeDispatch(ctx)
+	restricted, err := m.restrictedOperator(reads, enr)
+	if err != nil {
+		cancel()
+		return policy.Decision{}, false, false, err
+	}
 	facts, err := m.projectFacts(reads, enr, []string{name}, set)
 	cancel()
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
+	own.Restricted = restricted
 	requester := facts.requester(own)
 	decision, err := set.Evaluate(name, requester)
 	if err != nil {
@@ -1237,7 +1275,10 @@ func writtenBeforeMigration13(alias string) string {
 // merely passed over: each is ended for good here, as
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
 // the names afresh — the denied request that tells the session why, where the list dropped it,
-// and the card the tag's own person answers, where the tag ended it.
+// and the card the tag's own person answers, where the tag ended it. A session whose person
+// Dispatch calls a restricted member (enrollmentRow.Restricted, which Create asked before this)
+// has the grant ended before any name is re-checked (restrictedMember), and Create goes on to the
+// denied request that names restricted-member.
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
 // which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
@@ -1262,6 +1303,12 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 	}
 candidates:
 	for _, match := range matches {
+		if enr.Restricted {
+			if ended := m.endGrant(ctx, match.grantID, restrictedMember()); !errors.Is(ended, ErrGrantNotLive) {
+				return Request{}, false, ended
+			}
+			return Request{}, false, nil
+		}
 		var rulesVersion, decidedBy string
 		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
 			return Request{}, false, err
