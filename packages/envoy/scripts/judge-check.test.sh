@@ -12,7 +12,10 @@
 #   (b) a readonly variable the starting shell exports reaches the started program no more: no
 #       unset removes it, and exec_with_env takes off its export instead;
 #   (c) a start that names a readonly variable among its settings is refused, naming the variable,
-#       and runs nothing.
+#       and runs nothing, in a subshell that keeps set -e as the callers' do;
+#   (d) a stack broker whose environment holds SHELLOPTS and BASHOPTS, bash's own readonly
+#       variables, still gives an extra broker that starts, holding neither;
+#   (e) under bash -x, broker_env_of and with_broker_env trace nothing of what they copy.
 # Each function is read out of the script that defines it and run in this shell. Needs bash, jq
 # and Linux's /proc.
 set -euo pipefail
@@ -90,28 +93,71 @@ check "judge-check's extra broker start answers the addresses the broker logged"
   test "${EXTRA_API_ADDR:-} ${EXTRA_PROXY_ADDR:-}" = "127.0.0.1:1 127.0.0.1:2"
 
 # --- (b) and (c) exec_with_env and a readonly variable of the starting shell, each run in a
-# subshell of its own as its callers run it: `( exec_with_env ... ) &`. ---
-readonly_reached="$(
-  (
-    export JUDGE_CHECK_TEST_READONLY=not-a-secret-readonly
-    readonly JUDGE_CHECK_TEST_READONLY
-    exec_with_env ONLY=1 -- "$real_env"
-  ) 2>&1
-)" || true
+# subshell of its own in the background, as its callers run it: `( exec_with_env ... ) >log &`.
+# That subshell keeps this test's set -e, as theirs keep their scripts'; a command substitution
+# would drop it, and with it the way a failed assignment ends the shell. ---
+(
+  export JUDGE_CHECK_TEST_READONLY=not-a-secret-readonly
+  readonly JUDGE_CHECK_TEST_READONLY
+  exec_with_env ONLY=1 -- "$real_env"
+) >"$work/readonly.out" 2>&1 &
+wait "$!" || true
+readonly_reached="$(cat "$work/readonly.out")"
 check "a readonly variable the starting shell exports reaches the started program no more" \
   test "$readonly_reached" = "ONLY=1"
 [[ "$readonly_reached" == "ONLY=1" ]] || printf 'the program had: %s\n' "$readonly_reached"
 refused_status=0
-refused_said="$(
-  (
-    # shellcheck disable=SC2034 # the start below names it: the row is that it cannot take a value
-    readonly JUDGE_CHECK_TEST_NAMED=1
-    exec_with_env JUDGE_CHECK_TEST_NAMED=2 -- "$real_env"
-  ) 2>&1
-)" || refused_status=$?
+(
+  # shellcheck disable=SC2034 # the start below names it: the row is that it cannot take a value
+  readonly JUDGE_CHECK_TEST_NAMED=1
+  exec_with_env JUDGE_CHECK_TEST_NAMED=2 -- "$real_env"
+) >"$work/refused.out" 2>&1 &
+wait "$!" || refused_status=$?
+refused_said="$(cat "$work/refused.out")"
 check "a start that names a readonly variable among its settings is refused with 2, naming it, and runs nothing" \
   test "$refused_status:$refused_said" = "2:${0##*/}: refused to start ${real_env}: JUDGE_CHECK_TEST_NAMED is readonly in this shell, so it cannot take the value the start gives it"
 [[ "$refused_status" -eq 2 ]] || printf 'the start exited %s, saying: %s\n' "$refused_status" "$refused_said"
+
+# --- (d) A stack broker started from a shell that exported SHELLOPTS and BASHOPTS carries both,
+# bash's own readonly variables; broker_env_of leaves them out of the copy, so judge-check's extra
+# broker still starts, as env -i once started it. ---
+"$real_env" -i PATH="$work/bin:/usr/bin:/bin" SHELLOPTS=braceexpand:hashall:interactive-comments \
+  BASHOPTS=checkwinsize BROKER_DATABASE_URL='postgres://broker:not-a-secret@127.0.0.1:5999/db' sleep 60 &
+shellopts_stand_in=$!
+for _ in $(seq 1 50); do
+  [[ "$(tr '\0' ' ' <"/proc/$shellopts_stand_in/cmdline" 2>/dev/null)" == sleep* ]] && break
+  sleep 0.1
+done
+rm -f "$work/broker-environ"
+shellopts_status=0
+(
+  # shellcheck disable=SC2034 # start_extra_broker, eval'd above, reads it
+  BROKER_PIDS=("$shellopts_stand_in") EXTRA_BROKER_PIDS=()
+  PATH="$work/bin:$PATH" start_extra_broker shellopts
+  for pid in "${EXTRA_BROKER_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+) >"$work/shellopts.out" 2>&1 || shellopts_status=$?
+kill "$shellopts_stand_in" 2>/dev/null || true
+shellopts_copied="$(grep -c -E '^(SHELLOPTS|BASHOPTS)$' "$work/broker-environ" 2>/dev/null || true)"
+check "a stack broker whose environment holds an exported SHELLOPTS and BASHOPTS still gives a broker that starts, without either" \
+  test "${shellopts_status}:${shellopts_copied}" = "0:0"
+if [[ "${shellopts_status}:${shellopts_copied}" != "0:0" ]]; then
+  printf 'the start exited %s and copied %s of the two; it said:\n' "$shellopts_status" "${shellopts_copied:-none}"
+  cat "$work/shellopts.out" "$work/broker-shellopts.log" 2>/dev/null || true
+fi
+
+# --- (e) Under bash -x, broker_env_of and with_broker_env trace nothing of the environment they
+# copy: the stand-in stack broker of (a), still running, holds the password in its database URL. ---
+cat >"$work/trace-caller" <<'EOF'
+. "$EXEC_ENV_LIB"
+broker_env_of "$TRACE_STAND_IN"
+(with_broker_env "$TRACE_ENV") >/dev/null
+EOF
+EXEC_ENV_LIB="$script_dir/lib/exec-env.sh" TRACE_STAND_IN="$stand_in" TRACE_ENV="$real_env" \
+  bash -x "$work/trace-caller" 2>"$work/trace" || true
+traced="$(grep -n not-a-secret "$work/trace" | cut -c1-160 || true)"
+check "under bash -x, broker_env_of and with_broker_env trace no line holding a setting of the environment they copy" \
+  test -z "$traced"
+[[ -z "$traced" ]] || printf 'trace lines holding the password: %s\n' "$traced"
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'judge-check.test: %s failed\n' "$failed"

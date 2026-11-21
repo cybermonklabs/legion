@@ -18,13 +18,23 @@ export class DatabaseUrlRefused extends Error {}
  *  It throws `DatabaseUrlRefused` for what libpq refuses in a password (a `%` that starts no `%XX`
  *  escape, and `%00`), for a password whose bytes are not UTF-8 (no environment value can carry
  *  them), for a host in `[ ]` libpq cannot read, for a raw `@` in the hosts (the text past a
- *  password's raw `@`, which libpq would print in its host error), and for anything but a
+ *  password's raw `@`, which libpq would print in its host error), for an `@` between the first
+ *  `/` and the `?` (a password's raw `/`, which leaves libpq no credentials, so it reads the user as
+ *  the host and the password's head as the port, and prints that), and for anything but a
  *  `postgres://` or `postgresql://` URL, since a key=value string can hold a password this does
  *  not take out. */
 export function splitDatabaseUrl(url: string): { url: string; password: string | undefined } {
   const scheme = /^postgres(ql)?:\/\//.exec(url)?.[0];
   if (scheme === undefined) refuse("it is not a postgres:// or postgresql:// URL");
   const rest = url.slice(scheme.length);
+  // An `@` between the first `/` and the `?` is a password's raw `/`: libpq's credentials run only
+  // to the first `/`, so it would read the user as a host, the password's head as a port, and
+  // print it.
+  const beforeQuery = rest.split("?", 1)[0];
+  const slash = beforeQuery.indexOf("/");
+  if (slash !== -1 && beforeQuery.slice(slash + 1).includes("@")) {
+    refuse("an @ sits between the first / and the ?");
+  }
   let password: string | undefined;
   let user = "";
   let location = rest;

@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
+import { handOverMessage } from "../local-instance-support";
 import { DatabaseUrlRefused, splitDatabaseUrl } from "../pg-url";
 import { resetSession, sql, sqlAt } from "../psql";
 
@@ -268,3 +269,151 @@ test.skipIf(process.platform !== "linux")(
     }).toEqual({ envArgs: false, cmdline: false, databaseUrl: url });
   }
 );
+
+test.skipIf(process.platform !== "linux" || Bun.which("openssl") === null)(
+  "run-server.sh hands its server DATABASE_URL, the App key and the sign-in key in its environment and in no process's arguments",
+  () => {
+    const e2e = join(import.meta.dir, "..");
+    const work = join(standIn, "server-work");
+    mkdirSync(join(work, "bin"), { recursive: true });
+    // A python3 and an env first on PATH that record their arguments before they run, as
+    // held-port.py and env would carry a setting named to them, and a stand-in server that
+    // writes its own arguments and the settings it was given.
+    for (const tool of ["python3", "env"]) {
+      writeFileSync(
+        join(work, "bin", tool),
+        `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+        { mode: 0o755 }
+      );
+    }
+    writeFileSync(
+      join(work, "server"),
+      [
+        "#!/bin/sh",
+        `tr '\\0' ' ' </proc/$$/cmdline >'${work}/server-cmdline'`,
+        `printf '%s\\n%s\\n%s\\n' "$DATABASE_URL" "$DISPATCH_DEV_SIGNIN_SHARED_KEY" "\${#DISPATCH_APP_PEM_B64}" >'${work}/server-env'`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const url = "postgres://tester:not-a-secret%40server@127.0.0.1:5999/dispatch_e2e";
+    const sharedKey = "not-a-secret-shared-key";
+    const run = Bun.spawnSync(["bash", join(e2e, "run-server.sh")], {
+      env: {
+        PATH: `${join(work, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+        DATABASE_URL: url,
+        DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: sharedKey,
+        DISPATCH_E2E_SERVER_BIN: join(work, "server"),
+        FAKE_BROKER_PORT: "9024",
+        FAKE_ENVOY_PORT: "9021",
+        FAKE_GITHUB_PORT: "9022",
+      },
+    });
+    expect(run.exitCode, run.stderr.toString()).toBe(0);
+    const argv = readFileSync(join(work, "argv"), "utf8");
+    const [databaseUrl, shared, pemLength] = readFileSync(join(work, "server-env"), "utf8").split(
+      "\n"
+    );
+    expect({
+      recorded: argv.includes("python3 ") && argv.includes("env "),
+      argvPassword: argv.includes("not-a-secret"),
+      argvKey: argv.includes("PRIVATE KEY"),
+      cmdline: readFileSync(join(work, "server-cmdline"), "utf8").includes("not-a-secret"),
+      databaseUrl,
+      shared,
+      pemGiven: Number(pemLength) > 0,
+    }).toEqual({
+      recorded: true,
+      argvPassword: false,
+      argvKey: false,
+      cmdline: false,
+      databaseUrl: url,
+      shared: sharedKey,
+      pemGiven: true,
+    });
+  }
+);
+
+/** What `dispatch:local` prints once its instance is up, for the database `databaseUrl`. */
+function handOver(databaseUrl: string, supplied: boolean): string {
+  return handOverMessage({
+    baseUrl: "http://127.0.0.1:9030",
+    broadcastId: "broadcast-1",
+    plannerSessionId: "planner-1",
+    fakeEnvoy: "http://127.0.0.1:9031",
+    databaseUrl,
+    supplied,
+    ports: { DISPATCH_E2E_PORT: "9030", FAKE_ENVOY_PORT: "9031" },
+    env: {},
+  });
+}
+
+/** The DATABASE_URL the hand-over's command gives its run, as bash reads that command's words. */
+function pastedDatabaseUrl(message: string): string {
+  const command = message
+    .split("\n")
+    .find((line) => line.startsWith("    DISPATCH_E2E_REUSE_SERVERS=1 "));
+  if (command === undefined) throw new Error(`the hand-over holds no command:\n${message}`);
+  const prefix = command.trim().replace(/ bunx playwright test .*$/, "");
+  const read = Bun.spawnSync(["bash", "-c", `${prefix} printenv DATABASE_URL`]);
+  if (read.exitCode !== 0) throw new Error(`bash read no DATABASE_URL: ${read.stderr.toString()}`);
+  return read.stdout.toString().trimEnd();
+}
+
+// The command's run reuses the instance's servers (DISPATCH_E2E_REUSE_SERVERS=1), so its one
+// reader of DATABASE_URL is e2e/psql.ts; the session psql of `sql` stands in for it here.
+test("dispatch:local's hand-over prints no password a person gave in DATABASE_URL, and its command still reaches psql with that password in PGPASSWORD", async () => {
+  for (const [given, bare, password] of [
+    [
+      "postgres://tester:not-a-secret%40hand@127.0.0.1:5999/dispatch_local?sslmode=disable",
+      "postgres://tester@127.0.0.1:5999/dispatch_local?sslmode=disable",
+      "not-a-secret@hand",
+    ],
+    [
+      "postgres://tester@127.0.0.1:5999/dispatch_local?password=not-a-secret-query&sslmode=disable",
+      "postgres://tester@127.0.0.1:5999/dispatch_local?sslmode=disable",
+      "not-a-secret-query",
+    ],
+  ] as const) {
+    const message = handOver(given, true);
+    const pasted = pastedDatabaseUrl(message);
+    resetSession();
+    process.env.DATABASE_URL = pasted;
+    process.env.PGPASSWORD = password;
+    try {
+      await expect(sql("select 1")).rejects.toThrow();
+    } finally {
+      process.env.PGPASSWORD = "the-callers-own-not-a-secret";
+    }
+    const { args, pgpassword } = handed();
+    expect({
+      printed: message.split("\n").filter((line) => line.includes("not-a-secret")),
+      pasted,
+      saysPgpassword: message.includes("exported as PGPASSWORD"),
+      psqlUrl: args[0],
+      pgpassword,
+    }).toEqual({
+      printed: [],
+      pasted: bare,
+      saysPgpassword: true,
+      psqlUrl: bare,
+      pgpassword: password,
+    });
+  }
+});
+
+test("dispatch:local's hand-over prints the dev container's URL and a URL with no password whole, and asks for no PGPASSWORD", () => {
+  // The dev container's URL is one the command makes itself (`supplied` false), so it prints whole
+  // whatever its password: the stand-in here takes the place of the dev container's literal.
+  for (const [url, supplied] of [
+    ["postgres://postgres:not-a-secret-dev@127.0.0.1:55432/dispatch_local?sslmode=disable", false],
+    ["postgres://tester@127.0.0.1:5999/dispatch_local?sslmode=disable", true],
+  ] as const) {
+    const message = handOver(url, supplied);
+    expect({
+      database: message.includes(`  Database (truncated and reseeded on every start): ${url}\n`),
+      pasted: pastedDatabaseUrl(message),
+      saysPgpassword: message.includes("PGPASSWORD"),
+    }).toEqual({ database: true, pasted: url, saysPgpassword: false });
+  }
+});

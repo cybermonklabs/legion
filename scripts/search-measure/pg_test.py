@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 import json  # noqa: E402
 import os  # noqa: E402
 import pathlib  # noqa: E402
+import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
 from unittest import mock  # noqa: E402
@@ -105,6 +106,48 @@ class CorpusTest(unittest.TestCase):
                     pg.split_dsn(case["url"])
                 self.assertEqual(str(refused.exception),
                                  f"pg: refused a Postgres URL: {case['fault']} (the URL is not printed)")
+
+
+class RunSearchTest(unittest.TestCase):
+    """run_search.py takes the fixture's database URL from FIXTURE_DATABASE_URL, never from its
+    own command line, and its psql gets the URL without its password."""
+
+    setUp = RunTest.setUp
+
+    def run_search(self, *arguments, fixture_url=None):
+        directory = pathlib.Path(self.calls).parent
+        cases = directory / "cases.json"
+        cases.write_text(json.dumps([{"case_id": "ask-1", "kind": 1, "sha256": "",
+                                      "source": {"kind": "ask", "ask_id": "00000000-0000-0000-0000-000000000001",
+                                                 "offset": 0, "length": 1}}]))
+        environment = {key: value for key, value in os.environ.items() if key != "FIXTURE_DATABASE_URL"}
+        if fixture_url is not None:
+            environment["FIXTURE_DATABASE_URL"] = fixture_url
+        return subprocess.run(
+            [sys.executable, "-B", str(pathlib.Path(__file__).resolve().parent / "run_search.py"),
+             "--cases", str(cases), "--url", "http://127.0.0.1:9", "--token", "fixture-token",
+             "--out", str(directory / "out.jsonl"), *arguments],
+            env=environment, capture_output=True, text=True, timeout=60)
+
+    def test_the_fixture_url_comes_from_FIXTURE_DATABASE_URL_and_its_password_reaches_psql_alone(self):
+        url = "postgres://tester:not-a-secret%40fix@127.0.0.1:5999/searchfix?sslmode=disable"
+        result = self.run_search(fixture_url=url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (call,) = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(call["argv"][0], "postgres://tester@127.0.0.1:5999/searchfix?sslmode=disable")
+        self.assertEqual(call["PGPASSWORD"], "not-a-secret@fix")
+        for argument in call["argv"]:
+            self.assertNotIn("not-a-secret", argument)
+
+    def test_a_run_with_no_FIXTURE_DATABASE_URL_is_refused_naming_it_and_the_option_is_gone(self):
+        missing = self.run_search()
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("FIXTURE_DATABASE_URL must name the fixture's database", missing.stderr)
+        option = self.run_search("--fixture-dsn", "postgres://h/searchfix",
+                                 fixture_url="postgres://h/searchfix")
+        self.assertEqual(option.returncode, 2)
+        self.assertIn("unrecognized arguments: --fixture-dsn", option.stderr)
+        self.assertFalse(self.calls.exists())
 
 
 if __name__ == "__main__":

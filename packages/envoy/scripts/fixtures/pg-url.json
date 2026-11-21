@@ -104,6 +104,10 @@
     {
       "url": "postgres://tester:not-a-secret@tail@127.0.0.1:5999/postgres",
       "fault": "a host holds a raw @"
+    },
+    {
+      "url": "postgres://tester:not-a-secret/x@127.0.0.1:5999/postgres",
+      "fault": "an @ sits between the first / and the ?"
     }
   ]
 }

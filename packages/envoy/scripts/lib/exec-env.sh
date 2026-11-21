@@ -28,8 +28,23 @@
 #       exec_with_env with BROKER_ENV's entries: `( with_broker_env "$BROKER_BIN" ) &` starts a
 #       broker with the environment broker_env_of read.
 
+# Under xtrace (set -x) each of the three functions turns tracing off as it starts, since bash
+# traces every expansion of a setting and each would show a secret, and turns it back on only
+# when it returns: a refusal, or an exec that failed (bash's execfail). An exec that succeeded
+# leaves the started program with no shell to trace. A caller's own call line is traced before
+# any of them runs, with whatever settings it names there.
+
 # exec_with_env NAME=value... -- COMMAND [ARG...]: see the header.
 exec_with_env() {
+  local exec_with_env_xtrace="" exec_with_env_status=0
+  [[ $- != *x* ]] || { exec_with_env_xtrace=1 && { set +x; } 2>/dev/null; }
+  exec_with_env_into "$@" || exec_with_env_status=$?
+  [ -z "$exec_with_env_xtrace" ] || set -x
+  return "$exec_with_env_status"
+}
+
+# exec_with_env_into is exec_with_env without the guard.
+exec_with_env_into() {
   local -a exec_with_env_settings=() exec_with_env_names=()
   local exec_with_env_name exec_with_env_flags exec_with_env_entry
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
@@ -64,26 +79,47 @@ exec_with_env() {
   for exec_with_env_entry in "${exec_with_env_settings[@]}"; do
     exec_with_env_name="${exec_with_env_entry%%=*}"
     [[ "$exec_with_env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    # shellcheck disable=SC2163 # each entry is NAME=value, which export sets as it exports
-    if ! export "$exec_with_env_entry" 2>/dev/null; then
+    # A readonly name is refused before export tries it: an assignment to a readonly variable ends
+    # a shell under set -e, as each caller runs, even inside an if, so a failed export would end
+    # the start with status 1 and no word of why. declare -p's flags carry an r for one.
+    exec_with_env_flags="$(declare -p "$exec_with_env_name" 2>/dev/null)" || exec_with_env_flags=""
+    exec_with_env_flags="${exec_with_env_flags#declare -}"
+    if [[ "${exec_with_env_flags%% *}" == *r* ]]; then
       printf '%s: refused to start %s: %s is readonly in this shell, so it cannot take the value the start gives it\n' \
         "${0##*/}" "$1" "$exec_with_env_name" >&2
       return 2
     fi
+    # shellcheck disable=SC2163 # each entry is NAME=value, which export sets as it exports
+    export "$exec_with_env_entry"
   done
   exec "$@"
 }
 
-# broker_env_of PID [NAME=value...]: see the header.
+# broker_env_of PID [NAME=value...]: see the header. SHELLOPTS and BASHOPTS are left out of the
+# copy: they are bash's own readonly variables, which a stack broker started from a shell that
+# exported them carries, and which exec_with_env could not give a value, so it would refuse the
+# start; a broker reads neither, and env -i, which once started these brokers, passed them as
+# plain entries.
 broker_env_of() {
-  local pid="$1"
+  local broker_env_of_xtrace="" broker_env_of_entry pid="$1"
+  [[ $- != *x* ]] || { broker_env_of_xtrace=1 && { set +x; } 2>/dev/null; }
   shift
   BROKER_ENV=()
-  mapfile -d '' -t BROKER_ENV <"/proc/$pid/environ"
+  while IFS= read -r -d '' broker_env_of_entry; do
+    case "$broker_env_of_entry" in
+      SHELLOPTS=* | BASHOPTS=*) ;;
+      *) BROKER_ENV+=("$broker_env_of_entry") ;;
+    esac
+  done <"/proc/$pid/environ"
   BROKER_ENV+=("$@")
+  [ -z "$broker_env_of_xtrace" ] || set -x
 }
 
 # with_broker_env COMMAND [ARG...]: see the header.
 with_broker_env() {
-  exec_with_env "${BROKER_ENV[@]}" -- "$@"
+  local with_broker_env_xtrace="" with_broker_env_status=0
+  [[ $- != *x* ]] || { with_broker_env_xtrace=1 && { set +x; } 2>/dev/null; }
+  exec_with_env "${BROKER_ENV[@]}" -- "$@" || with_broker_env_status=$?
+  [ -z "$with_broker_env_xtrace" ] || set -x
+  return "$with_broker_env_status"
 }

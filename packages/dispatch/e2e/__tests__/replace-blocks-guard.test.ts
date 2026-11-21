@@ -44,7 +44,8 @@ import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
-const localInstancePath = join(dispatchPackage, "e2e/local-instance.ts");
+/** Where the hand-over message e2e/local-instance.ts prints is written (`handOverMessage`). */
+const handOverPath = join(dispatchPackage, "e2e/local-instance-support.ts");
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
@@ -81,9 +82,10 @@ if (!live) {
   );
 }
 
-/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up,
- *  the message that holds DATABASE_URL whole. The fixture log below is built from it, and a row
- *  ties it to the line the instance writes and to the line the driver's cut names. */
+/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up
+ *  (`handOverMessage` in e2e/local-instance-support.ts), the message that holds DATABASE_URL. The
+ *  fixture log below is built from it, and a row ties it to the line the message writes and to
+ *  the line the driver's cut names. */
 const handOverHeading = "Dispatch local instance is up.";
 
 /** The user and the host of a postgres:// URL, which `withPassword` puts around a password. */
@@ -501,10 +503,11 @@ test.skipIf(!live)(
 );
 
 /** The log a start leaves when the driver's read misses the signed-in line and the instance then
- *  stops: what came before the hand-over, then the hand-over message itself, which
- *  e2e/local-instance.ts writes in one console.log holding DATABASE_URL whole, twice. The
- *  signed-in line is left out of it, which is the read missing it: with that line the driver
- *  takes the run for started and prints no log at all. */
+ *  stops: what came before the hand-over, then the hand-over message itself, as
+ *  e2e/local-instance.ts once wrote it, holding DATABASE_URL whole, twice (it now leaves out a
+ *  password the run gave; the cut is held to the worse case). The signed-in line is left out of
+ *  it, which is the read missing it: with that line the driver takes the run for started and
+ *  prints no log at all. */
 function stoppedInstanceLog(databaseUrl: string): { log: string; handOver: string[] } {
   const handOver = [
     handOverHeading,
@@ -524,12 +527,13 @@ function stoppedInstanceLog(databaseUrl: string): { log: string; handOver: strin
 }
 
 test("the hand-over heading is the line the instance writes and the line the driver cuts at", () => {
-  const source = readFileSync(localInstancePath, "utf8");
+  const source = readFileSync(handOverPath, "utf8");
   const written = JSON.stringify(`\n${handOverHeading}\n`);
   expect(
     source.split(written).length - 1,
-    `e2e/local-instance.ts does not write ${written} once, as a line of its own. The driver ` +
-      "cuts the instance's log at that line, and this file's fixture log is built from it."
+    `e2e/local-instance-support.ts (handOverMessage, which e2e/local-instance.ts prints) does not ` +
+      `write ${written} once, as a line of its own. The driver cuts the instance's log at that ` +
+      "line, and this file's fixture log is built from it."
   ).toBe(1);
   const cut = `sed '/^${handOverHeading.replaceAll(".", "\\.")}/,$d'`;
   expect(

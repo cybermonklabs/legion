@@ -26,7 +26,9 @@ def split_dsn(dsn):
     with a `SystemExit` that names the fault and prints nothing of the DSN, what libpq refuses in a
     password (a % that starts no %XX escape, and %00), a host whose [ has no ] or whose ] is
     followed by anything but :, /, ? or ,, a raw @ in the hosts (the text past a password's raw @,
-    which libpq would print in its host error), and any DSN but a postgres:// or postgresql:// URL,
+    which libpq would print in its host error), an @ between the first / and the ? (a password's
+    raw /, which leaves libpq no credentials, so it reads the user as the host and the password's
+    head as the port, and prints that), and any DSN but a postgres:// or postgresql:// URL,
     since a key=value string can hold a password this does not take out. The same rules are the
     shell's packages/envoy/scripts/lib/pg-url.sh and the TypeScript packages/dispatch/e2e/pg-url.ts,
     which change with this one.
@@ -34,6 +36,10 @@ def split_dsn(dsn):
     scheme, separator, rest = dsn.partition("://")
     if not separator or scheme not in ("postgres", "postgresql"):
         _refuse("it is not a postgres:// or postgresql:// URL")
+    # An @ between the first / and the ? is a password's raw /: libpq's credentials run only to the
+    # first /, so it would read the user as a host, the password's head as a port, and print it.
+    if "@" in rest.partition("?")[0].partition("/")[2]:
+        _refuse("an @ sits between the first / and the ?")
     password = None
     user = ""
     location = rest

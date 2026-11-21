@@ -1457,6 +1457,7 @@ dispatch_ui:
   - 'packages/envoy/going/testdata/**'
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/process-tree.sh'
+  - 'scripts/e2e/lib/held-port.py'
   # why: .github/ci-notes/ci.md#dispatch_ui-the-dashboards-tsc-program-compiles-legionenvoy-clients
   - 'packages/envoy-client/src/**'
   - 'packages/cipher-client/**'
