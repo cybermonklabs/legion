@@ -633,6 +633,103 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	}
 }
 
+// TestRacingReparentsAcrossProjectsCommitNoRing: two writes that would close a ring of parents
+// through two projects, an ALPHA issue moved under a BETA issue and that BETA issue moved under
+// the ALPHA one, sent at once. Both take the deployment-wide dependency lock, and each locks the
+// other's project for its parent, so they run one after the other: each round ends with exactly
+// one taken and the other refused as a cycle, never with both committed, never with a deadlock.
+// The race is replayed crossProjectRaceRounds times, each round on the pair cleared of parents.
+func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
+	beta := createListedIssues(t, handler, "BETA", 1)[0]
+	parentOf := func(key string) string {
+		t.Helper()
+		return valueOrNone(readTestIssue(t, handler, key).Parent)
+	}
+	clearParent := func(key string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": nil}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("clear %s's parent: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+	for round := range crossProjectRaceRounds {
+		clearParent(alpha)
+		clearParent(beta)
+		start := make(chan struct{})
+		responses := make(chan *httptest.ResponseRecorder, 2)
+		for _, move := range []struct{ key, parent string }{{alpha, beta}, {beta, alpha}} {
+			go func() {
+				<-start
+				responses <- patchIssueParent(t, handler, move.key, move.parent)
+			}()
+		}
+		close(start)
+		taken, refused := 0, 0
+		for range 2 {
+			response := awaitResponse(t, responses)
+			switch {
+			case response.Code == http.StatusOK:
+				taken++
+			case response.Code == http.StatusConflict && (strings.Contains(response.Body.String(), `"code":"PARENT_INPUT"`) ||
+				strings.Contains(response.Body.String(), `"code":"DEPENDENCY_CYCLE"`)):
+				refused++
+			default:
+				t.Fatalf("round %d: status=%d body=%s, want 200 or a 409 cycle refusal", round, response.Code, response.Body.String())
+			}
+		}
+		if taken != 1 || refused != 1 {
+			t.Fatalf("round %d: %d reparents taken and %d refused, want one of each", round, taken, refused)
+		}
+		if parentOf(alpha) == beta && parentOf(beta) == alpha {
+			t.Fatalf("round %d: the ring %s → %s → %s committed", round, alpha, beta, alpha)
+		}
+	}
+}
+
+// TestAParentWriteTakesTheParentsProjectLock: a create with a parent and a reparent take the
+// dependency lock of the parent's project, not only of the issue's own, so a writer that holds
+// that lock - an earlier build's dependency write of that project, which takes no other - fences
+// both. With ALPHA's lock held, a BETA create under ALPHA's issue and a BETA reparent under it
+// wait; once it is released, both land with that parent.
+func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
+	beta := createListedIssues(t, handler, "BETA", 1)[0]
+	gate, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(context.Background())
+	if err := lockProjectIssueDependencies(context.Background(), gate, "ALPHA"); err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan *httptest.ResponseRecorder, 2)
+	go func() {
+		waiting <- patchIssueParent(t, handler, beta, alpha)
+	}()
+	go func() {
+		waiting <- createIssueUnder(t, handler, "BETA", "Created under ALPHA's issue", alpha, nil)
+	}()
+	waitForDatabaseLocks(t, gate, 2)
+	if parent := readTestIssue(t, handler, beta).Parent; parent != nil {
+		t.Fatalf("the reparent of %s landed under %s while ALPHA's dependency lock was held", beta, *parent)
+	}
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		response := awaitResponse(t, waiting)
+		if response.Code != http.StatusOK && response.Code != http.StatusCreated {
+			t.Fatalf("a parent write after the lock's release: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if parent := decodeBody[model.Issue](t, response).Parent; parent == nil || *parent != alpha {
+			t.Fatalf("a parent write after the lock's release left the parent %s, want %s", valueOrNone(parent), alpha)
+		}
+	}
+}
+
 // TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
 // project is refused a parent outside it, as it is refused such a blocked_by target, though the
 // issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
