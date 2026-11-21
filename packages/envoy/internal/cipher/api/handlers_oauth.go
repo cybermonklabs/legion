@@ -7,23 +7,40 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // deviceAuthorization is POST /v1/oauth/device_authorization: a machine login's device
 // authorization request (RFC 8628), public. It spends its source address's launcher bucket before
-// the provider does any work, as the token login does (refuseAddress); then it verifies the
-// request object to read the person its login_hint names and spends that person's bucket
-// (launcherLoginKey). A refused request is 429 with Retry-After. Deps.DeviceLogin then opens the
-// login in the provider's transaction, and its refusals are OAuth errors (invalid_request) whose
-// description names the broker's code: a request object that does not verify, repeats a jti or
-// names another key than dpop_jkt REQUEST_INVALID, one naming a service
-// SERVICE_LOGS_IN_WITH_TOKEN.
+// the provider does any work, as the token login does (refuseAddress).
+//
+// At the edge it also spends the one bucket every caller shares (launcherLimiter.overall), and
+// this comment is where that rule is written. Every login the edge opens spends exactly one token
+// of it: a request the pre-check (deviceLoginCanOpen) judges able to open a login spends it
+// before the provider does any work, and a login Deps.DeviceLogin opens that the pre-check did not
+// judge so, as one whose iat crossed a second between the two clock reads does, spends it once
+// opened, a refusal rolling the login back. A request the pre-check refuses and that opens no
+// login spends nothing of it. A request the pre-check passes and that still opens no login
+// spends one: a replay, whose jti only Deps.DeviceLogin reads; one the provider refuses for a
+// reason of its own after the pre-check; and one the named person's bucket refuses below, whose
+// login is rolled back. Each needs an object signed for the edge, which anyone with a key of
+// their own makes as they make a valid login.
+//
+// Deps.DeviceLogin verifies the request and opens the login in the provider's transaction, and
+// only a login it opened spends the bucket of the person its login_hint names
+// (spendDeviceLoginBucket), so a request that writes nothing costs that person nothing; a refusal
+// there rolls the login back too. A refused request is 429 with Retry-After. Deps.DeviceLogin's
+// refusals are OAuth errors (invalid_request) whose description names the broker's code: a
+// request object that does not verify, repeats a jti or names another key than dpop_jkt
+// REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri
+// is this listener's page (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !s.launcherLimiter.addressAllows(r) {
 		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
@@ -32,29 +49,67 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !readOAuthForm(w, r) {
 		return
 	}
-	s.deps.OAuth.DeviceAuthorize(w, r, func(ctx context.Context, form url.Values, userCode string) error {
-		if err := s.spendDeviceLoginBucket(form); err != nil {
+	spent := false
+	if s.launcherLimiter.overall != nil && s.deviceLoginCanOpen(r.PostForm) {
+		if !s.launcherLimiter.overallAllows() {
+			oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.overall.Every()))
+			return
+		}
+		spent = true
+	}
+	s.deps.OAuth.DeviceAuthorize(w, r, s.verificationURI, func(ctx context.Context, form url.Values, userCode string) error {
+		if err := s.deps.DeviceLogin(ctx, form, userCode); err != nil {
 			return deviceLoginRefusal(err)
 		}
-		return deviceLoginRefusal(s.deps.DeviceLogin(ctx, form, userCode))
+		if !spent && !s.launcherLimiter.overallAllows() {
+			return deviceLoginRefusal(rateLimitedRefusal(s.launcherLimiter.overall.Every()))
+		}
+		return deviceLoginRefusal(s.spendDeviceLoginBucket(r, form))
 	})
 }
 
-// spendDeviceLoginBucket verifies form's request object, refusing one naming a service before it
-// reaches the limiter, and spends one request of the person:<login> bucket it names: a
-// RATE_LIMITED refusal when that bucket is empty.
-func (s *server) spendDeviceLoginBucket(form url.Values) error {
+// deviceLoginCanOpen reports whether form is a device authorization the provider can open a login
+// for: the device login's own client, and a person's machine login that passes
+// machine.Service.CheckPersonLogin, the device login's own checks short of the jti, none of which
+// reads the database. What its answer spends is deviceAuthorization's.
+func (s *server) deviceLoginCanOpen(form url.Values) bool {
+	if form.Get("client_id") != oauthwire.ClientID {
+		return false
+	}
+	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), time.Now()) == nil
+}
+
+// spendDeviceLoginBucket spends one request of the bucket of the person form's request object
+// names, which Deps.DeviceLogin has verified (deviceLoginKey), and is a RATE_LIMITED refusal when
+// that bucket is empty.
+func (s *server) spendDeviceLoginBucket(r *http.Request, form url.Values) error {
 	obj, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
 	if err != nil {
 		return err
 	}
-	if obj.Service() != "" {
-		return machine.ErrServiceLogsInWithToken
-	}
-	if !s.launcherLimiter.perLogin.AllowAt(launcherLoginKey(obj), time.Now()) {
+	if !s.launcherLimiter.perLogin.AllowAt(s.deviceLoginKey(obj, r), time.Now()) {
 		return rateLimitedRefusal(s.launcherLimiter.perLogin.Every())
 	}
 	return nil
+}
+
+// deviceLoginKey is the per-login bucket a device login of obj from r spends, under this
+// listener's key prefix (server.loginKeyPrefix): person:<login> on the broker's own address
+// (launcherLoginKey), and at the edge the person at the caller's address (edgePersonKey,
+// server.loginKeyByAddress), so a flood from one address spends that address's bucket for the
+// person and never the one a caller elsewhere uses.
+func (s *server) deviceLoginKey(obj record.RequestObject, r *http.Request) string {
+	if !s.loginKeyByAddress {
+		return s.loginKeyPrefix + launcherLoginKey(obj)
+	}
+	return s.loginKeyPrefix + edgePersonKey(record.CanonicalLogin(obj.LoginHint), s.address(r))
+}
+
+// edgePersonKey is the key of a person's bucket at an address: person:<length of
+// login>:<login>:<address>. Both a login (a quoted local part) and an address (IPv6) can hold
+// ":", so the login's length comes first and no two pairs make one key.
+func edgePersonKey(login, address string) string {
+	return "person:" + strconv.Itoa(len(login)) + ":" + login + ":" + address
 }
 
 // deviceLoginRefusal is the OAuth refusal a device login's error answers with: the broker's own
@@ -88,11 +143,13 @@ func rateLimitedRefusal(every time.Duration) *oauth.Refusal {
 // device code grant once the login's person has approved it, and the refresh grant, each with a
 // DPoP proof from the machine's key, and its answers are OAuth's own (RFC 6749 section 5). The
 // provider checks the proof's htu against the URL it rebuilds from the request's scheme, Host and
-// X-Forwarded-Proto, so the request it is handed carries BROKER_PUBLIC_URL's scheme and host and
+// X-Forwarded-Proto, so the request it is handed carries Deps.PublicURL's scheme and host and
 // no forwarding headers: the proof names PublicURL + /v1/oauth/token, as every other broker proof
-// names PublicURL + its path, whatever the hop in front of the broker sends. It first spends its
-// source address's token bucket (DefaultTokenLimit), a refusal being 429 invalid_request
-// RATE_LIMITED with Retry-After, as the device authorization endpoint's is.
+// names PublicURL + its path, whatever the hop in front of the broker sends. At the broker's edge
+// that URL is BROKER_EDGE_URL (RegisterEdge), so a proof made for either listener is refused at
+// the other. It first spends its source address's token bucket (DefaultTokenLimit), a refusal
+// being 429 invalid_request RATE_LIMITED with Retry-After, as the device authorization
+// endpoint's is.
 func (s *server) oauthToken(w http.ResponseWriter, r *http.Request) {
 	if !s.tokenAllows(r) {
 		oauth.WriteRefusal(w, &oauth.Refusal{

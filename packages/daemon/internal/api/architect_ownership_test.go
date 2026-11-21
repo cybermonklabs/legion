@@ -17,15 +17,16 @@ import (
 )
 
 // A sub-architect holds a grant for the whole tree, so it can name any issue of it, but
-// release_children, park_child and rerun_child move an issue into or out of the workflow, which is
-// the work of an architect above that issue. So the architect of a child C takes them only on an
-// issue under C: the tree root, C itself, its sibling S and every issue under S are refused
-// ISSUE_NOT_OWNED before anything about the issue's status or run is answered, and the refusal
-// applies nothing and writes nothing to Dispatch. A wave that names one such issue releases none of
-// the wave. An issue under C gets each route's own answers, and an issue of another tree is
-// outside the tree, as before. The root architect still takes all three on every issue of its
-// tree, S's included.
-func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) {
+// release_children and rerun_child move an issue into the workflow, which is the work of an
+// architect above that issue. So the architect of a child C takes them only on an issue under C:
+// the tree root, C itself, its sibling S and every issue under S are refused ISSUE_NOT_OWNED before
+// anything about the issue's status or run is answered, and the refusal applies nothing and writes
+// nothing to Dispatch. A wave that names one such issue releases none of the wave. An issue under C
+// gets each route's own answers, and an issue of another tree is outside the tree, as before. The
+// root architect still takes both on every issue of its tree, S's included. rerun_child judges
+// ownership by record.OwnsUnder, the walk the workflow also reads before it takes an architect's
+// status on a child.
+func TestASubArchitectReleasesAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) {
 	const (
 		root, own, sibling                         = "LEGION-208", "LEGION-209", "LEGION-210"
 		ownTriage, ownRunning, ownDone             = "LEGION-211", "LEGION-212", "LEGION-213"
@@ -85,7 +86,6 @@ func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) 
 	release := route{"release_children", "/legion/v1/waves/release", "todo", func(grant, issue string) map[string]any {
 		return map[string]any{"grantId": grant, "issues": []string{issue}}
 	}}
-	park := route{"park_child", "/legion/v1/children/park", "backlog", child}
 	rerun := route{"rerun_child", "/legion/v1/children/rerun", "todo", child}
 
 	type answer struct {
@@ -99,7 +99,6 @@ func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) 
 		notRecorded = answer{http.StatusNotFound, "ISSUE_NOT_FOUND"}
 		released    = answer{http.StatusConflict, "ISSUE_ALREADY_RELEASED"}
 		running     = answer{http.StatusConflict, "CHILD_RUNNING"}
-		notRunning  = answer{http.StatusConflict, "CHILD_NOT_RUNNING"}
 	)
 	// call makes architect's request of the route on issue and checks its answer: an applied call
 	// writes the route's one status for issue, and a refused one applies no fact and writes nothing.
@@ -142,36 +141,33 @@ func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) 
 	}
 
 	// Each row is one issue the architect of C names, and what each route answers it, in this
-	// order. A triage issue is not recorded, so park_child and rerun_child do not find it; the
-	// calls under C that apply leave the record as it was, since the harness's handler only
-	// records the fact.
+	// order. A triage issue is not recorded, so rerun_child does not find it; the calls under C
+	// that apply leave the record as it was, since the harness's handler only records the fact.
 	for _, row := range []struct {
-		issue                string
-		release, park, rerun answer
+		issue          string
+		release, rerun answer
 	}{
-		{root, notOwned, notOwned, notOwned},
-		{own, notOwned, notOwned, notOwned},
-		{sibling, notOwned, notOwned, notOwned},
-		{siblingTriage, notOwned, notRecorded, notRecorded},
-		{siblingRunning, notOwned, notOwned, notOwned},
-		{siblingDone, notOwned, notOwned, notOwned},
-		{foreign, outside, outside, outside},
-		{ownTriage, applied, notRecorded, notRecorded},
-		{ownRunning, released, applied, running},
-		{ownDone, released, notRunning, applied},
+		{root, notOwned, notOwned},
+		{own, notOwned, notOwned},
+		{sibling, notOwned, notOwned},
+		{siblingTriage, notOwned, notRecorded},
+		{siblingRunning, notOwned, notOwned},
+		{siblingDone, notOwned, notOwned},
+		{foreign, outside, outside},
+		{ownTriage, applied, notRecorded},
+		{ownRunning, released, running},
+		{ownDone, released, applied},
 	} {
 		call(subArchitect, release, row.issue, row.release)
-		call(subArchitect, park, row.issue, row.park)
 		call(subArchitect, rerun, row.issue, row.rerun)
 	}
 	// The root architect owns every issue of its tree, the sibling's grandchildren included.
 	call(rootArchitect, release, siblingTriage, applied)
-	call(rootArchitect, park, siblingRunning, applied)
 	call(rootArchitect, rerun, siblingDone, applied)
 
 	want := []statusWrite{
-		{issue: ownTriage, status: "todo"}, {issue: ownRunning, status: "backlog"}, {issue: ownDone, status: "todo"},
-		{issue: siblingTriage, status: "todo"}, {issue: siblingRunning, status: "backlog"}, {issue: siblingDone, status: "todo"},
+		{issue: ownTriage, status: "todo"}, {issue: ownDone, status: "todo"},
+		{issue: siblingTriage, status: "todo"}, {issue: siblingDone, status: "todo"},
 	}
 	if !reflect.DeepEqual(statuses.writes, want) {
 		t.Fatalf("Dispatch writes = %#v, want only the applied calls' %#v", statuses.writes, want)
@@ -184,7 +180,7 @@ func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) 
 		}
 		appliedTo = append(appliedTo, issue.Key)
 	}
-	if wantKeys := []string{ownTriage, ownRunning, ownDone, siblingTriage, siblingRunning, siblingDone}; !reflect.DeepEqual(appliedTo, wantKeys) {
+	if wantKeys := []string{ownTriage, ownDone, siblingTriage, siblingDone}; !reflect.DeepEqual(appliedTo, wantKeys) {
 		t.Fatalf("facts applied to %q, want one per applied call: %q", appliedTo, wantKeys)
 	}
 }

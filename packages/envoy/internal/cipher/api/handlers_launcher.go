@@ -10,9 +10,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
-// launcherLoginKey is the per-login bucket a person's machine login spends: person:<login>, the
-// person its login_hint names. A request naming a service never reaches the limiter
-// (spendDeviceLoginBucket refuses it first).
+// launcherLoginKey is the per-login bucket a person's machine login spends on the broker's own
+// address: person:<login>, the person its login_hint names. At the edge the key also names the
+// caller's address (edgePersonKey). A request naming a service never reaches the limiter:
+// Deps.DeviceLogin (machine.Service.LoginDevice) refuses it first.
 func launcherLoginKey(obj record.RequestObject) string {
 	return "person:" + record.CanonicalLogin(obj.LoginHint)
 }
