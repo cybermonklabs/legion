@@ -32,12 +32,13 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
 // reads the rule at most once and sends nothing else: the test steps the lane one try at a time,
-// holding each park's timer and running it itself, and reads every statement the server's
-// connections run between one park and the next off the bytes they write (SentStatements), so a
-// statement shows however it was sent - on its own, in a batch, prepared and run by name, bound in
-// one round trip and run in a later one. Each must be, byte for byte, the rule's own statement
-// (model.MentionCopyRuleSQL) bound to this send's event and destination, at most one a try, or the
-// pool's idle-connection check (PoolPing); any other statement fails the test, whatever it reads.
+// holding each park's timer and running it itself, and reads every statement the server ran or
+// refused on its connections between one park and the next, off the bytes they write and the
+// server's answers (SentStatements), so a statement shows however it was sent - on its own, in a
+// batch, prepared and run by name, bound in one round trip and run in a later one. Each must be,
+// byte for byte, the rule's own statement (model.MentionCopyRuleSQL), run, bound to this send's
+// event and destination, at most one a try, or the pool's idle-connection check (PoolPing); any
+// other statement, and any the server refused, fails the test, whatever it reads.
 // The send was decided held on a read of the rule: at least one, for this send, is sent between
 // the comment and the first WARN, and none for any other send. Once the topic family is captured
 // again the send lands, the gauges read none and no second WARN comes. The controls are the scrape
@@ -117,6 +118,8 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	decidedOn := 0
 	for _, statement := range sent.Statements()[posted:] {
 		switch read, isRule := ruleRead(statement); {
+		case statement.Failed:
+			unrecognised = append(unrecognised, refusedStatement(statement))
 		case isRule && read == heldRead:
 			decidedOn++
 		case isRule:
@@ -141,6 +144,8 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		reads := 0
 		for _, statement := range sent.Statements()[before:] {
 			switch read, isRule := ruleRead(statement); {
+			case statement.Failed:
+				unrecognised = append(unrecognised, refusedStatement(statement))
 			case isRule && read == heldRead:
 				reads++
 			case isRule:
@@ -273,4 +278,10 @@ func ruleRead(statement storetest.SentStatement) (string, bool) {
 		return "with arguments that do not read as an event and a destination", true
 	}
 	return fmt.Sprintf("event %d to %s", event, destination), true
+}
+
+// refusedStatement describes a statement the server refused or that failed while it ran, which
+// may have read the rule in part, so the read-bound tests count none as expected.
+func refusedStatement(statement storetest.SentStatement) string {
+	return fmt.Sprintf("a statement the server answered with error %s: %s", statement.Code, firstChars(statement.SQL, 160))
 }

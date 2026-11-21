@@ -19,14 +19,21 @@ import (
 // connection out (pgconn.PgConn.Ping): a comment, which reads and writes nothing.
 const PoolPing = "-- ping"
 
-// SentStatements records every statement the connections of the store SentStore opens send to the
-// server. It reads the bytes each connection writes before they leave, so a statement shows
-// whatever sent it: a query, a batch or pipeline, a statement prepared and then run by its name,
-// a portal bound in one round trip and run in a later one, or a call on the pgconn under a pgx
-// connection. A pgx tracer sees only some of these: a QueryTracer misses a batch's statements, and
-// no tracer sees a call on the pgconn. A statement is one execution, as the server runs it: a
-// simple query's text, an Execute of a portal with the SQL and values the portal was bound with,
-// or a function call. A Bind that no Execute follows runs nothing and records nothing.
+// SentStatements records every statement the server ran or refused on the connections of the store
+// SentStore opens. It reads the bytes each connection writes and the server's answers on the same
+// connection, so a statement shows whatever sent it: a query, a batch or pipeline, a statement
+// prepared and then run by its name, a portal bound in one round trip and run in a later one, or a
+// call on the pgconn under a pgx connection. A pgx tracer sees only some of these: a QueryTracer
+// misses a batch's statements, and no tracer sees a call on the pgconn.
+//
+// Every effect follows the server's answer, not the client's send. A Parse, a Bind and a Close
+// take effect on their ParseComplete, BindComplete and CloseComplete. A statement is recorded when
+// the server says it ran it: an Execute of a portal on its CommandComplete, EmptyQueryResponse or
+// PortalSuspended, with the SQL and values the portal was bound with; each statement of a simple
+// query on its CommandComplete or EmptyQueryResponse; a function call on its result. A statement
+// the server answers with an error is recorded as Failed; the messages the server then discards,
+// up to the next Sync, have no effect. A Bind that no Execute follows runs nothing and records
+// nothing.
 //
 // Its boundary is the store's own connections: those of its pool, the lease and listener
 // connections opened from its configuration, and any connection opened from a copy of that
@@ -39,9 +46,13 @@ type SentStatements struct {
 	blind []string
 }
 
-// SentStatement is one statement a connection sent (SentStatements).
+// SentStatement is one statement the server ran or refused (SentStatements). Failed is whether the
+// server answered it with an error, which Code holds: a statement refused before it ran, or one
+// that failed while it ran.
 type SentStatement struct {
 	SQL     string
+	Failed  bool
+	Code    string
 	formats []int16
 	values  [][]byte
 }
@@ -87,7 +98,7 @@ func (s SentStatement) format(index int) int16 {
 	}
 }
 
-// Statements is every statement recorded, in the order the connections sent them.
+// Statements is every statement recorded, in the order the server answered them.
 func (r *SentStatements) Statements() []SentStatement {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -95,9 +106,11 @@ func (r *SentStatements) Statements() []SentStatement {
 }
 
 // Blind is each thing the recorder could not read: a connection that asked for encryption, a
-// message it could not decode, a Bind of a statement its connection never prepared, or an Execute
-// of a portal its connection has not bound. A test that reads Statements must fail on any of them,
-// since a statement the recorder could not read may be the one the test looks for.
+// message it could not decode, or an answer of the server it could not pair with what the
+// connection sent - a statement run from a portal or prepared statement it never saw made, an
+// answer nothing sent asked for. A connection it could not read it reads no further. A test that
+// reads Statements must fail on any of them, since a statement the recorder could not read may be
+// the one the test looks for.
 func (r *SentStatements) Blind() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -137,7 +150,7 @@ func SentStore(t testing.TB, database *store.Store, sent *SentStatements) *store
 			if err != nil {
 				return nil, err
 			}
-			return &sendingConn{Conn: conn, sent: sent, prepared: map[string]string{}, portals: map[string]boundPortal{}}, nil
+			return newSendingConn(conn, sent), nil
 		}
 	})}
 }
@@ -152,33 +165,48 @@ const (
 	messageHeaderBytes = 5
 )
 
-// boundPortal is a portal a Bind made: the statement an Execute of it runs, and how many sync
-// points (syncs) the connection had written before the Bind.
-type boundPortal struct {
-	statement SentStatement
-	after     int
+// sent is one message a connection sent that the server answers, waiting for that answer: its
+// type, and what the answer makes of it.
+type sent struct {
+	kind byte
+	// name is a Parse's statement, a Bind's or an Execute's portal, a Close's or a Describe's
+	// object.
+	name string
+	// statement is a Bind's prepared statement.
+	statement string
+	// query is a Parse's SQL or a simple query's text.
+	query string
+	// object is a Close's or a Describe's object type: 'S' a statement, 'P' a portal.
+	object  byte
+	formats []int16
+	values  [][]byte
+	// function is a function call's object id.
+	function uint32
 }
 
-// sendingConn is a connection whose writes its SentStatements reads before they leave, and whose
-// reads it reads for the server's ReadyForQuery messages, which say when a transaction ended and
-// with it every portal bound in it. written and answered hold the bytes of a message not yet
-// whole each way; prepared holds this connection's prepared statements and portals its portals,
-// by name. syncs counts the sync points written - a Sync, a simple query, a function call - each
-// of which the server answers with one ReadyForQuery; ready counts those answers read, after the
-// one that ends the startup (greeted).
+// sendingConn is a connection whose writes and reads its SentStatements reads. written and
+// answered hold the bytes of a message not yet whole each way. waiting holds, in order, the
+// messages sent that the server has not yet answered; discarding is set from a refusal in an
+// extended query until the client's next Sync, since the server discards everything sent in
+// between. prepared holds the connection's prepared statements and portals its portals, by name,
+// each as the server last acknowledged it.
 type sendingConn struct {
 	net.Conn
-	sent     *SentStatements
-	mu       sync.Mutex
-	written  []byte
-	answered []byte
-	started  bool
-	greeted  bool
-	lost     bool
-	prepared map[string]string
-	portals  map[string]boundPortal
-	syncs    int
-	ready    int
+	recorder   *SentStatements
+	mu         sync.Mutex
+	written    []byte
+	answered   []byte
+	started    bool
+	greeted    bool
+	lost       bool
+	waiting    []sent
+	discarding bool
+	prepared   map[string]string
+	portals    map[string]SentStatement
+}
+
+func newSendingConn(conn net.Conn, recorder *SentStatements) *sendingConn {
+	return &sendingConn{Conn: conn, recorder: recorder, prepared: map[string]string{}, portals: map[string]SentStatement{}}
 }
 
 func (c *sendingConn) Write(p []byte) (int, error) {
@@ -204,7 +232,7 @@ func (c *sendingConn) readWritten(p []byte) {
 		return
 	}
 	c.written = append(c.written, p...)
-	for {
+	for !c.lost {
 		if !c.started {
 			if len(c.written) < startupHeaderBytes {
 				return
@@ -232,8 +260,8 @@ func (c *sendingConn) readWritten(p []byte) {
 		if !whole {
 			return
 		}
-		c.sentMessage(kind, body)
 		c.written = c.written[length:]
+		c.sentMessage(kind, body)
 	}
 }
 
@@ -246,15 +274,13 @@ func (c *sendingConn) readAnswered(p []byte) {
 		return
 	}
 	c.answered = append(c.answered, p...)
-	for {
+	for !c.lost {
 		kind, body, length, whole := c.next(c.answered)
 		if !whole {
 			return
 		}
-		if kind == 'Z' {
-			c.readyForQuery(body)
-		}
 		c.answered = c.answered[length:]
+		c.answer(kind, body)
 	}
 }
 
@@ -276,47 +302,37 @@ func (c *sendingConn) next(pending []byte) (kind byte, body []byte, length int, 
 }
 
 // lose records what could not be read and reads nothing more of this connection, whose later
-// bytes no longer start on a message.
+// messages it can no longer pair with their answers.
 func (c *sendingConn) lose(what string) {
 	c.lost = true
-	c.written, c.answered = nil, nil
-	c.sent.blindTo(what)
+	c.written, c.answered, c.waiting = nil, nil, nil
+	c.recorder.blindTo(what)
 }
 
-// sentMessage reads one whole message the connection sent. A simple query, an Execute and a
-// function call are statements the server runs. A Parse, a Bind and a Close change what a later
-// Bind's statement name or Execute's portal name stands for, and a Sync, a simple query and a
-// function call are each a sync point, which the server answers with one ReadyForQuery. A simple
-// query also drops the unnamed statement and the unnamed portal. The other messages - Describe,
-// Flush, the copy and authentication messages - neither run a statement nor change one.
+// sentMessage reads one whole message the connection sent, and keeps the ones the server answers -
+// a Parse, a Bind, a Close, a Describe, an Execute, a Sync, a simple query, a function call - in
+// order, until their answers come. A Flush, a Terminate, and the copy and authentication messages
+// get no answer of their own. While the server discards what follows a refusal, everything before
+// the next Sync has no effect.
 func (c *sendingConn) sentMessage(kind byte, body []byte) {
-	switch kind {
-	case 'Q':
-		var query pgproto3.Query
-		if err := query.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("a simple query that does not decode: %v", err))
+	if c.discarding {
+		if kind != 'S' {
 			return
 		}
-		delete(c.prepared, "")
-		delete(c.portals, "")
-		c.syncs++
-		c.sent.record(SentStatement{SQL: query.String})
+		c.discarding = false
+	}
+	switch kind {
 	case 'P':
 		var parse pgproto3.Parse
 		if err := parse.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("a Parse that does not decode: %v", err))
+			c.lose(fmt.Sprintf("a Parse that does not decode: %v", err))
 			return
 		}
-		c.prepared[parse.Name] = parse.Query
+		c.waiting = append(c.waiting, sent{kind: kind, name: parse.Name, query: parse.Query})
 	case 'B':
 		var bind pgproto3.Bind
 		if err := bind.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("a Bind that does not decode: %v", err))
-			return
-		}
-		query, known := c.prepared[bind.PreparedStatement]
-		if !known {
-			c.sent.blindTo(fmt.Sprintf("a Bind of the statement %q, which its connection never prepared", bind.PreparedStatement))
+			c.lose(fmt.Sprintf("a Bind that does not decode: %v", err))
 			return
 		}
 		values := make([][]byte, len(bind.Parameters))
@@ -325,68 +341,174 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 				values[index] = append([]byte{}, value...)
 			}
 		}
-		c.portals[bind.DestinationPortal] = boundPortal{
-			statement: SentStatement{SQL: query, formats: append([]int16(nil), bind.ParameterFormatCodes...), values: values},
-			after:     c.syncs,
-		}
-	case 'E':
-		var execute pgproto3.Execute
-		if err := execute.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("an Execute that does not decode: %v", err))
-			return
-		}
-		portal, bound := c.portals[execute.Portal]
-		if !bound {
-			c.sent.blindTo(fmt.Sprintf("an Execute of the portal %q, which its connection has not bound", execute.Portal))
-			return
-		}
-		c.sent.record(portal.statement)
+		c.waiting = append(c.waiting, sent{
+			kind: kind, name: bind.DestinationPortal, statement: bind.PreparedStatement,
+			formats: append([]int16(nil), bind.ParameterFormatCodes...), values: values,
+		})
 	case 'C':
 		var closing pgproto3.Close
 		if err := closing.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("a Close that does not decode: %v", err))
+			c.lose(fmt.Sprintf("a Close that does not decode: %v", err))
 			return
 		}
-		switch closing.ObjectType {
-		case 'S':
-			delete(c.prepared, closing.Name)
-		case 'P':
-			delete(c.portals, closing.Name)
+		c.waiting = append(c.waiting, sent{kind: kind, name: closing.Name, object: closing.ObjectType})
+	case 'D':
+		var describe pgproto3.Describe
+		if err := describe.Decode(body); err != nil {
+			c.lose(fmt.Sprintf("a Describe that does not decode: %v", err))
+			return
 		}
+		c.waiting = append(c.waiting, sent{kind: kind, name: describe.Name, object: describe.ObjectType})
+	case 'E':
+		var execute pgproto3.Execute
+		if err := execute.Decode(body); err != nil {
+			c.lose(fmt.Sprintf("an Execute that does not decode: %v", err))
+			return
+		}
+		c.waiting = append(c.waiting, sent{kind: kind, name: execute.Portal})
 	case 'S':
-		c.syncs++
+		c.waiting = append(c.waiting, sent{kind: kind})
+	case 'Q':
+		var query pgproto3.Query
+		if err := query.Decode(body); err != nil {
+			c.lose(fmt.Sprintf("a simple query that does not decode: %v", err))
+			return
+		}
+		c.waiting = append(c.waiting, sent{kind: kind, query: query.String})
 	case 'F':
 		var call pgproto3.FunctionCall
 		if err := call.Decode(body); err != nil {
-			c.sent.blindTo(fmt.Sprintf("a function call that does not decode: %v", err))
+			c.lose(fmt.Sprintf("a function call that does not decode: %v", err))
 			return
 		}
-		c.syncs++
-		c.sent.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", call.Function)})
+		c.waiting = append(c.waiting, sent{kind: kind, function: call.Function})
 	}
 }
 
-// readyForQuery reads the server's answer to a sync point. The first ReadyForQuery ends the
-// startup and answers none. Each after it answers the next sync point the connection wrote, and
-// says whether a transaction is still open there: when none is ('I'), the transaction that held
-// every portal bound before that sync point has ended, and those portals with it. A portal bound
-// after it belongs to the next transaction and stays.
-func (c *sendingConn) readyForQuery(body []byte) {
+// answer reads one whole message from the server and pairs it with the oldest message sent that
+// waits for it. The startup's own messages, up to its ReadyForQuery, answer nothing sent; a
+// notice, a parameter status or a notification answers nothing either, wherever it comes.
+func (c *sendingConn) answer(kind byte, body []byte) {
 	if !c.greeted {
-		c.greeted = true
-		return
-	}
-	c.ready++
-	if len(body) != 1 {
-		c.sent.blindTo(fmt.Sprintf("a ReadyForQuery of %d bytes", len(body)))
-		return
-	}
-	if body[0] != 'I' {
-		return
-	}
-	for name, portal := range c.portals {
-		if portal.after < c.ready {
-			delete(c.portals, name)
+		if kind == 'Z' {
+			c.greeted = true
 		}
+		return
+	}
+	switch kind {
+	case 'N', 'S', 'A':
+		return
+	}
+	if len(c.waiting) == 0 {
+		c.lose(fmt.Sprintf("a %q message from the server, which nothing the connection sent waits for", kind))
+		return
+	}
+	head := &c.waiting[0]
+	switch {
+	case kind == 'E':
+		c.refused(body)
+	case kind == 'Z':
+		c.readyForQuery(body)
+	case kind == '1' && head.kind == 'P':
+		c.prepared[head.name] = head.query
+		c.done()
+	case kind == '2' && head.kind == 'B':
+		query, known := c.prepared[head.statement]
+		if !known {
+			c.lose(fmt.Sprintf("a BindComplete for the statement %q, which the server never acknowledged preparing", head.statement))
+			return
+		}
+		c.portals[head.name] = SentStatement{SQL: query, formats: head.formats, values: head.values}
+		c.done()
+	case kind == '3' && head.kind == 'C':
+		if head.object == 'S' {
+			delete(c.prepared, head.name)
+		} else {
+			delete(c.portals, head.name)
+		}
+		c.done()
+	case kind == 't' && head.kind == 'D' && head.object == 'S':
+	case (kind == 'T' || kind == 'n') && head.kind == 'D':
+		c.done()
+	case (kind == 'C' || kind == 'I' || kind == 's') && head.kind == 'E':
+		portal, bound := c.portals[head.name]
+		if !bound {
+			c.lose(fmt.Sprintf("the server ran the portal %q, which it never acknowledged binding", head.name))
+			return
+		}
+		c.recorder.record(portal)
+		c.done()
+	case (kind == 'C' || kind == 'I') && head.kind == 'Q':
+		c.recorder.record(SentStatement{SQL: head.query})
+	case kind == 'V' && head.kind == 'F':
+		c.recorder.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", head.function)})
+	case (kind == 'D' || kind == 'G' || kind == 'H' || kind == 'W' || kind == 'd' || kind == 'c') && (head.kind == 'E' || head.kind == 'Q'):
+	case kind == 'T' && head.kind == 'Q':
+	default:
+		c.lose(fmt.Sprintf("a %q message from the server, which the %q waiting for an answer does not expect", kind, head.kind))
+	}
+}
+
+// done drops the oldest message waiting, which its answer has ended.
+func (c *sendingConn) done() {
+	c.waiting = c.waiting[1:]
+}
+
+// refused reads the server's ErrorResponse to the oldest message waiting. An Execute, a simple
+// query or a function call it refuses is recorded as Failed. In an extended query the server then
+// discards every message up to the next Sync, so none of them has any effect, and those sent after
+// this answer are discarded as they come (discarding). A simple query, a function call or a Sync
+// it refuses still waits for its ReadyForQuery.
+func (c *sendingConn) refused(body []byte) {
+	var refusal pgproto3.ErrorResponse
+	if err := refusal.Decode(body); err != nil {
+		c.lose(fmt.Sprintf("an ErrorResponse that does not decode: %v", err))
+		return
+	}
+	head := c.waiting[0]
+	switch head.kind {
+	case 'Q':
+		c.recorder.record(SentStatement{SQL: head.query, Failed: true, Code: refusal.Code})
+		return
+	case 'F':
+		c.recorder.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", head.function), Failed: true, Code: refusal.Code})
+		return
+	case 'S':
+		return
+	case 'E':
+		statement, bound := c.portals[head.name]
+		if !bound {
+			statement = SentStatement{SQL: fmt.Sprintf("the portal %q, which the server never acknowledged binding", head.name)}
+		}
+		statement.Failed, statement.Code = true, refusal.Code
+		c.recorder.record(statement)
+	}
+	for len(c.waiting) > 0 && c.waiting[0].kind != 'S' {
+		c.done()
+	}
+	c.discarding = len(c.waiting) == 0
+}
+
+// readyForQuery reads the server's ReadyForQuery, which ends a Sync, a simple query or a function
+// call, and says whether a transaction is still open there. When none is ('I'), every portal has
+// ended with the transaction that held it; a simple query has also dropped the unnamed statement
+// and the unnamed portal.
+func (c *sendingConn) readyForQuery(body []byte) {
+	head := c.waiting[0]
+	if head.kind != 'S' && head.kind != 'Q' && head.kind != 'F' {
+		c.lose(fmt.Sprintf("a ReadyForQuery, which the %q waiting for an answer does not expect", head.kind))
+		return
+	}
+	if len(body) != 1 {
+		c.lose(fmt.Sprintf("a ReadyForQuery of %d bytes", len(body)))
+		return
+	}
+	c.done()
+	if head.kind == 'Q' {
+		delete(c.prepared, "")
+		delete(c.portals, "")
+	}
+	if body[0] == 'I' {
+		clear(c.portals)
 	}
 }

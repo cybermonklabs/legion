@@ -341,11 +341,12 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 // reads the rule at most once for each row it claims; it claims a row only once the row is due;
 // and it writes a row that waits due again 2 s or more after that write. A trigger records, beside
 // each value of next_attempt_at written, the now() of the statement that wrote it: a row's claim
-// and its record. The test reads every statement a pass's connections run off the bytes they
-// write (SentStatements), so a statement shows however it was sent - on its own, in a batch,
-// prepared and run by name, bound in one round trip and run in a later one - and each must be,
-// byte for byte, one of the statements a pass sends (passStatements): any other fails the test,
-// whatever it reads. Each read of the rule is bound to one row's event and destination, and no row
+// and its record. The test reads every statement the server ran or refused on a pass's
+// connections, off the bytes they write and the server's answers (SentStatements), so a statement
+// shows however it was sent - on its own, in a batch, prepared and run by name, bound in one round
+// trip and run in a later one - and each must be, byte for byte, one of the statements a pass
+// sends (passStatements), and run: any other, and any the server refused, fails the test, whatever
+// it reads. Each read of the rule is bound to one row's event and destination, and no row
 // may be read for more than once in a pass, nor read for at all unless the pass claims it. Fifty
 // rows wait behind an earlier event no record has written. The first pass claims all fifty,
 // reading the rule at least once to hold them. Half the rows are then written due an hour on, on
@@ -454,6 +455,9 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 		readsOf := map[string]int{}
 		for _, statement := range sent.Statements()[before:] {
 			switch {
+			case statement.Failed:
+				problems = append(problems, fmt.Sprintf("%s: a statement the server answered with error %s, which may have read the rule in part: %q",
+					name, statement.Code, statementText(statement.SQL, 160)))
 			case statement.SQL == model.MentionCopyRuleSQL:
 				reads++
 				event, readEvent := statement.Int8(0)
