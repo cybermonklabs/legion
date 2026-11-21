@@ -6,10 +6,8 @@ body: |-
   it (`401 TOKEN_REVOKED`, and `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` for a broker token, which is
   also refused within five minutes after, the two databases' clocks apart). One made later acts,
   and a personal token it mints records the address's account. Nothing is refused at the upgrade.
-  A broker token recording no account is no longer refused only until a revocation settles,
-  `401 BROKER_REVOCATION_SETTLING` is gone, and nothing Dispatch admits waits on the broker's
-  revocation any more. The membership answer the broker reads takes `account=none` and
-  `credential_created_at` beside the account.
+  Nothing Dispatch admits waits on the broker's revocation. The membership answer the broker reads
+  takes `account=none` and `credential_created_at` beside the account.
 time: 2026-11-17T18:58:02.611128146Z
 custom:
     Issue: pr4199

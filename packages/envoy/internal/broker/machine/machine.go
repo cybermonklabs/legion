@@ -296,22 +296,22 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // credential before the revoke reads login's machine logins, and the revoke ends it; one that
 // waited reads what the revoke recorded, and is refused.
 //
-// point is the session generation of login's address at Dispatch as Dispatch's check of the
+// generation is the session generation of login's address at Dispatch as Dispatch's check of the
 // approver read it, which a current Dispatch relays (approver_session_generation), and nil for an
 // approve that carries none (an older or rolled-back Dispatch). Every recording of an account at
 // Dispatch moves that generation in its own transaction, and the revoke records the generation its
-// replacement left. So an approval carrying a point is ErrApprovalCheckedBeforeReplacement, whatever
-// account it names, when a replacement of login's address was recorded at a greater generation
+// replacement left. So an approval carrying a generation is ErrApprovalCheckedBeforeReplacement,
+// whatever account it names, when a replacement of login's address was recorded at a greater one
 // (store.SubjectReplacedAfter), read under the same lock: its check passed before the address
 // moved, and the revoke, having ended every credential of the address recording none, would no
-// longer end the login it mints. An approval carrying no point that names no account is
+// longer end the login it mints. An approval carrying no generation that names no account is
 // ErrApprovalNamesNoAccount when Dispatch named any account replaced at login's address within
 // ApprovalInFlightWindow (store.SubjectReplacedWithin), read under the same lock, since nothing
-// else places it before or after the move; one carrying no point that names an account is held to
-// that account alone, as above. A denial mints nothing and takes away nothing anyone holds, so it
-// is decided whatever the account and the point.
-func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string, account store.IssuerSubject, point *int64) (state, credentialID string, err error) {
-	if approve && point == nil {
+// else places it before or after the move; one carrying no generation that names an account is
+// held to that account alone, as above. A denial mints nothing and takes away nothing anyone
+// holds, so it is decided whatever the account and the generation.
+func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string, account store.IssuerSubject, generation *int64) (state, credentialID string, err error) {
+	if approve && generation == nil {
 		s.ApprovalsWithoutGeneration.Inc()
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
@@ -404,8 +404,8 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 			return "", "", ErrApproverReplaced
 		}
 		switch {
-		case point != nil:
-			checkedBefore, err := store.SubjectReplacedAfter(ctx, tx, login, *point)
+		case generation != nil:
+			checkedBefore, err := store.SubjectReplacedAfter(ctx, tx, login, *generation)
 			if err != nil {
 				return "", "", err
 			}

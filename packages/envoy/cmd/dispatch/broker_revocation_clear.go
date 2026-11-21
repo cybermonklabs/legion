@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -79,10 +80,9 @@ func clearBrokerRevocation(ctx context.Context, args []string, databaseURL strin
 	}
 	code := 0
 	for _, named := range seen {
-		settled := false
-		for _, revocation := range cleared {
-			settled = settled || revocation.Subject == named.Subject && revocation.Generation == named.Generation
-		}
+		settled := slices.ContainsFunc(cleared, func(revocation store.OwedBrokerRevocation) bool {
+			return revocation.Subject == named.Subject && revocation.Generation == named.Generation
+		})
 		if settled {
 			fmt.Fprintf(stdout, "clear-broker-revocation: %s %s:%d cleared\n", email, named.Subject, named.Generation)
 			continue

@@ -67,10 +67,7 @@ func brokerRevocationBatch(timeout time.Duration) int {
 	if timeout <= 0 || timeout >= brokerRevocationRetry {
 		return 1
 	}
-	if batch := int((brokerRevocationRetry - timeout) / timeout); batch > 1 {
-		return batch
-	}
-	return 1
+	return max(1, int((brokerRevocationRetry-timeout)/timeout))
 }
 
 // brokerRevocationMinGap is the least time between two passes' starts, whatever woke them
