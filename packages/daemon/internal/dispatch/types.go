@@ -41,7 +41,6 @@ type Client interface {
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
-	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
@@ -66,15 +65,6 @@ type Client interface {
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
-}
-
-// RepoProject is one mapping of a GitHub repository (owner/name) to a Dispatch project, and
-// whether it is that project's default: the repository an issue resolves to when neither it nor
-// any ancestor names one.
-type RepoProject struct {
-	Repo    string
-	Project string
-	Default bool
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route

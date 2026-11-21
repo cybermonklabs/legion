@@ -691,25 +691,27 @@ func testDeadline(t testing.TB) (deadline time.Time, bounded bool) {
 	return deadline.Add(-min(startMargin, time.Until(deadline)/2)), true
 }
 
-// waitBound is where a wait of a test on a server's own fact ends (testDeadline), and so what each
+// waitEnd is where a wait of a test on a server's own fact ends (testDeadline), and so what each
 // step of the wait may take: no probe, dial, request or pause runs past the end, so a wait that
 // gives up fails its test by name before the binary's own -timeout panics. Each step is cut to
-// what is left (step), and the wait checks its end after every step (over). With no deadline
-// (bounded false) every step takes its own bound and the wait has no end.
-type waitBound struct {
+// what is left (step), the dials of a connect together (dial), and the wait checks its end after
+// every step (over). With no deadline (bounded false) every step takes its own bound and the wait
+// has no end. It is not buckets.go's waitBound, which bounds one fixture create by a margin of its
+// own before the test's deadline.
+type waitEnd struct {
 	end     time.Time
 	bounded bool
 }
 
-// boundOf is the bound of a wait of t (testDeadline).
-func boundOf(t testing.TB) waitBound {
+// boundOf is the end of a wait of t (testDeadline).
+func boundOf(t testing.TB) waitEnd {
 	end, bounded := testDeadline(t)
-	return waitBound{end: end, bounded: bounded}
+	return waitEnd{end: end, bounded: bounded}
 }
 
 // step is d, or what is left of the wait when that is less, and never under a millisecond: a step
 // must run to fail, and nats.go reads a zero timeout as none.
-func (b waitBound) step(d time.Duration) time.Duration {
+func (b waitEnd) step(d time.Duration) time.Duration {
 	if !b.bounded {
 		return d
 	}
@@ -717,18 +719,64 @@ func (b waitBound) step(d time.Duration) time.Duration {
 }
 
 // stepContext is the context of one JetStream request of the wait, for d at most (step).
-func (b waitBound) stepContext(d time.Duration) (context.Context, context.CancelFunc) {
+func (b waitEnd) stepContext(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), b.step(d))
 }
 
 // over reports whether the wait has reached its end.
-func (b waitBound) over() bool { return b.bounded && !time.Now().Before(b.end) }
+func (b waitEnd) over() bool { return b.bounded && !time.Now().Before(b.end) }
 
 // pause waits retryInterval between two steps, or what is left when that is less.
-func (b waitBound) pause() { time.Sleep(b.step(retryInterval)) }
+func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 
 // String is the end, as a wait's failure names it.
-func (b waitBound) String() string { return b.end.Format(time.RFC3339Nano) }
+func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
+
+// dial is the options of one connect of the wait: each server's handshake bounded by dialTimeout
+// cut to what is left (step), and, when the wait has an end, every server's dial and handshake
+// ending by it. nats.go bounds each server's handshake by its Timeout alone and tries each server
+// of a comma-separated URL in turn, so a URL of three servers that accept and say nothing would
+// otherwise spend what is left three times over.
+func (b waitEnd) dial() []natsgo.Option {
+	options := []natsgo.Option{natsgo.Timeout(b.step(dialTimeout)), natsgo.NoReconnect()}
+	if b.bounded {
+		options = append(options, natsgo.SetCustomDialer(endDialer{end: b.end}))
+	}
+	return options
+}
+
+// endDialer dials a server of a connect by end, and gives the connection back with every deadline
+// nats.go sets on it during the handshake capped at end (endConn).
+type endDialer struct{ end time.Time }
+
+func (d endDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: dialTimeout, Deadline: d.end}).Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return endConn{Conn: conn, end: d.end}, nil
+}
+
+// endConn is a connection whose deadlines are capped at end. nats.go sets its handshake's deadline
+// (Timeout from now) and clears it, with the zero time, once the handshake is done; a cleared
+// deadline stays cleared, so a connection that connected is not cut at end.
+type endConn struct {
+	net.Conn
+	end time.Time
+}
+
+func (c endConn) capped(t time.Time) time.Time {
+	if t.IsZero() || t.Before(c.end) {
+		return t
+	}
+	return c.end
+}
+
+func (c endConn) SetDeadline(t time.Time) error     { return c.Conn.SetDeadline(c.capped(t)) }
+func (c endConn) SetReadDeadline(t time.Time) error { return c.Conn.SetReadDeadline(c.capped(t)) }
+func (c endConn) SetWriteDeadline(t time.Time) error {
+	return c.Conn.SetWriteDeadline(c.capped(t))
+}
 
 // readiness is the part of a nats-server awaitReady asks.
 type readiness interface {
@@ -736,7 +784,7 @@ type readiness interface {
 }
 
 // awaitReady returns once srv, just started, accepts connections: the server's own readiness
-// (ReadyForConnections), asked for retryInterval at a time, cut to what is left (waitBound). A
+// (ReadyForConnections), asked for retryInterval at a time, cut to what is left (waitEnd). A
 // server that logged a fatal error, a listener it could not open among them, fails its start at
 // once, whether or not its client listener came up.
 func awaitReady(t testing.TB, srv readiness, log *logCapture) error {
@@ -993,7 +1041,7 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
 	bound := boundOf(t)
 	for {
-		conn, err := dialNATS(uri, natsgo.Timeout(bound.step(dialTimeout)), natsgo.NoReconnect())
+		conn, err := dialNATS(uri, bound.dial()...)
 		switch {
 		case err == nil:
 			conn.Close()
@@ -1051,16 +1099,16 @@ const (
 
 // Connect waits, until testDeadline, for a test NATS server to accept a real connection and
 // JetStream to answer an operation before returning it, each dial and request cut to what is left
-// (waitBound). The relay accepts a connection before the server behind it has finished its
-// protocol handshake, and NATS can complete that handshake while JetStream is still starting; a KV
-// test needs both readiness boundaries.
+// (waitEnd), the dials of each connect together. The relay accepts a connection before the server
+// behind it has finished its protocol handshake, and NATS can complete that handshake while
+// JetStream is still starting; a KV test needs both readiness boundaries.
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
 	bound := boundOf(t)
 	var conn *natsgo.Conn
 	for {
 		var err error
-		conn, err = dialNATS(uri, natsgo.Timeout(bound.step(dialTimeout)), natsgo.NoReconnect())
+		conn, err = dialNATS(uri, bound.dial()...)
 		if err == nil {
 			break
 		}
@@ -1083,7 +1131,7 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 
 // waitForJetStream retries a real JetStream operation, until testDeadline, rather than trusting a
 // successful core-NATS connect. Each try gets a context of jetStreamStep, cut to what is left
-// (waitBound), which the operation's request must honour. Kept separate so its transient boundary
+// (waitEnd), which the operation's request must honour. Kept separate so its transient boundary
 // has a direct unit test.
 func waitForJetStream(t testing.TB, check func(context.Context) error) {
 	t.Helper()

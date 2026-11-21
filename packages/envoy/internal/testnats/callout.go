@@ -2,11 +2,9 @@ package testnats
 
 import (
 	"fmt"
+	"github.com/nats-io/nkeys"
 	"strings"
 	"testing"
-
-	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nkeys"
 )
 
 // CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
@@ -151,15 +149,15 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 }
 
 // awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is
-// seed, each dial cut to what is left (waitBound): the proof it speaks the client protocol and
-// enforces its configured users. A server with an auth callout cannot be probed with a client that
-// has no credential, as awaitAuth probes one, because the server holds such a client for its
-// authorization timeout while it waits for an answer no service gives yet.
+// seed, each connect's dials cut to what is left (waitEnd): the proof it speaks the client
+// protocol and enforces its configured users. A server with an auth callout cannot be probed with a
+// client that has no credential, as awaitAuth probes one, because the server holds such a client
+// for its authorization timeout while it waits for an answer no service gives yet.
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
 	bound := boundOf(t)
 	for {
-		conn, connectErr := ConnectSeed(t, uri, seed, natsgo.Timeout(bound.step(dialTimeout)))
+		conn, connectErr := ConnectSeed(t, uri, seed, bound.dial()...)
 		if connectErr == nil {
 			conn.Close()
 			return

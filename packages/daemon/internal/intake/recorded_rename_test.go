@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A review or a checks settlement of a pull request already open when its repository was
@@ -43,7 +44,12 @@ func TestAReviewOfAPullRequestRecordedUnderTheOtherNameOfARenameIsRecorded(t *te
 			fact: Push{Repo: "cybermonklabs/legion", Branch: "legion/LEGION-208", Before: "head-captured", After: "pushed"}, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			spec := ConsumerSpec{Project: "LEGION", AckWait: 5 * time.Second, Renames: tc.renames}
+			// A hang guard, not the subject: AckWait bounds the one store read recordedPullRequest
+			// makes, and at 5 s whether a read a loaded runner made slower came back as the row's
+			// answer or as context deadline exceeded was the machine's to decide. A minute, or what
+			// is left of the test binary's deadline less a second when that is sooner
+			// (testwait.Bounded), only a hung read reaches.
+			spec := ConsumerSpec{Project: "LEGION", AckWait: testwait.Bounded(t, time.Minute, time.Second), Renames: tc.renames}
 			got, err := recordedPullRequest(context.Background(), spec, pool, tc.fact)
 			if err != nil || got != tc.want {
 				t.Fatalf("recordedPullRequest(%#v) = %v, %v; want %v and no error", tc.fact, got, err, tc.want)

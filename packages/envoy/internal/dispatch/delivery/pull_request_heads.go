@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -33,9 +34,10 @@ import (
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
 // result, and by the read of an issue's results for a `before_merge` result's commit, at most
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
-// which takes every open row read longer than five minutes ago and every merged row the rule
-// this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads).
+// which takes every open row read longer ago than PullRequestHeadStaleAfter (every open row at
+// every pass of one process, as far as the batch reaches, and as PullRequestHeadStaleAfter says
+// with several) and every merged row the rule this build judges by has not judged yet — one
+// offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -636,11 +638,27 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again, and PullRequestHeadBatch how many it reads in one pass.
-const (
-	PullRequestHeadStaleAfter = 5 * time.Minute
-	PullRequestHeadBatch      = 200
-)
+// reconcile reads it again.
+//
+// The bound is duty.LeasePeriod(ReconcileInterval), ReconcileInterval less a tenth of it: the
+// shortest wait the reconcile leaves after a pass, whose waits are drawn in
+// (ReconcileInterval - ReconcileInterval/10, ReconcileInterval] (duty.RunJittered,
+// duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
+// With one process the next pass starts more than this bound after that end, so every pass
+// re-reads every open row the pass before it read, as far as the batch reaches. With several
+// processes serving one database the next pass can be another process's, starting less than this
+// bound after the read, and it leaves the row as fresh. The first pass that starts more than this
+// bound after the read reads it, and the deployment's passes come at most ReconcileInterval
+// apart, so two reads of an open row are at most about this bound plus ReconcileInterval apart,
+// nine and a half minutes, plus the passes' own run time. A bound of the whole ReconcileInterval
+// would leave such a row not yet due at one process's next pass whenever that pass's wait, with
+// the time the pass before ran on after the read, came to five minutes or less, which a quick pass
+// almost always does, and the row would wait for the pass after: about ten minutes between two
+// reads of it rather than five.
+var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
+
+// PullRequestHeadBatch is how many rows the reconcile reads again in one pass.
+const PullRequestHeadBatch = 200
 
 // ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
 // unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
@@ -648,14 +666,15 @@ const (
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round every five minutes; a merged row is written once more at most, by an envelope or a
-// read-through, and a recorded result reads through only for a commit no head Dispatch knows.
-// So a merged row left credited to nobody stays that way, and every `before_merge` result at
-// that head stands at no basis for ever: a merge delivered by a `pull_request` envelope naming no
-// head repository is one such row (recordPullRequestHead attributes nobody, since it cannot
-// tell this repository's branch from a fork's), and so is every pull request merged under an
-// older attribution rule that credited nobody — a title naming another repository's issue first
-// was the whole of INFRA-1240.
+// round at every pass of one process, each starting at most five minutes after the one before it
+// ended, and as PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// most, by an envelope or a read-through, and a recorded result reads through only for a commit
+// no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
+// `before_merge` result at that head stands at no basis for ever: a merge delivered by a
+// `pull_request` envelope naming no head repository is one such row (recordPullRequestHead
+// attributes nobody, since it cannot tell this repository's branch from a fork's), and so is
+// every pull request merged under an older attribution rule that credited nobody — a title
+// naming another repository's issue first was the whole of INFRA-1240.
 //
 // The rule half of the arm takes a row an older rule credited too, which is R8 of INFRA-1522:
 // rule 2 ranks the head branch and the two links above the title and the body, so a child's
@@ -688,10 +707,11 @@ const (
 // and the merged rows no read ever reached. Raising the rule offers every merged row of the
 // deployment once, which on a production-shaped table measured for INFRA-1522 is 12,000 rows,
 // about 12,000 GitHub reads and 2,400 an hour against an installation's 5,000 — half a
-// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass it is
-// about 600 an hour and about a day, and a table of a few hundred merged rows is still a few
-// passes. The two reads are ordered the same way and the bound is applied to their sum, so a
-// pass never reads more rows than it did before.
+// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass, and at
+// most one pass in each 4.5-minute period of the reconcile's lease, it is about 600 to 670 an
+// hour and about a day, and a table of a few hundred merged rows is still a few passes. The two
+// reads are ordered the same way and the bound is applied to their sum, so a pass never reads
+// more rows than it did before.
 func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestHead, error) {
 	heads, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads

@@ -13,9 +13,9 @@ import (
 
 // A server that cannot open a listener its configuration asks for logs a fatal error and will
 // never accept connections, and its start fails at once with that log rather than waiting for the
-// test's deadline (awaitReady). The row starts one whose leafnode port another listener holds,
-// through a t with no deadline (fatalRecorder has no Deadline method), so a wait that missed the
-// fatal error would last as long as the binary.
+// test's deadline (awaitReady). The row starts one whose leafnode port another listener holds, and
+// needs the failure to name the fatal error: a wait that missed it would fail only at the test's
+// deadline, naming that instead.
 func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 	held, err := testport.ListenLoopback()
 	if err != nil {

@@ -3,11 +3,15 @@ package testnats
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // shortTB is t with a deadline of its own, end, and Fatal recorded and its goroutine ended as
@@ -110,6 +114,60 @@ func TestADialWaitGivesNoDialLongerThanWhatIsLeft(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// silentServers is n listeners that accept every connection and never send it NATS's INFO, as
+// servers whose handshakes never come, and their URLs as one comma-separated list.
+func silentServers(t *testing.T, n int) string {
+	t.Helper()
+	var mu sync.Mutex
+	var conns []net.Conn
+	urls := make([]string, 0, n)
+	for range n {
+		listener, err := testport.ListenLoopback()
+		if err != nil {
+			t.Fatalf("listen for a silent server: %v", err)
+		}
+		go func() {
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				conns = append(conns, conn)
+				mu.Unlock()
+			}
+		}()
+		t.Cleanup(func() { listener.Close() })
+		urls = append(urls, "nats://"+listener.Addr().String())
+	}
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range conns {
+			conn.Close()
+		}
+	})
+	return strings.Join(urls, ",")
+}
+
+// A connect to a list of servers whose handshakes never come ends with the wait, not once per
+// server: nats.go bounds each server's handshake by its Timeout alone and tries each server in
+// turn, so three such servers with 600 ms left would take 1.8 s, past the test's deadline 1.2 s
+// away. The row dials real listeners, through nats.go's own connect.
+func TestAConnectToSilentServersEndsWithTheWait(t *testing.T) {
+	const window = 600 * time.Millisecond
+	url := silentServers(t, 3)
+	begun := time.Now()
+	tb := heldWait(t, window, func(tb testing.TB) { Connect(tb, url) })
+	took := time.Since(begun)
+	if !strings.Contains(tb.message, "short of the test's deadline") {
+		t.Fatalf("a connect to three servers whose handshakes never come failed with %q, want it to name the test's deadline", tb.message)
+	}
+	if took >= 2*window {
+		t.Errorf("the connect to three silent servers failed after %s, past the test's deadline %s after it began", took, 2*window)
 	}
 }
 

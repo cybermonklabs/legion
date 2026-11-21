@@ -35,6 +35,8 @@ func TestAPauseStopsAndHoldsAClaimOfAnotherProjectsIssue(t *testing.T) {
 
 	// A spawn of another project's issue, up and idle in its own process.
 	const foreignIssue = "OTHERPROJECT-5"
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(foreignIssue, "todo", "", false)
 	foreign := r.d.spawn(api.SpawnRequest{Tree: foreignIssue, Issue: foreignIssue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	testwait.Eventually(t, "the spawn of another project's issue to launch", func() bool { return len(r.rt.launchesOf(foreign)) == 1 })
 	launched := r.claim(foreign)
