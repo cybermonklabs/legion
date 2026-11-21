@@ -7,15 +7,24 @@ body: |-
   the write while a child of another project is open under the issue (any status but `done` and
   `icebox`, as `record.ChildOpen` reads it), also a child filed after the last controller tick.
   The daemon answers that refusal `409 SIGNOFF_CHILD_OPEN`, naming each such child with its
-  project and status, and records nothing. Each route first judges the act read-only as the
+  project and status, and records nothing. The write is made at the sequence of the route's own
+  read of the issue (`expected_sequence`): where a person moved the issue since, nothing is
+  written over the move, nothing is recorded, and the route answers `409 ISSUE_CHANGED` naming the
+  status Dispatch shows; an event that kept the status, a message, only has the route read again
+  and write at the new sequence. Each route first judges the act read-only as the
   workflow records the issue (`workflow.Engine.SignOffRefusal`, `CloseRootRefusal`), so a refusal
   the workflow makes writes nothing in Dispatch; a fact that refuses or fails after the write
   writes back the status Dispatch showed before it, and records that write so the event of the
   acceptance's own write changes nothing. The write back lands only over the acceptance's own
   write: on the sequence of a read that still shows that status (`expected_sequence`), so a
   person's later move stays, and never while the record holds the issue in `retro` or `merging`,
-  so an acceptance another request recorded meanwhile keeps its `retro` in Dispatch. Two `sign_off` or
-  `close_root` requests of one issue run one after the other, and a caller that goes away does
+  so an acceptance another request recorded meanwhile keeps its `retro` in Dispatch. One lock of
+  the daemon's process for each issue (`issuelock.Locks`) holds the writers of its status apart:
+  `sign_off` and `close_root` hold it from their read until their fact commits and any write back
+  is made, so two of them of one issue run one after the other; each outbox status row takes it
+  around its reads and its write, and finishes without writing where Dispatch shows `retro` and
+  the record holds the issue accepted; and the status repair leaves an issue whose acceptance is
+  under way, naming it in its run line's `accepting` list. A caller that goes away does
   not stop the write back. The reason of a `close_root` is posted by the close's
   status row after the status, which Dispatch takes on a closed issue; where the event of the
   route's own `done` write reaches the record before the close's fact, the fact posts the reason

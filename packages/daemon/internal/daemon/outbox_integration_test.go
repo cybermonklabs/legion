@@ -264,8 +264,8 @@ func (d *blockingDispatch) SetStatus(context.Context, string, string) (dispatch.
 func (d *blockingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *blockingDispatch) SetAcceptanceStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, key, status)
+func (d *blockingDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *blockingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("blockingDispatch takes no hand-over")
@@ -463,8 +463,8 @@ func (d *refusingDispatch) SetStatus(_ context.Context, _ string, status string)
 func (d *refusingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *refusingDispatch) SetAcceptanceStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, key, status)
+func (d *refusingDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *refusingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("refusingDispatch takes no hand-over")
@@ -531,8 +531,8 @@ func (d *boardDispatch) SetStatus(_ context.Context, _ string, status string) (d
 func (d *boardDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *boardDispatch) SetAcceptanceStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, key, status)
+func (d *boardDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("boardDispatch takes no hand-over")

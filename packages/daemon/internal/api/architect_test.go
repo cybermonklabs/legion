@@ -198,26 +198,39 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 // fences it: refused 409 ISSUE_CHANGED when the issue the fake keeps stands at another sequence,
 // and otherwise taken and kept as SetStatus keeps a write. An acceptance's write back makes it.
 func (r *statusRecorder) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	if r.err != nil {
-		return dispatch.Issue{}, r.err
-	}
-	if r.issues[issue.Key].LastSeq != issue.LastSeq {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+	if err := r.changedSince(issue); err != nil {
+		return dispatch.Issue{}, err
 	}
 	return r.SetStatus(ctx, issue.Key, status)
 }
 
-// SetAcceptanceStatus is SetStatus sent with refuse_open_foreign_children: refused with Dispatch's
-// 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue, and otherwise taken and
-// kept as SetStatus keeps a write, and in acceptances.
-func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, issue, status string) (dispatch.Issue, error) {
-	if children := r.foreignOpen[issue]; len(children) > 0 {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
-			Message: issue + " has an open child of another project", Issues: children}
+// changedSince is Dispatch's refusal of a write fenced on issue's sequence where the issue the
+// fake keeps stands at another one (409 ISSUE_CHANGED), and r.err, Dispatch's trouble, before it.
+func (r *statusRecorder) changedSince(issue dispatch.Issue) error {
+	if r.err != nil {
+		return r.err
 	}
-	written, err := r.SetStatus(ctx, issue, status)
+	if r.issues[issue.Key].LastSeq != issue.LastSeq {
+		return &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+	}
+	return nil
+}
+
+// SetAcceptanceStatus is SetStatusAt sent with refuse_open_foreign_children, judged in Dispatch's
+// order: refused 409 ISSUE_CHANGED where the issue stands at another sequence than issue's, then
+// with Dispatch's 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue, and
+// otherwise taken and kept as SetStatus keeps a write, and in acceptances.
+func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	if err := r.changedSince(issue); err != nil {
+		return dispatch.Issue{}, err
+	}
+	if children := r.foreignOpen[issue.Key]; len(children) > 0 {
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
+			Message: issue.Key + " has an open child of another project", Issues: children}
+	}
+	written, err := r.SetStatus(ctx, issue.Key, status)
 	if err == nil {
-		r.acceptances = append(r.acceptances, issue+"="+status)
+		r.acceptances = append(r.acceptances, issue.Key+"="+status)
 	}
 	return written, err
 }

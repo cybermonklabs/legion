@@ -26,7 +26,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -179,6 +181,11 @@ type outbox struct {
 	// (overrides.beforeOutboxStatusWrite), on the lane's goroutine, so the row waits for it to
 	// return; nil in production and in every outbox a test builds by hand, which tells no one.
 	beforeStatusWrite func(record.OutboxRow)
+	// issueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), which the API's sign_off and close_root hold from their read of Dispatch
+	// until their fact commits: each status row takes its issue's lock around its reads and its
+	// write (status). Nil, as in every outbox a test builds by hand, serializes nothing.
+	issueLocks *issuelock.Locks
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
 	// pause made or ended through another daemon of a rolling restart holds this daemon's launches
@@ -997,6 +1004,10 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if r.beforeStatusWrite != nil {
 		r.beforeStatusWrite(row)
 	}
+	// The row reads and writes under its issue's lock, which an acceptance holds from its read of
+	// Dispatch until its fact commits: no row writes between the acceptance's write and its fact,
+	// and a row queued before it reads the record as that fact left it (overAcceptance).
+	defer r.issueLocks.Lock(row.Issue)()
 	rule, err := ruleFor(payload.Kind)
 	if err != nil {
 		return fmt.Errorf("outbox row %d: %w", row.ID, err)
@@ -1015,6 +1026,9 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	// why the shared answer is taken after the rule rather than before it.
 	if statusMoved(payload, issue) {
 		return nil
+	}
+	if over, err := r.overAcceptance(ctx, row, payload, issue); err != nil || over {
+		return err
 	}
 	// A write's reason goes on the issue first, so it is there before the status moves the issue:
 	// a done write's before the close, and a workflow move's before the move it explains.
@@ -1196,6 +1210,33 @@ func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
 // superseded by a change made after it was queued.
 func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
 	return issue.Status != payload.ObservedStatus && issue.Status != payload.Status
+}
+
+// overAcceptance says whether row, an ordinary or a re-assert status row, would take Dispatch off
+// an acceptance the daemon records: Dispatch shows the issue at retro, the status of its accepted
+// phases, the record holds it accepted (record.Accepted: in retro or merging, or held from one of
+// them), and the row carries another status. Such a row was queued before the acceptance's fact
+// committed — accepting's needs_review, or a status repair's — and the acceptance's own write and
+// its row carry the status Dispatch owes now, so this one finishes having written nothing.
+// Written, it would leave Dispatch showing the issue unaccepted while the daemon records it
+// accepted, and another project's daemon would take a registration on it. The record is read
+// under the issue's lock (status), which an acceptance holds until its fact commits, so it is
+// the record that fact left.
+func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, shown dispatch.Issue) (bool, error) {
+	accepted := workflow.PhaseStatus(phase.Retro)
+	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted || payload.Status == accepted {
+		return false, nil
+	}
+	recorded, err := r.recordedIssue(ctx, row.Issue)
+	if err != nil {
+		return false, fmt.Errorf("judge the status write of %s against its acceptance: %w", row.Issue, err)
+	}
+	if recorded == nil || !record.Accepted(*recorded) {
+		return false, nil
+	}
+	r.log.Info("outbox status write finished without writing: the daemon records its issue accepted, which Dispatch shows",
+		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase)
+	return true, nil
 }
 
 // ordinaryRule judges the workflow moving an issue along inside the workflow

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -196,6 +197,31 @@ func TestTheStatusRepairLogsEachRepairAndEveryRun(t *testing.T) {
 	if strings.Contains(logged.String(), "the status repair queues") {
 		t.Fatalf("the second run logged %q, want no repair line", logged.String())
 	}
+}
+
+// A sign_off holds its issue's lock as an acceptance from its read of Dispatch until its fact
+// commits, and between its retro write and that commit the record holds the issue in accepting
+// with Dispatch at retro: a status the repair would correct to needs_review, over the write the
+// fact is about to record. The repair leaves the issue alone while that acceptance is under way,
+// names it in the run line's accepting list, and repairs it once the acceptance is over.
+func TestTheStatusRepairLeavesAnIssueWhoseAcceptanceIsUnderWay(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Accepting, "needs_review", "retro"))
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+	var logged bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
+	engine.cfg.IssueLocks = &issuelock.Locks{}
+
+	accepted := engine.cfg.IssueLocks.Accept("LEGION-208")
+	applyRefusingNothing(t, pool, engine, intake.ControllerTick{})
+	assertQueuedStatusWrites(t, pool)
+	if want := `msg="workflow: the status repair ran" trigger=tick queued=0 passedOver=[] pending=[] accepting=[LEGION-208]`; !strings.Contains(logged.String(), want) {
+		t.Fatalf("the run under the acceptance logged %q, want a line with %q", logged.String(), want)
+	}
+
+	accepted()
+	applyRefusingNothing(t, pool, engine, intake.ControllerTick{})
+	assertQueuedStatusWrites(t, pool, statusRow{"LEGION-208", "needs_review", "retro"})
 }
 
 // repairIssue is one issue of the status repair's tests: key, a member of tree, standing in at,

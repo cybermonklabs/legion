@@ -25,12 +25,13 @@ type Client interface {
 	// (the outbox's status row) go through it, while a route that writes a status on a person's or
 	// an architect's command takes SetStatus, having read nothing to be overtaken.
 	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
-	// SetAcceptanceStatus is SetStatus for the daemon's own acceptance of an issue, retro or done,
-	// sent with refuse_open_foreign_children: Dispatch refuses it while a child of another project
-	// is open under the issue (409 ForeignChildOpen, an *Error naming each in its Issues). sign_off
-	// and close_root write their status with it, before the daemon records the acceptance or the
-	// close.
-	SetAcceptanceStatus(ctx context.Context, key, status string) (Issue, error)
+	// SetAcceptanceStatus is SetStatusAt for the daemon's own acceptance of an issue, retro or
+	// done, sent with refuse_open_foreign_children: Dispatch refuses it while a child of another
+	// project is open under the issue (409 ForeignChildOpen, an *Error naming each in its Issues),
+	// and when anything was recorded on the issue since the caller read it (409 ISSUE_CHANGED).
+	// sign_off and close_root write their status with it, before the daemon records the
+	// acceptance or the close.
+	SetAcceptanceStatus(ctx context.Context, issue Issue, status string) (Issue, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
