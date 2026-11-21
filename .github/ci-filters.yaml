@@ -1056,6 +1056,7 @@ test:
   - 'scripts/github-apps/**'
   - 'scripts/sessions/**'
   - 'scripts/approval-eval/**'
+  - 'scripts/search-measure/**'
   - 'skills/approval-review/references/never-decide.md'
   - '.github/actions/install-changie/**'
   - '.github/changelog-packages'
@@ -1130,6 +1131,7 @@ docs:
   - 'packages/envoy/internal/weborigin/*'
   - 'packages/dispatch/**'
   - 'scripts/e2e/lib/held-port.py'
+  - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/proof-editor/src/**'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'
@@ -1443,6 +1445,7 @@ dispatch_ui:
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
+  - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/envoy/going/testdata/**'
   - 'scripts/third-party-notices.ts'
@@ -1511,6 +1514,7 @@ dispatch_browser:
   - *go_workspace
   - *dispatch_server
   - 'scripts/e2e/lib/held-port.py'
+  - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'scripts/third-party-notices.ts'

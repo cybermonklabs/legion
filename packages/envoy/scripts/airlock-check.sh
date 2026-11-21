@@ -66,6 +66,9 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+source "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
 	cat <<'EOF'
@@ -305,20 +308,41 @@ stop_stack() {
 	STACK_PID=""
 }
 
-# broker_env answers, in BROKER_ENV, the command prefix that runs a program with the environment
-# of a broker like the stack's own and the caller's overrides on top. It is read out of the first
-# stack broker's /proc/<pid>/environ rather than spelled here, so that a broker this script
-# starts can never lack a setting dev-airlock.sh gave the stack's. That script's own launcher is
-# the one that has to spell the environment: it starts the first broker and has nothing to copy
-# from. The entries are NUL-separated, and each becomes one argument of env, so a value holding
-# a space or a quote reaches the broker unchanged; env applies its assignments in order, so an
-# override the caller names replaces the copy.
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each. It is read out of the first stack broker's
+# /proc/<pid>/environ rather than spelled here, so that a broker this script starts can never
+# lack a setting dev-airlock.sh gave the stack's. That script's own launcher is the one that has to
+# spell the environment: it starts the first broker and has nothing to copy from. The entries are
+# NUL-separated, so a value holding a space or a quote reaches the broker unchanged; the overrides
+# come last, so an override the caller names replaces the copy.
 broker_env() { # <VAR=value>...
 	local pid
 	pid="$(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG" | head -n 1)"
-	local entries=()
-	mapfile -d '' -t entries <"/proc/$pid/environ"
-	BROKER_ENV=(env -i "${entries[@]}" "$@")
+	BROKER_ENV=()
+	mapfile -d '' -t BROKER_ENV <"/proc/$pid/environ"
+	BROKER_ENV+=("$@")
+}
+
+# with_broker_env COMMAND [ARG...] execs COMMAND with exactly BROKER_ENV as its environment, in
+# place of the subshell its caller runs it in, so `( with_broker_env CMD ) &` makes $! COMMAND's
+# pid. The entries reach COMMAND through that subshell's environment, which first loses every
+# variable and function this script exports, and never through a process's arguments: env -i took
+# them as arguments, which are in the process list for any user of the machine, and the stack
+# broker's environment holds its database URL, password and all. An entry whose name no shell can
+# export (an exported function's BASH_FUNC_name%%) is left out.
+with_broker_env() {
+	local -a exported
+	local entry flags name
+	mapfile -t exported < <(compgen -e)
+	unset "${exported[@]}" 2>/dev/null || true
+	while read -r _ flags name; do
+		if [[ "$flags" == *x* ]]; then unset -f "$name"; fi
+	done < <(declare -F)
+	# shellcheck disable=SC2163 # each entry is NAME=value, which export sets as it exports
+	for entry in "${BROKER_ENV[@]}"; do
+		if [[ "${entry%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then export "$entry"; fi
+	done
+	exec "$@"
 }
 
 # start_extra_broker starts one more broker process beside the stack's, on its database, rules
@@ -333,7 +357,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
@@ -477,7 +501,7 @@ record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] /
 # github_revokes is how many revokes of an installation token GitHub's stand-in has received.
 github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
 
-psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
+psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 ###############################################################################################
 # k1
@@ -1495,7 +1519,7 @@ k7_broker() {
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
@@ -1752,7 +1776,7 @@ k8a_start_broker() { # <rules file> <label>
 		BROKER_AIRLOCK_RULES_FILE="$1" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
-	"${BROKER_ENV[@]}" timeout 25 "$BROKER_BIN" >"$log" 2>&1
+	( with_broker_env timeout 25 "$BROKER_BIN" ) >"$log" 2>&1
 	local status=$?
 	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"
 	# The refusal has to be about this file: a broker that died of a setting this function did
@@ -1761,9 +1785,13 @@ k8a_start_broker() { # <rules file> <label>
 }
 
 check_k8a() {
-	expect "the judge-1800 and the no-hosts copies exit non-zero naming the entry"
+	# A judged entry that binds no host is valid since 1cb6615caa (#4142, "each key says who decides
+	# its requests"): such an entry says only who decides the key, and proxyrules.Validate accepts it
+	# on purpose. So the no-hosts copy is a change the command lists, not a failing copy, and the
+	# broker starts on it; the failing copies are the judge-1800 and the malformed ones.
+	expect "the judge-1800 copy exits non-zero naming the entry, and the no-hosts copy exits 0 listing the host it removes"
 	expect "the malformed copy names the parse position"
-	expect "a local broker refuses to start on each of the three failing copies"
+	expect "a local broker refuses to start on each of the two failing copies"
 	expect "the new-host, new-header and removed-entry copies exit 0 and list what they add or remove"
 	expect "the negative control, the valid file against itself, exits 0 and lists no change"
 
@@ -1789,14 +1817,14 @@ check_k8a() {
 		observe "$label: exit ${K8A_STATUS[$label]}; $(printf '%s' "$out" | head -n 3 | tr '\n' ' / ')"
 	done
 
-	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
-		"the 1800 and no-hosts copies exit non-zero naming the entry" \
+	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -eq 0 ] && contains 'AIRLOCK_DEMO_TOKEN": host s.airlock.test removed' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
+		"the 1800 copy exits non-zero naming the entry, and the no-hosts copy exits 0 listing the host it removes" \
 		"judge-1800 exited ${K8A_STATUS[judge-1800]} saying '${K8A_OUT[judge-1800]}'; no-hosts exited ${K8A_STATUS[no-hosts]} saying '${K8A_OUT[no-hosts]}'"
 	judge "$([ "${K8A_STATUS[malformed]}" -ne 0 ] && contains 'byte' "${K8A_OUT[malformed]}" && echo 0 || echo 1)" \
 		"the malformed copy names the parse position" "it exited ${K8A_STATUS[malformed]} saying '${K8A_OUT[malformed]}'"
 
 	local refusals=0 why=""
-	for label in judge-1800 no-hosts malformed; do
+	for label in judge-1800 malformed; do
 		if k8a_start_broker "$d/$label.json" "$label"; then
 			refusals=$((refusals + 1))
 			why="$why; $label: $K8A_WHY"
@@ -1805,8 +1833,8 @@ check_k8a() {
 		fi
 	done
 	observe "a local broker on each failing copy${why}"
-	judge "$([ "$refusals" = 3 ] && echo 0 || echo 1)" \
-		"the local broker refuses to start on each failing copy" "$refusals of 3 refused"
+	judge "$([ "$refusals" = 2 ] && echo 0 || echo 1)" \
+		"the local broker refuses to start on each failing copy" "$refusals of 2 refused"
 
 	local listed=0
 	for label in new-host new-header removed-entry; do

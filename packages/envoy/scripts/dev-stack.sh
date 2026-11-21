@@ -160,6 +160,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
 HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
   cat <<'EOF'
@@ -169,7 +172,9 @@ Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callou
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
 drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, else
-DATABASE_URL; this run creates and drops two databases of its own on that server.
+DATABASE_URL; this run creates and drops two databases of its own on that server. Prefer either
+variable to the option for a URL that holds a password: a process's arguments are in the process
+list for any user of the machine to read, and its environment is not.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
 agent-secrets-helper, natsd and natsprobe in <dir> in place of building them, and
@@ -453,7 +458,11 @@ DISPATCH_DATABASE_URL="${POSTGRES_SERVER}/${DISPATCH_DB}${POSTGRES_QUERY}"
 # shellcheck source-path=SCRIPTDIR source=lib/callout-stack.sh
 . "$SCRIPT_DIR/lib/callout-stack.sh"
 
-admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+# server_psql URL ARGS...: psql on URL, a database of POSTGRES_SERVER, as POSTGRES_SERVER's user,
+# with the password in psql's environment alone (lib/pg-url.sh's pg_url_run).
+server_psql() { pg_url_run "$1" psql "${@:2}"; }
+
+admin_psql() { server_psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 
 KEEPER_PID=""
 ISSUER_PID=""
@@ -523,6 +532,12 @@ cleanup() {
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+# A shell cannot trap a signal it was started with ignored: a background job of a shell without
+# job control, or a command under nohup, starts so, and its INT trap above does not take. Such a
+# run cannot be stopped by Ctrl-C, and says so, before anything is created.
+if [ "$(trap -p INT)" = "trap -- '' SIGINT" ]; then
+  echo "dev-stack: SIGINT was ignored when this run started, so Ctrl-C cannot stop it; stop it with TERM" >&2
+fi
 # The two in-place restarts, asked for by signal and run by the wait at the end of this script
 # once the stack is up: a request that arrives during the start waits for it. Trapped from here
 # on, so neither signal can end the run past the trap above, which their default action would.
@@ -545,14 +560,14 @@ echo "dev-stack: created databases $BROKER_DB and $DISPATCH_DB" >&2
 for url in "$BROKER_DATABASE_URL" "$DISPATCH_DATABASE_URL"; do
   want="${url%%\?*}"
   want="${want##*/}"
-  connected="$(psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
+  connected="$(server_psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
   if [ "$connected" != "$want" ]; then
     echo "dev-stack: refused: a database URL of this run connects to '$connected', not $want; drop any dbname= from the Postgres URL's query string" >&2
     exit 1
   fi
 done
 # The banner names the databases without any password their URL carries.
-DISPLAY_SERVER="$(printf '%s' "$POSTGRES_SERVER" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+DISPLAY_SERVER="$(pg_url_without_password "$POSTGRES_SERVER")"
 
 # --- Every binary this stack runs, in this run's own directory. One go build: the packages share
 # most of their closure, so building them together is one compile of it. With --binaries, a copy
@@ -732,12 +747,37 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
 # stands they name, started; without the option both are empty and nothing is started.
 project_access_broker_setup
+# start_with_only LOG SETTING... -- COMMAND [ARG...] starts COMMAND in the background, its standard
+# output and error to LOG, with exactly the SETTINGs (NAME=value) as its environment, which env -i
+# gave the processes this script starts, and sets started_pid. The settings reach it through the
+# environment of a subshell that unsets every variable and function this script exports and then
+# execs it, never through a process's arguments: env -i takes them as arguments, which are in the
+# process list for any user of the machine to read, and a database URL's password must not be.
+started_pid=""
+start_with_only() {
+  local log="$1" settings=()
+  shift
+  while [ "$1" != -- ]; do
+    settings+=("$1")
+    shift
+  done
+  shift
+  (
+    mapfile -t exported < <(compgen -e)
+    unset "${exported[@]}" 2>/dev/null || true
+    while read -r _ flags name; do
+      if [[ "$flags" == *x* ]]; then unset -f "$name"; fi
+    done < <(declare -F)
+    export "${settings[@]}"
+    exec "$@"
+  ) >"$log" 2>&1 &
+  started_pid=$!
+}
 # start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
 # every replica of one deployment, is the same binary and settings on the same database.
-started_pid=""
 start_broker() {
   : >"$1"
-  env -i PATH="$PATH" \
+  start_with_only "$1" PATH="$PATH" \
     BROKER_DATABASE_URL="$BROKER_POOL_DATABASE_URL" \
     BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
     BROKER_LISTEN_ADDR="127.0.0.1:0" \
@@ -767,8 +807,7 @@ start_broker() {
     "${PROJECT_ACCESS_ENV[@]}" \
     "${AIRLOCK_ENV[@]}" \
     "${callout_broker_env[@]}" \
-    "$BIN_DIR/broker" >"$1" 2>&1 &
-  started_pid=$!
+    -- "$BIN_DIR/broker"
 }
 echo "dev-stack: starting broker..." >&2
 start_broker "$BROKER_LOG"
@@ -867,31 +906,38 @@ DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 project_access_dispatch_env
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
-python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" \
-  HOME="$WORK_DIR/dispatch-home" \
-  XDG_CONFIG_HOME="$WORK_DIR/dispatch-home/config" \
-  XDG_DATA_HOME="$WORK_DIR/dispatch-home/data" \
-  XDG_CACHE_HOME="$WORK_DIR/dispatch-home/cache" \
-  DATABASE_URL="$DISPATCH_DATABASE_URL" \
-  DISPATCH_LISTEN_FD=3 \
-  DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_SERVER_URL="$DISPATCH_URL" \
-  DISPATCH_IDENTITY=cookie \
-  DISPATCH_DEV_SIGNIN=1 \
-  DISPATCH_INSECURE_COOKIE=1 \
-  DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE" \
-  DISPATCH_AGENT_SECRETS_URL="$BROKER_URL" \
-  DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE" \
-  DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
-  ENVOY_URL="$LISTENER_URL" \
-  ENVOY_TOKEN="$LISTENER_API_TOKEN" \
-  ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE" \
-  NATS_URLS="$NATS_URL" \
-  "${DISPATCH_ACCESS_ENV[@]}" \
-  "${callout_dispatch_env[@]}" \
-  "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
-DISPATCH_PID=$!
+dispatch_settings=(PATH="$PATH"
+  HOME="$WORK_DIR/dispatch-home"
+  XDG_CONFIG_HOME="$WORK_DIR/dispatch-home/config"
+  XDG_DATA_HOME="$WORK_DIR/dispatch-home/data"
+  XDG_CACHE_HOME="$WORK_DIR/dispatch-home/cache"
+  DATABASE_URL="$DISPATCH_DATABASE_URL"
+  DISPATCH_LISTEN_FD=3
+  DISPATCH_LISTEN_HOST=127.0.0.1
+  DISPATCH_SERVER_URL="$DISPATCH_URL"
+  DISPATCH_IDENTITY=cookie
+  DISPATCH_DEV_SIGNIN=1
+  DISPATCH_INSECURE_COOKIE=1
+  DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE"
+  DISPATCH_AGENT_SECRETS_URL="$BROKER_URL"
+  DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE"
+  DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist"
+  ENVOY_URL="$LISTENER_URL"
+  ENVOY_TOKEN="$LISTENER_API_TOKEN"
+  ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE"
+  NATS_URLS="$NATS_URL"
+  "${DISPATCH_ACCESS_ENV[@]}"
+  "${callout_dispatch_env[@]}")
+# held-port.py runs with exactly those settings (start_with_only) and hands Dispatch the ones it
+# names with --pass and nothing else, not what python3 adds to its own environment: the names are
+# its arguments, and the values, the database URL's password among them, are in no process's.
+dispatch_passed=()
+for setting in "${dispatch_settings[@]}"; do
+  dispatch_passed+=(--pass "${setting%%=*}")
+done
+start_with_only "$DISPATCH_LOG" "${dispatch_settings[@]}" -- \
+  python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD "${dispatch_passed[@]}" -- "$BIN_DIR/dispatch"
+DISPATCH_PID=$started_pid
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
 DISPATCH_URL="http://$awaited"
 until_true "Dispatch's route index" curl -sf "$DISPATCH_URL/api/v1"

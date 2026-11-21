@@ -561,6 +561,13 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
+      # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
+      # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
+      # python3 runs it.
+      - name: Test the search-measure psql helper
+        run: python3 -m unittest -v pg_test
+        working-directory: scripts/search-measure
+
       # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
       # test, whose answer is typed to the contract, and the root package pins its TypeScript and
       # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.

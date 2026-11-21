@@ -1,0 +1,83 @@
+"""Tests of `pg.run`: the password a DSN carries reaches psql in `PGPASSWORD` alone, in no argument.
+
+Run from this directory with `python3 -m unittest pg_test`. A stand-in psql first on PATH records
+each call's arguments and the `PGPASSWORD` it was given, one JSON object per call, so the rows read
+what psql was handed rather than what a server answered.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import json  # noqa: E402
+import os  # noqa: E402
+import pathlib  # noqa: E402
+import tempfile  # noqa: E402
+import unittest  # noqa: E402
+from unittest import mock  # noqa: E402
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import pg  # noqa: E402
+
+STAND_IN = """#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["PG_TEST_CALLS"], "a") as calls:
+    calls.write(json.dumps({"argv": sys.argv[1:], "PGPASSWORD": os.environ.get("PGPASSWORD")}) + "\\n")
+"""
+
+
+class RunTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = pathlib.Path(directory.name)
+        psql = root / "psql"
+        psql.write_text(STAND_IN)
+        psql.chmod(0o755)
+        self.calls = root / "calls"
+        environment = mock.patch.dict(os.environ, {
+            "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+            "PG_TEST_CALLS": str(self.calls),
+            "PGPASSWORD": "the-callers-own-not-a-secret",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def call(self, dsn):
+        pg.run(dsn, "-c", "select 1")
+        (call,) = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        return call
+
+    def test_an_encoded_password_is_in_PGPASSWORD_and_in_no_argument(self):
+        call = self.call("postgres://tester:not-a-secret%40can%2Fary@127.0.0.1:5999/postgres?sslmode=disable")
+        self.assertEqual(call["argv"], ["postgres://tester@127.0.0.1:5999/postgres?sslmode=disable",
+                                        "-v", "ON_ERROR_STOP=1", "-c", "select 1"])
+        self.assertEqual(call["PGPASSWORD"], "not-a-secret@can/ary")
+        for argument in call["argv"]:
+            self.assertNotIn("not-a-secret", argument)
+
+    def test_a_query_string_password_is_taken_out_with_its_ampersand(self):
+        call = self.call("postgres://tester@127.0.0.1:5999/postgres?sslmode=disable&pass%77ord=not-a-secret%26x&application_name=a%3Db")
+        self.assertEqual(call["argv"][0], "postgres://tester@127.0.0.1:5999/postgres?sslmode=disable&application_name=a%3Db")
+        self.assertEqual(call["PGPASSWORD"], "not-a-secret&x")
+        for argument in call["argv"]:
+            self.assertNotIn("not-a-secret", argument)
+
+    def test_a_DSN_with_no_password_is_passed_whole_and_keeps_the_callers_PGPASSWORD(self):
+        for dsn in ("postgres://tester@127.0.0.1:5999/postgres?sslmode=disable",
+                    "postgres://127.0.0.1:5999/postgres"):
+            self.calls.unlink(missing_ok=True)
+            call = self.call(dsn)
+            self.assertEqual(call["argv"][0], dsn)
+            self.assertEqual(call["PGPASSWORD"], "the-callers-own-not-a-secret")
+
+    def test_a_password_libpq_cannot_decode_is_refused_before_psql_runs(self):
+        with self.assertRaises(SystemExit) as refused:
+            pg.run("postgres://tester:not-a-secret%zz@127.0.0.1:5999/postgres", "-c", "select 1")
+        self.assertEqual(str(refused.exception), "pg: refused a Postgres URL: its password holds a % "
+                         "that starts no %XX escape, or %00 (the URL is not printed)")
+        self.assertFalse(self.calls.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

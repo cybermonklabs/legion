@@ -56,6 +56,10 @@ mode="${1:-}"
 e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD, as
+# e2e/psql.ts gives it; packages/envoy's scripts and this one share the one shell split.
+# shellcheck source-path=SCRIPTDIR source=../../envoy/scripts/lib/pg-url.sh
+. "$e2e_dir/../../envoy/scripts/lib/pg-url.sh"
 
 # The one directory this script serves: the build below writes the three binaries into it, a
 # handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the fake secrets file is written in
@@ -177,8 +181,9 @@ if [ "$mode" = issuer ]; then
     --sign-in-as "alice@$signin_domain"
 fi
 
-# The broker's database, beside DATABASE_URL's on the same server. psql runs without PGHOSTADDR,
-# as e2e/psql.ts runs it: libpq would otherwise connect to that address instead of the URL's host.
+# The broker's database, beside DATABASE_URL's on the same server. psql runs as e2e/psql.ts runs
+# it: the URL without its password and the password in PGPASSWORD (pg_url_run), and without
+# PGHOSTADDR, since libpq would otherwise connect to that address instead of the URL's host.
 if ! [[ "$DATABASE_URL" =~ ^(postgres(ql)?://[^/?]+)/([^/?]+)(\?.*)?$ ]]; then
   echo "run-broker.sh: DATABASE_URL must be postgres://<user>@<host>:<port>/<database>" >&2
   exit 2
@@ -186,8 +191,11 @@ fi
 broker_server="${BASH_REMATCH[1]}"
 broker_database="${BASH_REMATCH[3]}_broker"
 broker_database_url="${broker_server}/${broker_database}${BASH_REMATCH[4]}"
-env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
-  -c "drop database if exists \"$broker_database\" with (force)" \
+# psql_without_hostaddr ARGS...: psql with PGHOSTADDR left out of its environment. broker_psql
+# ARGS...: that psql on DATABASE_URL's database, its password in PGPASSWORD alone.
+psql_without_hostaddr() { env -u PGHOSTADDR psql "$@"; }
+broker_psql() { pg_url_run "$DATABASE_URL" psql_without_hostaddr -X -q -v ON_ERROR_STOP=1 "$@"; }
+broker_psql -c "drop database if exists \"$broker_database\" with (force)" \
   -c "create database \"$broker_database\""
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
