@@ -14,10 +14,11 @@ import (
 	"github.com/sjawhar/envoy/infra/routes"
 )
 
-// opener opens h for the target it was given, and records that target.
+// opener opens h through the target's context, and records the target.
 func opener(h *fakeHub, opened *routes.Target) routes.Opener {
 	return func(target routes.Target) (routes.Source, error) {
 		*opened = target
+		h.context = target.Context
 		return h, nil
 	}
 }
@@ -41,12 +42,13 @@ func TestRecordThenCheck(t *testing.T) {
 	code, stdout, stderr, opened := runRoutes(h, "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out,
 		"--context", "example-context", "--kubectl", "/usr/local/bin/kubectl")
 	require.Equal(t, 0, code, "stderr %q", stderr)
-	require.Contains(t, stdout, "recorded the 3 pods of envoy/envoy-nats at ")
+	require.Contains(t, stdout, `recorded the 3 pods of envoy/envoy-nats through context "example-context" of the cluster at "https://example-context.example.invalid" at `)
 	require.Equal(t, routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: "/usr/local/bin/kubectl", Context: "example-context", RoutePort: 6222}, opened)
 	require.True(t, h.closed, "record closed the hub it opened")
 	body, err := os.ReadFile(out)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"uid": "uid-envoy-nats-2"`)
+	require.Contains(t, string(body), `"context": "example-context",`+"\n"+`    "server": "https://example-context.example.invalid"`, "the record names its context and cluster")
 
 	check := func(h *fakeHub) (int, string) {
 		t.Helper()

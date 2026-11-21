@@ -1182,8 +1182,11 @@ envoy-infra routes record --namespace envoy --statefulset envoy-nats --out route
 envoy-infra routes check --namespace envoy --statefulset envoy-nats --record routes-record.json
 ```
 
-`routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, and
-the time, and refuses until the `env` roll has finished: while any pod is not Ready with a running
+`routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, the
+time, and the kubeconfig context it read through with its cluster's API server, which `routes
+check` requires of its own context and cluster, exit 2 otherwise, since a hub of the same names on
+another cluster has other pods, which the check would read as a new container on every pod. It
+refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
 `controller-revision-hash`, and the StatefulSet's `updatedReplicas`, `currentRevision` and
 `updateRevision`), or names no route variables in its nats container, since between two pods of a

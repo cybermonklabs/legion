@@ -78,15 +78,17 @@ type Pod struct {
 	StartedAt    time.Time
 }
 
-// Source reads the hub's pods. Pods lists every pod the StatefulSet has, by its ordinal names;
-// Monitor answers a GET of path on a pod's monitoring port; Log is the whole log of a pod's nats
-// container as the API server returns it with the container runtime's times (`kubectl logs
-// --timestamps`), the current container's newest file, each line after the RFC 3339 time the
-// runtime read it at and a space; RouteExchange opens a connection to a pod's route port and
-// returns the first line it sends, its INFO, and, when send is not empty, writes send and returns
-// the first line after the INFO that answers it (Exchange). Close ends whatever the source holds
-// open.
+// Source reads the hub's pods. Cluster names the kubeconfig context the source reads through and
+// that context's cluster, by its API server; Pods lists every pod the StatefulSet has, by its
+// ordinal names; Monitor answers a GET of path on a pod's monitoring port; Log is the whole log of
+// a pod's nats container as the API server returns it with the container runtime's times
+// (`kubectl logs --timestamps`), the current container's newest file, each line after the RFC 3339
+// time the runtime read it at and a space; RouteExchange opens a connection to a pod's route port
+// and returns the first line it sends, its INFO, and, when send is not empty, writes send and
+// returns the first line after the INFO that answers it (Exchange). Close ends whatever the source
+// holds open.
 type Source interface {
+	Cluster(ctx context.Context) (Cluster, error)
 	Pods(ctx context.Context) ([]Pod, error)
 	Monitor(ctx context.Context, pod, path string) ([]byte, error)
 	Log(ctx context.Context, pod string) ([]byte, error)
@@ -94,11 +96,20 @@ type Source interface {
 	Close() error
 }
 
-// Record is what `routes record` saves: the hub it read, when, and each pod's identity and its nats
-// container's start at that time.
+// Cluster is the kubeconfig context a source reads through, and the API server of its cluster.
+type Cluster struct {
+	Context string `json:"context"`
+	Server  string `json:"server"`
+}
+
+// Record is what `routes record` saves: the hub it read, through which context of which cluster,
+// when, and each pod's identity and its nats container's start at that time. A hub of the same
+// namespace and StatefulSet on another cluster has other pods, which `routes check` would read as a
+// new container on every pod, so it refuses a record of another context or cluster.
 type Record struct {
 	Namespace   string      `json:"namespace"`
 	StatefulSet string      `json:"statefulSet"`
+	Cluster     Cluster     `json:"cluster"`
 	RecordedAt  time.Time   `json:"recordedAt"`
 	Pods        []PodRecord `json:"pods"`
 }

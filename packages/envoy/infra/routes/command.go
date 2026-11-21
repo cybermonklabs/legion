@@ -125,6 +125,10 @@ func record(ctx context.Context, target Target, out string, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: %v\n", err)
 		return 2
 	}
+	if rec.Cluster, err = src.Cluster(ctx); err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: which cluster it reads is not known: %v\n", err)
+		return 2
+	}
 	body, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra routes record: %v\n", err)
@@ -134,8 +138,8 @@ func record(ctx context.Context, target Target, out string, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "recorded the %d pods of %s/%s at %s in %s\n", len(rec.Pods), rec.Namespace, rec.StatefulSet,
-		rec.RecordedAt.Format(time.RFC3339), out)
+	fmt.Fprintf(stdout, "recorded the %d pods of %s/%s through context %q of the cluster at %q at %s in %s\n", len(rec.Pods), rec.Namespace,
+		rec.StatefulSet, rec.Cluster.Context, rec.Cluster.Server, rec.RecordedAt.Format(time.RFC3339), out)
 	return 0
 }
 
@@ -156,6 +160,16 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		return 2
 	}
 	defer src.Close()
+	cluster, err := src.Cluster(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes check: which cluster it reads is not known: %v\n", err)
+		return 2
+	}
+	if cluster != rec.Cluster {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record taken through context %q of the cluster at %q, not through context %q of "+
+			"the cluster at %q\n", recordPath, rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
+		return 2
+	}
 	report := Check(ctx, src, rec)
 	for _, f := range report.Findings {
 		fmt.Fprintln(stdout, f)

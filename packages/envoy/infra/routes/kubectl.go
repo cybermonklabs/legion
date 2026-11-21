@@ -85,6 +85,31 @@ func (k *kubectlSource) args(args ...string) []string {
 	return append(append(all, "--namespace", k.Namespace), args...)
 }
 
+// Cluster reads the context kubectl reads through, the one given or its kubeconfig's current one,
+// and that context's API server, from `kubectl config view --minify`, which keeps that context and
+// its cluster alone and reads no object of the cluster.
+func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
+	out, err := k.kubectl(ctx, "config", "view", "--minify", "--output", "json")
+	if err != nil {
+		return Cluster{}, err
+	}
+	var config struct {
+		CurrentContext string `json:"current-context"`
+		Clusters       []struct {
+			Cluster struct {
+				Server string `json:"server"`
+			} `json:"cluster"`
+		} `json:"clusters"`
+	}
+	if err := json.Unmarshal(out, &config); err != nil {
+		return Cluster{}, fmt.Errorf("decode kubectl's configuration: %w", err)
+	}
+	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
+		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
+	}
+	return Cluster{Context: config.CurrentContext, Server: config.Clusters[0].Cluster.Server}, nil
+}
+
 // Pods reads the StatefulSet's replica count and the state of its latest roll, and then each of its
 // pods by name, <statefulset>-<i>, as a Role that names the pods allows; a list of the namespace's
 // pods would need more. A pod is Updated when the roll has finished, every replica updated and the

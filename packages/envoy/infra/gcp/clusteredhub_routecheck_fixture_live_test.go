@@ -326,6 +326,11 @@ func (h *stagedHub) server(name string) *stagedServer {
 	return nil
 }
 
+// Cluster is the one cluster the staged hub stands for.
+func (h *stagedHub) Cluster(context.Context) (routes.Cluster, error) {
+	return routes.Cluster{Context: "local", Server: "https://127.0.0.1"}, nil
+}
+
 // Pods is the three servers as the API server reports the pods: each pod's IP 127.0.0.1, where it
 // listens, a uid of its own, and its container's restarts and start.
 func (h *stagedHub) Pods(context.Context) ([]routes.Pod, error) {

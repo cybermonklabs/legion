@@ -24,7 +24,7 @@ import (
 )
 
 // fakeKubectl is a kubectl that answers from the files in $FAKE_KUBECTL_DIR, as the commands
-// OpenKubectl's Source runs: `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
+// OpenKubectl's Source runs: `config view --minify`, `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
 // :<port>`, which writes its PID to pid-<name>-<port>, then prints the local port in
 // port-<name>-<port> and runs until killed, and `logs pod/<name> --container nats --timestamps`.
 // It appends every command line it is given to calls, and refuses any other. It cuts its arguments
@@ -37,6 +37,7 @@ dir="$FAKE_KUBECTL_DIR"
 args="$*"
 printf '%s\n' "$args" >> "$dir/calls"
 case "$args" in
+*" config view --minify --output json") exec cat "$dir/config.json" ;;
 *" get statefulset envoy-nats --output json") exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
@@ -100,6 +101,7 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 		"status": map[string]any{"replicas": len(h.pods), "updatedReplicas": len(h.pods), "currentRevision": "envoy-nats-new", "updateRevision": "envoy-nats-new"}})
 	require.NoError(t, err)
 	write("statefulset.json", sts)
+	write("config.json", []byte(`{"current-context":"example-context","clusters":[{"name":"example","cluster":{"server":"https://example-context.example.invalid"}}]}`))
 	for _, p := range h.pods {
 		pod, err := json.Marshal(kubePod(p.Name, p.UID, p.IP, p.Ready, int(p.RestartCount), p.StartedAt))
 		require.NoError(t, err)
@@ -184,6 +186,9 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	require.Equal(t, recordOf(t, h), rec)
 	report := routes.Check(context.Background(), src, rec)
 	require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
+	cluster, err := src.Cluster(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid"}, cluster)
 
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 	require.NoError(t, err)
@@ -195,6 +200,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		}
 	}
 	require.Equal(t, 6, forwards, "one port-forward per pod and port for the pass, its /varz and /routez both through the monitoring one:\n%s", calls)
+	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --output json\n")
 	for _, p := range h.pods {
 		require.Contains(t, string(calls), "--context example-context --namespace envoy get pod "+p.Name+" --output json\n")
 		require.Contains(t, string(calls), "--context example-context --namespace envoy port-forward pod/"+p.Name+" --address 127.0.0.1 :8222\n")
