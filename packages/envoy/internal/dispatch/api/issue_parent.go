@@ -424,6 +424,76 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
+// foreignChildOpen is one child of another project that holds an acceptance write back: its key,
+// its project and its status.
+type foreignChildOpen struct {
+	Key     string `json:"key"`
+	Project string `json:"project"`
+	Status  string `json:"status"`
+}
+
+// foreignChildOpenError is the 409 FOREIGN_CHILD_OPEN body PATCH /api/v1/issues/{key} answers an
+// acceptance write that refuseOpenForeignChildren refuses, naming each open child of another
+// project in key order.
+type foreignChildOpenError struct {
+	Code   string             `json:"code"`
+	Error  string             `json:"error"`
+	Issues []foreignChildOpen `json:"issues"`
+}
+
+// openForeignChildrenError is refuseOpenForeignChildren's refusal, which the route answers with
+// the body it carries (foreignChildOpenError) rather than the plain error body.
+type openForeignChildrenError struct {
+	issue    string
+	children []foreignChildOpen
+}
+
+func (e openForeignChildrenError) Error() string {
+	named := make([]string, len(e.children))
+	for index, child := range e.children {
+		named[index] = fmt.Sprintf("%s (%s, %s)", child.Key, child.Project, child.Status)
+	}
+	return fmt.Sprintf("%s has an open child of another project: %s; it is accepted or closed only once each is done or in icebox",
+		e.issue, strings.Join(named, ", "))
+}
+
+func (e openForeignChildrenError) body() foreignChildOpenError {
+	return foreignChildOpenError{Code: "FOREIGN_CHILD_OPEN", Error: e.Error(), Issues: e.children}
+}
+
+// refuseOpenForeignChildren refuses an acceptance write - a status of retro or done that carries
+// refuse_open_foreign_children, which the Legion daemon's sign_off and close_root send - while key
+// has an open child of another project than project, key's own. Open is what the daemon's
+// record.ChildOpen says of a child its records do not hold, which a child of another project
+// always is: any status but done and icebox. A child of key's own project is its own daemon's to
+// judge, from the children it records, so it is not read here.
+//
+// The caller holds the deployment dependency lock (lockIssueDependencyWrite), which every create
+// with a parent and every reparent takes, so no child is filed under key, or moved under it,
+// between this read and the status the write sets.
+func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, key, project string) error {
+	rows, err := tx.Query(ctx, `
+		select key, project_key, status from issues
+		where parent_key = $1 and project_key <> $2 and status not in ('done', 'icebox')
+		order by key
+	`, key, project)
+	if err != nil {
+		return err
+	}
+	children, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignChildOpen, error) {
+		var child foreignChildOpen
+		err := row.Scan(&child.Key, &child.Project, &child.Status)
+		return child, err
+	})
+	if err != nil {
+		return err
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return openForeignChildrenError{issue: key, children: children}
+}
+
 // waitNode is one half of an issue in the dependency graph. An issue starts after its blocked_by
 // targets are done and after its parent starts; it is done after it starts and after its children
 // are done. Splitting the two halves lets sibling dependencies stand while still refusing a child

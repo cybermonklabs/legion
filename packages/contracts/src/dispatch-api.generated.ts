@@ -4961,6 +4961,16 @@ export interface components {
       started_at: null | string;
       title: string;
     };
+    ForeignChildOpen: {
+      key: string;
+      project: string;
+      status: string;
+    };
+    ForeignChildOpenError: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ForeignChildOpen"][] | null;
+    };
     GoingAction: {
       action: string;
       description: string;
@@ -6687,6 +6697,7 @@ export interface components {
       parent?: string | null;
       priority?: number | null;
       rank?: components["schemas"]["IssueRankInput"] | null;
+      refuse_open_foreign_children?: boolean;
       repo?: string | null;
       route?: null | string;
       status?: null | string;
@@ -10253,6 +10264,15 @@ export interface operations {
           "application/json": components["schemas"]["Issue"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ForeignChildOpenError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15024,6 +15044,8 @@ export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMi
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
+export type ForeignChildOpen = components["schemas"]["ForeignChildOpen"];
+export type ForeignChildOpenError = components["schemas"]["ForeignChildOpenError"];
 export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
