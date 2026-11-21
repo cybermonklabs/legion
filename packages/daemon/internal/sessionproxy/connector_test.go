@@ -277,14 +277,14 @@ func TestTheWriterTokenFileIsReadAgainAtEachExchange(t *testing.T) {
 
 // A fake's handler reads each request it is sent and fails the test on a body it cannot read,
 // so stopping a fake at the end of its test must never run a handler on a connection the stop
-// closed. The connector does leave such a request: when a login token expires within four
-// minutes, as the tokens of the rows above do, it starts a refresh as soon as one completes, and
-// a dial that then fails drops the instance from its cache and abandons that refresh's requests
-// without waiting for the fake. The fake's server can have read such a request's headers, and not
-// yet have started its handler, when the test's cleanup stops it. The row holds a request at that
-// point (headersHeldListener), on a new connection and on an idle one that has served a request
-// before, as the connection CI's daemon-go caught had. stopServing must close the connection and
-// run no handler on it.
+// closed (stopServing says how it does not). The connector does leave such a request: when a
+// login token expires within four minutes, as the tokens of the rows above do, it starts a
+// refresh as soon as one completes, and a dial that then fails drops the instance from its cache
+// and abandons that refresh's requests without waiting for the fake. The row holds a request whose
+// headers the server has read and whose handler has not started (headersHeldListener), on a new
+// connection and on an idle one that has served a request before: a forced reproduction of the
+// connector rows' failure holds it on both kinds, idle ones in most runs. stopServing must close
+// the connection and run no handler on it.
 func TestStopServingRunsNoHandlerOnAConnectionItCloses(t *testing.T) {
 	const served = "GET /served HTTP/1.1\r\nHost: fake.example\r\n\r\n"
 	const held = "POST /held HTTP/1.1\r\nHost: fake.example\r\nContent-Length: 5\r\n\r\n"
@@ -303,10 +303,7 @@ func TestStopServingRunsNoHandlerOnAConnectionItCloses(t *testing.T) {
 					return
 				}
 				_, err := io.ReadAll(r.Body)
-				select {
-				case ran <- err:
-				default:
-				}
+				ran <- err
 			}))
 			listener := &headersHeldListener{Listener: server.Listener, conns: make(chan *headersHeldConn, 1), before: len(tc.before), headers: len(held)}
 			server.Listener = listener
@@ -631,7 +628,8 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // stopServing stops the loopback server of a fake whose handler reads each request and fails the
-// test on what it cannot read, as a cleanup at the end of its test.
+// test on what it cannot read, as a cleanup at the end of its test (docs/testing.md, "A fake HTTP
+// server whose client gives up on requests").
 //
 // httptest.Server.Close alone closes each connection that is new or idle: the idle ones through
 // net/http's closeIdleConns, the new ones in a loop of its own. net/http marks a connection active
@@ -641,12 +639,11 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // test for no defect of the code under test (TestStopServingRunsNoHandlerOnAConnectionItCloses).
 // Shutdown first marks the server as shutting down, and net/http checks that mark after it marks
 // a connection active and before it starts the handler, so no handler starts on a connection the
-// stop closes. Its context has
-// already ended, so Shutdown closes the idle connections once and returns. Close then closes the
-// new and idle connections left and waits for the active handlers, whose connections it leaves
-// open: their clients must finish or cancel those requests for the cleanup to return. A server
-// whose handler fails the test on every request (refuseEveryRequest) keeps Close alone, so a
-// request that reaches it even as its test ends still fails the test.
+// stop closes. Its context has already ended, so Shutdown closes the idle connections and
+// returns. Close then closes the new and idle connections left and waits for the active handlers,
+// whose connections it leaves open: their clients must finish or cancel those requests for the
+// cleanup to return. A server whose handler fails the test on every request (refuseEveryRequest)
+// keeps Close alone, so a request whose headers the server has read by then still fails the test.
 func stopServing(server *httptest.Server) {
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -696,8 +693,6 @@ type headersHeldConn struct {
 // that read with a deadline once the handler has returned.
 func (c *headersHeldConn) Read(p []byte) (int, error) {
 	switch {
-	case len(p) == 0:
-		return c.Conn.Read(p)
 	case c.beforeLeft > 0:
 		n, err := c.Conn.Read(p[:min(len(p), c.beforeLeft)])
 		c.beforeLeft -= n
