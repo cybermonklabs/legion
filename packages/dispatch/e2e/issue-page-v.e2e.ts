@@ -33,6 +33,7 @@ import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
   DESKTOP,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusThePage,
   longWords,
   nodeRows,
@@ -823,6 +824,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
     await expectIssuePageDrawn(page);
     const loaded = new Set(traffic.requests.map((request) => request.path));
     traffic.reset();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("k");

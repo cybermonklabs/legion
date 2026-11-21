@@ -114,10 +114,13 @@ export async function phase<T>(
   }
 }
 
-/** Opens issue `key` at its own address and waits for the new page's tree. */
+/** Opens issue `key` at its own address and waits for the new page's tree, and for the page's
+ *  opening to put the focus on a row of it (`expectOpeningLanded`), so a row that leaves the
+ *  focus for the page after this (`focusThePage`, `unfoldEveryBranch`) leaves it for good. */
 export async function openIssue(page: Page, key: string): Promise<void> {
   await page.goto(`/issues/${key}`);
   await expectIssuePageDrawn(page);
+  await expectOpeningLanded(page);
 }
 
 /** Fails unless the new page is on screen with its tree, so every reading after it reads the
@@ -177,11 +180,66 @@ export async function focusRow(page: Page, id: string): Promise<Locator> {
   return row;
 }
 
-/** Leaves whatever control holds the focus. `body.focus()` does not do it: `body` takes no
- *  focus and the control keeps it. */
+/**
+ * Waits until the page's opening has put the focus on a row of the outline, as every load of the
+ * outline does (`IssueTree.tsx`'s `opening`): on the first open question that waits on the
+ * reader, else on the first row. A row that leaves the focus for the page after a load
+ * (`focusThePage`) waits for this first. The opening waits until every read its rows come from
+ * has answered (`readsSettled`), which can be after the issue's own read that `gotoIssue` and
+ * `openIssue` wait for, and until it lands it takes a focus nobody holds as its own to place: a
+ * blur made before the landing is undone by it, which leaves the row holding the focus. That is
+ * how dispatch-browser job 136853210753 failed: the opening's frame came between the blur and the
+ * check.
+ *
+ * It has no clock of its own, since how long the reads take is the machine's and not the row's.
+ * Playwright reads a `timeout` of 0 as no deadline of the poll's own, so the row's own timeout
+ * ends the wait, a quarter of a second before it, and the failure prints this message under "Test
+ * timeout of ...ms exceeded".
+ */
+export async function expectOpeningLanded(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (nodeRow) => (document.activeElement?.closest(nodeRow) ?? null) !== null,
+          SELECTORS.nodeRow
+        ),
+      { message: "the page opened with the focus on no row of the outline", timeout: 0 }
+    )
+    .toBe(true);
+}
+
+/**
+ * Leaves whatever control holds the focus, for the page itself. `body.focus()` does not do it:
+ * `body` takes no focus and the control keeps it. The page places a focus of its own a frame
+ * after it decides to - the outline's opening (`landOnRow`), a view's take of its row or Retry
+ * (`slots/stage.tsx`) - and while nothing holds the focus it gives that focus again, so a blur
+ * made before that frame is undone. So the blur waits two frames, for a focus the page has
+ * already asked of the next one, and the focus is read two frames after it, failing the row with
+ * the element that holds it then. A focus the page has not decided on yet is not one the frames
+ * see: after a load, wait for the page's opening first (`expectOpeningLanded`).
+ */
 export async function focusThePage(page: Page): Promise<void> {
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect.poll(() => page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  const holder = await page.evaluate(async () => {
+    const twoFrames = () => {
+      const frames = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+      return frames.promise;
+    };
+    await twoFrames();
+    const left = document.activeElement;
+    if (left instanceof HTMLElement || left instanceof SVGElement) left.blur();
+    await twoFrames();
+    const active = document.activeElement;
+    if (active === null || active === document.body) return null;
+    const role = active.getAttribute("role");
+    const words = (active.getAttribute("aria-label") ?? active.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    return `${active.tagName.toLowerCase()}${role === null ? "" : ` role="${role}"`} "${words}"`;
+  });
+  expect(holder, `the focus left for the page itself, and ${holder} took it back`).toBeNull();
 }
 
 /** A `"` inside an attribute value would end the selector's string, and no id the page draws

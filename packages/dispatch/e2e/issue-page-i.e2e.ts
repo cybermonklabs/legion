@@ -76,6 +76,7 @@ import {
   type DrawnRow,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   nodeRow,
@@ -151,10 +152,11 @@ interface OpenedTree {
 
 /** The whole issue, opened on the new page by one signed-in reader with the focus on the page
  *  itself, which is where reading mode is. A key pressed before this returns reaches no handler,
- *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded
- *  and that the focus left for the page itself (`gotoIssue`, `focusThePage`): each row below
- *  asserts the key or the tree property it is about first, and `expectTreeDrawn` after it. The
- *  suite's `test` has emptied the database before the row. */
+ *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded,
+ *  that the page's opening put the focus on a row of its own and that the focus then left for the
+ *  page itself (`gotoIssue`, `expectOpeningLanded`, `focusThePage`): each row below asserts the
+ *  key or the tree property it is about first, and `expectTreeDrawn` after it. The suite's
+ *  `test` has emptied the database before the row. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
   const seeded = await seedWholeIssue();
   const context = await asUser(browser, "alice");
@@ -162,6 +164,7 @@ async function openTree(browser: Browser): Promise<OpenedTree> {
   const page = await context.newPage();
   await page.setViewportSize({ height: 900, width: 1280 });
   await gotoIssue(page, `/issues/${seeded.key}`);
+  await expectOpeningLanded(page);
   await focusThePage(page);
   return { context, page, seeded };
 }
@@ -689,6 +692,7 @@ test("with no filter the page is the conversation, each node edited once, folded
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
 
     // The outline's measure: at most 1000 px wide, the prototype's `#pane`, and centred in
     // the stage, its gaps to the stage's insets on its two sides a pixel apart at most.
@@ -1078,6 +1082,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -1182,6 +1187,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
@@ -1268,6 +1274,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // The thread's folds are opened by their fold controls alone: `unfoldEveryBranch` also
     // presses the line that counts a deeper branch, which is what this reading reads shut.
@@ -2475,6 +2482,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await filterRow(page).getByRole("button", { exact: true, name: CONTROL_LABELS.keys }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
@@ -2596,6 +2604,7 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // A mark's absence is the claim, so the wait is a span: two seconds, twice the dwell that
     // marks a thread read, after which the folded thread is still unread.
@@ -2908,7 +2917,9 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
 
-    // One body is drawn: the focused node's.
+    // One body is drawn: the focused node's. The page's opening puts the focus on a row first,
+    // and the focus leaves for the page after it.
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("Tab");
     const focused = await focusedNodeId(page);
@@ -3815,6 +3826,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
 
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
@@ -4284,11 +4296,7 @@ function cueColours(page: Page): Promise<{ readonly ink: string; readonly pane: 
 async function openWithNoRowFocused(page: Page, key: string): Promise<void> {
   await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
-  await expect
-    .poll(async () => (await focusedRow(page)) !== null, {
-      message: "the page opens with the focus on no row",
-    })
-    .toBe(true);
+  await expectOpeningLanded(page);
   await focusThePage(page);
   await page.mouse.move(0, 0);
 }

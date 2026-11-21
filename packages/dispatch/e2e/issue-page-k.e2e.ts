@@ -23,6 +23,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusThePage,
@@ -719,9 +720,11 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         .toBe(id);
     };
 
-    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row.
+    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row. The
+    // page's opening puts the focus on a row first, and the focus leaves for the page after it.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
