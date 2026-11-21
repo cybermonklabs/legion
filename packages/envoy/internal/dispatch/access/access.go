@@ -242,33 +242,47 @@ func SessionClause(sessionExpr, viewerParam string) string {
 
 // SessionContentClause passes a session whose whole conversation the viewer bound at viewerParam
 // may read: the transcript the live agent view relays, whose tool results hold whatever the
-// session read of any project it worked in. SessionClause decides whether a session exists for a
-// viewer, and passes one that has acted in any project the viewer sees; this clause passes a
-// session only when every project it acted in (session_projects) and every project its listener
-// record lists (route_roster_session_projects) is one the viewer sees, and it names at least one,
-// so nothing its conversation holds is of a project the viewer does not see.
+// session read. A read records nothing (session_projects counts only what a session wrote), so the
+// clause holds the session to what its credential can read, not to what it wrote:
 //
-// The server's viewer and the viewer's own session pass, and so does every session for an open
-// viewer of a deployment that holds no private project (R9), in the statement's own SQL. A session
-// that names no project passes no other viewer: while a project is private nothing Dispatch holds
-// says which projects its conversation is of, and a viewer that is not open reads only what names
-// its projects. Until `envoy-dispatch backfill-session-projects` has filled the pairs
-// (session_projects_filled), a session passes no open viewer of a deployment that holds a private
-// project, as SessionClause's open arm.
+//   - The server's viewer and the viewer's own session pass, and every session passes an open
+//     viewer of a deployment that holds no private project (R9).
+//   - Any other session passes only when its listener record lists the credential's projects
+//     (route_roster_session_projects holds the session), the list names at least one project and
+//     every one the viewer sees, and every project the session wrote in is one the viewer sees. A
+//     session whose listener sent no list, or a list of none, is one whose reach Dispatch does not
+//     know, and passes no other viewer.
+//   - For a viewer that is not open (a restricted member) the session must also act for
+//     restricted members alone (session_owners, recorded from the proved writes' Actor.Owner): a
+//     restricted member's credential reads only the projects its list names, so the list bounds
+//     what the session read. A full member's credential reads every public project whatever it
+//     lists (CredentialCovers), which a restricted viewer does not see, so a full member's session,
+//     and a session no proved write tied to anybody, pass it in no state.
+//   - For an open viewer while a project is private, a full member's list bounds the private
+//     projects the session read, and every public one is the viewer's. Until
+//     `envoy-dispatch backfill-session-projects` has filled the pairs (session_projects_filled), no
+//     session but the viewer's own passes an open viewer while a project is private.
 func SessionContentClause(sessionExpr, viewerParam string) string {
-	listed := `coalesce((select listener.projects->(` + sessionExpr + `) from route_roster_session_projects listener where listener.id = true), '[]'::jsonb)`
+	held := `(select listener.projects from route_roster_session_projects listener where listener.id = true)`
 	return clause("SessionContentClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
 		or (%[4]s and not %[5]s)
-		or ((not %[4]s or exists (select 1 from session_projects_filled offset 0))
+		or (((%[4]s and exists (select 1 from session_projects_filled offset 0))
+				or (not %[4]s
+					and exists (select 1 from session_owners tied where tied.session_id = (%[1]s) offset 0)
+					and not exists (
+						select 1 from session_owners tied
+						left join people owner on owner.email = tied.login and owner.member_kind = 'restricted'
+						where tied.session_id = (%[1]s) and owner.email is null
+						offset 0)))
+			and coalesce(%[6]s ? (%[1]s), false)
+			and jsonb_array_length(%[6]s->(%[1]s)) > 0
+			and (%[6]s->(%[1]s)) <@ (%[2]s::jsonb->'sees')
 			and not exists (
 				select 1 from session_projects unseen
 				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
-				offset 0)
-			and %[6]s <@ (%[2]s::jsonb->'sees')
-			and (exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
-				or jsonb_array_length(%[6]s) > 0)))`,
+				offset 0)))`,
 		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
-		ViewerFlag(viewerParam, "private"), listed))
+		ViewerFlag(viewerParam, "private"), held))
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project

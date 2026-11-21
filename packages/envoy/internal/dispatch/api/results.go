@@ -316,8 +316,8 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 
 	// The project keys the line drops issue keys by are read before the transaction too, so a
 	// read that fails refuses the record with nothing written: read after the commit, it would
-	// lose the answer to a write that landed.
-	words, err := s.readLineWords(r.Context(), pool)
+	// lose the answer to a write that landed. They are the writer's (readLineWords).
+	words, err := s.readLineWords(r.Context(), pool, who)
 	if err != nil {
 		return refused(err)
 	}
@@ -1177,8 +1177,17 @@ var (
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
 
-// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
-func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+// readLineWords is lineWords for the projects who may know of and for this Dispatch's own URL. A
+// reader that sees every object, the server and every open viewer of a deployment that holds no
+// private project, gets the words of every project q reads, as before projects could be private
+// (R9). Any other reader gets lineWordsForAnyKey: a word dropped because it holds the key of a
+// project the reader cannot see would tell the reader, whose line answers which words it kept,
+// that the project exists; so the line drops every word of a key's shape, whichever projects
+// exist.
+func (s *server) readLineWords(ctx context.Context, q queryer, who model.Actor) (lineWords, error) {
+	if !seesEveryObject(who) {
+		return lineWordsForAnyKey(s.deps.ServerURL), nil
+	}
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
 		return lineWords{}, err
@@ -1188,6 +1197,16 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 		return lineWords{}, err
 	}
 	return lineWordsFor(keys, s.deps.ServerURL), nil
+}
+
+// lineWordsForAnyKey is lineWordsFor with every word dropped that holds an issue key's shape, a
+// project key's ([A-Z][A-Z0-9]{1,9}, any case) where lineWordsFor reads a key, followed by `-` and
+// a number that ends there by lineWordsFor's rule. So it drops UTF-8, SHA-256 and x86-64 too:
+// what the reader's line leaves out depends on no project that exists.
+func lineWordsForAnyKey(serverURL string) lineWords {
+	words := lineWordsFor(nil, serverURL)
+	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])[A-Z][A-Z0-9]{1,9}-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	return words
 }
 
 // lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word

@@ -265,16 +265,22 @@ func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, tar
 // recorded nowhere. It fails the test unless the answer is status.
 func (s privateSeed) asSession(t *testing.T, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
+	return s.asSessionOf(t, seedCarol, session, project, method, target, body, status)
+}
+
+// asSessionOf is asSession for a session of person, whose broker token names project.
+func (s privateSeed) asSessionOf(t *testing.T, person, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
+	t.Helper()
 	token := "broker-token-of-" + session + "-in-" + project
 	s.broker.Says(token, ciphertoken.Introspection{
-		Active: true, Session: session, Person: seedCarol,
+		Active: true, Session: session, Person: person,
 		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
 	})
 	response := httptest.NewRecorder()
 	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))
 	if response.Code != status {
-		t.Fatalf("session %s in %s: %s %s = %d %s, want %d", session, project, method, target, response.Code, response.Body.String(), status)
+		t.Fatalf("session %s of %s in %s: %s %s = %d %s, want %d", session, person, project, method, target, response.Code, response.Body.String(), status)
 	}
 	return response
 }

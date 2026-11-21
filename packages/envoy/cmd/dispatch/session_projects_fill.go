@@ -45,7 +45,7 @@ func backfillSessionProjects(ctx context.Context, args []string, databaseURL str
 	defer database.Pool.Close()
 	ctx = store.WithTransactionTracking(ctx)
 	if *reset {
-		for _, statement := range []string{`delete from session_projects`, `delete from session_projects_filled`} {
+		for _, statement := range []string{`delete from session_projects`, `delete from session_owners`, `delete from session_projects_filled`} {
 			if _, err := database.Pool.Exec(ctx, statement); err != nil {
 				fmt.Fprintf(stderr, "backfill-session-projects: --reset: %s: %v\n", statement, err)
 				return 1
@@ -107,6 +107,23 @@ func fillSessionProjects(ctx context.Context, pool *store.Pool, batch int) (sess
 					and not exists (
 						select 1 from session_projects recorded
 						where recorded.session_id = p.session_id and recorded.project_key = p.project_key)
+				returning 1
+			), owners as (
+				-- The person each proved session's credential acts for, as the live write records
+				-- it (events.queueSessionProject).
+				select distinct b.actor->>'id' as session_id, lower(b.actor->>'owner') as login
+				from batch b
+				where b.actor->>'kind' = 'session' and b.actor->>'id' <> ''
+					and b.actor->'act'->>'session' = b.actor->>'id'
+					and coalesce(b.actor->'act'->>'token_id', '') = ''
+					and coalesce(b.actor->>'owner', '') <> ''
+			), owned as (
+				insert into session_owners (session_id, login)
+				select o.session_id, o.login
+				from owners o
+				where not exists (
+					select 1 from session_owners recorded
+					where recorded.session_id = o.session_id and recorded.login = o.login)
 				returning 1
 			)
 			select (select max(id) from batch), (select count(*) from batch), (select count(*) from inserted)

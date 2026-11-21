@@ -281,7 +281,21 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 // one moment. A later event of the same pair in the same transaction sees the earlier one's row and
 // writes none.
 func queueSessionProject(batch *store.WriteBatch, e model.Event) {
-	if !provedSession(e.Actor) || (e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil) {
+	if !provedSession(e.Actor) {
+		return
+	}
+	// The person the session's credential acts for (Actor.Owner), the one tie Dispatch holds
+	// between a session and a person: a viewer that is not open is relayed only a session that acts
+	// for restricted members alone (access.SessionContentClause).
+	if e.Actor.Owner != nil && *e.Actor.Owner != "" {
+		batch.Queue("record the session's person", `
+			insert into session_owners (session_id, login)
+			select $1, $2
+			where not exists (
+				select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
+		`, e.Actor.ID, model.CanonicalLogin(*e.Actor.Owner))
+	}
+	if e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil {
 		return
 	}
 	batch.Queue("record the session's project", `
