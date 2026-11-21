@@ -161,6 +161,18 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
   }
 }
 
+/** The refusals of a person's save that no second try can change, so the panel shows Dispatch's
+ *  words for them and no Retry: a passkey another owner's link enrolled, which holds until that
+ *  owner resets the person (`PASSKEY_OF_ANOTHER_OWNER`, a sentence that names no other owner); a
+ *  project of another owner naming the person (`LISTED_BY_ANOTHER_OWNER`); a full member
+ *  (`FULL_MEMBER`); and an address of the company's Workspace (`WORKSPACE_ADDRESS`). */
+const FINAL_REFUSALS: Partial<Record<string, true>> = {
+  FULL_MEMBER: true,
+  LISTED_BY_ANOTHER_OWNER: true,
+  PASSKEY_OF_ANOTHER_OWNER: true,
+  WORKSPACE_ADDRESS: true,
+};
+
 /** What the owner who pressed the Private switch reads when Dispatch refuses it, by the refusal's
  *  code. Dispatch's own words for these refusals are written for the deployment's operator (a
  *  table, an envoy-dispatch command, a setting, the hub's bucket) and stay in the server's log and
@@ -432,8 +444,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     if (operation.part !== part) {
       return null;
     }
-    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a request
-    // Dispatch did not answer, a save the reader stopped, and every other part's refusal keep the
+    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a refusal no
+    // second try can change (`FINAL_REFUSALS`) keeps Dispatch's words and shows no Retry; a request
+    // Dispatch did not answer, a save the reader stopped, and every other refusal keep the
     // operation's line and its Retry.
     const shown =
       refused.change.kind === "visibility" && refused.error instanceof ApiError
@@ -460,7 +473,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
                         }
                   )
                 : apiErrorMessage(refused.error, operation.refusal),
-            retry: true,
+            retry: !(
+              refused.error instanceof ApiError && FINAL_REFUSALS[refused.error.code ?? ""] === true
+            ),
           };
     return (
       <div className="mt-3">

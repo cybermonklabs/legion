@@ -242,7 +242,11 @@ test("the owner gives the project to another person once they confirm it, and ev
   }
 });
 
-test("a refused save shows the server's own words beside its control, keeps the draft, and Retry sends it again", async () => {
+// A refusal shows Dispatch's own words beside its control, and Retry where a second try can get
+// past it, as this input refusal can once the draft is fixed. A refusal no retry can change - the
+// person held by another owner's passkey or project, a full member, a Workspace address - shows
+// no Retry (ProjectAccessPanel.passkeys.test.tsx).
+test("a refused save a Retry can get past shows the server's own words beside its control, keeps the draft, and Retry sends it again", async () => {
   const user = userEvent.setup();
   const panel = renderPanel();
   const refusal = 'a person is named by their email, and a group by its name: "dave" is no email';

@@ -167,9 +167,50 @@ test("an Invite Dispatch refuses says why in the person's row", async () => {
     expect(
       within(personRow(ana)).queryByRole("textbox", { name: `Enrollment link for ${ana}` })
     ).not.toBeInTheDocument();
+    // No second press gets past it, so the row offers no Retry.
+    expect(within(personRow(ana)).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     panel.restore();
     invite.mockRestore();
+  }
+});
+
+// Naming a person who holds a passkey another owner's link enrolled is refused until that owner
+// resets them (409 PASSKEY_OF_ANOTHER_OWNER), and a Reset of a full member or a Workspace address
+// is refused for good: no Retry gets past either, so the panel shows Dispatch's sentence, which
+// names no other owner, and no Retry. A refusal a Retry can get past keeps it (the input refusal
+// of ProjectAccessPanel.test.tsx is the control).
+test("a refusal no Retry can change shows Dispatch's sentence and no Retry", async () => {
+  const user = userEvent.setup();
+  const sentence =
+    "this address holds a passkey that a link of another project's owner enrolled; that owner resets them first";
+  const panel = renderPanel({ answer: withPasskeys() });
+  const put = spyOn(api, "putProjectAccessPerson").mockRejectedValue(
+    new ApiError(409, { code: "PASSKEY_OF_ANOTHER_OWNER", error: sentence })
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reset = spyOn(api, "resetProjectAccessPerson").mockRejectedValue(
+    new ApiError(409, { code: "FULL_MEMBER", error: "a full member signs in with Google" })
+  );
+  try {
+    await user.type(await screen.findByLabelText("Add a person"), "held@other.example");
+    await user.click(screen.getByRole("button", { name: "Add person" }));
+    const added = await screen.findByRole("alert");
+    expect(added).toHaveTextContent(sentence);
+    expect(within(added).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: `Reset ${ana}` }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("a full member signs in with Google")
+    );
+    expect(
+      within(screen.getByRole("alert")).queryByRole("button", { name: "Retry" })
+    ).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    put.mockRestore();
+    confirm.mockRestore();
+    reset.mockRestore();
   }
 });
 
