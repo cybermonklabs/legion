@@ -77,6 +77,10 @@ const (
 	// exchangeToken: an exchange the token endpoint answered with a status other than 200, which
 	// the proxy answers with.
 	codeExchangeRefused = "TOKEN_EXCHANGE_REFUSED"
+	// serveBound: a request a Limited name may not carry, a private project's grant of a
+	// project-channels secret spent other than on a post to a channel its owner named
+	// (slackPostAllowed).
+	codeChannelNotAllowed = "CHANNEL_NOT_ALLOWED"
 )
 
 // answerWriter is one answer of the proxy port as it is written: its id, which it sets in the

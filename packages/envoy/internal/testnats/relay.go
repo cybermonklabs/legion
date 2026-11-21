@@ -350,12 +350,12 @@ func (r *relay) barrier(t testing.TB) error {
 	})
 }
 
-// await waits, until t's testDeadline, for settled, called under the relay's mu, to say the
-// relay's connections are where it wants them, and returns settled's error, or one naming what it
-// waited for if the time ran out. A relay that has closed has nothing to wait for. t is read for
-// its deadline alone.
+// await waits, until t's testDeadline (waitEnd), for settled, called under the relay's mu, to say
+// the relay's connections are where it wants them, and returns settled's error, or one naming what
+// it waited for if the time ran out. Each pause is barrierPoll cut to what is left. A relay that
+// has closed has nothing to wait for. t is read for its deadline alone.
 func (r *relay) await(t testing.TB, what string, settled func() (bool, error)) error {
-	deadline, bounded := testDeadline(t)
+	bound := boundOf(t)
 	for {
 		r.mu.Lock()
 		done, err := settled()
@@ -364,10 +364,10 @@ func (r *relay) await(t testing.TB, what string, settled func() (bool, error)) e
 		if done || closed || err != nil {
 			return err
 		}
-		if bounded && time.Now().After(deadline) {
-			return fmt.Errorf("waited until %s, short of the test's deadline, for %s", deadline.Format(time.RFC3339), what)
+		if bound.over() {
+			return fmt.Errorf("waited until %s, short of the test's deadline, for %s", bound, what)
 		}
-		time.Sleep(barrierPoll)
+		time.Sleep(bound.step(barrierPoll))
 	}
 }
 

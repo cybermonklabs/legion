@@ -166,7 +166,7 @@ func TestAReLoginAfterALauncherRefusalRetiresTheDroppedCredential(t *testing.T) 
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(context.Background(), "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("the refused enroll: %v; want errNoCredential", err)
 	}
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {

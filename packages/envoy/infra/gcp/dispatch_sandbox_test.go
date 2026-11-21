@@ -8,6 +8,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 )
 
@@ -225,6 +226,7 @@ func TestDispatchSandboxRefusesWhatItDoesNotBuild(t *testing.T) {
 			row.set(args)
 			_, err := gcp.ResolveDispatch(args)
 			require.ErrorContains(t, err, row.input)
+			requireInputError(t, err, row.input)
 		})
 	}
 	// The same inputs as a sandbox consumer sends them, which is what the mode is.
@@ -292,6 +294,11 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 						require.ErrorContains(t, err, other.input, "the refusal names %s, which is unset too", other.input)
 					}
 				}
+				var refused *core.InputError
+				require.ErrorAs(t, err, &refused)
+				require.True(t, slices.ContainsFunc(group.inputs, func(other dispatchInput) bool {
+					return other.input == refused.Input && other.input != in.input
+				}), "the refusal is a core.InputError naming an input of the group still unset, not %s", refused.Input)
 			})
 		}
 	}
@@ -303,6 +310,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 	// such a message names the inputs the group is still short.
 	for _, row := range []struct {
 		name  string
+		input string
 		group []dispatchInput
 		setup func(*gcp.DispatchArgs)
 		sets  []string
@@ -310,6 +318,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 	}{
 		{
 			name:  "tailnet tailnetDnsName malformed",
+			input: "tailnetDnsName",
 			group: dispatchSandboxTailnetGroup,
 			setup: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "example-tailnet.example.com" },
 			sets:  []string{"tailnetDnsName"},
@@ -317,6 +326,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 		},
 		{
 			name:  "tailnet tags malformed",
+			input: "tags",
 			group: dispatchSandboxTailnetGroup,
 			setup: func(a *gcp.DispatchArgs) {
 				a.TailnetDnsName = "example-tailnet.ts.net"
@@ -327,6 +337,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 		},
 		{
 			name:  "tailnet tailscaleImage malformed",
+			input: "tailscaleImage",
 			group: dispatchSandboxTailnetGroup,
 			setup: func(a *gcp.DispatchArgs) {
 				a.TailnetDnsName = "example-tailnet.ts.net"
@@ -338,6 +349,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 		},
 		{
 			name:  "tailnet frontDoorToolsImage malformed",
+			input: "frontDoorToolsImage",
 			group: dispatchSandboxTailnetGroup,
 			setup: func(a *gcp.DispatchArgs) {
 				a.TailnetDnsName = "example-tailnet.ts.net"
@@ -352,6 +364,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 			// The whole tailnet group, since a sign-in input with no tailnet is refused for being
 			// sent at all, and the one sign-in input the resolver reads before the domain.
 			name:  "sign-in signInDomain malformed",
+			input: "signInDomain",
 			group: dispatchSandboxSignInGroup,
 			setup: func(a *gcp.DispatchArgs) {
 				setDispatchTailnetGroup(a)
@@ -367,6 +380,7 @@ func TestDispatchPartialTailnetGroupNamesEveryMissingInput(t *testing.T) {
 			row.setup(args)
 			_, err := gcp.ResolveDispatch(args)
 			require.ErrorContains(t, err, row.want, "the refusal the value earns")
+			requireInputError(t, err, row.input)
 			for _, in := range row.group {
 				if !slices.Contains(row.sets, in.input) {
 					require.ErrorContains(t, err, in.input, "the refusal names %s, which is unset too", in.input)
