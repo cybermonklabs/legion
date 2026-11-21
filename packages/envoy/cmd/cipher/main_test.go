@@ -1347,10 +1347,12 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
 // stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
 // fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
-// present: the call stops there rather than go on to a later source of the chain. That the call
-// ended at its bound is the call's own word, "(waited 1s while ...)", which it gives only once its
-// deadline has passed, with the two things that end a wait earlier checked absent: the marker is
-// still fresh, and key.pem never came. No span is read; the shared wait (runExecForm) only
+// present: the call stops there rather than go on to a later source of the chain. The call's
+// "(waited 1s while ...)" says it gave up with the marker there, but it names the configured
+// bound, not the time waited, so the row also requires the call to end no sooner than its bound
+// after a start read before the call starts. Load can only lengthen that span, so the row reads
+// no upper limit, which load could pass. The two things that end a wait earlier are checked
+// absent: the marker is still fresh, and key.pem never came. The shared wait (runExecForm) only
 // guards against a call whose bound never ends its wait.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -1359,10 +1361,15 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	keyDir := t.TempDir()
 	marker := writePendingMarker(t, keyDir, 0)
 
+	start := time.Now()
 	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
+	waited := time.Since(start)
 	if exit != 1 || !strings.Contains(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
 		!strings.Contains(stderr, "(waited 1s while ") || strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 saying it waits, naming the launcher's marker and the wait, and no later source", exit, stderr)
+	}
+	if waited < 1*time.Second {
+		t.Fatalf("the call gave up %s after the row started it, before its 1s bound", waited)
 	}
 	if !freshMarker(keyDir) {
 		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
