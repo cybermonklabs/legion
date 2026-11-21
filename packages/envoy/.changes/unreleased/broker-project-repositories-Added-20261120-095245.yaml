@@ -1,0 +1,32 @@
+kind: Added
+body: |-
+  The secrets broker answers an edge listener which repositories the issues of one of its
+  projects resolve to: `GET /v1/project-repositories?project=<KEY>` relays Dispatch's
+  `GET /api/v1/access/projects/{key}/repositories` as `{"project", "repositories": [...]}`, read
+  from Dispatch on every call and never kept, at `BROKER_PROJECT_ACCESS_URL` with the account token
+  the project access check presents. An edge listener is a `BROKER_NATS_SERVICES` entry of the new
+  kind `edge-listener`, `edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>`, which lists the
+  projects it serves, at most 16; it calls with the identity token a `BROKER_API_ACCOUNTS` caller
+  presents, and its account needs the same issuer: `BROKER_K8S_OIDC_ISSUER` for a Kubernetes
+  account, `BROKER_GOOGLE_OIDC_AUDIENCE` for a `google:` one, which counts as that audience's
+  Google caller. An entry without its issuer refuses the start. Any other account is
+  `403 NOT_AN_EDGE_LISTENER`, and a project its entry does not list
+  `403 PROJECT_NOT_LISTED`, before Dispatch is asked. Dispatch's 503 or any other refusal, no
+  answer within 2 seconds, a body the broker cannot read and an unset `BROKER_PROJECT_ACCESS_URL`
+  are each `503 REPOSITORIES_UNKNOWN`, never a list; a 17th call of one edge listener waiting on
+  Dispatch at once on one broker process is `503 REPOSITORIES_BUSY`, a guard on Dispatch's load
+  counted in each process (16 × N on N replicas), not a security bound. No Dispatch release serves
+  that route yet, so until one does every such call is `503 REPOSITORIES_UNKNOWN`. The broker reads
+  the edge-listener entries whether or not it runs the NATS auth service: `BROKER_NATS_SERVICES`
+  set alone, with only edge-listener entries, starts no auth service and needs no NATS audience,
+  and the boot's `NATS auth service state=off` line counts them. Any other entry still needs
+  `BROKER_NATS_URLS` and the three seed files. The NATS auth service refuses an edge listener's
+  own connection: this release holds no edge listener's NATS grant, so where the service runs an
+  edge-listener entry needs no NATS audience either. Every `BROKER_NATS_SERVICES` entry is now read
+  once, when the configuration loads, and every check reads that one reading: an entry of no form
+  refuses the start for its form, before any check of its kind or account. The broker reads
+  Dispatch's answer strictly: its two keys in their own case, each once, and the list sorted, each
+  repository once.
+time: 2026-11-20T09:52:45Z
+custom:
+    Issue: broker-project-repositories

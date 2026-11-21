@@ -48,3 +48,46 @@ a member or a kind is removed only after no running build reads it.
 The decoders that make this true are the listener's (`cmd/listener/delivery.go`), the session plugins' (`packages/envoy-client/src/delivery.ts`, `renderInbound`), the Legion daemon's (`packages/daemon/internal/intake/decode.go`) and the delivery intakes' (`internal/dispatch/delivery/intake.go` and `jobs.go`).
 
 `../../../cmd/dispatch/README.md` has the rule for each surface ("Two builds at once") and for migrations with their examples ("Database migrations"), the naming and the identifiers a set is refused for, and what the census is held to.
+
+**The keyword table holds each past version of the searchable text.**
+Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
+A row is never updated, a new version being a new row, but for the erase (`envoy-dispatch erase`): it deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+`search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
+The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
+It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
+No migration writes a row of either table.
+
+`TextVersions.SQL()` is the relation of the version of each item that held at `TextVersions.Cut`, for a statement to join as `from <SQL()> v`.
+A version holds at the cut when it started at or before the cut, and no later version of the same item in its owner's `seq` order started at or before the cut.
+So an item has at most one version at a time, and none before its first version started.
+The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
+It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+`Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
+For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
+With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.
+
+The reach is the latest time T such that every event whose `created_at` is at or before T has its rows.
+This includes an event that a transaction still open will commit.
+`ComputeTextVersionsReach` computes the reach in a READ COMMITTED transaction, one statement at a time, in this order:
+
+1. T0, `clock_timestamp()`, and whether the cursor is at most 5,000 events behind the newest event and not past it.
+   When it is not, no value is computed and no later step runs.
+
+2. A, the oldest `xact_start` of another client backend of this database that can write an event.
+   A backend can write an event when its login is a superuser, when its login or a role it is a member of has `INSERT` on `public.events`, or when its login is a role that the query cannot resolve.
+
+3. B, the oldest `created_at` of the events above the cursor, read in a later statement with its own snapshot, which checks the cursor against the newest event again.
+
+4. The reach: the earliest of A, B and T0 less 1 s, less 1 µs.
+
+A transaction open at step 2 is in A.
+A transaction that commits after step 2 and before step 3 is in B.
+A transaction that starts after step 2 started after T0.
+The 1 s covers the moment between the start of a transaction and its report of `xact_start`.
+No value is computed, and the stored reach stands, while a backend that can write an event is in a transaction whose start this role cannot read.
+The same is true while the cursor is more than 5,000 events behind the newest event, and while it is past the newest event after a reset of the log that the fill has not found yet.
+The fill stores the reach in each batch's transaction and never lowers it, and a reset of the event log sets it to null.
+`Store.TextVersionsReach` computes the reach again and answers the later of the computed reach and the stored reach.
+So a database whose fill is caught up and quiet is not refused a cut that the fill has reached.
