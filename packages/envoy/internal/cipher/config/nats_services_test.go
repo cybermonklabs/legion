@@ -1,4 +1,4 @@
-package natscallout
+package config
 
 import (
 	"testing"
@@ -16,18 +16,19 @@ const (
 )
 
 // Each entry is read as <kind>/<machine id or ->/<* or ->=<account>, the account written as
-// BROKER_API_ACCOUNTS writes one.
+// BROKER_API_ACCOUNTS writes one, and keeps its own text for the refusals that name it.
 func TestParseServicesReadsEachEntry(t *testing.T) {
-	services, err := ParseServices("listener/dev-stack/*=" + listenerAccount + "\n daemon/-/-=" + daemonAccount +
-		" measure/-/*=google:" + measureAccount + " dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch")
+	listener, daemon := "listener/dev-stack/*="+listenerAccount, "daemon/-/-="+daemonAccount
+	measure, dispatch := "measure/-/*=google:"+measureAccount, "dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch"
+	services, err := ParseNATSServices(listener + "\n " + daemon + " " + measure + " " + dispatch)
 	require.NoError(t, err)
-	require.Equal(t, []ServiceEntry{
-		{Kind: KindListener, MachineID: "dev-stack", Account: listenerAccount, AllProjects: true},
-		{Kind: KindDaemon, Account: daemonAccount},
-		{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-		{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
+	require.Equal(t, []NATSService{
+		{Kind: NATSListener, MachineID: "dev-stack", Account: listenerAccount, AllProjects: true, Text: listener},
+		{Kind: NATSDaemon, Account: daemonAccount, Text: daemon},
+		{Kind: NATSMeasure, Account: measureAccount, Google: true, AllProjects: true, Text: measure},
+		{Kind: NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true, Text: dispatch},
 	}, services)
-	none, err := ParseServices("  ")
+	none, err := ParseNATSServices("  ")
 	require.NoError(t, err)
 	require.Empty(t, none)
 }
@@ -36,11 +37,12 @@ func TestParseServicesReadsEachEntry(t *testing.T) {
 // comma separated: edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. The projects are read
 // sorted, each once, and no other kind's entry carries any.
 func TestParseServicesReadsAnEdgeListenersProjects(t *testing.T) {
-	services, err := ParseServices("edge-listener/edge-a/PRIV,OTHER=" + edgeAccount + " listener/host-a/*=" + listenerAccount)
+	edge, listener := "edge-listener/edge-a/PRIV,OTHER="+edgeAccount, "listener/host-a/*="+listenerAccount
+	services, err := ParseNATSServices(edge + " " + listener)
 	require.NoError(t, err)
-	require.Equal(t, []ServiceEntry{
-		{Kind: KindEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"OTHER", "PRIV"}},
-		{Kind: KindListener, MachineID: "host-a", Account: listenerAccount, AllProjects: true},
+	require.Equal(t, []NATSService{
+		{Kind: NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"OTHER", "PRIV"}, Text: edge},
+		{Kind: NATSListener, MachineID: "host-a", Account: listenerAccount, AllProjects: true, Text: listener},
 	}, services)
 }
 
@@ -48,24 +50,24 @@ func TestParseServicesReadsAnEdgeListenersProjects(t *testing.T) {
 // projects, and no entry of another kind: a listener's account is no edge listener, whatever
 // projects its own grant reaches.
 func TestEdgeListenersAreTheEdgeListenerEntries(t *testing.T) {
-	services, err := ParseServices("listener/host-a/*=" + listenerAccount + " edge-listener/edge-a/PRIV=" + edgeAccount +
+	services, err := ParseNATSServices("listener/host-a/*=" + listenerAccount + " edge-listener/edge-a/PRIV=" + edgeAccount +
 		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com daemon/-/-=" + daemonAccount)
 	require.NoError(t, err)
 	require.Equal(t, []api.EdgeListener{
 		{Account: edgeAccount, Projects: []string{"PRIV"}},
 		{Account: "example-edge@example-project.iam.gserviceaccount.com", Google: true, Projects: []string{"OTHER"}},
-	}, EdgeListeners(services))
-	require.Empty(t, EdgeListeners(nil))
+	}, NATSCallout{Services: services}.EdgeListeners())
+	require.Empty(t, NATSCallout{}.EdgeListeners())
 }
 
 // The measurement job's grant holds a KV read, which no project scope can hold, and it reads no
 // project's messages, so its entry takes the whole grant and is refused at the broker's start
 // naming the entry when it asks for its exchange projects.
 func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
-	_, err := ParseServices("measure/-/-=google:" + measureAccount)
+	_, err := ParseNATSServices("measure/-/-=google:" + measureAccount)
 	require.ErrorContains(t, err, `"measure/-/-=google:`+measureAccount+`"`)
 	require.ErrorContains(t, err, "measure")
-	services, err := ParseServices("measure/-/*=google:" + measureAccount)
+	services, err := ParseNATSServices("measure/-/*=google:" + measureAccount)
 	require.NoError(t, err)
 	require.True(t, services[0].AllProjects)
 }
@@ -96,7 +98,7 @@ func TestParseServicesRefusals(t *testing.T) {
 		"projects for a listener":                    "listener/host-a/PRIV=" + listenerAccount,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseServices(raw)
+			_, err := ParseNATSServices(raw)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "BROKER_NATS_SERVICES")
 		})

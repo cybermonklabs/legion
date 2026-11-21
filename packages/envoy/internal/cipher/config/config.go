@@ -745,8 +745,8 @@ type Config struct {
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
 	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices). An edge listener's entry,
+	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one, every entry
+	// read once at load (ParseNATSServices). An edge listener's entry,
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
 	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
 	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
@@ -760,8 +760,9 @@ type Config struct {
 	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
 	// the audience a service's Google identity token must carry, verified against
 	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
-	// has no audience is refused at start naming it. A session presents its broker access token
-	// and needs neither. All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
+	// has no audience is refused at start naming it, and an edge listener's entry, whose token the
+	// service never verifies, needs neither. A session presents its broker access token and needs
+	// neither. All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
 	// entries, the broker runs no auth service; any other set needs the URLs and the three seed
 	// files.
 	NATS NATSCallout
@@ -950,8 +951,9 @@ var removedVars = []struct{ name, reason string }{
 type NATSCallout struct {
 	URLs                                   []string
 	SeedFile, IssuerSeedFile, XKeySeedFile string
-	// Services is BROKER_NATS_SERVICES as given, which natscallout.ParseServices reads at start.
-	Services                    string
+	// Services is BROKER_NATS_SERVICES, each entry read once at load (ParseNATSServices): the
+	// one reading the auth service, the API's edge listeners and every check of Load take.
+	Services                    []NATSService
 	K8sAudience, GoogleAudience string
 }
 
@@ -1283,8 +1285,8 @@ var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<na
 // parseServiceAccounts does, and a Google account vmAccountRefusal refuses, which is the rule
 // BROKER_VM_SERVICES holds every Google account to. An account of neither form is ErrAccountForm.
 // Every setting that names a caller's account reads it here (BROKER_API_ACCOUNTS, and
-// BROKER_NATS_SERVICES through internal/cipher/natscallout), so no setting admits an account
-// another refuses.
+// BROKER_NATS_SERVICES through ParseNATSServices), so no setting admits an account another
+// refuses.
 func ParseAccount(setting, text, account string) (Account, error) {
 	switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
 	case tagged:
@@ -1494,14 +1496,16 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // because the named-caller routes it reaches act on the caller's word: the approval relays take the
 // deciding person's name from the caller, so the person's pod could decide any request in any
 // person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
-// NATS auth service (internal/cipher/natscallout) would then answer a connection of the person's
-// pod with that entry's service grant. It reads each entry's account with CutNATSServiceEntry, the
-// reading natscallout.ParseServices makes too, which holds the account to ParseAccount's form at
-// the boot. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair
-// names (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
-// holds. A person's pod login enrols under no session name (enroll.Service.podUnderTokenLogin), so
-// a pair moves no enrollment of it, but the session names the token exchange binds for the account
-// would cross: the other account could take the person's, and the person's pod the other account's.
+// person's pod would then be answered as that entry's service: by the NATS auth service
+// (internal/cipher/natscallout) with that entry's service grant or, for an edge-listener entry, by
+// GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
+// each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
+// which holds the account to ParseAccount's form. It refuses a mapped account that either side of
+// a BROKER_SESSION_ACCOUNT_PAIRS pair names (cfg.SessionAccountPairs), because a pair lets one
+// account take the session names the other holds. A person's pod login enrols under no session
+// name (enroll.Service.podUnderTokenLogin), so a pair moves no enrollment of it, but the session
+// names the token exchange binds for the account would cross: the other account could take the
+// person's, and the person's pod the other account's.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1520,9 +1524,10 @@ func mappedAccountRefusal(cfg *Config) error {
 		exchangePeople[entry.Account] = entry.Person
 	}
 	natsEntries := make(map[string]string)
-	for _, text := range strings.Fields(cfg.NATS.Services) {
-		if _, account, ok := CutNATSServiceEntry(text); ok {
-			natsEntries[account] = text
+	for _, entry := range cfg.NATS.Services {
+		// A mapped account is a Kubernetes service account, which a Google entry never names.
+		if !entry.Google {
+			natsEntries[entry.Account] = entry.Text
 		}
 	}
 	pairs := make(map[string]string)

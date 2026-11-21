@@ -1,19 +1,26 @@
 // Package projectrepos is the broker's read of Dispatch's answer to "which repositories do a
 // project's issues resolve to" (GET /api/v1/access/projects/{key}/repositories), which the broker
-// relays to an edge listener (GET /v1/project-repositories, internal/cipher/api). Dispatch
-// computes that answer from the project's issues, by the one rule its GitHub proxy follows too,
-// so an edge listener that relays the GitHub events of those repositories and Dispatch cannot
-// disagree about which they are.
+// relays to an edge listener (GET /v1/project-repositories, internal/cipher/api). That route is
+// Dispatch's (#4635) and is not in this tree yet. Dispatch computes the answer from the project's
+// issues (refs.ProjectRepositories). The rule by which its GitHub proxy hides a repository walks
+// the same terms, and still differs from the answer where refs.ProjectRepositories says it does:
+// a repository the project maps that no issue resolves to, an issue whose parent chain the walk
+// cannot finish, and a rename. The answer reads the same rule text the GitHub proxy reads once
+// #4177's rule is the route's; until then an edge listener's set and the proxy's can differ in
+// those three cases.
 //
 // Nothing here is kept: every read asks Dispatch, so an answer is never older than the call that
 // relays it, and anything but a whole answer about the project asked is an error, never a list, a
 // shorter one or an empty one. What an error means is the caller's: the route answers 503.
 //
-// It reads the Dispatch internal/cipher/projectaccess reads, at the same base URL with the same
-// account token (BROKER_PROJECT_ACCESS_URL, BROKER_PROJECT_ACCESS_TOKEN_FILE), so the broker has
-// one Dispatch and one account there. It is a package of its own rather than a method of that
-// client because projectaccess is the membership answer, which is to carry no list of a project's
-// repositories, so that no reader of the membership answer can take one from it.
+// It reads the Dispatch internal/cipher/projectaccess reads, through the same read
+// (internal/cipher/dispatchread), at the same base URL with the same account token
+// (BROKER_PROJECT_ACCESS_URL, BROKER_PROJECT_ACCESS_TOKEN_FILE), so the broker has one Dispatch and
+// one account there, and a token that does not work is the same error to both. It is a package of
+// its own rather than a method of that client so that the list it reads reaches no reader of the
+// membership answer. That answer still carries a list of its own (projectaccess.Answer's
+// Repositories), which is to be removed; until then this package keeps the edge listener's list
+// out of it.
 package projectrepos
 
 import (
@@ -28,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -46,87 +54,103 @@ const (
 
 // Client reads Dispatch's route at one base URL, presenting the broker's own account token.
 type Client struct {
-	base    string
-	account ciphertoken.Account
-	http    *http.Client
+	read dispatchread.Reader
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
 // (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader, the one projectaccess presents) on every call. A nil
 // httpClient is http.DefaultClient; each call is bounded by Timeout whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	return &Client{base: strings.TrimRight(baseURL, "/"), account: account, http: httpClient}
+	return &Client{read: dispatchread.New(baseURL, account, httpClient, Timeout, MaxAnswerBytes)}
 }
 
 // Repositories is Dispatch's list for project, read now: each repository, as "owner/name", that
-// an issue of the project resolves to, and an empty list, never nil, for a project none of whose
-// issues resolves to one. Every other outcome is an error naming what failed and never the token,
-// with no list: an account token it cannot read (Dispatch is then asked nothing), a transport
-// failure or Timeout passing, any status but 200 (Dispatch's 503, a project it does not hold, a
-// Dispatch that serves no such route, one refusing the broker's token), and a 200 whose body is
-// past MaxAnswerBytes or is not one JSON object naming project and a list of "owner/name"
-// strings.
+// an issue of the project resolves to, sorted byte-wise and each once, and an empty list, never
+// nil, for a project none of whose issues resolves to one. Every other outcome is an error naming
+// what failed and never the token, with no list. An account token it cannot read (Dispatch is
+// then asked nothing) and Dispatch's 401 or 403 to it are dispatchread.ErrBrokerRefused; so are
+// they to projectaccess. A transport failure or Timeout passing, any other status but 200
+// (Dispatch's 503, a project it does not hold, a Dispatch that serves no such route), and a 200
+// whose body is past MaxAnswerBytes or is no whole answer about project (readAnswer) are errors.
 func (c *Client) Repositories(ctx context.Context, project string) ([]string, error) {
-	bearer, err := c.account.Read()
+	answer, err := c.read.Get(ctx, pathPrefix+url.PathEscape(project)+pathSuffix, nil)
 	if err != nil {
-		return nil, fmt.Errorf("projectrepos: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", err)
+		return nil, fmt.Errorf("projectrepos: read %s's repositories: %w", project, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+pathPrefix+url.PathEscape(project)+pathSuffix, nil)
-	if err != nil {
-		return nil, fmt.Errorf("projectrepos: build the request: %w", err)
+	if answer.Status != http.StatusOK {
+		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", answer.Status, dispatchread.RefusalCode(answer.Body), project)
 	}
-	request.Header.Set("Authorization", "Bearer "+bearer)
-	request.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("projectrepos: ask dispatch: %w", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, MaxAnswerBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("projectrepos: read dispatch's answer: %w", err)
-	}
-	if len(body) > MaxAnswerBytes {
-		return nil, fmt.Errorf("projectrepos: dispatch's answer about %s is over %d bytes", project, MaxAnswerBytes)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", response.StatusCode, refusalCode(body), project)
-	}
-	return readAnswer(body, project)
+	return readAnswer(answer.Body, project)
 }
 
 // readAnswer is the list a 200's body carries about project, or an error saying why the body is
-// no whole answer about it.
+// no whole answer about it. The body is read as Dispatch writes it and no other way: one JSON
+// object holding the key "project", the project asked, and the key "repositories", a list of
+// "owner/name" strings sorted byte-wise, each once; each key in its own case and once, and no
+// other key. encoding/json alone would read a key in any case and the last of a key written twice,
+// so the object is read key by key.
 func readAnswer(body []byte, project string) ([]string, error) {
-	var answer struct {
-		Project      string    `json:"project"`
-		Repositories *[]string `json:"repositories"`
+	refused := func(why string) error {
+		return fmt.Errorf("projectrepos: dispatch's answer about %s %s", project, why)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	if err := decoder.Decode(&answer); err != nil {
-		return nil, fmt.Errorf("projectrepos: decode dispatch's answer about %s: %w", project, err)
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return nil, refused("is no JSON object")
 	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("projectrepos: dispatch's answer about %s holds more than one value", project)
-	}
-	switch {
-	case answer.Project != project:
-		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", answer.Project, project)
-	case answer.Repositories == nil:
-		return nil, fmt.Errorf("projectrepos: dispatch's answer about %s carries no list of repositories", project)
-	}
-	repositories := *answer.Repositories
-	for _, repository := range repositories {
-		if !ownerName(repository) {
-			return nil, fmt.Errorf("projectrepos: dispatch's answer about %s lists %q, which is no owner/name", project, repository)
+	var answered *string
+	var repositories *[]string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, refused("does not decode: " + err.Error())
+		}
+		switch key, _ := token.(string); {
+		case key == "project" && answered == nil:
+			answered = new(string)
+			if err := decoder.Decode(answered); err != nil {
+				return nil, refused("names no project: " + err.Error())
+			}
+		case key == "repositories" && repositories == nil:
+			var list []string
+			raw := json.RawMessage{}
+			if err := decoder.Decode(&raw); err != nil {
+				return nil, refused("does not decode: " + err.Error())
+			}
+			if string(raw) == "null" {
+				return nil, refused("carries no list of repositories")
+			}
+			if err := json.Unmarshal(raw, &list); err != nil {
+				return nil, refused("carries no list of repository names: " + err.Error())
+			}
+			repositories = &list
+		default:
+			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", key))
 		}
 	}
-	return repositories, nil
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return nil, refused("does not decode")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, refused("holds more than one value")
+	}
+	switch {
+	case answered == nil:
+		return nil, refused("names no project")
+	case *answered != project:
+		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", *answered, project)
+	case repositories == nil:
+		return nil, refused("carries no list of repositories")
+	}
+	list := *repositories
+	for index, repository := range list {
+		if !ownerName(repository) {
+			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", repository))
+		}
+		if index > 0 && list[index-1] >= repository {
+			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", repository, list[index-1]))
+		}
+	}
+	return list, nil
 }
 
 // ownerName reports whether repository is "owner/name": one slash, neither side empty, and no
@@ -137,14 +161,4 @@ func ownerName(repository string) bool {
 		return false
 	}
 	return !strings.ContainsFunc(repository, func(r rune) bool { return r <= ' ' || r == 0x7f })
-}
-
-// refusalCode is the code a refusal's body names, empty for one that names none: the status has
-// already decided the read failed, and the code only adds to its error.
-func refusalCode(body []byte) string {
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(body, &refusal)
-	return refusal.Code
 }

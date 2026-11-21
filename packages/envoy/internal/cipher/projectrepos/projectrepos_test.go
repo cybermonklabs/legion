@@ -8,18 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
-	"github.com/sjawhar/envoy/internal/cipher/projectrepos/projectrepostest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
 // resolve to none.
-func standIn(t *testing.T) *projectrepostest.Server {
+func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
-	return projectrepostest.NewServer(t, map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": nil})
+	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/pub", "acme/two"}},
+		"EMPTY": {Visibility: "private"},
+	}, nil)
 }
 
-func clientOf(server *projectrepostest.Server) *projectrepos.Client {
+func clientOf(server *projectaccesstest.Server) *projectrepos.Client {
 	return projectrepos.New(server.URL, server.Account, nil)
 }
 
@@ -69,7 +75,9 @@ func TestProjectRepositoriesClientAsksDispatchEveryTime(t *testing.T) {
 // the asked project's whole list is an error, and no list: Dispatch's 503, every other status (a
 // project it does not hold, a Dispatch that serves no such route, one refusing the broker's
 // token), a body that is no JSON, one about another project, one with no list or a list that is
-// no list of owner/name strings, and one past the bound.
+// no list of owner/name strings, and one past the bound. The body is read strictly, as Dispatch
+// writes it: its two keys in their own case, each once, no other key, and the list sorted
+// byte-wise with each repository once, so no body is read as an answer it does not spell.
 func TestProjectRepositoriesClientRefusesWhatIsNoWholeAnswer(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -93,6 +101,13 @@ func TestProjectRepositoriesClientRefusesWhatIsNoWholeAnswer(t *testing.T) {
 		{"a repository with a space", http.StatusOK, `{"project":"PRIV","repositories":["acme/p ub"]}`},
 		{"a second value after the answer", http.StatusOK, `{"project":"PRIV","repositories":[]} {}`},
 		{"a body past the bound", http.StatusOK, `{"project":"PRIV","repositories":["` + strings.Repeat("a", projectrepos.MaxAnswerBytes) + `/b"]}`},
+		{"the project written twice", http.StatusOK, `{"project":"OTHER","project":"PRIV","repositories":["acme/pub"]}`},
+		{"the list written twice", http.StatusOK, `{"project":"PRIV","repositories":[],"repositories":["acme/pub"]}`},
+		{"the project's key in another case", http.StatusOK, `{"PROJECT":"PRIV","repositories":["acme/pub"]}`},
+		{"the list's key in another case", http.StatusOK, `{"project":"PRIV","Repositories":["acme/pub"]}`},
+		{"a key Dispatch does not write", http.StatusOK, `{"project":"PRIV","repositories":["acme/pub"],"owner":"alice"}`},
+		{"a list out of order", http.StatusOK, `{"project":"PRIV","repositories":["acme/two","acme/pub"]}`},
+		{"a repository named twice", http.StatusOK, `{"project":"PRIV","repositories":["acme/pub","acme/pub"]}`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			server := standIn(t)
@@ -139,6 +154,62 @@ func TestProjectRepositoriesClientAsksNothingWithoutItsToken(t *testing.T) {
 	}
 	if calls := server.Calls(); calls != 0 {
 		t.Fatalf("Dispatch was asked %d times, want none", calls)
+	}
+}
+
+// TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn: Dispatch answering 401 or 403 to
+// the broker's own account token, and a token file the broker cannot read, are
+// dispatchread.ErrBrokerRefused, as they are to the membership client: the broker's own credential
+// is broken, a misconfiguration and not Dispatch out of reach. A 503 is not.
+func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		server := standIn(t)
+		server.SetAnswer(status, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not an access account"}`)
+		got, err := clientOf(server).Repositories(t.Context(), "PRIV")
+		if !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") || got != nil {
+			t.Fatalf("Repositories answered %d = %q, %v; want ErrBrokerRefused naming the code, and no list", status, got, err)
+		}
+	}
+	server := standIn(t)
+	broken := errors.New("open /var/run/secrets/dispatch-access/token: no such file or directory")
+	_, err := projectrepos.New(server.URL, failingAccount{broken}, nil).Repositories(t.Context(), "PRIV")
+	if !errors.Is(err, dispatchread.ErrBrokerRefused) || !errors.Is(err, broken) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
+		t.Fatalf("Repositories with an unreadable token = %v; want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE and wrapping the read's", err)
+	}
+	if calls := server.Calls(); calls != 0 {
+		t.Fatalf("Dispatch was asked %d times with no token, want none", calls)
+	}
+	server.SetAnswer(http.StatusServiceUnavailable, `{"code":"REPOSITORIES_UNRESOLVED","error":"too deep"}`)
+	if _, err := clientOf(server).Repositories(t.Context(), "PRIV"); err == nil || errors.Is(err, dispatchread.ErrBrokerRefused) {
+		t.Fatalf("Repositories answered 503 = %v; want an error that is not ErrBrokerRefused", err)
+	}
+}
+
+// TestBothClientsOfOneDispatchReadItAlike: the broker's two clients of the Dispatch at
+// BROKER_PROJECT_ACCESS_URL, pointed at one Dispatch with one account as cmd/cipherd wires them,
+// read it through the one read (dispatchread): each is answered, and a bearer Dispatch refuses and
+// a token file the broker cannot read are dispatchread.ErrBrokerRefused to both alike.
+func TestBothClientsOfOneDispatchReadItAlike(t *testing.T) {
+	server := standIn(t)
+	repositories, err := clientOf(server).Repositories(t.Context(), "PRIV")
+	if want := []string{"acme/pub", "acme/two"}; err != nil || !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("Repositories(PRIV) = %q, %v; want %q", repositories, err, want)
+	}
+	if _, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), "PRIV", ""); err != nil {
+		t.Fatalf("Access(PRIV) from the same Dispatch with the same account = %v, want an answer", err)
+	}
+	broken := errors.New("open /var/run/secrets/dispatch-access/token: no such file or directory")
+	for name, account := range map[string]ciphertoken.Account{
+		"a bearer Dispatch refuses":   projectaccesstest.StaticAccount("not-the-stand-ins-token"),
+		"a token file it cannot read": failingAccount{broken},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, repositoriesErr := projectrepos.New(server.URL, account, nil).Repositories(t.Context(), "PRIV")
+			_, accessErr := projectaccess.New(server.URL, account, nil).Access(t.Context(), "PRIV", "")
+			if !errors.Is(repositoriesErr, dispatchread.ErrBrokerRefused) || !errors.Is(accessErr, dispatchread.ErrBrokerRefused) {
+				t.Fatalf("Repositories = %v and Access = %v; want both dispatchread.ErrBrokerRefused", repositoriesErr, accessErr)
+			}
+		})
 	}
 }
 

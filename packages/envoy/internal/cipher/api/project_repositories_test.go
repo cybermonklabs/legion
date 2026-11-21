@@ -1,7 +1,7 @@
 // project_repositories_test.go drives GET /v1/project-repositories, the broker's relay to an edge
 // listener of Dispatch's answer to "which repositories do a project's issues resolve to", against
-// a stand-in of Dispatch's route (projectrepostest) and the real broker otherwise: the edge
-// listeners are the ones natscallout.ParseServices reads from a BROKER_NATS_SERVICES value, as
+// a stand-in of Dispatch's access routes (projectaccesstest) and the real broker otherwise: the
+// edge listeners are the ones config.ParseNATSServices reads from a BROKER_NATS_SERVICES value, as
 // cmd/cipherd hands them on.
 package api_test
 
@@ -20,9 +20,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
-	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
-	"github.com/sjawhar/envoy/internal/cipher/projectrepos/projectrepostest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -40,23 +40,34 @@ const (
 
 // repositoriesDispatch is the stand-in of Dispatch every test here starts from: PRIV's issues
 // resolve to acme/pub and acme/two, OTHER's to acme/other.
-func repositoriesDispatch(t *testing.T) *projectrepostest.Server {
+func repositoriesDispatch(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
-	return projectrepostest.NewServer(t, map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "OTHER": {"acme/other"}})
+	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/pub", "acme/two"}},
+		"OTHER": {Visibility: "private", Repositories: []string{"acme/other"}},
+	}, nil)
+}
+
+// edgeListeners is the edge listeners of services, a BROKER_NATS_SERVICES value, read as the
+// broker's start reads them (config.ParseNATSServices, config.NATSCallout.EdgeListeners).
+func edgeListeners(t *testing.T, services string) []api.EdgeListener {
+	t.Helper()
+	parsed, err := config.ParseNATSServices(services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config.NATSCallout{Services: parsed}.EdgeListeners()
 }
 
 // newRepositoriesServer is a broker reading Dispatch's answers from dispatch, nil for a broker
 // with no BROKER_PROJECT_ACCESS_URL, whose edge listeners are edgeServices' and which lists the
 // Envoy listener in BROKER_API_ACCOUNTS too, as a deployment does.
-func newRepositoriesServer(t *testing.T, dispatch *projectrepostest.Server) *testServer {
+func newRepositoriesServer(t *testing.T, dispatch *projectaccesstest.Server) *testServer {
 	t.Helper()
-	services, err := natscallout.ParseServices(edgeServices)
-	if err != nil {
-		t.Fatal(err)
-	}
+	edges := edgeListeners(t, edgeServices)
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
-		d.EdgeListeners = natscallout.EdgeListeners(services)
+		d.EdgeListeners = edges
 		if dispatch != nil {
 			d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 		}
@@ -209,18 +220,18 @@ func TestTheRepositoryAnswerIsOnlyForTheEdgeOfThatProject(t *testing.T) {
 func TestAnUnreadableDispatchAnswerIsUnknown(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		setup func(*projectrepostest.Server)
+		setup func(*projectaccesstest.Server)
 		none  bool
 	}{
-		{name: "Dispatch's 503", setup: func(d *projectrepostest.Server) { d.SetDown(true) }},
-		{name: "a 3 s stall", setup: func(d *projectrepostest.Server) { d.SetStall(3 * time.Second) }},
-		{name: "an unreadable body", setup: func(d *projectrepostest.Server) {
+		{name: "Dispatch's 503", setup: func(d *projectaccesstest.Server) { d.SetDown(true) }},
+		{name: "a 3 s stall", setup: func(d *projectaccesstest.Server) { d.SetStall(3 * time.Second) }},
+		{name: "an unreadable body", setup: func(d *projectaccesstest.Server) {
 			d.SetAnswer(http.StatusOK, `{"project":"PRIV","repositories":["acme/pub"`)
 		}},
-		{name: "a project Dispatch does not hold", setup: func(d *projectrepostest.Server) {
+		{name: "a project Dispatch does not hold", setup: func(d *projectaccesstest.Server) {
 			d.SetAnswer(http.StatusNotFound, `{"code":"PROJECT_NOT_FOUND","error":"no such project"}`)
 		}},
-		{name: "Dispatch refusing the broker's token", setup: func(d *projectrepostest.Server) {
+		{name: "Dispatch refusing the broker's token", setup: func(d *projectaccesstest.Server) {
 			d.SetAnswer(http.StatusForbidden, `{"code":"FORBIDDEN","error":"not an access account"}`)
 		}},
 		{name: "a broker that reads no Dispatch", none: true},
@@ -248,61 +259,94 @@ func TestAnUnreadableDispatchAnswerIsUnknown(t *testing.T) {
 	}
 }
 
+// heldReader is Dispatch's repository answer as the route reads it (api.ProjectRepositoriesReader),
+// holding every call about held until let is called, and answering every other project at once.
+// Each call that reaches it is sent on reached before it waits, so a test decides by what reached
+// Dispatch and never by a clock.
+type heldReader struct {
+	held    string
+	reached chan string
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHeldReader(held string) *heldReader {
+	return &heldReader{held: held, reached: make(chan string, 64), release: make(chan struct{})}
+}
+
+// let answers every held call and every later one; it may be called more than once.
+func (h *heldReader) let() { h.once.Do(func() { close(h.release) }) }
+
+func (h *heldReader) Repositories(ctx context.Context, project string) ([]string, error) {
+	h.reached <- project
+	if project == h.held {
+		select {
+		case <-h.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return []string{"acme/" + strings.ToLower(project)}, nil
+}
+
 // TestTheSeventeenthRepositoryCallInFlightIsBusy: an edge listener has at most 16 calls in flight
 // to Dispatch; its 17th is 503 REPOSITORIES_BUSY at once and never reaches Dispatch, while another
 // edge listener is answered; once the 16 are answered, the next call is answered too.
 func TestTheSeventeenthRepositoryCallInFlightIsBusy(t *testing.T) {
-	dispatch := repositoriesDispatch(t)
-	ts := newRepositoriesServer(t, dispatch)
+	edges := edgeListeners(t, edgeServices)
+	dispatch := newHeldReader("PRIV")
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.EdgeListeners = edges
+		d.ProjectRepositories = dispatch
+	})
+	// Registered after the server's own cleanup, so it runs first: a row that fails with calls
+	// still held lets them go, and the server's close does not wait on them.
+	t.Cleanup(dispatch.let)
 	bearer := ts.accountToken(t, edgeAccount, "", time.Hour)
-	release := dispatch.Hold("PRIV")
-	defer release()
 	type result struct {
 		status int
 		body   []byte
 		err    error
 	}
-	results := make(chan result, 16)
-	var started sync.WaitGroup
-	for range 16 {
-		started.Add(1)
-		go func() {
-			defer started.Done()
-			status, body, err := askRepositories(ts.URL, bearer, "PRIV")
-			results <- result{status, body, err}
-		}()
+	ask := func(results chan<- result) {
+		status, body, err := askRepositories(ts.URL, bearer, "PRIV")
+		results <- result{status, body, err}
 	}
-	// The held calls give up at projectrepos.Timeout, so the 17th is sent well before that.
-	ctx, cancel := context.WithTimeout(t.Context(), projectrepos.Timeout/2)
-	defer cancel()
-	for dispatch.InFlight() < 16 {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("%d calls reached Dispatch, want 16 in flight", dispatch.InFlight())
-		case <-time.After(5 * time.Millisecond):
+	held := make(chan result, 16)
+	for range 16 {
+		go ask(held)
+	}
+	for range 16 {
+		if project := <-dispatch.reached; project != "PRIV" {
+			t.Fatalf("Dispatch was asked about %s, want PRIV", project)
 		}
 	}
-	status, body, err := askRepositories(ts.URL, bearer, "PRIV")
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireRefused(t, status, body, http.StatusServiceUnavailable, "REPOSITORIES_BUSY")
-	if calls := dispatch.Calls(); calls != 16 {
-		t.Fatalf("Dispatch took %d calls, want 16: the 17th must not reach it", calls)
-	}
-	status, body = ts.repositories(t, otherEdgeAccount, "OTHER")
-	requireRepositories(t, status, body, "OTHER", []string{"acme/other"})
-	release()
-	started.Wait()
-	close(results)
-	for answer := range results {
+	seventeenth := make(chan result, 1)
+	go ask(seventeenth)
+	select {
+	case project := <-dispatch.reached:
+		t.Fatalf("the 17th call reached Dispatch (about %s), want it refused before", project)
+	case answer := <-seventeenth:
 		if answer.err != nil {
 			t.Fatal(answer.err)
 		}
-		requireRepositories(t, answer.status, answer.body, "PRIV", []string{"acme/pub", "acme/two"})
+		requireRefused(t, answer.status, answer.body, http.StatusServiceUnavailable, "REPOSITORIES_BUSY")
+	}
+	status, body := ts.repositories(t, otherEdgeAccount, "OTHER")
+	requireRepositories(t, status, body, "OTHER", []string{"acme/other"})
+	if project := <-dispatch.reached; project != "OTHER" {
+		t.Fatalf("Dispatch was asked about %s, want OTHER", project)
+	}
+	dispatch.let()
+	for range 16 {
+		answer := <-held
+		if answer.err != nil {
+			t.Fatal(answer.err)
+		}
+		requireRepositories(t, answer.status, answer.body, "PRIV", []string{"acme/priv"})
 	}
 	status, body = ts.repositories(t, edgeAccount, "PRIV")
-	requireRepositories(t, status, body, "PRIV", []string{"acme/pub", "acme/two"})
+	requireRepositories(t, status, body, "PRIV", []string{"acme/priv"})
 }
 
 // TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories: an edge listener on a machine holding a
@@ -316,14 +360,11 @@ func TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	services, err := natscallout.ParseServices("edge-listener/edge-g/PRIV=google:" + edgeGoogleAccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	edges := edgeListeners(t, "edge-listener/edge-g/PRIV=google:"+edgeGoogleAccount)
 	dispatch := repositoriesDispatch(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
-		d.EdgeListeners = natscallout.EdgeListeners(services)
+		d.EdgeListeners = edges
 		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 	})
 	token := func(account string) string {

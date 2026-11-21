@@ -248,6 +248,7 @@ on:
       - 'packages/envoy/internal/cipher/oauthstore/*'
       - 'packages/envoy/internal/cipher/oauthwire/*'
       - 'packages/envoy/internal/cipher/policy/*'
+      - 'packages/envoy/internal/cipher/dispatchread/*'
       - 'packages/envoy/internal/cipher/projectaccess/*'
       - 'packages/envoy/internal/cipher/projectrepos/*'
       - 'packages/envoy/internal/cipher/proof/*'

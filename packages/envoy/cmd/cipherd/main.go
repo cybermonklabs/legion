@@ -358,13 +358,13 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
-	// The NATS auth service's list of services and the verifiers of their platform tokens, read
-	// at boot so an entry it could never admit refuses the start rather than every connection. A
-	// broker that runs no auth service still reads the edge listeners' entries of the list, for
-	// GET /v1/project-repositories.
-	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	// The verifiers of the NATS auth service's services' platform tokens, read at boot so an entry
+	// it could never admit refuses the start rather than every connection. config.Load parsed the
+	// list (cfg.NATS.Services); a broker that runs no auth service still answers its edge
+	// listeners' entries at GET /v1/project-repositories.
+	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
 	fatal(err)
-	edgeListeners := natscallout.EdgeListeners(natsServices)
+	edgeListeners := cfg.NATS.EdgeListeners()
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -794,10 +794,10 @@ func main() {
 	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
 	// which, with the edge listeners GET /v1/project-repositories answers either way.
 	if cfg.NATS.Enabled() {
-		slog.Info("NATS auth service", "state", "on", "services", len(natsServices), "edge_listeners", len(edgeListeners))
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -806,7 +806,7 @@ func main() {
 		callout.Store(service)
 		go func() {
 			if err := service.Ready(ctx); err == nil {
-				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(cfg.NATS.Services))
 			}
 		}()
 	} else {

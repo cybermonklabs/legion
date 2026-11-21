@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 )
@@ -88,7 +89,7 @@ func TestPlatformTokensVerifyWithTheIssuersVerifier(t *testing.T) {
 // A listed service whose kind of token has no audience could never connect, so the broker's start
 // refuses it, naming the entry and the audience it needs.
 func TestRequireAudiences(t *testing.T) {
-	services, err := ParseServices("daemon/-/*=" + daemonAccount + " measure/-/*=google:" + measureAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount + " measure/-/*=google:" + measureAccount)
 	require.NoError(t, err)
 	require.NoError(t, RequireAudiences(services, "envoy-nats", "envoy-nats-google"))
 	err = RequireAudiences(services, "", "envoy-nats-google")
@@ -98,4 +99,18 @@ func TestRequireAudiences(t *testing.T) {
 	require.ErrorContains(t, err, "BROKER_NATS_GOOGLE_AUDIENCE")
 	require.ErrorContains(t, err, measureAccount)
 	require.NoError(t, RequireAudiences(nil, "", ""))
+}
+
+// An edge listener's entry asks for no NATS audience: the auth service refuses its connection by
+// name and verifies no token of it, so neither kind of edge entry, with neither audience set, is a
+// reason to refuse the start, beside a service that needs its own audience.
+func TestRequireAudiencesAsksAnEdgeListenerForNone(t *testing.T) {
+	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV=" + edgeAccount +
+		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com daemon/-/*=" + daemonAccount)
+	require.NoError(t, err)
+	require.NoError(t, RequireAudiences(services, "envoy-nats", ""))
+	require.NoError(t, RequireAudiences(services[:2], "", ""))
+	err = RequireAudiences(services, "", "")
+	require.ErrorContains(t, err, "BROKER_NATS_K8S_AUDIENCE")
+	require.ErrorContains(t, err, daemonAccount)
 }

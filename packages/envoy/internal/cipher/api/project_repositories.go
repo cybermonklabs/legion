@@ -9,7 +9,7 @@ import (
 )
 
 // EdgeListener is one edge listener's entry of BROKER_NATS_SERVICES as the broker's API reads it
-// (natscallout.EdgeListeners): the platform account its token names, whether that is a Google
+// (config.NATSCallout.EdgeListeners): the platform account its token names, whether that is a Google
 // account, and the projects the entry lists, sorted.
 type EdgeListener struct {
 	Account  string

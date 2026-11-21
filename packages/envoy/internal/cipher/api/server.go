@@ -166,7 +166,7 @@ type Deps struct {
 	// is never draining.
 	Draining func() bool
 	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
-	// (natscallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
+	// (config.NATSCallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
 	// names, presenting its own identity token as a listed caller does, about the projects that
 	// entry lists and no others, and refuses every other account. cmd/cipherd reads them whether or
 	// not it runs the NATS auth service. Nil lists none, where that route answers no caller.

@@ -10,24 +10,25 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// EdgeListenerKind is the kind of a BROKER_NATS_SERVICES entry that names an edge listener
-// (natscallout.KindEdgeListener). It is the one kind read with no NATS auth service running:
-// GET /v1/project-repositories answers the accounts these entries name.
-const EdgeListenerKind = "edge-listener"
-
-// loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
-// BROKER_NATS_SERVICES alone is no service either, when every entry of it is an edge listener's,
-// which the broker reads for GET /v1/project-repositories whether or not it answers a hub; any
-// other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
+// loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
+// parsed first (ParseNATSServices), so an entry of no form is refused for its form before any rule
+// here reads its kind or its account. None set is no service; BROKER_NATS_SERVICES alone is no
+// service either, when every entry of it is an edge listener's, which the broker reads for
+// GET /v1/project-repositories whether or not it answers a hub; any other set needs
+// BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
 // or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
 // a seed or a URL.
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
+	services, err := ParseNATSServices(getenv(NATSServicesVariable))
+	if err != nil {
+		return NATSCallout{}, err
+	}
 	settings := NATSCallout{
 		SeedFile:       strings.TrimSpace(getenv("BROKER_NATS_SEED_FILE")),
 		IssuerSeedFile: strings.TrimSpace(getenv("BROKER_NATS_ISSUER_SEED_FILE")),
 		XKeySeedFile:   strings.TrimSpace(getenv("BROKER_NATS_XKEY_SEED_FILE")),
-		Services:       strings.TrimSpace(getenv("BROKER_NATS_SERVICES")),
+		Services:       services,
 		K8sAudience:    strings.TrimSpace(getenv("BROKER_NATS_K8S_AUDIENCE")),
 		GoogleAudience: strings.TrimSpace(getenv("BROKER_NATS_GOOGLE_AUDIENCE")),
 	}
@@ -46,12 +47,12 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		// No service: only edge listeners' entries are read without one. Any other entry is
 		// the auth service's alone, which this broker would not run, so it is refused rather than
 		// silently admitting nothing.
-		for _, text := range strings.Fields(settings.Services) {
-			if head, _, _ := CutNATSServiceEntry(text); !strings.HasPrefix(head, EdgeListenerKind+"/") {
-				return NATSCallout{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q is no %s entry, and only the NATS auth service reads one, which needs BROKER_NATS_URLS and the three seed files", text, EdgeListenerKind)
+		for _, entry := range services {
+			if entry.Kind != NATSEdgeListener {
+				return NATSCallout{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q is no %s entry, and only the NATS auth service reads one, which needs BROKER_NATS_URLS and the three seed files", entry.Text, NATSEdgeListener)
 			}
 		}
-		return NATSCallout{Services: settings.Services}, nil
+		return NATSCallout{Services: services}, nil
 	}
 	if settings.URLs == nil {
 		return NATSCallout{}, errors.New("a BROKER_NATS_* setting is set, and BROKER_NATS_URLS is not: the NATS auth service needs the hub it answers")
@@ -78,18 +79,15 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 // account and the first that names a Google one, each "" when there is none: the callers of the
 // broker's API whose identity tokens need the cluster's issuer and Google's audience.
 func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
-	for _, text := range strings.Fields(n.Services) {
-		head, account, _ := CutNATSServiceEntry(text)
-		if !strings.HasPrefix(head, EdgeListenerKind+"/") {
-			continue
-		}
+	for _, entry := range n.Services {
 		switch {
-		case strings.HasPrefix(account, googleAPIAccountTag):
+		case entry.Kind != NATSEdgeListener:
+		case entry.Google:
 			if google == "" {
-				google = text
+				google = entry.Text
 			}
 		case kubernetes == "":
-			kubernetes = text
+			kubernetes = entry.Text
 		}
 	}
 	return kubernetes, google
@@ -113,15 +111,6 @@ func hubURLRefusal(entry string) string {
 		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
 	}
 	return ""
-}
-
-// CutNATSServiceEntry splits a BROKER_NATS_SERVICES entry, <kind>/<machine id or ->/<* or
-// ->=<account>, at its first = into the head before it and the account after it. ok is false for
-// an entry with no =. It is the one reading of an entry's account: natscallout.ParseServices
-// parses the head and holds the account to ParseAccount's form, and mappedAccountRefusal matches
-// the account against BROKER_POD_OPERATORS, so the two cannot read one entry two ways.
-func CutNATSServiceEntry(text string) (head, account string, ok bool) {
-	return strings.Cut(text, "=")
 }
 
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting
