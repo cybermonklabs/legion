@@ -115,8 +115,6 @@ func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder 
 	return nil
 }
 
-// DispatchIssueSeq is the highest sequence of any reading of key the copy took, and whether it
-// holds a row of key: every issue event the daemon applies writes its row first (blockers.Mirror).
 func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `select dispatch_seq from dispatch_issues where key = $1`, key).Scan(&seq)

@@ -1861,6 +1861,10 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchIssueSeq is the highest sequence of any reading of key the copy took, and whether it
+	// holds a row of key: every issue event the daemon applies writes its row first (blockers.Mirror),
+	// in the event's own transaction, whether or not the daemon records the issue.
+	DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,

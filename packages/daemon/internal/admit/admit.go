@@ -1020,7 +1020,9 @@ func (a *Admission) declaredAssignments() []record.DeclaredExperiment {
 // workflow records a child, else as a root when it is handed to Legion — or queued when it shows a
 // root in triage whose legion label a person set, and a recorded key a live event has already
 // carried strictly past the summary's own sequence is left alone — reapplying the summary would
-// overwrite fresher information with stale. Both Reconcile, immediately when the consumer is
+// overwrite fresher information with stale. An unrecorded key is held to the same sequence: a
+// summary older than an event of the issue the daemon has already applied records and queues
+// nothing (unrecordedSummaryStale). Both Reconcile, immediately when the consumer is
 // already caught up, and release, once the consumer catches up to a summary Reconcile deferred,
 // call this the same way: a key nothing else ever gets around to explaining still lands on what
 // the listing already knew.
@@ -1031,6 +1033,9 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	}
 	handed := summary.HandedOver
 	if stored == nil {
+		if stale, err := a.unrecordedSummaryStale(ctx, tx, summary); err != nil || stale {
+			return err
+		}
 		// An unrecorded root the listing shows in triage with the label is queued as its event
 		// would be (applyFact) when a person set the label, which the listing's preparation read
 		// from the issue's event log: the person's label fell while the daemon was down, or on a
@@ -1146,6 +1151,43 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		}
 	}
 	return a.recordObservation(ctx, tx, *stored, o)
+}
+
+// unrecordedSummaryStale says whether summary, of an issue admission does not record, is older
+// than an event of the issue the daemon has already applied, and so must record and queue nothing.
+// A listing is read before the transaction that applies it, and an event of the issue can apply
+// between the two: a recovery's listing waits on its GitHub reads, and a summary Reconcile held
+// waits for the consumer to reach its stream position. When that event recorded nothing — its
+// repository was unread, it moved the issue out of todo, or it took the label off — nothing else
+// stands between the older summary and a record: a person's edit of the issue's repository would be
+// lost, the issue recorded on the repository it named before, and no note would say the edit was
+// not applied, since the record would be made without it. So the summary applies nothing, and the
+// issue stands as the event left it. An event whose repository was unread noted the issue for that
+// repository's recovery (workflow.Config.NoteUnread), whose listing, at the event's sequence or
+// later, records the issue where Dispatch then resolves it once GitHub answers.
+//
+// How far the daemon has applied the issue's events is read from the copy of Dispatch's issues
+// (record.Store.DispatchIssueSeq), the rule intake's settleObserved holds a view of an unrecorded
+// issue to: blockers.Mirror, the first handler of every fact, writes each applied issue event's
+// sequence there in the event's own transaction, recorded issue or not, and both callers of
+// applySummary hold the lock every fact applies under. The listing's own write to the copy
+// (blockers.Reconcile) raises the row no higher than the summary's own sequence, so a summary is
+// never stale against itself. A summary with no sequence orders against nothing and applies, as
+// it does against a record.
+func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue) (bool, error) {
+	if summary.Seq <= 0 {
+		return false, nil
+	}
+	applied, found, err := a.store.DispatchIssueSeq(ctx, tx, summary.Key)
+	if err != nil {
+		return false, fmt.Errorf("read how far the daemon has applied the events of %s: %w", summary.Key, err)
+	}
+	if !found || applied <= summary.Seq {
+		return false, nil
+	}
+	a.log.Debug("admission: the listing is older than an event of the issue the daemon applied; it records nothing",
+		"issue", summary.Key, "listed", summary.Seq, "applied", applied)
+	return true, nil
 }
 
 // applyObservation records a newer Dispatch observation of a recorded issue: the one place a live
@@ -2415,9 +2457,9 @@ func (a *Admission) Holds() uint64 {
 // eventually applies — current with a live event that is newer than it but creates no record: an
 // event moving the key out of todo, or taking its label off, teaches nothing to the record (there
 // is none yet), but it is real information about what Dispatch shows now. Left alone, release
-// would apply the stale boot summary Reconcile originally deferred, as if this event had never
-// arrived. A key that is not held, or an event at or behind the held summary's own sequence, is
-// left untouched.
+// would find the summary Reconcile originally deferred older than this event and apply nothing of
+// it (unrecordedSummaryStale); refreshed, release applies what this event showed. A key that is
+// not held, or an event at or behind the held summary's own sequence, is left untouched.
 func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

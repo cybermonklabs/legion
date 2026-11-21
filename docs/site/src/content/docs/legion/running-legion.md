@@ -34,7 +34,10 @@ its default branch as GitHub names it, when it first records the issue, and keep
 change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
 A change that sends no event of the issue, as a move of the project's default repository does,
 and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing.
+its next event or the next boot's listing. A change of the issue's own repository sends an event,
+and once the daemon has applied it, no listing read before it records the issue: an edit made
+before the daemon records the issue is applied, and the issue is recorded where Dispatch resolves
+it at that event or later.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
