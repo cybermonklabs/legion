@@ -1172,8 +1172,9 @@ changed, whatever the file holds (`server/reload.go:1651-1654`, `:1706-1707`), a
 an authorization change (`usersOption` embeds `authOption`, `server/reload.go:387-389`, `:308-310`),
 so each of the `routes` and `authorization` reloads runs `reloadAuthorization`
 (`server/reload.go:2067-2068`, `:2091-2092`), which finds no configured user of that name and
-closes the client (`server/reload.go:2413-2431`, closed at `:2350-2352`), with no log line for the
-close. The client then reconnects and the callout runs again. This closes every callout client, not
+closes the client (`server/reload.go:2413-2431`, closed at `:2350-2352`), with no log line at the
+hub's default level, since nats-server logs a client's close at debug (`server/client.go:2133`).
+The client then reconnects and the callout runs again. This closes every callout client, not
 only one the service would now refuse, and it happens on every accepted reload of a hub with a
 callout, a reload of an unchanged file and any account layout included (measured on nats-server
 2.15.1 with the hub's own render; a reload whose answer names no user keeps its clients, the
