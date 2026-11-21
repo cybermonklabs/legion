@@ -42,7 +42,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Pull request and merge gate
 
-- The implementer opens the pull request with the line `Dispatch: <KEY>` in its body. Later phases push to that branch and edit that pull request.
+- The implementer opens the pull request. The branch `legion/<KEY>` ties it to the issue, so no pull request title or body and no commit subject names a Dispatch key or link. Later phases push to that branch and edit that pull request.
 - No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 - The merge gate, in order: the tester's evidence green → the reviewer's approval of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.

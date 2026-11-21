@@ -15,7 +15,7 @@ Before you race another tree's pull request on shared files, `envoy_publish` to 
      jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
    ```
 
-   Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
+   Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge the base forward`, or `Merge the base forward` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
 2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round.
 4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.

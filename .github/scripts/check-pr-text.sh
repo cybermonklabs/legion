@@ -577,8 +577,8 @@ AWK
   merges=0
   # A merge commit's message is read with the pull request's own branch and its base branch each
   # written <head branch> and <base branch>: the daemon names an issue's branch after its key, and
-  # a forward merge's message names both (the worker skill's `Merge <base> into <branch>`, GitHub's
-  # "Update branch" `Merge branch 'main' into <branch>`, git's `Merge branch 'x' into <branch>`),
+  # a forward merge's message names both (GitHub's "Update branch" `Merge branch 'main' into
+  # <branch>`, git's `Merge branch 'x' into <branch>`),
   # so a branch name, which this rule does not read, is not read through a merge's message either.
   # Any other commit's message is read as written: a branch named after a key does not hide that
   # key in a message a person wrote. A ref is replaced only where it stands whole: no letter,

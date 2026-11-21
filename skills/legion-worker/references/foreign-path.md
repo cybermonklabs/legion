@@ -6,7 +6,7 @@ Read this when step 2 of `skill://legion-worker` lists a path you did not write.
 - The path is in the first list (the working copy `@`): take your own paths out of `@`, without `jj new` first:
 
 ```bash
-cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
+cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<what you did>' <your paths…>
 jj -R "$LEGION_WORKSPACE" metaedit -r @- --update-author
 jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
 jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>

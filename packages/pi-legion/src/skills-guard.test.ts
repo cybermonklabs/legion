@@ -571,7 +571,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     ["packages/daemon/internal/prompts/go/implementer.md"]
   );
   countedOncePerFile(
-    "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m '<issue>: carry the pull request to the pushed commit'`",
+    "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m 'carry the pull request to the pushed commit'`",
     workerPrompt
   );
   countedOncePerFile(

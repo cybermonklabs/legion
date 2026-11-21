@@ -1397,7 +1397,7 @@ test("trims the name", () => {
   expect(greet("  Ada  ")).toBe("Hello, Ada!");
 });
 EOF
-  g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
+  g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI"
   C1=$(g rev-parse HEAD)
   g push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
@@ -1417,9 +1417,7 @@ EOF
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
   JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
   (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
-  body="Dispatch: $worker_key
-
-Adds \`greet(name)\` and \`bun greet.ts <name>\`.
+  body="Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 
 ## Verification
 
@@ -1432,8 +1430,8 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 
 **Chain:** not stacked."
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" '
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
+    --argjson number "$worker_pr" '
+    {number:$number, url:$url, html_url:$url, title:"feat: greet()", state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
      reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"},
      statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The worker and implementer role prompts no longer start a commit message with the issue key: the empty commit that carries a pull request onto the pushed commit, and the empty commit of a root whose code lands through its children, now have messages without that prefix.
+  The branch `legion/<KEY>` already ties the pull request to its issue.
+custom:
+  Issue: pr4701
+time: 2026-11-21T00:39:03.000000000Z

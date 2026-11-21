@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The legion-worker skill tells a worker to write no Dispatch key or link into a pull request title, a pull request body or a commit subject, because the branch `legion/<KEY>` ties the pull request to its issue.
+  The pull request body's `Why` line ends without the key, the `Chain` line names the base branch's pull request instead of its branch, and the example messages of a forward merge and of a split of your own paths no longer name the branch or the key.
+custom:
+  Issue: pr4701
+time: 2026-11-21T00:39:03.000000000Z

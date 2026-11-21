@@ -101,15 +101,15 @@ same way: a question in your Inbox that says what is blocked, the options, and w
 
 The issue's status tells you which phase is running (see [What each status means](#what-each-status-means)).
 The issue's events show each status change, and the architect's messages there say what changed
-and why. The pull request appears under the issue's external links, and its body carries the line
-`Dispatch: <KEY>` pointing back to the issue.
+and why. The pull request appears under the issue's external links, and its branch, `legion/<KEY>`,
+names the issue.
 
 ## Review the pull request
 
 You can read the pull request at any time. Legion's implementer writes its description from a fixed
 template, and the later phases fill in their own lines:
 
-- **Outcome** and **Why**: what changes for a user, and the issue it answers.
+- **Outcome** and **Why**: what changes for a user, and the problem it answers.
 - **Proven by** and **Checks**: one line per check of the issue's Verification document, each the
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.

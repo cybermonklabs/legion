@@ -10,7 +10,7 @@ The implementer writes the body from this template when the pull request opens; 
 ## For the reviewer
 
 **Outcome:** <one sentence a user of this repository would recognise: what someone can now do, or what stops going wrong>
-**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
+**Why:** <the problem, one or two sentences, with no Dispatch key or link>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
@@ -42,7 +42,7 @@ order. Each is the line `dispatch result` printed when the result was recorded, 
 
 **Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
 
-**Chain:** stacked on <base bookmark> frozen at <sha> / not stacked.
+**Chain:** stacked on <the base branch's pull request URL> frozen at <sha> / not stacked.
 ```
 
 GitHub refuses a body over 65,536 characters: past about 48,000, link evidence rather than inline it.
