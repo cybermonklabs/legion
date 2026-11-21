@@ -31,7 +31,7 @@ const (
 	// withdrew the handover. A HandOverStatusRow, also a todo, is not one.
 	PersonHandoverStatusRow StatusRowKind = "person-handover"
 	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
-	// take (ReassertStatusWrite names the three cases): a session's write, which the workflow
+	// take (ReassertStatusWrite names the cases): a session's write, which the workflow
 	// keeps out of the record (workflow's sessionStatusWrite), or the daemon's own stale
 	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch and the record
 	// kept the daemon's status, so this row is queued observing a status the issue is not meant
@@ -116,7 +116,7 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 
 // ReassertStatusWrite is the daemon's own status set back over a status that the daemon does not
 // take, which the row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of the
-// write that put that status on the issue. The workflow queues one in three cases. A session with
+// write that put that status on the issue. The workflow queues one in these cases. A session with
 // a claim in the issue's tree writes a status, other than the owning architect's move of a child
 // out of the workflow (workflow's sessionStatusWrite). A session with no claim in the tree writes
 // a status on a root that runs or that waits on a person (sessionStatusWrite too). The daemon's own

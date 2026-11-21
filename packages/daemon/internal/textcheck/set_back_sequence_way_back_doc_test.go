@@ -2,10 +2,10 @@ package textcheck
 
 import "testing"
 
-// The way back of the release that lets the owning architect's status stand is in two files: the
-// header of store migration 20261120012547_set_back_observed_seq, which ships the block with the
-// migration, and a fenced block of docs/kubernetes.md, under "Rolling back the release that lets
-// the owning architect's status stand", where an operator reads it at a rollback.
+// The way back of the release that lets the owning architect's status stand is in the header of
+// store migration 20261120012547_set_back_observed_seq, which ships the block with the migration,
+// and in a fenced block of docs/kubernetes.md, under "Rolling back the release that lets the
+// owning architect's status stand", where an operator reads it at a rollback.
 // internal/store's TestTheSetBackSequenceWayBackLeavesWhatTheReleaseBeforeReads runs the header's
 // block over pending rows and reads what it leaves. This test holds the guide's block to that one,
 // so the block an operator runs is the block that test proves. The split keeps the guide out of

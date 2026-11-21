@@ -2,7 +2,7 @@
 -- write it undoes (dispatch://INFRA-3178 R3). The migration changes no table and runs no statement.
 --
 -- A set-back is the status row that writes the daemon's status back over a status that the daemon
--- does not take (record.ReassertStatusWrite). The daemon queues a set-back in three cases. A
+-- does not take (record.ReassertStatusWrite). The daemon queues a set-back in these cases. A
 -- session with a claim in the issue's tree writes a status, other than the owning architect's move
 -- of a child out of the workflow. A session with no claim in the tree writes a status on a root
 -- that runs or that waits on a person. The daemon's own hand-over todo on a child of a closed tree

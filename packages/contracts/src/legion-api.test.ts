@@ -253,8 +253,8 @@ const schemas: Record<string, z.ZodType> = {
   // as `*`, so `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds
   // and whichever of them carries a pull request. `noBody` says the answer writes no body at
   // all, which reads differently from a body whose set of key paths is empty: the four routes
-  // that answer 204 are `"noBody": true` with no path, and the empty object the eight fact
-  // routes answer is `"noBody": false` with no path.
+  // that answer 204 are `"noBody": true` with no path, and the empty object the fact routes
+  // answer is `"noBody": false` with no path.
   //
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
@@ -400,7 +400,7 @@ test("every Go-written fixture parses to a value equal to the file", () => {
 // brought it and the fixture above. Every answer schema the module exports must therefore be the
 // schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
 // schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
-// of eight fact-route goldens, so it is a value of the map eight times over and passes as any
+// of the fact-route goldens, so it is a value of the map once per fact route and passes as any
 // other does.
 test("every answer schema the module exports is the schema of a golden", () => {
   const held = new Set(Object.values(schemas));

@@ -55,7 +55,7 @@ func OutOfWorkflow(status string) bool {
 // and notices carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done,
 // backlog, icebox or triage on a child as it takes a person's move (workflow's
 // sessionStatusWrite). So the move is the architect's own status write in Dispatch, and no
-// operation of the legion tool makes it. The rule says eight things, and each one stops a loss
+// operation of the legion tool makes it. Each thing the rule says stops a loss
 // that the move alone does not stop. A fold names its carrier, and the issues that wait on the
 // folded child wait on the carrier first, because done starts them. A running child's worker
 // pushes first, because done ends its turn and its pod at once. An open pull request leaves the
@@ -66,9 +66,9 @@ func OutOfWorkflow(status string) bool {
 //
 // It lives here because two packages send it, and api does not import workflow: workflow's
 // refusals and notices over children still in the workflow, and api's refusals of close_root on a
-// child and of the removed child route. The architect prompts carry the same eight things whole
+// child and of the removed child route. The architect prompts carry the same rules whole
 // (prompts/go/architect-common.md). The legion tool's description carries these words
-// (packages/pi-legion/src/tools.ts), and two tests hold the two copies together.
+// (packages/pi-legion/src/tools.ts), and these tests hold the copies together:
 // TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to
 // packages/contracts/fixtures/daemon-api/end-child-rule.json, and
 // packages/pi-legion/src/tools.test.ts holds the description to that file.
@@ -98,7 +98,7 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 // names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
-// (packages/pi-legion/src/tools.ts). The two tests that hold EndChildRule to that description
+// (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
 // hold this sentence to it too: TestTheEndChildRuleGolden writes both to end-child-rule.json.
 const StatusNotTakenYet = "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it."
 

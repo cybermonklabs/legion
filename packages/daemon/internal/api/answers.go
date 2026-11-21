@@ -48,7 +48,7 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. 202 and 205 are
+// one of the two alone would describe a shape at a contract no entry declares. The last two are
 // repositoriesLiveContract and childRouteRemovedContract rather than their numbers for the same
 // reason: dispatch://INFRA-4401's change and dispatch://INFRA-3178's each name their constant, and
 // a renumber of either moves its constant and this list with it.
@@ -167,8 +167,8 @@ var Answers = []Answer{
 	// `note` and which 46 is the floor for here.
 	{ID: AnswerHandoffComplete, Routes: []string{"POST /legion/v1/handoff/complete"}, Since: ServingFloor},
 	// Older than the floor: the empty object the fact routes answer. The child route that
-	// version.go's 205 removed answered it too: that route now answers every call with the
-	// refusal (removedChildRoute), and no plugin at 205 calls it.
+	// childRouteRemovedContract removed answered it too: that route now answers every call with
+	// the refusal (removedChildRoute), and no plugin at that contract calls it.
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",
 		"POST /legion/v1/gates/register",

@@ -470,10 +470,9 @@ export function createLegionTool(deps: {
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its sign_off and the controller's operations: the exact text
     // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child, from "End a child" to "write it again", are the
-    // words of the daemon's record.EndChildRule, and the sentence after them, "A status that you
-    // wrote … read_record shows it.", is the daemon's record.StatusNotTakenYet (both in
-    // packages/daemon/internal/record/project.go). Two tests hold the two copies together. The
+    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
+    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
     // description to that file.

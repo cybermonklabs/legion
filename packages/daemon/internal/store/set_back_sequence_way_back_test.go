@@ -18,7 +18,7 @@ import (
 // carries the way back of the release that lets the owning architect's status stand.
 // docs/kubernetes.md carries the same block under "Rolling back the release that lets the owning
 // architect's status stand", and internal/textcheck's
-// TestTheSetBackSequenceWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text. This file
+// TestTheSetBackSequenceWayBackIsOneTextInTheHeaderAndTheGuide holds them to one text. This file
 // reads the header alone, so the guide stays out of this package's CI filter.
 const setBackSequenceVersion = 20261120012547
 

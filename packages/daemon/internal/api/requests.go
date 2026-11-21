@@ -49,36 +49,26 @@ var AcceptedByName = []AcceptedField{
 			"which no daemon at contract 86 or later makes, so true is refused (READY_RETIRED)"},
 }
 
-// childRouteRemovedContract is version.go's 205, the contract that removed the child route
-// removedChildRoute now answers: the owning architect writes the child's status in Dispatch
-// instead. SupportedContracts names it, so a renumber of that entry at a forward merge moves this
-// constant and the list together, beside DaemonAPIVersion while 205 is this daemon's own contract.
+// childRouteRemovedContract is the contract of version.go's entry for dispatch://INFRA-3178,
+// which removed the child route removedChildRoute now answers: the owning architect writes the
+// child's status in Dispatch instead. SupportedContracts names it, so a renumber of that entry at
+// a forward merge moves this constant and the list together.
 const childRouteRemovedContract = 205
 
-// RemovedRoute is a route a plugin of an earlier contract sends a body to and that a later
-// contract took away from the plugin. The daemon still registers the route and answers every
-// call with a refusal of its own that says what the caller does instead, so a plugin below LeftAt
-// is told why its call did nothing, where an unregistered route would answer "no route". The
-// route reads no body, so no body it is sent is refused as an unknown member.
-type RemovedRoute struct {
-	// Route is the route, as `METHOD /path`.
-	Route string
-	// LeftAt is the first contract whose plugin does not call the route.
-	LeftAt int
-	// Answer is what the route answers every call with.
-	Answer string
-}
-
 // RemovedRoutes is every route a recorded contract's plugin sends a body to that this daemon
-// reads no body at any more. The request gate reads it (request_shapes_test.go). A record of a
-// route that no row of pluginRequests reads passes only with a row here whose LeftAt is above the
-// record's contract, and so the record of this daemon's own contract never holds the route. Each
-// row's route is registered and reads no body (routesReadingNoBody), and no row of pluginRequests
-// names it.
-var RemovedRoutes = []RemovedRoute{
-	{Route: "POST /legion/v1/children/park", LeftAt: childRouteRemovedContract,
-		Answer: "410 ROUTE_REMOVED to every call, with the status the owning architect writes in Dispatch in its place " +
-			"and the rules of that write (removedChildRoute); the route applies no fact and writes nothing to Dispatch"},
+// reads no body at any more, with the first contract whose plugin does not call it. The daemon
+// still registers each such route and answers every call with a refusal of its own that says what
+// the caller does instead, so a plugin below that contract is told why its call did nothing, where
+// an unregistered route would answer "no route". The route reads no body, so no body it is sent
+// is refused as an unknown member.
+//
+// The request gate reads it (request_shapes_test.go). A record of a route that no row of
+// pluginRequests reads passes only where this table names the route at a contract above the
+// record's, so the record of this daemon's own contract never holds the route, and each route
+// here is held to routesReadingNoBody.
+var RemovedRoutes = map[string]int{
+	// The child route removedChildRoute answers.
+	"POST /legion/v1/children/park": childRouteRemovedContract,
 }
 
 // requestDecoded is told the pattern of the route and the Go type of every body decodeJSON

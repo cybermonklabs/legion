@@ -268,7 +268,7 @@ func TestControllerStatusOnAnotherProjectsIssueRecordsNothing(t *testing.T) {
 // close_root ends only a tree root. Its refusal of a child tells the architect how a child leaves
 // the workflow instead: by the status write of the architect that owns it, in Dispatch
 // (record.EndChildRule), and never by an operation the daemon no longer serves (dispatch://INFRA-3178
-// R6). Two checks refuse it, and each says so: the route's check of the issue the request names
+// R6). Each check that refuses it says so: the route's check of the issue the request names
 // (rootArchitectOf), and the workflow's check of the record the close fact reads (workflow's
 // closeRoot). Each row holds only that much of the wording.
 func TestTheRootRequiredRefusalNamesTheStatusWrite(t *testing.T) {

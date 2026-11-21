@@ -2056,7 +2056,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// endChildrenFirst is what the two refusals over children still in the workflow, sign_off's and
+// endChildrenFirst is what the refusals over children still in the workflow, sign_off's and
 // close_root's, tell the architect to do: wait for its status write to be taken, end a child by
 // that write (record.EndChildRule), and ask the person about a child that no move fits. hold is
 // what the architect holds until the person answers.
