@@ -1,10 +1,8 @@
 package workflow
 
 import (
-	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -16,11 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
-
-// skippedSaid is the sentence each text the roles read of a head's CI says once where it names a
-// check skipped (dispatch://INFRA-4135 R1), spelled out here so a change to it fails these tests.
-const skippedSaid = "a skipped check ran nothing on this head"
 
 // skippedRun is a check run as intake's decoder reads it from a settlement whose skipped group
 // names it and whose check_runs entry carries GitHub's word for it (decodeChecks): skipped, the
@@ -36,14 +31,20 @@ func wordedRun(name string, id int64, word string) record.AttemptRun {
 	return record.AttemptRun{Name: name, ID: id, GitHubConclusion: word}
 }
 
+// concluded is check with conclusion, as a text names a check that did not pass: GitHub's word
+// for its run, or the daemon's conclusion where the run carries none.
+func concluded(check, conclusion string) texts.CheckConclusion {
+	return texts.CheckConclusion{Check: check, Conclusion: conclusion}
+}
+
 // The suites a pull request holds back for the merge queue skip on its head, and the CI message
-// names each of them skipped, by the word GitHub gave it, beside the checks that ran, each by its
-// own word, and says once, after the checks, that a skipped check ran nothing on this head
-// (dispatch://INFRA-4135 R1). The seven are the ones GitHub concluded skipped at
+// names each of them in its list of skipped checks (skipped), never among the checks that passed,
+// and counts the checks that ran and passed - build and lint, which GitHub concluded success, and
+// advice, which it concluded neutral (dispatch://INFRA-4135 R1, and its plan's forward-merge rule
+// for dispatch://INFRA-3686's records). The seven are the ones GitHub concluded skipped at
 // cybermonklabs/legion#3981's head fb63391ff0d3 (`gh api --paginate
-// "repos/cybermonklabs/legion/commits/fb63391ff0d3/check-runs?filter=latest&per_page=100"`),
-// beside build and lint, which GitHub concluded success, and advice, which it concluded neutral.
-// The settlement is the one the decoder reads from the listener's: the seven in its skipped group,
+// "repos/cybermonklabs/legion/commits/fb63391ff0d3/check-runs?filter=latest&per_page=100"`). The
+// settlement is the one the decoder reads from the listener's: the seven in its skipped group,
 // and each run with its word.
 func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
 	pool := migratedPool(t)
@@ -60,17 +61,17 @@ func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
 		skippedRun("envoy-smoke", 9),
 		wordedRun("lint", 10, "success"),
 	}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "advice" neutral, "build" success, `+
-		`"dispatch-memory" skipped, "envoy-go" skipped, "envoy-go-docs-finalizers" skipped, "envoy-go-race" skipped, `+
-		`"envoy-go-race-api" skipped, "envoy-go-race-docs" skipped, "envoy-smoke" skipped, "lint" success; `+skippedSaid))
+	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, settledCI{passed: 3, skipped: []string{"dispatch-memory", "envoy-go",
+		"envoy-go-docs-finalizers", "envoy-go-race", "envoy-go-race-api", "envoy-go-race-docs", "envoy-smoke"}}))
 }
 
 // A draft pull request's CI runs almost nothing: at cybermonklabs/legion#4180's head 061ca442
 // GitHub's 52 check runs are 46 skipped, 2 failure and 4 success (`gh api --paginate
 // "repos/cybermonklabs/legion/commits/061ca442/check-runs?filter=latest&per_page=100"`), and the
-// message the daemon sent for that head named the skipped ones succeeded. The CI message names each
-// of the 52 by its word, in name order - the 46 skipped, CodeQL and ci-ok failure, the four Analyze
-// jobs success - and says once that a skipped check ran nothing on this head.
+// message the daemon sent for that head named the skipped ones succeeded. The CI message names
+// the 46 skipped in name order in its list of skipped checks, names CodeQL and ci-ok as not passed
+// by GitHub's word, failure, and counts the four Analyze jobs as passed; no check is named
+// succeeded.
 func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 	skipped := []string{"airlock-lean", "broker-client", "broker-multiprocess", "browser-image", "cancel-started", "changes",
 		"ci-filters", "ci-images", "claude-envoy", "conflicts-script", "contracts", "daemon-go", "dispatch-browser",
@@ -87,11 +88,9 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 	}
 	// The settlement as the decoder reads it: the skipped group's runs skipped with their word,
 	// every other run with its word alone, and the failed group in Failing.
-	words := make(map[string]string, 52)
 	var runs []record.AttemptRun
 	for _, name := range skipped {
 		runs = append(runs, skippedRun(name, int64(len(runs)+1)))
-		words[name] = "skipped"
 	}
 	for _, group := range []struct {
 		names []string
@@ -99,54 +98,50 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 	}{{failed, "failure"}, {succeeded, "success"}} {
 		for _, name := range group.names {
 			runs = append(runs, wordedRun(name, int64(len(runs)+1), group.word))
-			words[name] = group.word
 		}
 	}
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, runs, failed...))
 
-	names := slices.Sorted(maps.Keys(words))
-	named := make([]string, len(names))
-	for i, name := range names {
-		named[i] = strconv.Quote(name) + " " + words[name]
+	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, settledCI{passed: 4,
+		notPassed: []texts.CheckConclusion{concluded("CodeQL", "failure"), concluded("ci-ok", "failure")},
+		skipped:   slices.Sorted(slices.Values(skipped))}))
+	message := CISettledMessage("LEGION-208", recordedPR(t, pool, "LEGION-208"), phase.Testing)
+	if len(message.Skipped) != 46 || len(message.NotPassed) != 2 || message.Passed != 4 {
+		t.Errorf("the CI message names %d skipped and %d not passed and counts %d passed, want 46, 2 and 4: %+v",
+			len(message.Skipped), len(message.NotPassed), message.Passed, message)
 	}
-	want := "CI settled at head: " + strings.Join(named, ", ") + "; " + skippedSaid
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, want))
-	line := settledChecks(recordedPR(t, pool, "LEGION-208"))
-	for _, count := range []struct {
-		said string
-		want int
-	}{{`" skipped`, 46}, {`" failure`, 2}, {`" success`, 4}, {`" succeeded`, 0}, {skippedSaid, 1}} {
-		if got := strings.Count(line, count.said); got != count.want {
-			t.Errorf("the CI line says %q %d times, want %d: %q", count.said, got, count.want, line)
+	for _, check := range message.NotPassed {
+		if check.Conclusion == string(record.RunSucceeded) || slices.Contains(skipped, check.Check) {
+			t.Errorf("the CI message names %+v as not passed, want no check succeeded and no skipped one there", check)
 		}
 	}
 }
 
 // A listener of an earlier release sends neither a skipped group nor a word, and its settlement
 // decodes to runs with neither (intake's
-// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message reads
-// word for word as it did before the daemon read either, and says nothing of a skipped check.
+// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message is
+// the record it was before the daemon read either, each check named by the daemon's conclusion,
+// and it names no check skipped.
 func TestASettlementWithNoSkippedGroupOrConclusionWordTellsTodaysLine(t *testing.T) {
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(),
 		settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 2}}, "unit"))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "build" succeeded, "unit" failed`))
+	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, settledCI{passed: 1, notPassed: []texts.CheckConclusion{failed("unit")}}))
 }
 
 // The listener as it stands before it carries a word sends the skipped group and no word: the CI
-// message names the check the group names skipped and every other one by its group, and says once
-// that a skipped check ran nothing on this head (dispatch://INFRA-4135 R1, a listener that sends
-// no conclusion word).
+// message names the check the group names skipped and every other one by its group
+// (dispatch://INFRA-4135 R1, a listener that sends no conclusion word).
 func TestASettlementWithASkippedGroupAndNoWordNamesThoseSkipped(t *testing.T) {
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, []record.AttemptRun{
 		{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2, Conclusion: record.RunSkipped}, {Name: "unit", ID: 3}}, "unit"))
 	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil,
-		`CI settled at head: "build" succeeded, "envoy-go" skipped, "unit" failed; `+skippedSaid))
+		settledCI{passed: 1, notPassed: []texts.CheckConclusion{failed("unit")}, skipped: []string{"envoy-go"}}))
 }
 
 // settledOutcome is what a settlement of LEGION-208's head left beside what the CI message says:
@@ -227,12 +222,8 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 			if got.phase != tc.from {
 				t.Fatalf("after the settlement the issue is in %s, want it left in %s", got.phase, tc.from)
 			}
-			told := make([]record.RoleMessage, 0, len(tc.roles))
-			for _, role := range tc.roles {
-				told = append(told, record.RoleMessage{Role: roleToken(t, role),
-					Body: toldBody(`CI settled at head: "build" success, "dispatch-memory" skipped, "envoy-go" skipped; ` + skippedSaid)})
-			}
-			assertRoleMessages(t, pool, "LEGION-208", told)
+			assertRoleMessages(t, pool, "LEGION-208", statusesTold(t, tc.roles, tc.from,
+				settledCI{passed: 1, skipped: []string{"dispatch-memory", "envoy-go"}}))
 		})
 	}
 }
@@ -240,17 +231,17 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 // A settlement that changes only what a run is - the same run ids at a newer generation, envoy-go
 // reported first with no skipped group and no word and then in the skipped group with the word
 // skipped - is a new judgement of the head (classify.JudgementChanged compares runs whole): it is
-// recorded, the roles are told the new line, and it moves nothing.
+// recorded, the roles are told the new record, and it moves nothing.
 func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2}}))
-	messages := tell(t, nil, `CI settled at head: "build" succeeded, "envoy-go" succeeded`)
+	messages := tell(t, nil, settledCI{passed: 2})
 	assertRoleMessages(t, pool, "LEGION-208", messages)
 
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, []record.AttemptRun{{Name: "build", ID: 1}, skippedRun("envoy-go", 2)}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "build" succeeded, "envoy-go" skipped; `+skippedSaid))
+	assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, settledCI{passed: 1, skipped: []string{"envoy-go"}}))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the settlement the issue is in %s, want it left in testing", got)
 	}
@@ -271,10 +262,11 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 	}
 }
 
-// The notice of a head GitHub will not merge names each check run GitHub reported on the head by
-// the word GitHub gave it, a skipped one skipped, and says once, after the commit statuses, that a
-// skipped check ran nothing on this head: a required check GitHub skipped there never ran, and
-// the architect reading the notice must not take it for a pass (dispatch://INFRA-4135 R1).
+// The notice of a head GitHub will not merge, and the reviewer's message of it, name each check
+// run GitHub skipped on the head in their list of skipped checks, and count the head's check runs
+// and commit statuses that passed without it: a required check GitHub skipped there never ran,
+// and the architect or the reviewer reading it must not take it for a pass
+// (dispatch://INFRA-4135 R1).
 func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
@@ -284,103 +276,99 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 	told := reviewStuckNotices(t, pool)
-	want := "GitHub reported on head " + headOne + `: "envoy-go" skipped, "unit tests" success; commit statuses: "deploy" success; ` +
-		skippedSaid + ". The daemon reads the base's rules only on a conflicting read"
-	if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
-		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
+	if len(told) != 1 || told[0].MergeState != string(record.MergeStateBlocked) || !slices.Equal(told[0].Skipped, []string{"envoy-go"}) ||
+		len(told[0].NotPassed) != 0 || len(told[0].NotPassedStatuses) != 0 || told[0].Passed == nil || *told[0].Passed != 2 {
+		t.Fatalf("review-stuck notices %+v, want one of the blocked head naming envoy-go skipped, nothing not passed, and 2 passed", told)
 	}
-	if said := strings.Count(told[0].Reason, skippedSaid); said != 1 {
-		t.Fatalf("the notice says %q %d times, want once: %q", skippedSaid, said, told[0].Reason)
+	message, found := stuckApprovedRound(t, pool)
+	if !found || !slices.Equal(message.Skipped, []string{"envoy-go"}) || len(message.NotPassed) != 0 || len(message.NotPassedStatuses) != 0 ||
+		message.Passed != 2 {
+		t.Fatalf("the reviewer's approved-round-stuck message %+v (found %t), want envoy-go skipped, nothing not passed, and 2 passed", message, found)
 	}
 }
 
 // A released worker woken by a settlement whose only checks that did not pass are skipped is told
-// they were skipped, each name quoted, in name order, and that a skipped check ran nothing on this
-// head, and never that the head passed every check (dispatch://INFRA-4135 R1). A run is skipped by
-// its conclusion or by GitHub's word: the listener as it stands sends a skipped group and no word,
-// which gives runs with the skipped conclusion and no word, and a settlement whose skipped group
-// the decoder could not read gives runs with the word skipped and no skipped conclusion; the CI
-// message names either skipped, and the task names them skipped too. With a check failed or
-// cancelled, or a failed commit status, the skipped checks follow the failed or cancelled ones,
-// which stay unquoted, and come before the statuses. A skipped run the settlement names failed or
-// cancelled is that and not skipped, which no listener sends, and a run it names failed or
-// cancelled with its own word (failure, timed_out or cancelled) is named failed or cancelled, as
-// before. A settlement with no skipped run gives the text it gave before, whatever other word
-// GitHub gave each run; one with no word either wakes the worker with the task it gave before,
-// word for word.
+// they were skipped, in name order, in the task's list of skipped checks, and never counts them
+// among the checks that passed (dispatch://INFRA-4135 R1). A run is skipped by its conclusion or
+// by GitHub's word: the listener as it stands sends a skipped group and no word, which gives runs
+// with the skipped conclusion and no word, and a settlement whose skipped group the decoder could
+// not read gives runs with the word skipped and no skipped conclusion; the CI message names either
+// skipped, and the task names them skipped too. A failed or cancelled check is named with GitHub's
+// word for its run, as the CI message names it, beside the skipped checks and the failed
+// statuses. A skipped run the settlement names failed or cancelled is that and not skipped, which
+// no listener sends. A settlement with no skipped run counts every check that passed by its word,
+// success or neutral; one with no word either wakes the worker with the record it gave before.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
-	const woken = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. " +
-		"The wake is a CI settlement on your pull request's head: "
 	checks := func(runs []record.AttemptRun, failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)
 		fact.CheckRuns, fact.Cancelled, fact.Statuses = runs, cancelled, statuses
 		return fact
 	}
 	onlySkipped := checks([]record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("envoy-go", 2), skippedRun("envoy-go-race", 3)}, nil, nil)
-	const onlySkippedDetail = `head1 had no failed or cancelled check; skipped "envoy-go", "envoy-go-race": ` + skippedSaid
 	for _, shape := range []struct {
-		name   string
-		fact   intake.PullRequestChecks
-		detail string
+		name      string
+		fact      intake.PullRequestChecks
+		notPassed []texts.CheckConclusion
+		skipped   []string
+		statuses  []texts.StatusState
+		passed    int
 	}{
-		{"only skipped checks did not pass", onlySkipped, onlySkippedDetail},
+		{"only skipped checks did not pass", onlySkipped, nil, []string{"envoy-go", "envoy-go-race"}, nil, 1},
 		{"in name order", checks([]record.AttemptRun{skippedRun("envoy-smoke", 3), skippedRun("dispatch-memory", 2), wordedRun("build", 1, "success")}, nil, nil),
-			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-smoke": ` + skippedSaid},
+			nil, []string{"dispatch-memory", "envoy-smoke"}, nil, 1},
 		{"a skipped group and no word", checks([]record.AttemptRun{{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2, Conclusion: record.RunSkipped}}, nil, nil),
-			`head1 had no failed or cancelled check; skipped "envoy-go": ` + skippedSaid},
+			nil, []string{"envoy-go"}, nil, 1},
 		{"a skipped group the decoder could not read", checks([]record.AttemptRun{wordedRun("build", 1, "success"),
 			wordedRun("envoy-go", 2, "skipped"), wordedRun("dispatch-memory", 3, "skipped")}, nil, nil),
-			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-go": ` + skippedSaid},
+			nil, []string{"dispatch-memory", "envoy-go"}, nil, 1},
 		{"a failed check run", checks([]record.AttemptRun{skippedRun("envoy-go", 2), wordedRun("unit", 3, "failure")}, []string{"unit"}, nil),
-			`head1 failed unit; skipped "envoy-go": ` + skippedSaid},
+			[]texts.CheckConclusion{concluded("unit", "failure")}, []string{"envoy-go"}, nil, 0},
 		{"a cancelled check run", checks([]record.AttemptRun{wordedRun("e2e", 1, "cancelled"), skippedRun("envoy-go", 2)}, nil, []string{"e2e"}),
-			`head1 had e2e cancelled; skipped "envoy-go": ` + skippedSaid},
+			[]texts.CheckConclusion{concluded("e2e", "cancelled")}, []string{"envoy-go"}, nil, 0},
 		{"a failed commit status", checks([]record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("envoy-go", 2)}, nil, nil,
 			status("deploy", "success", 1), status("ci", "failure", 1)),
-			`head1 had no failed or cancelled check; skipped "envoy-go": ` + skippedSaid + "; failed commit status ci"},
-	} {
-		got := settlementDetail(shape.fact)
-		if got != shape.detail {
-			t.Errorf("%s: settlementDetail = %q, want %q", shape.name, got, shape.detail)
-		}
-		if strings.Contains(got, "passed every check") || strings.Count(got, skippedSaid) != 1 {
-			t.Errorf("%s: settlementDetail = %q, want %q once and no %q", shape.name, got, skippedSaid, "passed every check")
-		}
-	}
-	for _, today := range []struct {
-		name   string
-		fact   intake.PullRequestChecks
-		detail string
-	}{
-		{"a skipped run the settlement names failed", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, []string{"envoy-go"}, nil), "head1 failed envoy-go"},
-		{"a skipped run it names cancelled", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, nil, []string{"envoy-go"}), "head1 had envoy-go cancelled"},
-		{"a failed run with its word failure", checks([]record.AttemptRun{wordedRun("unit", 1, "failure")}, []string{"unit"}, nil), "head1 failed unit"},
-		{"a failed run with its word timed_out", checks([]record.AttemptRun{wordedRun("unit", 1, "timed_out")}, []string{"unit"}, nil), "head1 failed unit"},
-		{"a cancelled run with its word cancelled", checks([]record.AttemptRun{wordedRun("e2e", 1, "cancelled")}, nil, []string{"e2e"}), "head1 had e2e cancelled"},
+			nil, []string{"envoy-go"}, []texts.StatusState{red("ci", "failure")}, 2},
+		{"a skipped run the settlement names failed", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, []string{"envoy-go"}, nil),
+			[]texts.CheckConclusion{failed("envoy-go")}, nil, nil, 0},
+		{"a skipped run it names cancelled", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, nil, []string{"envoy-go"}),
+			[]texts.CheckConclusion{concluded("envoy-go", string(record.RunCancelled))}, nil, nil, 0},
+		{"a failed run with its word failure", checks([]record.AttemptRun{wordedRun("unit", 1, "failure")}, []string{"unit"}, nil),
+			[]texts.CheckConclusion{concluded("unit", "failure")}, nil, nil, 0},
+		{"a failed run with its word timed_out", checks([]record.AttemptRun{wordedRun("unit", 1, "timed_out")}, []string{"unit"}, nil),
+			[]texts.CheckConclusion{concluded("unit", "timed_out")}, nil, nil, 0},
+		{"a cancelled run with its word cancelled", checks([]record.AttemptRun{wordedRun("e2e", 1, "cancelled")}, nil, []string{"e2e"}),
+			[]texts.CheckConclusion{concluded("e2e", "cancelled")}, nil, nil, 0},
 		{"words and no skipped run", checks([]record.AttemptRun{wordedRun("advice", 1, "neutral"), wordedRun("build", 2, "success")}, nil, nil),
-			"head1 passed every check"},
-		{"no skipped run and no word", settlement("head1"), "head1 passed every check"},
+			nil, nil, nil, 2},
+		{"no skipped run and no word", settlement("head1"), nil, nil, nil, 1},
 	} {
-		if got := settlementDetail(today.fact); got != today.detail {
-			t.Errorf("%s: settlementDetail = %q, want today's %q", today.name, got, today.detail)
+		got := SettlementWake("LEGION-208", phase.Implementing, "sjawhar/legion", shape.fact)
+		if !reflect.DeepEqual(got.NotPassed, shape.notPassed) || !reflect.DeepEqual(got.Skipped, shape.skipped) ||
+			!reflect.DeepEqual(got.NotPassedStatuses, shape.statuses) || got.Passed == nil || *got.Passed != shape.passed {
+			t.Errorf("%s: the settlement's wake = %+v, want the checks %+v not passed, %v skipped, the statuses %+v not passed and %d passed",
+				shape.name, got, shape.notPassed, shape.skipped, shape.statuses, shape.passed)
 		}
 	}
-	t.Run("the wake on only skipped checks", func(t *testing.T) {
-		rig := newWakeRig(t)
-		rig.apply("settled", onlySkipped)
-		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, woken+onlySkippedDetail)
-		if task := wakeStarts(t, rig.pool)[0].Task; strings.Contains(task, "passed every check") {
-			t.Fatalf("the woken role's task = %q, want no %q: a skipped check ran nothing", task, "passed every check")
-		}
-	})
-	t.Run("the wake on no skipped run and no word", func(t *testing.T) {
-		rig := newWakeRig(t)
-		rig.apply("settled", settlement("head1"))
-		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks)
-		want := woken + "head1 passed every check. Read the checks before you decide anything."
-		if task := wakeStarts(t, rig.pool)[0].Task; task != want {
-			t.Fatalf("the woken role's task = %q, want today's %q", task, want)
-		}
-	})
+	for _, wake := range []struct {
+		name string
+		fact intake.PullRequestChecks
+		// line is the line of the woken role's task that names its skipped checks, "" for none.
+		line string
+	}{
+		{"the wake on only skipped checks", onlySkipped, "skipped[2]: envoy-go,envoy-go-race"},
+		{"the wake on no skipped run and no word", settlement("head1"), ""},
+	} {
+		t.Run(wake.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			rig.apply("settled", wake.fact)
+			want := SettlementWake("LEGION-208", phase.Implementing, "sjawhar/legion", wake.fact)
+			// The wake brings back a session an idle release stopped (newWakeRig), which its task names.
+			want.StoppedBy = StoppedByRelease.word()
+			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, taskText(want), "passed: 1")
+			task := wakeStarts(t, rig.pool)[0].Task
+			if named := strings.Contains(task, "skipped"); wake.line == "" && named || wake.line != "" && !strings.Contains(task, wake.line) {
+				t.Fatalf("the woken role's task = %q, want its skipped checks named as %q", task, wake.line)
+			}
+		})
+	}
 }

@@ -142,6 +142,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	notice, _ := tickNoticeOf(t, pool, testProject)
 	want := record.ControllerNotice{
 		Kind:             record.TickNotice,
+		Issue:            testProject,
 		OpenCapabilities: []string{"secrets"},
 		Blocked:          []record.BlockedIssue{{Issue: blockedRoot, BlockedBy: []string{blocker}}},
 		Held: []record.HeldIssue{

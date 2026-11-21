@@ -2,6 +2,9 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,9 +155,9 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: every issue it waited on (LEGION-300, LEGION-301) is done" + childStartedOwnership
+	want := "LEGION-209 started tree=LEGION-208 waited_on=LEGION-300,LEGION-301"
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
-		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
+		t.Fatalf("child-status notices = %#v, want one of %q", got, want)
 	}
 }
 
@@ -194,7 +197,7 @@ func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
 	}
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership
+	want := "LEGION-209 started tree=LEGION-208 waited_on="
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
 		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
 	}
@@ -325,7 +328,7 @@ func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *tes
 
 // R2: the notice that reports the move out of admitted carries no role. The gate's opening is
 // the one move out of that phase (Table), and admitted is the architect's own (phase.RoleFor), so
-// a role on the notice would tell the architect that its own phase ended. noticeFor writes the
+// a role on the notice would tell the architect that its own phase ended. NoticeFor writes the
 // notice of a move out of admitted with no role.
 func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 	pool := migratedPool(t)
@@ -547,31 +550,29 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 	}
 }
 
-// childStartedOwnership is how every child-status notice of a child's start ends, after its
-// reason: the child's own architect starts with it and owns it while that architect holds its
-// role, so the architect it tells hears only what goes above that architect (ChildStartedNotice).
-const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
-	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-	"holdsRole decides"
-
+// childStatusNotices is each child-status notice the outbox holds, in order, as its facts: the
+// child, the change, the tree and every issue it waited on.
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'child-status' order by id")
+	rows, err := pool.Query(t.Context(), "select payload from outbox where kind = 'notice' and payload->>'kind' = 'child-status' order by id")
 	if err != nil {
 		t.Fatalf("read the child-status notices: %v", err)
 	}
 	defer rows.Close()
-	var reasons []string
+	var told []string
 	for rows.Next() {
-		var reason string
-		if err := rows.Scan(&reason); err != nil {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatalf("scan a child-status notice: %v", err)
 		}
-		reasons = append(reasons, reason)
+		var notice record.Notice
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("decode a child-status notice %s: %v", payload, err)
+		}
+		told = append(told, fmt.Sprintf("%s %s tree=%s waited_on=%s", notice.Issue, notice.Change, notice.Tree, strings.Join(notice.WaitedOn, ",")))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the child-status notices: %v", err)
 	}
-	return reasons
+	return told
 }

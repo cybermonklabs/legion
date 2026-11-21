@@ -446,7 +446,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return DispatchAskRestored{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), Mark: event.mark()}, nil
 		}
 		closed := DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
-			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
+			Words: closeWords(event, unread), Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
 		// A person's decline is the one resolution the daemon acts on: it resumes the root's
 		// architect with Dispatch's own words and the person's note (workflow's resumeTask), so
 		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
@@ -518,7 +518,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, nil
 		}
 		return DispatchAskReply{Key: event.IssueKey, Ask: comment.Ask, WaitingOn: comment.WaitingOn, Actor: dispatch.Actor(event.Actor),
-			Mark: event.mark(), Comment: comment.ID}, nil
+			Mark: event.mark(), Comment: comment.ID, Words: commentWords(event, unread)}, nil
 	case "issue.claimed", "issue.released":
 		var payload struct {
 			Claim json.RawMessage `json:"claim"`
@@ -607,6 +607,70 @@ func decodeAskPayload(event dispatchEvent, unread *[]string) (askPayload, error)
 	}
 	ask.kind = askKind(ask.Kind, unread)
 	return ask, nil
+}
+
+// closeWords are the words of an ask's close as its payload carries them (DispatchAskClosed.Words):
+// an answer's text and the options it chose (Dispatch's model.AskAnswer), at the answer's time,
+// or a resolution's note (model.AskResolution's reason), at the resolution's time. A stand-in
+// (payload_omitted) says more follows. They are read apart from the ask, so words the decoder
+// cannot read are reported and kept as none, with more to follow, rather than making a close the
+// workflow acts on poison.
+func closeWords(event dispatchEvent, unread *[]string) *record.ActWords {
+	var payload struct {
+		Answer *struct {
+			Selected []string  `json:"selected"`
+			Text     *string   `json:"text"`
+			At       time.Time `json:"at"`
+		} `json:"answer"`
+		Resolution *struct {
+			Reason string    `json:"reason"`
+			At     time.Time `json:"at"`
+		} `json:"resolution"`
+		PayloadOmitted bool `json:"payload_omitted"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		*unread = append(*unread, fmt.Sprintf("the words of %s: %v", event.Type, err))
+		return event.words("", nil, time.Time{}, true)
+	}
+	switch {
+	case event.Type == "ask.answered" && payload.Answer != nil:
+		return event.words(deref(payload.Answer.Text), payload.Answer.Selected, payload.Answer.At, payload.PayloadOmitted)
+	case event.Type == "ask.resolved" && payload.Resolution != nil:
+		return event.words(payload.Resolution.Reason, nil, payload.Resolution.At, payload.PayloadOmitted)
+	}
+	return event.words("", nil, time.Time{}, payload.PayloadOmitted)
+}
+
+// commentWords are the words of a comment as its payload carries them (DispatchAskReply.Words):
+// its body, at the comment's time, with more to follow where Dispatch cut the body
+// (body_truncated, model.CommentEventPayload) or sent a stand-in that left it out
+// (payload_omitted). Words the decoder cannot read are reported, as closeWords reports them.
+func commentWords(event dispatchEvent, unread *[]string) *record.ActWords {
+	var payload struct {
+		Body           string    `json:"body"`
+		BodyTruncated  bool      `json:"body_truncated"`
+		CreatedAt      time.Time `json:"created_at"`
+		PayloadOmitted bool      `json:"payload_omitted"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		*unread = append(*unread, fmt.Sprintf("the words of %s: %v", event.Type, err))
+		return event.words("", nil, time.Time{}, true)
+	}
+	return event.words(payload.Body, nil, payload.CreatedAt, payload.BodyTruncated || payload.PayloadOmitted)
+}
+
+// words are the words of the act e is, whole as the event carried them: text and options by the
+// event's actor, at the time the payload gives the act, or at the event's own time where it gives
+// none, and more where the event did not carry all of them. No options is nil, as the record
+// reads an act that chose none back.
+func (e dispatchEvent) words(text string, options []string, at time.Time, more bool) *record.ActWords {
+	if at.IsZero() {
+		at = e.CreatedAt
+	}
+	if len(options) == 0 {
+		options = nil
+	}
+	return &record.ActWords{Text: text, Options: options, By: dispatch.Actor(e.Actor).Name(), At: at.UTC(), More: more}
 }
 
 // artifact is the document an approval request asks a person to approve, "" for any other ask.

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -72,7 +73,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	}
 	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
-		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
+		Text: "The daemon must replace the pod that runs this issue's roles. The round is " + podUpdateRound + ".",
 	}); err != nil || !written {
 		t.Fatalf("queue the earlier release's ask = %t, %v; want it written", written, err)
 	}
@@ -283,10 +284,11 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
+			ask := supervise.UpdateTask(podUpdateIssue, podUpdateRound, podUpdatePod, nil, podUpdateDrift, podUpdateBound)
 			for range 2 {
 				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
-					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
+					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
+					Images: ask.Images, Settings: ask.Settings, Reasons: ask.Reasons, EndsAt: ask.EndsAt,
 				}); err != nil || !written {
 					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)
 				}
@@ -408,14 +410,14 @@ type stoppingPublisher struct {
 	cancel context.CancelFunc
 }
 
-func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.inner.Publish(ctx, topic, message, payload, key)
+func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
+	err := p.inner.Publish(ctx, topic, message, payload, urgency, key)
 	p.cancel()
 	return err
 }
 
-func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
-	kept, err := p.inner.PublishKept(ctx, topic, message, payload, key)
+func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	kept, err := p.inner.PublishKept(ctx, topic, message, payload, urgency, key)
 	p.cancel()
 	return kept, err
 }

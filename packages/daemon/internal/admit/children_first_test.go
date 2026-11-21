@@ -3,7 +3,7 @@ package admit
 import (
 	"context"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The tree every test here drives: a root whose architect has written its spec, and the children
@@ -72,7 +72,16 @@ func moveChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, id, key, 
 // childrenFirstNotices is every children-first notice queued for key, in outbox order.
 func childrenFirstNotices(t *testing.T, pool *pgxpool.Pool, key string) []record.Notice {
 	t.Helper()
-	return gateNotices(t, pool, key, workflow.ChildrenFirstNoticeKind)
+	return gateNotices(t, pool, key, texts.ChildrenFirst)
+}
+
+// namedChildren is each open child a children-first notice names, as `key (status)`.
+func namedChildren(notice record.Notice) []string {
+	named := make([]string, 0, len(notice.Children))
+	for _, child := range notice.Children {
+		named = append(named, child.Key+" ("+child.Status+")")
+	}
+	return named
 }
 
 // blockedNow is what the daemon reports under admission.blocked, read exactly as a controller
@@ -117,10 +126,8 @@ func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	if len(told) != 1 {
 		t.Fatalf("children-first notices = %+v, want exactly one", told)
 	}
-	for _, want := range []string{cfRoot, cfFirst + " (backlog)", cfSecond + " (backlog)"} {
-		if !strings.Contains(told[0].Reason, want) {
-			t.Fatalf("the children-first notice %q does not name %q", told[0].Reason, want)
-		}
+	if got, want := namedChildren(told[0]), []string{cfFirst + " (backlog)", cfSecond + " (backlog)"}; told[0].Issue != cfRoot || !slices.Equal(got, want) {
+		t.Fatalf("the children-first notice of %s names %v, want %s naming %v", told[0].Issue, got, cfRoot, want)
 	}
 	if want := []record.BlockedIssue{{Issue: cfRoot, BlockedBy: []string{cfFirst, cfSecond}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
 		t.Fatalf("blocked = %#v, want %#v", blockedNow(t, pool, admission), want)
@@ -174,7 +181,7 @@ func TestAParentBelowTheRootWaitsForItsOwnChild(t *testing.T) {
 	// child it released holds none either, its first phase having still to start.
 	assertSlots(t, pool, nil)
 	told := childrenFirstNotices(t, pool, cfFirst)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, grandchild+" (backlog)") {
+	if len(told) != 1 || !slices.Equal(namedChildren(told[0]), []string{grandchild + " (backlog)"}) {
 		t.Fatalf("the child's children-first notices = %+v, want one naming %s", told, grandchild)
 	}
 
@@ -210,8 +217,8 @@ func TestAListedChildHoldsItsParentAndAParkedOneDoesNot(t *testing.T) {
 	if len(told) != 1 {
 		t.Fatalf("children-first notices = %+v, want exactly one", told)
 	}
-	if strings.Contains(told[0].Reason, parked) {
-		t.Fatalf("the children-first notice %q names the parked child %s, which holds nothing", told[0].Reason, parked)
+	if got := namedChildren(told[0]); !slices.Equal(got, []string{cfFirst + " (backlog)"}) {
+		t.Fatalf("the children-first notice names %v, want %s alone: the parked child %s holds nothing", got, cfFirst, parked)
 	}
 	if want := []record.BlockedIssue{{Issue: cfRoot, BlockedBy: []string{cfFirst}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
 		t.Fatalf("blocked = %#v, want %#v", blockedNow(t, pool, admission), want)
@@ -226,8 +233,7 @@ func TestAListedChildHoldsItsParentAndAParkedOneDoesNot(t *testing.T) {
 
 // A5. A child a Dispatch blocked_by link holds against an issue above it on its own parent chain
 // is a cycle: the child waits for its parent and the parent waits for the child. The daemon
-// names the child, the ancestor and the link, in one fixed sentence, and does nothing else about
-// it.
+// names the child with the ancestor its link names, and does nothing else about it.
 func TestAChildBlockedByItsOwnParentIsNamedAsACycle(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -239,8 +245,8 @@ func TestAChildBlockedByItsOwnParentIsNamedAsACycle(t *testing.T) {
 	if len(told) != 1 {
 		t.Fatalf("children-first notices = %+v, want exactly one", told)
 	}
-	if want := workflow.ChildCycleReason(cfFirst, cfRoot); !strings.Contains(told[0].Reason, want) {
-		t.Fatalf("the children-first notice %q does not say %q", told[0].Reason, want)
+	if want := []texts.OpenChildFacts{{Key: cfFirst, Status: "backlog", Cycle: cfRoot}}; !reflect.DeepEqual(told[0].Children, want) {
+		t.Fatalf("the children-first notice names %+v, want %+v", told[0].Children, want)
 	}
 	want := []record.BlockedIssue{{Issue: cfRoot, BlockedBy: []string{cfFirst}}, {Issue: cfFirst, BlockedBy: []string{cfRoot}}}
 	if got := blockedNow(t, pool, admission); !reflect.DeepEqual(got, want) {

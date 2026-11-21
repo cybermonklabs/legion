@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -230,8 +231,11 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		_, err = a.wakeController(ctx, tx,
-			record.ControllerNotice{Kind: record.TickNotice, Held: held, Blocked: blocked, Silent: silent}, a.project, a.now())
+		tick, err := record.ControllerNoticeOf(TickNotice(a.project, held, blocked, silent))
+		if err != nil {
+			return nil, nil, err
+		}
+		_, err = a.wakeController(ctx, tx, tick, a.project, a.now())
 		return returned, nil, err
 	}
 	if handover, ok := fact.(intake.Handover); ok {
@@ -285,7 +289,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 			if err := a.queuePersonHandover(ctx, tx, observation.Key, "triage", "event"); err != nil {
 				return nil, nil, err
 			}
-		} else if err := a.enqueue(ctx, tx, observation.Key, record.ControllerNotice{Kind: record.TriageNotice}, a.now()); err != nil {
+		} else if err := a.tellControllerOf(ctx, tx, observation.Key, TriageNotice(observation.Key)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -325,7 +329,11 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		if err != nil || !free {
 			return released, nil, err
 		}
-		_, err = a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.TodoNotice}, observation.Key, a.now().Add(todoWakeDelay))
+		todo, err := record.ControllerNoticeOf(TodoNotice(observation.Key))
+		if err != nil {
+			return released, nil, err
+		}
+		_, err = a.wakeController(ctx, tx, todo, observation.Key, a.now().Add(todoWakeDelay))
 		return released, nil, err
 	}
 	a.mu.Lock()
@@ -398,8 +406,64 @@ func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []s
 	if err != nil || !free {
 		return err
 	}
-	_, err = a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.SlotFreeNotice}, released[0], a.now())
+	notice, err := record.ControllerNoticeOf(SlotFreeNotice(released[0]))
+	if err != nil {
+		return err
+	}
+	_, err = a.wakeController(ctx, tx, notice, released[0], a.now())
 	return err
+}
+
+// TriageNotice is the triage controller notice of key, an issue in triage whose root no architect
+// owns. The issue is the whole of it.
+func TriageNotice(key string) texts.TriageRecord {
+	return texts.TriageRecord{NoticeHead: texts.NoticeHead{Kind: texts.Triage, Issue: key}}
+}
+
+// TodoNotice is the todo controller notice of key, an issue not handed to Legion that changed in
+// todo while a slot stood free. The issue is the whole of it.
+func TodoNotice(key string) texts.TodoRecord {
+	return texts.TodoRecord{NoticeHead: texts.NoticeHead{Kind: texts.Todo, Issue: key}}
+}
+
+// SlotFreeNotice is the slot-free controller notice of key, the first issue whose slot admission
+// released while nothing waiting took it. The issue is the whole of it.
+func SlotFreeNotice(key string) texts.SlotFreeRecord {
+	return texts.SlotFreeRecord{NoticeHead: texts.NoticeHead{Kind: texts.SlotFree, Issue: key}}
+}
+
+// tellControllerOf queues rec, the record of a notice kind on the list, as a controller notice on
+// issue at the admission's clock.
+func (a *Admission) tellControllerOf(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
+	notice, err := record.ControllerNoticeOf(rec)
+	if err != nil {
+		return err
+	}
+	return a.enqueue(ctx, tx, issue, notice, a.now())
+}
+
+// tellArchitectOf queues rec, the record of a notice kind on the list, as a notice on issue to the
+// architect that owns it, at now.
+func (a *Admission) tellArchitectOf(ctx context.Context, tx pgx.Tx, issue string, rec any, now time.Time) error {
+	notice, err := record.NoticeOf(rec)
+	if err != nil {
+		return err
+	}
+	return a.enqueue(ctx, tx, issue, notice, now)
+}
+
+// TickNotice is the tick controller notice of project, the daemon's periodic wake of the
+// controller, whose issue is the project key. It names its lists whole, since the controller's
+// daily report reads them there (dispatch://INFRA-2837's R1, dispatch://INFRA-2964's R3): every
+// issue held in neither the active set nor the waiting line with the one word for why, every issue
+// blocked by another, and every phase worker nothing will prompt (tickRows). The open rows of the
+// capability report are added when the wake is queued (wakeController).
+func TickNotice(project string, held []record.HeldIssue, blocked []record.BlockedIssue, silent []record.SilentIssue) texts.TickRecord {
+	tick := texts.TickRecord{NoticeHead: texts.NoticeHead{Kind: texts.Tick, Issue: project}, Blocked: blocked, Silent: silent}
+	for _, issue := range held {
+		tick.Held = append(tick.Held, texts.HeldIssue{Issue: issue.Issue, Reason: string(issue.Reason), HeldBy: issue.HeldBy})
+	}
+	return tick
 }
 
 // todoWakeDelay is how long a `todo` controller notice waits in the outbox before it is published.
@@ -817,11 +881,16 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if !owed {
 			continue
 		}
-		// A rule answered true, so this run has a claim, and its record holds the last step and,
-		// for a background stall, the moment of the report the rule judged it by.
+		// A rule answered true, so this run has a claim. Its record holds the last step where the
+		// silence rule judged it (SilentPhaseWorker reads a step past the bound), and, for a
+		// background stall, the moment of the report that rule judged it by; a background stall
+		// is judged by the report alone, so a claim whose agent the record holds no step of names
+		// no last step and no time quiet, rather than a step at year 1 and the 292 years since.
 		lastStep := run.Claim.Step.LastStep()
-		entry := record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
-			Silent: now.Sub(lastStep).Round(time.Minute).String()}
+		entry := record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep}
+		if !lastStep.IsZero() {
+			entry.Silent = now.Sub(lastStep).Round(time.Minute).String()
+		}
 		if background {
 			entry.BackgroundSince = run.Claim.ActivityAt
 		}
@@ -2251,7 +2320,7 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 		if !told {
 			continue
 		}
-		if err := a.enqueue(ctx, tx, key, workflow.ChildrenFirstNotice(facts.ChildWaits[key]), now); err != nil {
+		if err := a.tellArchitectOf(ctx, tx, key, workflow.ChildrenFirstNotice(facts.ChildWaits[key]), now); err != nil {
 			return err
 		}
 		a.log.Info("admission: an issue waits for the Dispatch children under it", "issue", key,
@@ -2331,7 +2400,7 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
 // awaiting-person root is live by design, and leaves only when its hand-over label or its current
 // Dispatch claim makes a resume unsafe (workflow's Unresumable). Legion starts nothing for
 // either — it is someone else's work now, or a person's move to make — and the controller is told
-// on the controller topic alone (record.UnslottedNotice, one per root, its reason naming why). A
+// on the controller topic alone (UnslottedNotice, one per root). A
 // key Reconcile holds is left for release to apply first, when respectHolds is set. It reports
 // whether it released any.
 func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, live map[string]struct{},
@@ -2349,15 +2418,10 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if !awaiting && !a.unslotted(issue, live, waits) {
 			continue
 		}
-		reason := fmt.Sprintf("%s was %s, a status only a running tree has, while no tree of it runs: its lifecycle is not open, it waits in no line and on no person, so nothing would ever start it", issue.Key, issue.Status)
-		if why != "" {
-			reason = fmt.Sprintf("%s awaits a person, but %s", issue.Key, why)
-		}
 		if err := a.engine.LeaveUnslotted(ctx, tx, issue); err != nil {
 			return released, fmt.Errorf("release unslotted root %s: %w", issue.Key, err)
 		}
-		reason += "; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again"
-		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
+		if err := a.tellControllerOf(ctx, tx, issue.Key, UnslottedNotice(issue, why)); err != nil {
 			return released, err
 		}
 		intake.OnCommit(ctx, func() {
@@ -2366,6 +2430,15 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		released = true
 	}
 	return released, nil
+}
+
+// UnslottedNotice is the unslotted controller notice of root, which admission found with
+// neither a slot nor a place in the waiting line and set to done: the status it stood at, a status
+// only a running tree has, its phase, and, for a root that awaits a person, why it cannot resume
+// (unresumable, workflow's Unresumable), empty for a root no tree of which runs.
+func UnslottedNotice(root record.Issue, unresumable string) texts.UnslottedRecord {
+	return texts.UnslottedRecord{NoticeHead: texts.NoticeHead{Kind: texts.Unslotted, Issue: root.Key}, Status: root.Status, Phase: root.Phase,
+		Unresumable: unresumable}
 }
 
 // awaitingUnresumable returns why an awaiting root of this project may not resume (workflow's
@@ -2558,7 +2631,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		return err
 	}
 	if root.Phase == phase.Held && root.Hold != nil {
-		if err := a.enqueue(ctx, tx, root.Key, workflow.HeldNotice(root), now); err != nil {
+		if err := a.tellArchitectOf(ctx, tx, root.Key, workflow.HeldNotice(root), now); err != nil {
 			return err
 		}
 	}
@@ -3222,9 +3295,10 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // while a controller is registered (architectStalls, wakeStalledArchitects), so a root the pass
 // could still do something for is wholly served before the controller is woken about it. The
 // arms read the holders as the pass read them before its sends, and the roots whose architect
-// start the pass wrote are handed to them, so the second arm reads that start and its reason
-// says what the pass did. floor is the floor the arms count from, which the caller read with the
-// project's pause (readStallFloor) and found the project not paused, so this reads no pause.
+// start the pass wrote are handed to them, so the second arm reads that start and its notice
+// says the pass wrote it (start_written). floor is the floor the arms count from, which the caller
+// read with the project's pause (readStallFloor) and found the project not paused, so this reads
+// no pause.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts, floor stallFloor,
 ) error {

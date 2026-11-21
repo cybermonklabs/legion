@@ -329,7 +329,9 @@ func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 //
 // An empty session is no refusal: the body names no session, so the request acts as none, and
 // nothing is recorded under another session's name. The two message routes alone allow that, and
-// what they produce is an envelope with no source session.
+// what they produce is an envelope with no source session. Such a message still has a sender where
+// a broker token proved one: the token's session, which the sender limit counts and the sender
+// stamp names (messageSender).
 func sessionNotBound(r *http.Request, logger *logging.Logger, session string) string {
 	caller, ok := brokerCaller(r)
 	if !ok || session == "" || caller.Session == session {
@@ -340,4 +342,19 @@ func sessionNotBound(r *http.Request, logger *logging.Logger, session string) st
 		slog.String("request_session", session),
 		slog.String("path", r.URL.Path))
 	return fmt.Sprintf("this access token acts as session %s, so it may not act as %s", caller.Session, session)
+}
+
+// messageSender is the session that sends a message r carries, whose body names sourceSession:
+// the session a secrets-broker token proved, else the body's trimmed source_session.
+// sessionNotBound has already refused a body that names a session the token does not, so a
+// token's session is the sender whether the body names it or not. A request under the shared
+// listener bearer proves no session, so a message whose body names none has no sender, which is
+// how the Legion daemon publishes (packages/daemon/internal/notify). The sender limit counts this
+// session (senderLimit.take), and the envelope's sender stamp names it (senderStamp), which is how
+// a role's kept copy still tells a session's message from the daemon's (wakesItsRole).
+func messageSender(r *http.Request, sourceSession string) string {
+	if caller, ok := brokerCaller(r); ok && caller.Session != "" {
+		return caller.Session
+	}
+	return strings.TrimSpace(sourceSession)
 }

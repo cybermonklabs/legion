@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -111,7 +112,9 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // to the Envoy topic of the issue's merger, and to nothing else: the pull request left the merge
 // queue at the row's head, GitHub did not report it merged, and the event names no reason, so the
 // merger reads the reason on GitHub and acts on it (step 5 of its role prompt). It stops nothing
-// it reaches, as a hook prompt stops nothing.
+// it reaches, as a hook prompt stops nothing. The message is its kind's record
+// (record.MergeQueueRemoval.Record), an object, published under the summary
+// `merge-queue-removal on <KEY>` at the urgency the list gives the kind for the merger.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
 // ended as the row of a hook prompt nobody holds is (hookPrompt). That row can end because the
@@ -149,28 +152,33 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		return nil
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
-		what: "the merge-queue removal of " + row.Issue, message: payload.Message(row.Issue, pr.Repo), attributes: attributes,
+		what: "the merge-queue removal of " + row.Issue, summary: noticeSummary(texts.MergeQueueRemoval, row.Issue),
+		payload: payload.Record(row.Issue, pr.Repo), urgency: texts.UrgencyOf(texts.MergeQueueRemoval, claim.RoleMerger, texts.Variant{}),
+		attributes: attributes,
 		claimEnded: "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
 		delivered:  "outbox merge-queue removal delivered to the merger"})
 }
 
 // heldMessage is one message a row delivers to a role of its issue and holds until a session of
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
-// message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
-// published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the summary it
+// is published under (`<kind> on <KEY>`), the record published and the urgency the list gives its
+// kind for the role, the attributes of the row's log lines, and the two lines the delivery itself
+// logs: the row's end on a claim that failed or retired, and the delivery.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
 	role       claim.Role
 	what       string
-	message    string
+	summary    string
+	payload    any
+	urgency    texts.Urgency
 	attributes []any
 	claimEnded string
 	delivered  string
 }
 
-// deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
+// deliverHeld publishes m's record to the Envoy topic of m's role, and to nothing else, and holds
 // the row until a session of that role takes it: the delivery a merge-queue removal and a
 // merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
 // ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
@@ -218,7 +226,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.summary, m.payload, m.urgency, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)

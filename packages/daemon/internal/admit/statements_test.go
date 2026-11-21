@@ -95,7 +95,7 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 			}
 			for i := range held {
 				if wakes := architectWakes(t, pool, slottedKey(i)); len(wakes) != 1 {
-					t.Fatalf("the architect wakes of %s before the counted facts = %q, want the one the first fact told: the case's premise", slottedKey(i), wakes)
+					t.Fatalf("the architect wakes of %s before the counted facts = %+v, want the one the first fact told: the case's premise", slottedKey(i), wakes)
 				}
 			}
 		}

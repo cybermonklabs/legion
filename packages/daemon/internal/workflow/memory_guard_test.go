@@ -15,8 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // memoryGuardKillReport is a kill whose sizes print as 812.40 MiB, 3.13 GiB and 4.00 GiB.
@@ -36,10 +36,10 @@ func outboxRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
 	return rows
 }
 
-// The kill is told to the role whose connection reported it, as one role message addressed to its
-// claim token: the note names the process by its executable, its size, the pod's reading and its
-// limit, and points to where heavy work runs. Nothing else is queued for the issue: no architect
-// notice, no Dispatch message.
+// The kill is told to the role whose connection reported it, as one memory-kill message at med
+// addressed to its claim token: the guard's cause, the process by its executable, its pid, its
+// size, the pod's anonymous memory reading and its limit. Nothing else is queued for the issue: no
+// architect notice, no Dispatch message.
 func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -52,22 +52,15 @@ func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 		t.Fatalf("apply the kill: %v", err)
 	}
 
-	want := "The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: " +
-		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
-		"The pod's other processes and your session go on. " +
-		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
-		"read skill://legion-worker/references/tools.md before you run it again."
-	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
+	assertRoleMessages(t, pool, "LEGION-209", []roleTold{toldMed(string(token), memoryKill(texts.KillGuard, "python3", "3.13 GiB"))})
 	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 1 {
 		t.Fatalf("the outbox holds %d rows of LEGION-209, want the one role message", rows)
 	}
 }
 
 // A process a microVM pod's own kernel stopped is told to the role whose connection reported it
-// with the kernel's note, not the guard's: the process named and escaped as the guard's note names
-// it, its size, the pod's memory counter (not the guard's anonymous reading) and its limit, in the
-// guard's units, and where heavy work runs. The guard's own note, for a report with no cause, is
-// TestMemoryGuardAKillIsToldToTheReportingRoleAlone's, pinned whole.
+// with the kernel's cause, not the guard's: the process as the launcher named it, its size, the
+// pod's memory counter (not the guard's anonymous reading) and its limit, in the guard's units.
 func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -82,23 +75,15 @@ func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
 		t.Fatalf("apply the kill: %v", err)
 	}
 
-	want := "The pod's kernel stopped one of your processes because the pod ran out of memory: " +
-		"``x`y`` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
-		"The pod's other processes and your session go on. " +
-		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
-		"read skill://legion-worker/references/tools.md before you run it again."
-	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
+	assertRoleMessages(t, pool, "LEGION-209", []roleTold{toldMed(string(token), memoryKill(texts.KillKernel, "x`y", "3.26 GiB"))})
 	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 1 {
 		t.Fatalf("the outbox holds %d rows of LEGION-209, want the one role message", rows)
 	}
 }
 
 // One of the processes that run a role's session, which the microVM pod's own kernel stopped, is
-// told to the role whose connection reported it in words of its own: the process, its size, the
-// pod's memory counter and its limit as the kernel's note of a command gives them; that it was no
-// command the role ran; that, were it the agent, its turn and every process of the role ended with
-// it; and what the daemon does next, the relaunch of the same session and the failed launch it
-// counts. It never says the session goes on, and it still says where heavy work runs.
+// told to the role whose connection reported it with a cause of its own, beside the process, its
+// size, the pod's memory counter and its limit as the kernel's message of a command gives them.
 func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -113,15 +98,7 @@ func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testin
 		t.Fatalf("apply the kill: %v", err)
 	}
 
-	want := "The pod's kernel stopped one of your processes because the pod ran out of memory: " +
-		"`omp` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
-		"It was one of the processes that run your session, not a command you ran. " +
-		"If it was your agent, your turn ended with it, and so did every other process of your role. " +
-		"The daemon then starts the same session again and sends again any task that the turn was running. " +
-		"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. " +
-		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
-		"read skill://legion-worker/references/tools.md before you run it again."
-	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
+	assertRoleMessages(t, pool, "LEGION-209", []roleTold{toldMed(string(token), memoryKill(texts.KillKernelProtected, "omp", "3.26 GiB"))})
 	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 1 {
 		t.Fatalf("the outbox holds %d rows of LEGION-209, want the one role message", rows)
 	}
@@ -148,26 +125,11 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 	}
 }
 
-// The executable's name sits in a code span that nothing in it can end or spread over lines: a file
-// name can hold any character but `/` and NUL, so the fence is longer than any run of backticks the
-// name holds, a name that begins or ends with a backtick is padded, and a character that does not
-// print is written as its escape.
-func TestMemoryGuardTheNoteKeepsTheExecutableInsideItsCodeSpan(t *testing.T) {
-	for _, tc := range []struct{ name, want string }{
-		{"python3 grow.py", "`python3 grow.py`"},
-		{"sh -c 'echo `id`'", "``sh -c 'echo `id`'``"},
-		{"bash -c 'a ``` b'", "````bash -c 'a ``` b'````"},
-		{"`id` x", "`` `id` x ``"},
-		{"x `id`", "`` x `id` ``"},
-		{" padded ", "`  padded  `"},
-		{"two\nlines\x1b[31m", "`two\\nlines\\x1b[31m`"},
-		{"reorder\u202etext", "`reorder\\u202etext`"},
-		{"", "` `"},
-	} {
-		if got := codeSpan(tc.name); got != tc.want {
-			t.Errorf("codeSpan(%q) = %q, want %q", tc.name, got, tc.want)
-		}
-	}
+// memoryKill is the memory-kill message of LEGION-209 for memoryGuardKillReport's sizes, with
+// cause, the process and the pod's memory reading the cause names.
+func memoryKill(cause, process, pod string) texts.MemoryKillRecord {
+	return texts.MemoryKillRecord{RoleHead: texts.RoleHead{Kind: texts.MemoryKill, Issue: "LEGION-209"}, Cause: cause, Process: process,
+		PID: 4242, Size: "812.40 MiB", PodMemory: pod, Limit: "4.00 GiB"}
 }
 
 // Sizes are written in the largest binary unit they reach, with two decimals, and in whole bytes

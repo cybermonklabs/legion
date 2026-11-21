@@ -7,6 +7,7 @@ import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { splitWordsBlocks } from "@legion/envoy-client/words-block"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
@@ -87,13 +88,21 @@ test("writes each Envoy envelope into the session as the rendered card that name
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
 
-  expect(notifier.notifications).toEqual([
-    {
-      content:
-        'envoy:\n  to: you (ses_claude)\n  from: ses_sender\n  at: "2025-10-09T08:53:20Z"\n  id: evt-42\n  urgency: high\n  reply_with:\n    tool: envoy_send\n    args:\n      session_id: ses_sender\n      in_reply_to: evt-42\n      message: ...\n  summary: Use the channel',
-      eventId: "evt-42",
-    },
+  // The shared renderer's card: its fields, each once and with no reply command, then the
+  // sender's words in a block of their own.
+  expect(notifier.notifications).toHaveLength(1)
+  const [written] = notifier.notifications
+  expect(written?.eventId).toBe("evt-42")
+  const { head, blocks } = splitWordsBlocks(written?.content ?? "")
+  expect(head.split("\n")).toEqual([
+    "envoy:",
+    "  to: you",
+    "  from: ses_sender",
+    '  at: "2025-10-09T08:53:20Z"',
+    "  id: evt-42",
+    "  urgency: high",
   ])
+  expect(blocks).toEqual([{ tag: "message", name: "message", text: "Use the channel" }])
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {

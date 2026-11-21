@@ -526,7 +526,7 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	}
 	h.wantStarts(secondToken, 0)
 	// The due time goes with the report: the owner's notice names the moment that launch's turn
-	// comes rather than guessing at the wait (the daemon's stallBackstopEnds).
+	// comes rather than guessing at the wait (the notice's wake_due, stallBackstopRecord).
 	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchParked, WakeDue: parked.At}
 	if len(stops) != 1 || stops[0] != want {
 		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want the one end it made, %+v", stops, want)
@@ -722,7 +722,7 @@ func stalledSweep(h *harness) (time.Time, StepRecord) {
 // end the machine reaches is written (endReached), and that is all it covers: an end no
 // constant declares — a conversion of a string computed at run time, which nothing here does,
 // or one another package manufactures — is outside it, and the daemon's notice answers that one
-// by naming the value rather than claiming a relaunch (the daemon's stallBackstopEnd).
+// by naming the value with no stop word rather than claiming a relaunch (the daemon's stallStop).
 func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -779,7 +779,7 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 	declares := map[ProcessEnd]bool{}
 	for _, constant := range declared {
 		if !listed[ProcessEnd(constant.text)] {
-			t.Errorf("the constant %s (%q) is a value of ProcessEnd that ProcessEnds does not list: add it there, give it a case in TestEveryProcessEndTellsItsOwnerExactlyOnce, and give it a sentence in the daemon's stallBackstopEnds", constant.name, constant.text)
+			t.Errorf("the constant %s (%q) is a value of ProcessEnd that ProcessEnds does not list: add it there, give it a case in TestEveryProcessEndTellsItsOwnerExactlyOnce, and give it a row in the daemon's stallBackstopEnds", constant.name, constant.text)
 		}
 		declares[ProcessEnd(constant.text)] = true
 	}
@@ -810,9 +810,9 @@ func compiledDependencies(t *testing.T) importer.Lookup {
 // that the runtime did make, the refusal cleared by a start that succeeded, the launch the
 // daemon's own stop cut short before any stop was made, and the refusal an earlier
 // replacement of the same claim met, which this one does not carry. What rests on them is one
-// sentence of the owner's notice: a pod the runtime would not stop goes on holding its node's
-// room and its disk, and the owner is the one who acts on that (the daemon's
-// stallStopClause).
+// field of the owner's notice: a pod the runtime would not stop goes on holding its node's
+// room and its disk, and the owner is the one who acts on that (the notice's stop word, the
+// daemon's stallStop).
 //
 // Here the launch's write was refused and the stop of the process it let go was refused too,
 // so the claim is left with the replacement still to make and with a process nobody has seen
@@ -862,10 +862,9 @@ func TestTheBackstopReportsNoUnconfirmedStopOnceTheReplacementStarted(t *testing
 // launch stop one process — the one letGo moved into previous, which launchNow holds until a
 // start succeeds — so the latest answer about it is the answer, and a claim that ends failed
 // with every start refused but its process stopped on the second ask is a claim whose owner
-// must not be sent after a pod that is not there: the notice of an unconfirmed stop opens by
-// taking the turn off the claim rather than ending it, and says the process may be running
-// still, which wakes.md has the architect put to a person (stopPrevious, the daemon's
-// stallTurnClause and stallStopClause).
+// must not be sent after a pod that is not there: the notice of an unconfirmed stop names the
+// stop as unconfirmed rather than made, so the process may be running still, which wakes.md has
+// the architect put to a person (stopPrevious, the daemon's stallStop).
 func TestTheBackstopReportsNoUnconfirmedStopOnceALaterStopWasMade(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)

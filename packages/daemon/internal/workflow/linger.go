@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -145,11 +146,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	kind := record.NoticeKind("child-status")
-	if status == "done" {
-		kind = "child-closed"
+	var told any = ChildClosedNotice(issue.Key)
+	if status != "done" {
+		told = ChildLeftNotice(issue.Key, status)
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is %s", issue.Key, status)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, told); err != nil {
 		return err
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not
@@ -179,6 +180,12 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	return e.openCheck(ctx, tx, issue, *pr, lingers)
+}
+
+// ChildLeftNotice is the child-status notice of issue, a child that left the workflow with status
+// other than done (texts.ChangeLeft).
+func ChildLeftNotice(issue, status string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue}, Change: texts.ChangeLeft, Status: status}
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is

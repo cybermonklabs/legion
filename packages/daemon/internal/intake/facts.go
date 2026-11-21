@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Fact is a closed vocabulary of observations that can change Legion's workflow record. Each fact
@@ -361,6 +362,13 @@ func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 // no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
 // one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
 // as Dispatch recorded it.
+//
+// Words are the words of the close as its event carried them (record.ActWords), by its actor: an
+// answer's text and the options it chose, at the answer's time; a resolution's note (a decline's
+// among them), at the resolution's time. The event's own time stands where the payload gives
+// none. A close that reached the daemon as a payload_omitted stand-in keeps what the stand-in
+// kept, usually nothing, with More set: the ask itself holds the rest. The decoder sets Words on
+// every close.
 type DispatchAskClosed struct {
 	Key      string
 	Ask      string
@@ -368,6 +376,7 @@ type DispatchAskClosed struct {
 	Artifact string
 	State    string
 	Decline  *record.AskDecline
+	Words    *record.ActWords
 	Actor    dispatch.Actor
 	Mark     record.EventMark
 }
@@ -385,6 +394,12 @@ func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 // the actor who made it, its event's place in the issue's Dispatch event log (Mark), and the
 // comment's own id (Comment, empty for a hand-back), which is where in Dispatch a person's reply
 // relayed to the controller was made (workflow's relayParkedDecision).
+//
+// Words are the comment's words as its event carried them (record.ActWords), by its actor at the
+// comment's time (the event's own where the payload gives none): its body, with More set where
+// the event marked the body cut (body_truncated) or reached the daemon as a payload_omitted
+// stand-in, which leaves the body out. The comment itself holds the rest. A hand-back writes no
+// words, so its Words are nil.
 type DispatchAskReply struct {
 	Key       string
 	Ask       string
@@ -394,6 +409,7 @@ type DispatchAskReply struct {
 	Actor     dispatch.Actor
 	Mark      record.EventMark
 	Comment   string
+	Words     *record.ActWords
 }
 
 func (f DispatchAskReply) namedIssue() (string, bool) { return f.Key, true }
@@ -1118,10 +1134,14 @@ type CloseRoot struct {
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
 
+// CloseRootLead is the daemon's own words that a close's message opens with (Message), before the
+// architect's reason.
+const CloseRootLead = "Closed by its architect before its first phase: "
+
 // Message is what the close posts on the issue: that its architect closed it before its first
 // phase, and the reason it gave.
 func (f CloseRoot) Message() string {
-	return "Closed by its architect before its first phase: " + f.Reason
+	return CloseRootLead + f.Reason
 }
 
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
@@ -1131,10 +1151,10 @@ func (f CloseRoot) Message() string {
 // different questions — a worker that kept dying and a worker that could never start — and the
 // failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
 // since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
-// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
-// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
-// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
-// (workflow's deathReason).
+// workflow's noticeFailure). A worker-died's own fields name neither whole: its death is the
+// first line of Death, only where the notice carries no failure record, Cause is
+// supervise.CauseDied and no PodEnd was read, which is the tree architect's notice alone, and
+// StartFailure is named nowhere else (workflow's diedOf).
 //
 // PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
 // read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
@@ -1256,16 +1276,15 @@ type ClaimReady struct {
 	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
 	// is taken once per start row however often the row runs.
 	Paced bool
-	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
-	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
-	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
-	// current session's processes, since abandoning a session ends the record of its process
-	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
-	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
-	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
-	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
-	// prompt the claim's machine sends, at that prompt's confirmation.
-	Relaunch string
+	// Relaunch is what the last let-go of the claim's process ended (supervise.EndedWork.Facts),
+	// while the claim's record of it is untold (supervise.EndedWork.Tells); nil otherwise. A record
+	// that still tells is one of the claim's current session's processes, since abandoning a
+	// session ends the record of its process (supervise's forgetSession). The first source alone
+	// sets it, from the claim its ready wrote (the daemon's applyTerminal): an architect's catch-up
+	// carries it (workflow's QueueCatchUp), because the first turn of a relaunched architect can be
+	// that catch-up's rather than its prompt's. The catch-up's copy tells nothing: the record is
+	// told by the prompt the claim's machine sends, at that prompt's confirmation.
+	Relaunch *texts.RelaunchFacts
 }
 
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }

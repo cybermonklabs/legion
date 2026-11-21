@@ -40,16 +40,28 @@ export function followNoticeText(
 }
 
 /**
+ * What the subscribe line of an issue adds: Dispatch sends the events the Legion daemon's own
+ * session writes, such as a status move of a Legion issue, at urgency `low`, and an Oh My Pi host
+ * holds such a card for the session's next turn. A close (`issue.closed`), a release
+ * (`issue.released`) and an ask's event come at the default urgency all the same
+ * (`daemonEventGoesLow`, packages/envoy/internal/dispatch/outbox/publisher.go).
+ */
+const DAEMON_STATUS_MOVES =
+  "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, which an Oh My Pi host holds for your next turn)";
+
+/**
  * `For every event on <owner>: envoy_subscribe <topic>`, the line that subscribes a session to
- * every event on `owner`, when `topics`, the session's subscriptions, hold none that covers it.
- * Null when one does, and when `topics` is null: nothing then says what the session receives.
+ * every event on `owner`, when `topics`, the session's subscriptions, hold none that covers it,
+ * with `DAEMON_STATUS_MOVES` after it for an issue. Null when one does, and when `topics` is
+ * null: nothing then says what the session receives.
  */
 export function ownerSubscribeLine(
   owner: OwnerTopic,
   topics: readonly string[] | null | undefined
 ): string | null {
   if (topics == null || topics.some((topic) => subscriptionCovers(topic, owner))) return null;
-  return `For every event on ${owner.label}: envoy_subscribe ${owner.topic}`;
+  const line = `For every event on ${owner.label}: envoy_subscribe ${owner.topic}`;
+  return owner.topic === issueTopic(owner.label).topic ? `${line} ${DAEMON_STATUS_MOVES}` : line;
 }
 
 /**

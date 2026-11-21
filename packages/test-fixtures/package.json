@@ -21,6 +21,10 @@
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
     },
+    "./notice-fields": {
+      "types": "./src/notice-fields.ts",
+      "bun": "./src/notice-fields.ts"
+    },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
       "bun": "./src/temporary-directories.ts"

@@ -72,6 +72,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -572,11 +573,21 @@ func (r *childAdoptionLive) queuedRootLeavesTheLine() {
 	}
 	r.inTree(c, r.tree)
 	r.note("read back over %s: %s kept its slot and its own architect's claim, stayed out of the line, and is still recorded in the tree of %s", liveSettle, c, r.tree)
-	want := fmt.Sprintf("%s joined the tree of %s from the admission queue", c, r.tree)
+	// The notice names the child, the change and the tree it joined, and no tree it came from:
+	// the admission queue is none (workflow.JoinedTheTreeNotice).
+	joined := func(told listenerPublish) bool {
+		var notice record.Notice
+		if err := json.Unmarshal([]byte(told.Payload), &notice); err != nil {
+			t.Fatalf("decode the child-status notice %q: %v", told.Payload, err)
+		}
+		return notice.Issue == c && notice.Change == texts.ChangeJoined && notice.Tree == r.tree && notice.FromTree == ""
+	}
+	var told []listenerPublish
 	testwait.Eventually(t, "the child-status notice to the architect of "+r.tree, func() bool {
-		return slices.ContainsFunc(r.architectNotices(r.tree, "child-status"), func(told listenerPublish) bool { return told.Payload == want })
+		told = r.architectNotices(r.tree, "child-status")
+		return slices.ContainsFunc(told, joined)
 	})
-	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, want)
+	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, told[slices.IndexFunc(told, joined)].Payload)
 }
 
 // Step 2 (AC2, todo). D, a labelled todo root, queues while every slot is held. Dispatch shows it

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -286,9 +287,14 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	// provider refused: a worker reading an empty transcript would otherwise take the task for a
 	// fresh start and do again what the abandoned session already pushed.
 	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
+	if len(prompts) != 2 {
+		t.Fatalf("the new session was prompted %+v, want the sentence and the retried phase's task", prompts)
+	}
+	lines := strings.Split(prompts[1].Message, "\n")
+	for _, want := range []string{"kind: " + string(texts.PhaseAssignment), "issue: LEGION-208", "phase: implementing", "retried: " + workflow.RetriedByArchitect} {
+		if !slices.Contains(lines, want) {
+			t.Fatalf("the new session was prompted %q, want the retried phase's task to carry the line %q", prompts[1].Message, want)
+		}
 	}
 	wantsAbandonment(t, prompts[1].Message, refusal)
 }
@@ -348,15 +354,16 @@ func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePh
 	wantsAbandonment(t, prompts[1].Message, "`legion claims forget-session`")
 }
 
-// wantsAbandonment is the check both retries make of the fresh session's first prompt: it names
-// the session that was abandoned and why — the provider's own words for a refused one, the
-// context size among them where the provider gave one — and the two things that outlived that
-// session, the issue's branch and the handoff records its phases wrote on the Dispatch issue.
+// wantsAbandonment is the check both retries make of the fresh session's first prompt: its
+// abandoned-session note names the session that was abandoned and why — the provider's own words
+// for a refused one, the context size among them where the provider gave one — and the issue's
+// branch, which outlived that session. The handoff records on the Dispatch issue outlive it too,
+// and the role's prompt says how to read them.
 func wantsAbandonment(t *testing.T, prompt, why string) {
 	t.Helper()
 	for _, want := range []string{
-		oldSession, "abandoned", why,
-		"legion/" + "LEGION-208", "dispatch handoff-read --issue LEGION-208 --phase", "(plan, implement, test, review)",
+		"kind: " + string(texts.AbandonedSessionNote), "session: " + oldSession, why,
+		"branch: legion/" + "LEGION-208",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the fresh session's first prompt does not name %q:\n%s", want, prompt)

@@ -230,9 +230,9 @@ func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, i
 // and each cycle among them gives a second row, naming the child and the ancestor its own
 // blocked_by link holds it under: the link is a fact about the child, not about the parent, and
 // a reader that saw only the parent's row would have no way to tell a child nobody has released
-// from one that can never be released at all. The architect's notice says the same two things in
-// words (ChildCycleReason). They are built from the judgement the line is held by, so what a
-// reader sees is what the decider decided.
+// from one that can never be released at all. The architect's notice names the same two things
+// as fields (workflow.ChildrenFirstNotice). They are built from the judgement the line is held
+// by, so what a reader sees is what the decider decided.
 func ChildWaitRows(waits map[string]ChildWait) []BlockedIssue {
 	rows := make([]BlockedIssue, 0, len(waits))
 	for parent, wait := range waits {

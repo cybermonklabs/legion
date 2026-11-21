@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -485,9 +486,11 @@ type reportedNotice struct {
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
 // dedupe key names a row) to the role topic of an architect of this project, in either form of
 // the lane's name (the role alone, or this daemon's Dispatch project and then the role), whose
-// summary is the executor's own "<kind> on <issue>" for an issue of this project and whose payload
-// is that notice. ok is false for a report about anything else, a lane of another project
-// among them.
+// summary is the executor's own "<kind> on <issue>" for an issue of this project, whose kind the
+// list marks as a notice to an architect (texts.Notice), and whose payload is that notice. ok is
+// false for a report about anything else, a lane of another project among them. A role message
+// to an architect goes under the same summary, and its record's keys can all be keys of a
+// notice, as a CI settlement's are; its kind is no notice, so its report is never re-held as one.
 func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, bool) {
 	row, ok := record.ParseOutboxKey(exception.DedupeKey)
 	if !ok {
@@ -511,6 +514,9 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if !found || kind != notice.Kind || !claim.IsIssueKey(issue) || !strings.HasPrefix(issue, r.dispatchProject+"-") {
 		return reportedNotice{}, false
 	}
+	if entry, onList := texts.Lookup(kind); !onList || entry.Form != texts.Notice {
+		return reportedNotice{}, false
+	}
 	return reportedNotice{issue: issue, notice: notice, row: row, architect: claim.Token(token)}, true
 }
 
@@ -523,12 +529,14 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // the release ends is the wait for the architect, not the wait for the role. That covers a copy
 // waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
 // claim's session file, so the relaunched agent registers the very session id the stopped one
-// had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
-// minutes for a stopped session's registration to lapse would otherwise hold back every later
-// notice to that architect behind the fence, after the architect is back. Released, the notices
-// go in the order they were written, ahead of the ones behind them. The waiting notices and their
-// trees are one repeatable read, each tree read once; the fence is not read, since a release only
-// makes a notice due and its send still passes the fence.
+// had), a notice held on the outbox's backoff while nobody held the role, and a low notice that
+// waits for its released architect's next ready and woke nothing (deliverNotice's
+// lowNoticeRecheck), which this ready delivers at once, at the architect's next turn. A copy
+// waiting minutes for a stopped session's registration to lapse would otherwise hold back every
+// later notice to that architect behind the fence, after the architect is back. Released, the
+// notices go in the order they were written, ahead of the ones behind them. The waiting notices
+// and their trees are one repeatable read, each tree read once; the fence is not read, since a
+// release only makes a notice due and its send still passes the fence.
 //
 // A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
 // architect being away — the architect is running, which is why a start wrote a catch-up instead

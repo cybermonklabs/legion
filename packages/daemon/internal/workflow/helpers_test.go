@@ -2,7 +2,11 @@ package workflow
 
 import (
 	"context"
+	"html"
+	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // refusalCode is the code of a fact's refusal, or "" when it was not refused.
@@ -138,4 +143,108 @@ func messageBodies(t *testing.T, pool *pgxpool.Pool) []string {
 		t.Fatalf("iterate Dispatch messages: %v", err)
 	}
 	return bodies
+}
+
+// readTask is a task as its reader reads it (texts.Render): the lines before its first block,
+// each field's value by its key — a quoted value unquoted, a list's or a table's key with its
+// [n] as written — each block of another author's words, in order, and round, the last line of a
+// reviewer's task that holds the daemon's two sentences of its review round (reviewround.Ending),
+// kept word for word and read as no field.
+type readTask struct {
+	lines  []string
+	fields map[string]string
+	blocks []taskBlock
+	round  string
+}
+
+// reviewRoundLine is the last line of a reviewer's task naming commit, or `none`, and entry, or
+// `none` where entry is not above 0 (reviewround.Ending).
+func reviewRoundLine(commit string, entry int64) string {
+	return strings.TrimPrefix(reviewround.Sentences(commit, entry), " ")
+}
+
+// taskBlock is one block of a task: its tag, the field it is named by (the tag less a -N), its
+// attributes and the words between its tags.
+type taskBlock struct {
+	tag, name string
+	attrs     map[string]string
+	text      string
+}
+
+var (
+	blockOpening   = regexp.MustCompile(`^<([a-z_]+)(-[0-9]+)?((?: [a-z]+="[^"]*")*)>$`)
+	blockAttribute = regexp.MustCompile(` ([a-z]+)="([^"]*)"`)
+)
+
+// readTaskOf reads task, failing the test where a block is not closed on a line of its own or
+// anything but a block follows the first block. It logs the task, so each test prints the tasks
+// it reads.
+func readTaskOf(t *testing.T, task string) readTask {
+	t.Helper()
+	t.Logf("task:\n%s", task)
+	read := readTask{fields: map[string]string{}}
+	lines := strings.Split(task, "\n")
+	if last := lines[len(lines)-1]; len(lines) > 1 && strings.HasPrefix(last, reviewround.CommitLabel+": ") {
+		read.round, lines = last, lines[:len(lines)-1]
+	}
+	i := 0
+	for ; i < len(lines) && !blockOpening.MatchString(lines[i]); i++ {
+		read.lines = append(read.lines, lines[i])
+		key, value, ok := strings.Cut(lines[i], ": ")
+		if !ok || strings.HasPrefix(lines[i], " ") {
+			continue
+		}
+		if unquoted, err := strconv.Unquote(value); err == nil && strings.HasPrefix(value, `"`) {
+			value = unquoted
+		}
+		read.fields[key] = value
+	}
+	for i < len(lines) {
+		opening := blockOpening.FindStringSubmatch(lines[i])
+		if opening == nil {
+			t.Fatalf("the task's line %d, %q, follows a block and opens none:\n%s", i+1, lines[i], task)
+		}
+		block := taskBlock{tag: opening[1] + opening[2], name: opening[1], attrs: map[string]string{}}
+		for _, attribute := range blockAttribute.FindAllStringSubmatch(opening[3], -1) {
+			block.attrs[attribute[1]] = html.UnescapeString(attribute[2])
+		}
+		end := i + 1
+		for end < len(lines) && lines[end] != "</"+block.tag+">" {
+			end++
+		}
+		if end == len(lines) {
+			t.Fatalf("the task's block %s, opened at line %d, is never closed:\n%s", block.tag, i+1, task)
+		}
+		block.text = strings.Join(lines[i+1:end], "\n")
+		read.blocks = append(read.blocks, block)
+		i = end + 1
+	}
+	return read
+}
+
+// block is the one block of r named name, failing the test unless there is exactly one.
+func (r readTask) block(t *testing.T, name string) taskBlock {
+	t.Helper()
+	var found []taskBlock
+	for _, block := range r.blocks {
+		if block.name == name {
+			found = append(found, block)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("the task has %d blocks named %s (%+v), want one", len(found), name, r.blocks)
+	}
+	return found[0]
+}
+
+// hasLines says whether task holds each of lines as a line of its own: a field as the task's
+// encoder writes it, such as "phase: retro".
+func hasLines(task string, lines ...string) bool {
+	held := strings.Split(task, "\n")
+	for _, line := range lines {
+		if !slices.Contains(held, line) {
+			return false
+		}
+	}
+	return true
 }

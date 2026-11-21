@@ -8,10 +8,11 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // volumeAt is when the first sweep of these tests reports, and volumePod the uid of the pod whose
@@ -116,10 +118,11 @@ func fullSweep() record.VolumeNearFull {
 }
 
 // One sweep that ended with the volume still above its low mark writes exactly one notice, to the
-// issue's own architect, carrying everything the architect needs to act: which pod, how full, what
-// the sweep freed, why it stopped, the /proc read the kernel refused, and what is on the volume
-// with the two age splits that tell a working set from cold bytes and the clause that says what
-// kind of size those are.
+// issue's own architect, carrying everything the architect needs to act as fields of its record:
+// which pod, how full, what the sweep freed, why it stopped, the /proc read the kernel refused, and
+// what is on the volume with the two age splits that tell a working set from cold bytes. It writes
+// no sentence of them: the architect's prompt says how to read the fields, the kind of size those
+// are among them (texts_steps_test.go).
 func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
@@ -129,8 +132,8 @@ func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 		t.Fatalf("the outbox holds %d volume-near-full notices, want exactly one", len(notices))
 	}
 	notice := notices[0]
-	if notice.Role != claim.RoleArchitect {
-		t.Fatalf("the notice is addressed to %q, want the issue's architect", notice.Role)
+	if entry, _ := texts.Lookup(notice.Kind); !slices.Equal(entry.Readers, []claim.Role{claim.RoleArchitect}) || notice.Issue != "LEGION-208" {
+		t.Fatalf("the notice of %q is read by %v, want LEGION-208's architect alone", notice.Issue, entry.Readers)
 	}
 	if notice.Volume == nil {
 		t.Fatalf("the notice carries no volume sweep: %+v", notice)
@@ -151,12 +154,8 @@ func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 	if len(volume.Sizes) != 2 || volume.Sizes[0] != (record.VolumeSize{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30}) {
 		t.Fatalf("the notice carries sizes %+v, want the walk's own entries with both age splits", volume.Sizes)
 	}
-	for _, want := range []string{"LEGION-208", volumePod, "51539607552", "2147483648", "3221225472",
-		"nothing left older than the minimum age", "pid 42 (/proc/42/fd)", "caches/uv", "older than an hour", "older than a day",
-		"each size is the apparent size of the files at or under its path"} {
-		if !strings.Contains(notice.Reason, want) {
-			t.Errorf("the sentence the architect reads does not name %q: %s", want, notice.Reason)
-		}
+	if notice.Reason != "" {
+		t.Errorf("the notice writes a sentence of the sweep, %q, want its facts alone", notice.Reason)
 	}
 	if !strings.Contains(rig.logged.String(), VolumeNoticeWritten) {
 		t.Errorf("the daemon wrote no %q line for the notice: %s", VolumeNoticeWritten, rig.logged.String())
@@ -303,8 +302,9 @@ func TestARecoveryRaisedSweepWaitsForTheHour(t *testing.T) {
 
 // The trimmer switching itself off is the report no sweep makes, and the one the bounds must not
 // swallow: the protection this notice exists for has stopped, on exactly the pod that has been
-// reporting. It is told whatever the counts stand at, and it carries the faults with their stacks
-// and the last reading.
+// reporting. It is told whatever the counts stand at, and it carries the faults with their stacks,
+// each on one line with its line breaks written as Go writes them (VolumeNearFullNotice), and the
+// last reading.
 func TestASwitchedOffTrimmerIsToldWhateverTheCountsStandAt(t *testing.T) {
 	rig := newVolumeRig(t)
 	for at := range VolumeNoticeCap {
@@ -334,8 +334,8 @@ func TestASwitchedOffTrimmerIsToldWhateverTheCountsStandAt(t *testing.T) {
 		t.Fatalf("the switched-off notice carries %d faults, want the three that stopped the trimmer", len(last.Volume.Faults))
 	}
 	for i, fault := range faults {
-		if last.Volume.Faults[i] != fault {
-			t.Errorf("fault %d is %q, want it whole with its stack: %q", i, last.Volume.Faults[i], fault)
+		if want := strings.ReplaceAll(fault, "\n", `\n`); last.Volume.Faults[i] != want {
+			t.Errorf("fault %d is %q, want it whole with its stack on one line: %q", i, last.Volume.Faults[i], want)
 		}
 	}
 	if last.Volume.UsedBytes != 49<<30 || last.Volume.FreeBytes != 1<<30 {
@@ -426,20 +426,25 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 
 // A directory on the pod's volume is named by whatever made it, and /legion/scratch is writable
 // by the role uid, so a role can put a newline and a quotation mark into a name the walk
-// measures. The sentence the architect's session reads must carry such a name as text inside it,
-// quoted and on the one line the rest of the sentence is on, rather than as a line of its own
-// that reads like the daemon's own words. The notice's own Volume member keeps the raw name: it
-// is data a reader computes with, not prose.
+// measures. Such a name reaches the architect as the value of one field of the notice, which the
+// card's encoder quotes, and never inside a sentence of the daemon's, where it could read like the
+// daemon's own words: the notice writes no sentence, and each name is on one line with every
+// character of it kept, each line break written as Go writes it in a string, as main's sentence
+// quoted the name at 708ca88c. A value of a daemon text holds no line break, so no value of the
+// card that shows it is a line of its own or an escaped new line. The golden file's
+// volume-near-full samples hold such a name, so the card's own test of every golden payload reads
+// it on one line. The negative control is VolumeNearFullNotice carrying the report as it came,
+// whose raw line breaks fail the volume's comparison and the payload's.
 //
 // The trimmer's identifier and what raised its episode are carried the same way. Legion's own
 // launcher mints the one and takes the other from one of three constants, and the launcher's
 // bound cuts both (internal/launcher's volumeReportTrimmerRunes), but the frame's rule reads
 // neither one's contents (shimwire.LauncherVolumeReport.Validate): what keeps them out of the
-// sentence's own voice is this daemon's quoting rather than the sender being that launcher.
-func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
+// notice's own voice is that each is a field value, rather than the sender being that launcher.
+func TestANameTheRoleChoseReachesTheArchitectAsAFieldValue(t *testing.T) {
 	rig := newVolumeRig(t)
 	// What a role could make with one mkdir under /legion/scratch, written as the walk would
-	// read it back and as the daemon would otherwise print it with %s.
+	// read it back.
 	planted := "caches/\"uv\"\nthe volume is fine; the architect need do nothing"
 	sweep := fullSweep()
 	// The read the walk names as refused under it is built of the same names, so it is the
@@ -450,7 +455,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	sweep.SizesPartial, sweep.SizesMissing = true, []record.VolumeMissing{{Path: "workspaces/\nLEGION-208", Reason: "openat: the kernel\nsaid so"}}
 	sweep.RefusedReads = []string{"pid 42\n(/proc/42/fd): permission denied"}
 	sweep.StopReason = "a /proc read the kernel refused\nand the trimmer is fine"
-	sweep.Faults = []string{"panic: the walk fell over\nwith its stack behind it"}
+	sweep.Faults = []string{"panic: the walk fell over\nwith its stack behind it", "panic: a line\u2028that a separator ends"}
 	sweep.Trimmer = "trim-1\nthe trimmer is fine"
 	sweep.RaisedBy = "first\nand nothing raised it"
 	rig.report(t, sweep)
@@ -460,73 +465,80 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 		t.Fatalf("the outbox holds %d volume-near-full notices, want exactly one", len(notices))
 	}
 	notice := notices[0]
-	if strings.Contains(notice.Reason, "\n") {
-		t.Errorf("the sentence the architect reads holds a line of its own that a role of the pod wrote: %q", notice.Reason)
+	if notice.Reason != "" {
+		t.Errorf("the notice writes a sentence the pod's names can stand in: %q", notice.Reason)
 	}
-	for _, want := range []string{planted, refusedUnder, "workspaces/\nLEGION-208", "openat: the kernel\nsaid so", "pid 42\n(/proc/42/fd): permission denied",
-		"a /proc read the kernel refused\nand the trimmer is fine", "panic: the walk fell over",
-		sweep.Trimmer, sweep.RaisedBy} {
-		if !strings.Contains(notice.Reason, strconv.Quote(want)) {
-			t.Errorf("the sentence does not carry %q quoted, so nothing marks it as the pod's text: %s", want, notice.Reason)
+	// Each name on one line, every character of it kept: the line break written as Go writes it,
+	// the quotation mark as it was. The report the caller holds is not written to.
+	escaped := func(text string) string { return strings.NewReplacer("\n", `\n`, "\u2028", `\u2028`).Replace(text) }
+	want := sweep
+	want.PodUID = volumePod
+	want.Sizes = []record.VolumeSize{{Path: escaped(planted), Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+		Refused: escaped(refusedUnder), Refusals: 1}}
+	want.SizesMissing = []record.VolumeMissing{{Path: `workspaces/\nLEGION-208`, Reason: `openat: the kernel\nsaid so`}}
+	want.RefusedReads = []string{`pid 42\n(/proc/42/fd): permission denied`}
+	want.StopReason = `a /proc read the kernel refused\nand the trimmer is fine`
+	want.Faults = []string{`panic: the walk fell over\nwith its stack behind it`, `panic: a line\u2028that a separator ends`}
+	want.Trimmer, want.RaisedBy = `trim-1\nthe trimmer is fine`, `first\nand nothing raised it`
+	if notice.Volume == nil || !reflect.DeepEqual(*notice.Volume, want) {
+		t.Fatalf("the notice's volume is %+v, want every name on one line with each of its characters: %+v", notice.Volume, want)
+	}
+	if sweep.Sizes[0].Path != planted || sweep.Faults[0] != "panic: the walk fell over\nwith its stack behind it" {
+		t.Errorf("the notice wrote the caller's report: %+v", sweep)
+	}
+	payload, err := json.Marshal(notice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read record.Notice
+	if err := json.Unmarshal(payload, &read); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range append([]string{read.Volume.Sizes[0].Path, read.Volume.Sizes[0].Refused, read.Volume.SizesMissing[0].Path,
+		read.Volume.SizesMissing[0].Reason, read.Volume.StopReason, read.Volume.Trimmer, read.Volume.RaisedBy},
+		append(read.Volume.RefusedReads, read.Volume.Faults...)...) {
+		if strings.ContainsAny(value, "\n\r\u2028") {
+			t.Errorf("a value of the notice's payload holds a line break, which the card shows as a line of its own or an escaped new line: %q", value)
 		}
-	}
-	if notice.Volume == nil || len(notice.Volume.Sizes) != 1 || notice.Volume.Sizes[0].Path != planted {
-		t.Fatalf("the notice's own sizes carry %+v, want the raw name a reader computes with", notice.Volume)
 	}
 }
 
-// A size the walk could read only in part is told as a lower bound with the first read the walk
-// did not make there, and a walk that went on past it to its end is told nothing of ending
-// early: for exactly that report the sentence used to read `that walk ended early and measured
-// none of ` followed by nothing, with the unreadable directory's bytes given as the directory's
-// own. A directory the walk could not open is told as one it measured none of, with the read the
-// kernel refused, and as no size. A walk its budget cut is told as cut, beside what it measured
-// none of, and where it names nothing as unmeasured the sentence carries no empty list; it is cut
-// before it reached every target, and not every directory, since a regular file can be a target
-// of its own (internal/launcher's sizeWalk.targets). The negative control is fullSweep's own
-// sizes, which the walk read whole and which no row tells as a lower bound, and for the cut
-// walk's word the sentence as it stood at a3f5d0965f3f, which said "before it reached every
-// directory".
+// A size the walk could read only in part, a directory the walk could not open, and a walk its
+// budget cut are three facts, and the notice keeps them apart as the report gave them: the size
+// with its refused read and its count, the target the walk measured none of with the kernel's
+// answer, and the cut walk's mark beside the count of targets the report left out. A reader tells
+// a lower bound from a whole size by the size's own refused read, and a cut walk from a refused
+// read by sizesPartial, as the architect's prompt says; for exactly these reports the sentence
+// main once wrote read `that walk ended early and measured none of ` followed by nothing, with the
+// unreadable directory's bytes given as the directory's own. Each case's volume crosses the outbox
+// row, which a later daemon decodes strictly.
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
 	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
 	for _, tc := range []struct {
 		name  string
 		sweep func(*record.VolumeNearFull)
-		want  []string
-		not   []string
 	}{
 		{
 			name: "a read refused under a directory",
 			sweep: func(sweep *record.VolumeNearFull) {
 				sweep.Sizes = append(sweep.Sizes, record.VolumeSize{Path: pack, Bytes: 1, Refused: under, Refusals: 2})
 			},
-			want: []string{strconv.Quote(pack) + " holds at least 1 bytes",
-				"the walk could not make 2 of its reads under it, the first at " + strconv.Quote(under),
-				`"caches/uv" holds 12884901888 bytes`},
-			not: []string{"ended early", "was cut", "measured none of", `"caches/uv" holds at least`},
 		},
 		{
 			name: "a directory the walk could not open",
 			sweep: func(sweep *record.VolumeNearFull) {
 				sweep.SizesMissing = []record.VolumeMissing{{Path: "/legion/scratch/sealed", Reason: "openat: permission denied"}}
 			},
-			want: []string{`the size walk measured none of "/legion/scratch/sealed" (because "openat: permission denied")`},
-			not:  []string{"was cut", `"/legion/scratch/sealed" holds`, "at least"},
 		},
 		{
 			name: "a walk its budget cut",
 			sweep: func(sweep *record.VolumeNearFull) {
 				sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted = true, []record.VolumeMissing{{Path: "/legion/uv/cache"}}, 3
 			},
-			want: []string{"the size walk was cut before it reached every target",
-				`the size walk measured none of "/legion/uv/cache" and 3 more it leaves out`},
-			not: []string{"at least", "ended early"},
 		},
 		{
 			name:  "a cut walk that names nothing as unmeasured",
 			sweep: func(sweep *record.VolumeNearFull) { sweep.SizesPartial = true },
-			want:  []string{"the size walk was cut before it reached every target"},
-			not:   []string{"measured none of"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -539,147 +551,102 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 			if len(notices) != 1 {
 				t.Fatalf("the outbox holds %d volume-near-full notices, want exactly one", len(notices))
 			}
-			notice := notices[0]
-			for _, want := range tc.want {
-				if !strings.Contains(notice.Reason, want) {
-					t.Errorf("the sentence the architect reads does not say %q: %s", want, notice.Reason)
-				}
+			volume := notices[0].Volume
+			if volume == nil {
+				t.Fatalf("the notice carries no volume sweep: %+v", notices[0])
 			}
-			for _, not := range tc.not {
-				if strings.Contains(notice.Reason, not) {
-					t.Errorf("the sentence the architect reads says %q: %s", not, notice.Reason)
-				}
+			if !slices.Equal(volume.Sizes, sweep.Sizes) {
+				t.Errorf("the notice carries sizes %+v, want the report's own %+v", volume.Sizes, sweep.Sizes)
 			}
-			// The notice's own Volume member carries the sizes as the report did, the refusal
-			// with them: it crossed the outbox row, which a later daemon decodes strictly.
-			if notice.Volume == nil || !slices.Equal(notice.Volume.Sizes, sweep.Sizes) {
-				t.Errorf("the notice carries sizes %+v, want the report's own %+v", notice.Volume, sweep.Sizes)
+			if volume.SizesPartial != sweep.SizesPartial || !slices.Equal(volume.SizesMissing, sweep.SizesMissing) ||
+				volume.SizesMissingOmitted != sweep.SizesMissingOmitted {
+				t.Errorf("the notice carries a cut walk %t, missing %+v and %d left out, want the report's %t, %+v and %d",
+					volume.SizesPartial, volume.SizesMissing, volume.SizesMissingOmitted, sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted)
+			}
+			for _, size := range volume.Sizes {
+				if (size.Refused != "") != (size.Path == pack) {
+					t.Errorf("the size of %q carries the refused read %q, want one only where the walk read the size in part", size.Path, size.Refused)
+				}
 			}
 		})
 	}
 }
 
-// The sizes a notice gives are apparent sizes, each file counted once for each name the walk met
-// it under (internal/launcher's measureTree), so a sparse file counts at its length and a file
-// bun linked from its install cache into a workspace's node_modules counts in both, and the sizes
-// can sum past the used bytes the same sentence gives. The sentence says so in one clause, once
-// however many sizes it carries, after the last of them, and says nothing of it where the report
-// carries no size, as a switched-off trimmer's carries none. The negative control is the
-// sentence at 8ce4ac94, which gave the sizes with no such clause.
-func TestANoticeSaysOnceThatItsSizesAreApparentSizes(t *testing.T) {
-	const clause = "; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses"
-	sweep := fullSweep()
-	sweep.PodUID = volumePod
-	reason := volumeNoticeReason("LEGION-208", sweep)
-	if said := strings.Count(reason, clause); said != 1 {
-		t.Errorf("the sentence of a report of %d sizes says %d times that they are apparent sizes, want once: %s", len(sweep.Sizes), said, reason)
-	}
-	lastSize := `"workspaces/LEGION-208" holds 21474836480 bytes (2147483648 older than an hour, 0 older than a day)`
-	if !strings.Contains(reason, lastSize+clause+"; measured at ") {
-		t.Errorf("the sentence does not say it straight after the last size, %s: %s", lastSize, reason)
-	}
-
-	// A size read only in part is a size all the same, and a count of sizes left out follows
-	// the clause rather than parting it from the sizes it speaks of.
-	sweep.Sizes = []record.VolumeSize{{Path: "/legion/feed/pack", Bytes: 1, Refused: "/legion/feed/pack/under", Refusals: 2}}
-	sweep.SizesOmitted = 4
-	if reason := volumeNoticeReason("LEGION-208", sweep); !strings.Contains(reason, `the first at "/legion/feed/pack/under"`+clause+"; 4 more sizes are left out of this report") {
-		t.Errorf("the sentence of a size read in part does not say it between that size and the count left out: %s", reason)
-	}
-
-	sweep.Sizes, sweep.SizesOmitted = nil, 0
-	if reason := volumeNoticeReason("LEGION-208", sweep); strings.Contains(reason, "apparent") {
-		t.Errorf("the sentence of a report that carries no size speaks of apparent sizes: %s", reason)
-	}
-}
-
-// The sentence of a sweep is in the past tense: the frame carries no time for the sweep it
-// reports, and a report the launcher held through an outage reaches the daemon after it, so the
-// volume was above its low mark when the sweep ended and the sentence says nothing of it now. Its
-// freed bytes are the sweep's first reading's used bytes less its last's, which are negative when
-// the volume's used bytes grew, and such a sweep is told as the volume growing by that many
-// bytes. The negative control is the sentence at b7085e21, which read "is still above its low
-// mark after a sweep" in both rows and "-1048576 freed by this sweep" in the second.
-func TestAVolumeNoticeTellsTheSweepInThePastAndAGrowthAsAGrowth(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		freed   int64
-		want    []string
-		notSaid []string
-	}{
-		{
-			name:    "a sweep that freed bytes",
-			freed:   3 << 30,
-			want:    []string{"was still above its low mark when the sweep ended", ": 51539607552 bytes used, 2147483648 free, 3221225472 freed by the sweep;"},
-			notSaid: []string{"is still above", "grew"},
-		},
-		{
-			name:    "a sweep the roles outwrote",
-			freed:   -1 << 20,
-			want:    []string{"was still above its low mark when the sweep ended", ": 51539607552 bytes used, 2147483648 free, and the volume grew by 1048576 bytes while the sweep ran;"},
-			notSaid: []string{"is still above", "-1048576", "freed"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+// The bytes a sweep freed are its first reading's used bytes less its last's, which are negative
+// when the volume's used bytes grew, and the notice carries that number as the report gave it, a
+// negative one included: the architect's prompt reads it as the volume growing by that many bytes
+// while the sweep ran, and the notice as a past sweep. The negative control is the sentence at
+// b7085e21, which told "-1048576 freed by this sweep".
+func TestAVolumeNoticeCarriesWhatTheSweepFreedAsTheReportGaveIt(t *testing.T) {
+	for _, freed := range []int64{3 << 30, -1 << 20} {
+		t.Run(fmt.Sprint(freed), func(t *testing.T) {
+			rig := newVolumeRig(t)
 			sweep := fullSweep()
-			sweep.PodUID, sweep.FreedBytes = volumePod, tc.freed
-			reason := volumeNoticeReason("LEGION-208", sweep)
-			for _, want := range tc.want {
-				if !strings.Contains(reason, want) {
-					t.Errorf("the sentence the architect reads does not say %q: %s", want, reason)
-				}
+			sweep.FreedBytes = freed
+			rig.report(t, sweep)
+			notices := rig.notices(t)
+			if len(notices) != 1 || notices[0].Volume == nil {
+				t.Fatalf("the outbox holds %+v, want one volume-near-full notice", notices)
 			}
-			for _, not := range tc.notSaid {
-				if strings.Contains(reason, not) {
-					t.Errorf("the sentence the architect reads says %q: %s", not, reason)
-				}
+			if got := notices[0].Volume; got.FreedBytes != freed || got.UsedBytes != 48<<30 || got.FreeBytes != 2<<30 {
+				t.Errorf("the notice carries used=%d free=%d freed=%d, want 51539607552, 2147483648 and %d, as the report gave them",
+					got.UsedBytes, got.FreeBytes, got.FreedBytes, freed)
 			}
 		})
 	}
 }
 
-// The switched-off trimmer's report is made by no sweep, so its sentence names no bytes freed and
-// no episode: the frame's freed bytes are zero because nothing swept, and its episode and what
-// raised it are filled in for the frame's own rule where the trimmer raised none (launcher's
-// switchOff). Its used and free bytes are the trimmer's last reading, and both zero where it made
-// none, which the sentence says in words rather than as a volume of zero bytes. The negative
-// control is the sentence at b7085e21, which read `0 bytes used, 0 free, 0 freed by this sweep`
-// and `episode 1 raised by "first"` for a trimmer that made no reading and raised no episode.
-func TestASwitchedOffNoticeNamesNoSweepAndNoEpisode(t *testing.T) {
+// The switched-off trimmer's report is made by no sweep (launcher's switchOff), and its used and
+// free bytes are the trimmer's last reading, and both zero where it made none. The notice carries
+// them as the report gave them beside switchedOff, with the faults that stopped the trimmer and no
+// size, and the architect's prompt says what of it is a sweep's and what is not: the episode, what
+// raised it and the freed bytes say nothing of a sweep, and both readings at zero is a trimmer
+// that made no reading. The negative control is the sentence at b7085e21, which read `0 bytes
+// used, 0 free, 0 freed by this sweep` for a trimmer that made no reading.
+func TestASwitchedOffNoticeCarriesTheLastReadingAsTheReportGaveIt(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		used, free int64
-		want       string
-		notSaid    []string
 	}{
-		{
-			name:    "a trimmer that made no reading",
-			want:    `(trimmer "trim-1"): it made no reading of the volume;`,
-			notSaid: []string{"bytes used", "freed", "episode", "raised by", "last reading"},
-		},
-		{
-			name: "a trimmer whose last reading stands",
-			used: 49 << 30, free: 1 << 30,
-			want:    `(trimmer "trim-1"): its last reading of the volume was 52613349376 bytes used, 1073741824 free;`,
-			notSaid: []string{"freed", "episode", "raised by", "no reading"},
-		},
+		{"a trimmer that made no reading", 0, 0},
+		{"a trimmer whose last reading stands", 49 << 30, 1 << 30},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			off := record.VolumeNearFull{PodUID: volumePod, Trimmer: "trim-1", Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
 				UsedBytes: tc.used, FreeBytes: tc.free, StopReason: "the trimmer switched itself off after 3 panics in a row",
 				Faults: []string{"read the volume: panic: runtime error: invalid memory address\ngoroutine 9 [running]:"}, SwitchedOff: true}
-			reason := volumeNoticeReason("LEGION-208", off)
-			if want := "the cache trimmer on LEGION-208's pod " + volumePod + " has switched itself off"; !strings.HasPrefix(reason, want) {
-				t.Errorf("the sentence the architect reads does not open %q: %s", want, reason)
+			notice := VolumeNearFullNotice("LEGION-208", off)
+			if notice.Kind != texts.VolumeNearFull || notice.Issue != "LEGION-208" || notice.Volume == nil {
+				t.Fatalf("the notice is %+v, want LEGION-208's volume-near-full with the report", notice)
 			}
-			if !strings.Contains(reason, tc.want) {
-				t.Errorf("the sentence the architect reads does not say %q: %s", tc.want, reason)
+			want := off
+			want.Faults = []string{`read the volume: panic: runtime error: invalid memory address\ngoroutine 9 [running]:`}
+			if got := *notice.Volume; !reflect.DeepEqual(got, want) {
+				t.Errorf("the notice carries %+v, want the report as it came, each fault on one line: %+v", got, want)
 			}
-			for _, not := range tc.notSaid {
-				if strings.Contains(reason, not) {
-					t.Errorf("the sentence the architect reads says %q: %s", not, reason)
-				}
+			if !strings.Contains(off.Faults[0], "\n") {
+				t.Errorf("the notice wrote the faults of the caller's report: %q", off.Faults)
+			}
+			if strings.Contains(fmt.Sprint(notice), "freed by") {
+				t.Errorf("the notice writes a sentence of a sweep: %+v", notice)
 			}
 		})
+	}
+}
+
+// R2: "The fields are those of the kind, ... the versions and the state that the reader acts on
+// that its event has" (dispatch://INFRA-3686/spec). The report of a trimmer that switched itself
+// off is made by no sweep and measures no size, so it holds no time of a size walk; the notice must
+// state none, as main's sentence left the time out where it was zero, rather than a walk measured
+// at 0001-01-01, which the architect's prompt reads as the time the walk measured the sizes.
+func TestASwitchedOffVolumeNoticeStatesNoTimeOfAWalk(t *testing.T) {
+	notice := VolumeNearFullNotice("LEGION-208", record.VolumeNearFull{Trimmer: "t", Episode: 1, RaisedBy: "first", SwitchedOff: true,
+		StopReason: "the trimmer switched itself off after 3 panics in a row of sweeps", Faults: []string{"panic: a", "panic: b", "panic: c"}})
+	payload, err := json.Marshal(notice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "0001-01-01") {
+		t.Errorf("the notice of a switched-off trimmer states a size walk measured at year 1: %s", payload)
 	}
 }

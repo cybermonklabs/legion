@@ -5131,7 +5131,7 @@ describe("renderTranscript (test 12)", () => {
     ]) {
       expect(out).toMatch(
         new RegExp(
-          `<primary-message kind="envoy-message">\\nenvoy:[^]*Tester here: ${text.replace(/\./g, "\\.")}\\n</primary-message>`
+          `<primary-message kind="envoy-message">\\nenvoy:[^]*Tester here: ${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n&lt;/answer&gt;\\n</primary-message>`
         )
       );
     }

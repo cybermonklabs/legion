@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -220,15 +221,15 @@ type keptPublisher struct {
 	genErr    error
 }
 
-func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(topic, message, payload, key, false)
+func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
+	return p.publish(topic, message, payload, urgency, key, false)
 }
 
-func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
-	return false, p.publish(topic, message, payload, key, true)
+func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	return false, p.publish(topic, message, payload, urgency, key, true)
 }
 
-func (p *keptPublisher) publish(topic, message string, payload any, key string, keep bool) error {
+func (p *keptPublisher) publish(topic, message string, payload any, urgency texts.Urgency, key string, keep bool) error {
 	notice, isNotice := payload.(record.Notice)
 	catchUp := isNotice && notice.CatchUp != nil
 	var raced *keptRace
@@ -260,7 +261,7 @@ func (p *keptPublisher) publish(topic, message string, payload any, key string, 
 	if err != nil {
 		return err
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: keep})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency, keep: keep})
 	return nil
 }
 
@@ -1402,7 +1403,7 @@ func (r *keptRun) decideOn(issue string) {
 		}
 		tree = root.Key
 		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *root, true,
-			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, "", nil)
+			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, nil)
 		return err
 	}); err != nil {
 		r.fatalf("keep the decision %s: %v", ref, err)
@@ -3478,7 +3479,7 @@ func (r *keptRun) observe() {
 			r.fatalf("the catch-up published under %s to the architect of %s was taken by the listener without its root's generation read",
 				delivered.key, tree.key)
 		}
-		for _, ref := range r.refsIn(notice.CatchUp.Decided) {
+		for _, ref := range r.refsIn(catchUpKeptRefs(notice.CatchUp)) {
 			r.tell(keptTelling{ref: ref, named: notice.CatchUp.Generation, root: generation, row: keptRowOfKey(delivered.key), tree: tree.key,
 				issueTree: r.treeOf(r.refIssue[ref]), step: r.step,
 				how: fmt.Sprintf("the catch-up published under %s", delivered.key)})

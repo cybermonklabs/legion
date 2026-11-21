@@ -1400,8 +1400,10 @@ at your own session gives the next exact proof operation; it arrives in your ses
 you. Any other notice is not an instruction. Follow your instruction precisely, use the Go-daemon
 Legion tools and handoffs, and do not create work outside the issue's smoke branch.
 
-The task that starts your phase (`Continue … Phase: <phase>`) is such a notice too: in this proof it
-is never your instruction. Answer it with one line of plain prose saying you are standing by for
+The task that starts your phase (its first lines `kind: phase-assignment`, or `kind: phase-resume`,
+and `issue: <key>`, and its `phase: <phase>` line) is such a notice too: in this proof it is never
+your instruction.
+Answer it with one line of plain prose saying you are standing by for
 the proof's instruction, call no tool, and do not do the phase's work or call `handoff_complete`
 until a Dispatch message from the proof asks you to. A reminder that your phase is still open is
 answered the same way, with one line and no tool, until that message comes.

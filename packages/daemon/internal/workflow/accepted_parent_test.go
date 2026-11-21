@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // seedBeneath records a child of parent in tree, standing in at with the Dispatch status its
@@ -184,14 +185,13 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	if got := record.AcceptedAncestor(held, treeByKey(t, pool, "LEGION-208")); got != "LEGION-208" {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want LEGION-208, found by walking past the done parent", got)
 	}
-	var reason string
+	var change, ancestor string
 	if err := pool.QueryRow(context.Background(),
-		"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
+		"select payload->>'change', payload->>'accepted_ancestor' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").
+		Scan(&change, &ancestor); err != nil {
 		t.Fatalf("read the child-status notice: %v", err)
 	}
-	for _, want := range []string{"LEGION-300", "LEGION-208", "admitted"} {
-		if !strings.Contains(reason, want) {
-			t.Fatalf("the child-status notice %q does not say %q", reason, want)
-		}
+	if change != texts.ChangeBeneathAccepted || ancestor != "LEGION-208" {
+		t.Fatalf("the child-status notice names change %q under accepted ancestor %q, want %q under LEGION-208", change, ancestor, texts.ChangeBeneathAccepted)
 	}
 }

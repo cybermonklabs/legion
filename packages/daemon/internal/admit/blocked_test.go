@@ -203,7 +203,7 @@ func TestTheCloseOfABlockerLegionKeepsNoRecordOfAdmitsTheRoot(t *testing.T) {
 // for a slot that is no longer free; with two the slot still free after it wakes the controller.
 func TestEveryFactOfAnIssueLegionKeepsNoRecordOfIsALook(t *testing.T) {
 	const root, blocker, observed = "LEGION-ROOT", "LEGION-BLOCKER", "LEGION-OUTSIDE"
-	todoNotice := []effect{{kind: record.OutboxKindControllerNotice, issue: observed, payload: record.ControllerNotice{Kind: record.TodoNotice}}}
+	todoNotice := []effect{{kind: record.OutboxKindControllerNotice, issue: observed, payload: record.ControllerNotice{Kind: record.TodoNotice, Issue: observed}}}
 	for _, tc := range []struct {
 		name    string
 		cap     int
@@ -306,7 +306,7 @@ func TestASlotIsFreeWhenEveryRootInTheQueueIsBlocked(t *testing.T) {
 
 	assertSlots(t, pool, nil)
 	assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-ACTIVE",
-		payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}})
+		payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: "LEGION-ACTIVE"}}})
 }
 
 // Work already under way is never stopped: a blocker put on the issue of a tree that already runs
@@ -665,7 +665,7 @@ func TestATreeTakenBackIsNeitherHeldNorReportedBlockedOnALaterPass(t *testing.T)
 	assertSlots(t, pool, []record.Slot{{Issue: running, Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, []string{root})
 	assertControllerNotices(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice}},
+		{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject}},
 	})
 
 	done := issue(t, pool, running)

@@ -36,8 +36,8 @@ type StallBackstopStop struct {
 	Bound    time.Duration
 	End      ProcessEnd
 	// WakeDue is when the launch the pacing parked is due to run (wake.at, reserveWake), carried
-	// so the owner's notice names that moment rather than guessing at the wait (the daemon's
-	// stallBackstopEnds). It is the zero time for every other end, which queues no wake.
+	// so the owner's notice names that moment rather than guessing at the wait (the notice's
+	// wake_due). It is the zero time for every other end, which queues no wake.
 	WakeDue time.Time
 	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
 	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch
@@ -56,7 +56,7 @@ type StallBackstopStop struct {
 	// start and then a good one ends relaunched with a failure charged, and one refused start
 	// and then a refused write leaves the relaunch pending with the same — and the budget
 	// itself counts every failure of the claim's life rather than this replacement's (the
-	// daemon's stallChargeClause). It is 0 for an end no start was refused in.
+	// notice's launch_failures). It is 0 for an end no start was refused in.
 	LaunchFailures int
 }
 
@@ -113,9 +113,9 @@ type StallBackstopStop struct {
 // It tells once per end, because this is the only call that tells and the end is decided once,
 // where the machine makes it (endReached). A relaunch the pacing parked is told here and not
 // again at the wake's turn, and that turn tells nobody either, whatever it does: so the notice
-// of a parked relaunch names what the park itself settles — the launch queued, and no stop made
-// of the stalled process — and names what can change that at the launch's turn as an open list,
-// rather than promising the launch (wakeNow, runWake, the daemon's stallBackstopEnds).
+// of a parked relaunch names what the park itself settles — the end, the launch's due moment, and
+// no stop made of the stalled process — rather than promising the launch (wakeNow, runWake, the
+// daemon's stallBackstopRecord).
 //
 // The record in that report is the request's, which is the store's own as the sweep read it: the
 // claim this machine holds carries the record as it stood when the machine was built, since a

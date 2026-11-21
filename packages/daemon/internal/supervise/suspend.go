@@ -525,8 +525,8 @@ const (
 // endDied, under the same goneCause): the take-back's own mark is what tells the record that the
 // task was taken from the dead turn (Machine.cutTurnOf), and the stop's let-go that follows finds
 // this launch's record standing and records no suspension in its place. So the task is sent again
-// saying the process died, which is what the sentence in front of it reads from that record
-// (interruptedTask, relaunchSentence), rather than saying a suspension ended it. Where died judged
+// saying the process died, which is what the note in front of it reads from that record
+// (CutTurnNote, RelaunchNote), rather than saying a suspension ended it. Where died judged
 // the death, its record stands and this adds none. A take-back that fails records nothing, as it
 // changes nothing else.
 //

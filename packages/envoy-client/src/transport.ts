@@ -1417,8 +1417,9 @@ function messageMetadata(input: MessageMetadataInput) {
 
 /**
  * A blank source session is no source session. The listener's own JSON drops an empty
- * `source_session` on the way back out (`omitempty`), so sending one costs the recipient both
- * the sender label and the reply hint while looking, to the sender, like an attributed message.
+ * `source_session` on the way back out (`omitempty`), so sending one costs the recipient the
+ * sender's session, which its card names as `from` and a reply goes to, while looking, to the
+ * sender, like an attributed message.
  */
 function sourceSession(sessionID: string | undefined) {
   return sessionID === undefined || sessionID === "" ? {} : { source_session: sessionID };

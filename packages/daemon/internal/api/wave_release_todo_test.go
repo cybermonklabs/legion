@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -227,12 +229,25 @@ func (u *unreadRelease) release(t *testing.T, wave ...string) {
 	}
 }
 
-// notices is the reason of every notice queued to the root's architect.
+// stalledFacts selects a notice row's child-release-stalled facts in one line, as stalledFact
+// writes them; a reason, which the record never carries, is appended where a row has one.
+const stalledFacts = `concat_ws(' ', payload->>'kind', payload->>'stall', 'child=' || coalesce(payload->>'child', ''),
+	'parent=' || coalesce(payload->>'parent', ''), 'ancestor=' || coalesce(payload->>'ancestor', ''),
+	'blocker=' || coalesce(payload->>'blocker', ''), 'blocker_status=' || coalesce(payload->>'blocker_status', ''),
+	'repo=' || coalesce(payload->>'repo', ''), 'attempts=' || coalesce(payload->>'attempts', '0'), 'reason=' || (payload->>'reason'))`
+
+// stalledFact is the line stalledFacts selects for a child-release-stalled notice of stall.
+func stalledFact(stall, child, parent, ancestor, blocker, blockerStatus, repo string, attempts int) string {
+	return fmt.Sprintf("child-release-stalled %s child=%s parent=%s ancestor=%s blocker=%s blocker_status=%s repo=%s attempts=%d",
+		stall, child, parent, ancestor, blocker, blockerStatus, repo, attempts)
+}
+
+// notices is every notice queued to the root's architect, as its stalledFacts line.
 func (u *unreadRelease) notices(t *testing.T) []string {
 	t.Helper()
 	var reasons []string
 	if err := u.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(context.Background(), `select payload::text from outbox where issue = $1 and kind = 'notice' order by id`, unreadRoot)
+		rows, err := tx.Query(context.Background(), `select `+stalledFacts+` from outbox where issue = $1 and kind = 'notice' order by id`, unreadRoot)
 		if err != nil {
 			return err
 		}
@@ -304,11 +319,12 @@ func TestWaveReleaseGoesOnPastAChildLeftForAnUnreadRepository(t *testing.T) {
 	if want := []string{"zeta/tools " + unreadRoot + " " + c, "zeta/tools " + unreadRoot + " " + g}; !slices.Equal(u.awaited, want) {
 		t.Fatalf("children left to the recovery = %q, want %q", u.awaited, want)
 	}
-	notices := u.notices(t)
-	if len(notices) != 2 ||
-		!strings.Contains(notices[0], c+" is todo but not recorded") || !strings.Contains(notices[0], p+", on its parent chain, is backlog") || !strings.Contains(notices[0], "Release "+p+" first, then release "+c+" again") ||
-		!strings.Contains(notices[1], g+" was not written todo: it is under "+c) || !strings.Contains(notices[1], "Release "+g+" again once "+c+" is recorded") {
-		t.Fatalf("notices to %s's architect = %q, want one for %s naming %s and one for %s naming %s", unreadRoot, notices, c, p, g, c)
+	want := []string{
+		stalledFact(texts.StallUnrecordedBlocker, c, p, "", p, "backlog", "zeta/tools", 0),
+		stalledFact(texts.StallUnrecordedAncestor, g, c, c, "", "", "zeta/tools", 0),
+	}
+	if notices := u.notices(t); !slices.Equal(notices, want) {
+		t.Fatalf("notices to %s's architect = %q, want %q: one for %s naming %s, and one for %s naming %s", unreadRoot, notices, want, c, p, g, c)
 	}
 }
 
@@ -421,9 +437,9 @@ func TestWaveReleaseAnswersAChildOnAnUnreadRepositoryByWhatItsRecoveryWillDo(t *
 		t.Fatalf("notices = %q, want none: the recovery records %s and %s", notices, child, grandchild)
 	}
 	u.release(t, orphan)
-	notices := u.notices(t)
-	if len(notices) != 1 || !strings.Contains(notices[0], held+", on its parent chain, is backlog and not recorded") || !strings.Contains(notices[0], "Release "+held+" first, then release "+orphan+" again") {
-		t.Fatalf("notices = %q, want one naming %s, in backlog on acme/widgets, to release first", notices, held)
+	want := []string{stalledFact(texts.StallUnrecordedBlocker, orphan, held, "", held, "backlog", "zeta/tools", 0)}
+	if notices := u.notices(t); !slices.Equal(notices, want) {
+		t.Fatalf("notices = %q, want %q: one naming %s, in backlog, to release first", notices, want, held)
 	}
 	for _, key := range []string{child, grandchild, orphan} {
 		if recordedChild(t, u.h, key) != nil || u.retryRow(t, key) {

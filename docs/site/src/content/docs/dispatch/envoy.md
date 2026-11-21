@@ -146,6 +146,13 @@ All of them are kept in the stream. Some are also delivered straight to an agent
   holder.
 - On an issue with no route and no session holding its claim, a person's comment, and its edit,
   reach every session that wrote the issue's spec (its primary document), on its own inbox topic.
+- On such an issue, a person's reply in a thread, and its edit, reach only the thread when a
+  session of the thread is live or unresponsive in Envoy's registry. The thread's sessions are
+  the sessions that wrote a comment in it, or the sessions that follow the ask whose thread it
+  is. The reply then reaches no session that only wrote the spec or the document the thread is
+  on. A session that the reply names and whose mention failed still gets it. When every session
+  of the thread is gone or stopped, or Envoy's registry does not answer, the reply reaches the
+  spec's sessions and the document's sessions.
 
 A session reached more than one of these ways gets one copy. A new comment that mentions a session
 arrives there once, as the mention, when the mention reached it; when the mention's send fails,
@@ -172,7 +179,7 @@ published still gets it when it reconnects
 
 | Topic | What it is |
 | --- | --- |
-| `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
+| `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote (apart from a reply in a thread whose own session is live or unresponsive), and claim changes arrive here. |
 | `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
@@ -212,9 +219,12 @@ both. A publish that repeats a dedupe key while its first copy is still kept sto
 and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the
 role, the listener raises the role's wake report again every five minutes, so a released Legion
-role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
-publish is then refused `404` with the reason `unclaimed` or `holder_lapsed`, as it is when the
-keep itself fails. If the holder does not take the message's delivery mode, the refusal is
+role comes back to take it. A message at urgency `low` whose publish names no sender session
+raises no wake report, when it is published or later: that is how the Legion daemon sends a text
+that its reader can act on at its next turn, and such a text brings no released role back. A
+sender that keeps a queue of its own sends `keep: false`, and the publish is then refused `404`
+with the reason `unclaimed` or `holder_lapsed`, as it is when the keep itself fails. If the
+holder does not take the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
 `504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
@@ -239,10 +249,11 @@ A released Legion role gets the messages kept for it when it comes back. The rel
 role's process and leaves its claim standing. The session's record is gone at most about five
 minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
 the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass. Either way it is kept and wakes the role. When the role comes
-back, its session registers again or claims the role, and either one hands it each message kept
-for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
-kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
+the claim at its next pass. Either way it is kept, and it wakes the role unless it is at urgency
+`low` with no sender session. When the role comes back, its session registers again or claims
+the role, and either one hands it each message kept for the role whose hour has not ended, as an
+Envoy card that carries `kept_at`, the time Envoy kept it. The card can arrive before the task
+the daemon gives the woken role. `envoy_inbox` lists
 it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds
 only what that process received. To check one message:
 

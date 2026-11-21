@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The listener answers a publish it stored or kept with the envelope it stored (publishResponse,
@@ -56,9 +58,9 @@ func TestPublishReadsAnEnvelopeAnswerThatCarriesTheRoleFieldAsWithoutIt(t *testi
 				publisher := New(server.URL, "")
 				payload := map[string]string{"kind": "pr-blocked"}
 				if tc.keep {
-					return publisher.PublishKept(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")
+					return publisher.PublishKept(context.Background(), topic, "pr-blocked on LEGION-2", payload, texts.Med, "legion-outbox:42")
 				}
-				return false, publisher.Publish(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")
+				return false, publisher.Publish(context.Background(), topic, "pr-blocked on LEGION-2", payload, texts.Med, "legion-outbox:42")
 			}
 
 			kept, err := read(envelope)

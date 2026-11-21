@@ -237,14 +237,14 @@ test.skipIf(skip)(
 
     // The session is the same session, and it took a turn on the message it sent itself.
     const again = await pane.until("the turn the worker's own message started", () =>
-      pane.turns().find((turn) => lastMessage(turn).includes("Your turn was ended because"))
+      pane.turns().find((turn) => lastMessage(turn).includes("notice: turn ended"))
     );
-    expect(lastMessage(again)).toContain("`eval` call");
-    expect(lastMessage(again)).toContain("Decide whether that call is still worth making");
+    expect(lastMessage(again)).toContain("call_tool: eval");
+    expect(lastMessage(again)).toContain(`call_id: ${evidence.toolCallId}`);
     await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
-    expect(restarts[0]).toContain("Your turn was ended because its `eval` call");
+    expect(restarts[0]).toContain("call_tool: eval");
     expect(pane.running()).toBe(true);
 
     // The ladder stopped at the abort: the turn it ended closed the call's record, so the step

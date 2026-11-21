@@ -148,7 +148,7 @@ func TestAnIssuePodDialingAStaleStreamIsReplacedAndEveryRoleResumesIntoTheNewPod
 		if obs.Kind != runtime.StaleAddress || obs.Locator != loc {
 			t.Fatalf("%s: %s at %+v, want StaleAddress at the recorded locator: %s", loc.Claim, obs.Kind, obs.Locator, obs.Detail)
 		}
-		if want := (movedAddress{connectFlag, testOptions().StreamURL, movedStreamURL}).String(); !strings.Contains(obs.Detail, want) {
+		if want := (movedAddress{connectFlag, connectFlag, testOptions().StreamURL, movedStreamURL}).String(); !strings.Contains(obs.Detail, want) {
 			t.Errorf("%s's detail %q lacks %q", loc.Claim, obs.Detail, want)
 		}
 		if strings.Contains(obs.Detail, "LEGION_DAEMON_URL") {
@@ -210,7 +210,7 @@ func TestARoleToldAStaleDaemonURLGetsANewGenerationInTheSamePod(t *testing.T) {
 	if obs.Kind != runtime.StaleAddress || obs.Locator != loc {
 		t.Fatalf("%s at %+v, want StaleAddress at the recorded locator: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
-	if want := (movedAddress{"LEGION_DAEMON_URL", testOptions().DaemonURL, movedDaemonURL}).String(); !strings.Contains(obs.Detail, want) {
+	if want := (movedAddress{"LEGION_DAEMON_URL", "LEGION_DAEMON_URL", testOptions().DaemonURL, movedDaemonURL}).String(); !strings.Contains(obs.Detail, want) {
 		t.Errorf("detail %q lacks %q", obs.Detail, want)
 	}
 	if strings.Contains(obs.Detail, connectFlag) {
@@ -267,7 +267,7 @@ func TestEnrollingWithTheSecretsBrokerDriftsAnIssuePodMadeWithoutIt(t *testing.T
 		t.Fatalf("%s (%s), want the tester alive: its generation runs in a pod that carries no enrollment, so it holds no broker URL to move",
 			obs.Kind, obs.Detail)
 	}
-	want := (movedAddress{agentSecretsTokenVolume, "(unset)", enrollmentName(brokerTokenProjection(broker))}).String()
+	want := (movedAddress{agentSecretsTokenVolume, agentSecretsTokenVolume, "(unset)", enrollmentName(brokerTokenProjection(broker))}).String()
 	if drifted := driftOf(t, g, r2, testerLoc); !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
 	}
@@ -385,7 +385,7 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	if obs.Kind != runtime.Alive || obs.Locator != testerLoc {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
-	want := (movedAddress{ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
+	want := (movedAddress{ghVolumeName, ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
 	drifted := driftOf(t, g, r2, testerLoc)
 	if !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
@@ -538,7 +538,7 @@ func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
 		state, connected := r2.launchers.state(workerToken, testerLoc.Sandbox.PodUID)
 		return connected && state.Child != nil
 	})
-	want := (movedAddress{ghVolumeName + " holds a repository directory", repositoryDirectory, "the owner directories alone"}).String()
+	want := (movedAddress{ghVolumeName, ghVolumeName + " holds a repository directory", repositoryDirectory, "the owner directories alone"}).String()
 	if drifted := driftOf(t, g, r2, testerLoc); !slices.Contains(drifted, want) {
 		t.Fatalf("PodDrift = %q, want %q among it", drifted, want)
 	}
@@ -740,7 +740,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	// owner set itself, which gains a name here and can only lose one across the states above.
 	r3 := secondRuntime(t, g, servingAddedOwner)()
 	control, ok := r3.movedGhDirs(pod, claim.RoleTester)
-	if want := (movedAddress{ghVolumeName, ghDirsName(renamedDirs), ghDirsName(servedDirs)}); !ok || control != want {
+	if want := (movedAddress{ghVolumeName, ghVolumeName, ghDirsName(renamedDirs), ghDirsName(servedDirs)}); !ok || control != want {
 		t.Fatalf("the control reads %+v (moved %t), want %+v: a daemon serving an owner the pod projects no directory for moves it", control, ok, want)
 	}
 	launched := ghItems(t, &corev1.Pod{Spec: r3.podTemplate(launchOf(t, r3, spec)).Spec}, claim.RoleTester)
@@ -788,7 +788,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	drift := (movedAddress{agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
+	drift := (movedAddress{agentSecretsTokenVolume, agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
 	seen := []runtime.Observation{next(t, observations), next(t, observations)}
 	for _, loc := range []runtime.Locator{testerLoc, reviewerLoc} {
 		obs := observationOf(t, seen, loc)
@@ -925,7 +925,7 @@ func TestAPodEnrolledOtherwiseThanTheRuntimeIsNowHasDrifted(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			want := (movedAddress{agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
+			want := (movedAddress{agentSecretsTokenVolume, agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
 			drifted := driftOf(t, g, r2, loc)
 			if slices.Contains(drifted, want) != tc.drifted {
 				t.Fatalf("PodDrift = %q, want the enrollment drifted %t (%q)", drifted, tc.drifted, want)

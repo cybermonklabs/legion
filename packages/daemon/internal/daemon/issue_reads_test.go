@@ -99,9 +99,9 @@ func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
 			t.Fatalf("read the issue's pull request: %v", err)
 		}
 	}
-	reasons := noticeReasons(t, pool, "pull-request-missing")
-	if len(reasons) != 1 || !strings.Contains(reasons[0], "legion/CAPTURE-1") || !strings.Contains(reasons[0], "handoff") {
-		t.Fatalf("two reads told pull-request-missing %q, want one naming the branch and the handoff commit", reasons)
+	notices := noticePayloads(t, pool, "pull-request-missing")
+	if len(notices) != 1 || notices[0]["branch"] != "legion/CAPTURE-1" || notices[0]["handoff_commit"] == nil || notices[0]["reason"] != nil {
+		t.Fatalf("two reads told pull-request-missing %v, want one naming the branch and the handoff commit", notices)
 	}
 }
 

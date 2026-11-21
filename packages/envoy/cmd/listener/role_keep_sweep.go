@@ -240,10 +240,12 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 
 // keptLaneWakesItsRole reports whether role's kept lane holds, from the copy stored at from on and
 // within roleKeepScanMax copies, a copy the listener kept (isOutboxCopy) whose age at now is at
-// most roleKeepWakeAge. The read goes forward because the stream reads no message before a
-// sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
-// the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
-// no read can decode wakes nothing either.
+// most roleKeepWakeAge and that wakes its role (wakesItsRole). The read goes forward because the
+// stream reads no message before a sequence; a lane's copies grow younger along it, so the read
+// ends at the first copy that wakes the role. An outbox copy wakes nothing, as the outbox's own
+// keep raises no report; a copy at urgency low with no sender - no source_session and no sender
+// stamp - wakes nothing, as the publish route raised no report for it (roleSend.noHolder); and a
+// copy no read can decode wakes nothing either.
 func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from
@@ -257,7 +259,7 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		}
 		next = stored.Sequence + 1
 		var item contracts.Envelope
-		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) {
+		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) && wakesItsRole(item) {
 			return true, nil
 		}
 	}

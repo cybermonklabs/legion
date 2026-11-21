@@ -391,7 +391,7 @@ func TestEveryLaunchOfAClaimWithASessionAndNoFileNamesItsSession(t *testing.T) {
 					r.rt.ScriptSpawn(fake.SpawnResult{Err: storeDown})
 					_ = r.handle(RequestSpawn{Claim: testToken})
 				},
-				trigger: func(r *byIDRig) { r.advance(sessionStoreRetry) },
+				trigger: func(r *byIDRig) { r.advance(SessionStoreRetry) },
 			},
 			{
 				name:  "after a launch whose write failed",

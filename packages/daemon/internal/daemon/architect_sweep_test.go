@@ -173,7 +173,7 @@ func TestTheArchitectSweepWakesTheControllerForAStallInAQuietProject(t *testing.
 		t.Fatalf("the sweep over a quiet project whose one root's architect took nothing applied %d facts, want the one that wakes the controller", n)
 	}
 	wakes := architectStalledWakes(t, pool, root.Key)
-	if len(wakes) != 1 || !strings.HasPrefix(wakes[0], record.ArchitectTookNothing.Words()+":") {
+	if len(wakes) != 1 || wakes[0] != string(record.ArchitectTookNothing) {
 		t.Fatalf("the architect-stalled wakes of %s = %q, want the one wake of the first arm", root.Key, wakes)
 	}
 	if starts := sweptStarts(t, pool, root.Key); len(starts) != 0 {

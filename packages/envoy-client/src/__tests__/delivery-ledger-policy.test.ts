@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decode } from "@toon-format/toon";
-import { type ConsumerGapNotice, gapNoticeText } from "../consumer-delivery";
+import { type ConsumerGapNotice, GAP_NOTICE, gapNoticeText } from "../consumer-delivery";
 import { closeReplayedRemoval } from "../delivery-ledger";
 
 const ISSUE = "notifications.dispatch.issue.DSP-1.>";
@@ -94,12 +94,49 @@ describe("a stored subscription removal", () => {
 describe("a gap notice", () => {
   const card = (notice: ConsumerGapNotice) => decode(gapNoticeText(notice));
 
-  test("is a card for the session, named by its kind", () => {
-    expect(card({ kind: "stream_recreated", message: "recreated" })).toEqual({
-      envoy: { notice: "stream recreated", detail: "recreated" },
+  // What the relay knows of the gap is a field each; the log's sentence stays out.
+  test("is a card for the session that names the gap's facts", () => {
+    expect(
+      card({
+        kind: "stream_recreated",
+        stream: "stream-new",
+        previousStream: "stream-old",
+        message: "recreated",
+      })
+    ).toEqual({
+      envoy: {
+        notice: GAP_NOTICE.kind,
+        stream: "stream-new",
+        previous_stream: "stream-old",
+      },
     });
-    expect(card({ kind: "retention_gap", message: "too old" })).toEqual({
-      envoy: { notice: "messages may be missing", detail: "too old" },
+    expect(
+      card({ kind: "retention_gap", stream: undefined, retentionHours: 72, message: "too old" })
+    ).toEqual({
+      envoy: { notice: GAP_NOTICE.kind, retention_hours: 72 },
     });
+  });
+
+  // No field names the cause (R2 of dispatch://INFRA-3686: no field the same in every notice of
+  // its kind), so each cause's notice states the field of its own cause and not the other's.
+  test("tells its cause by its fields alone", () => {
+    const retention = card({
+      kind: "retention_gap",
+      stream: "stream-7f3a",
+      retentionHours: 72,
+      message: "too old",
+    });
+    const recreated = card({
+      kind: "stream_recreated",
+      stream: "stream-new",
+      previousStream: "stream-old",
+      message: "recreated",
+    });
+
+    expect(retention).toHaveProperty("envoy.retention_hours");
+    expect(retention).not.toHaveProperty("envoy.previous_stream");
+    expect(recreated).toHaveProperty("envoy.previous_stream");
+    expect(recreated).not.toHaveProperty("envoy.retention_hours");
+    for (const told of [retention, recreated]) expect(told).not.toHaveProperty("envoy.cause");
   });
 });

@@ -21,12 +21,13 @@ const jq = (program: string, stdin: string, raw = false): unknown =>
   );
 
 const needle = "tick on LEGSMOKE";
-// rendered is a tick delivery's card as pi-envoy renders it, with LIST as its openCapabilities
-// line, or none.
+// rendered is a tick delivery's card as pi-envoy renders it (envoy-client's renderInbound): the
+// envelope's fields under `envoy:`, the head `summary: <kind> on <project>`, and the tick's record
+// under `message:`, its kind and issue first, with LIST as its openCapabilities line, or none.
 const rendered = (list: string | null) =>
-  `Envoy message\n  summary: ${needle}\n  message:\n    kind: tick\n${
-    list === null ? "" : `    openCapabilities[${list.split(",").length}]: ${list}\n`
-  }  from: legion-daemon`;
+  `envoy:\n  from: agent\n  at: "2026-11-14T21:05:01Z"\n  id: c2f0e1a4b7d94c3e8a1f5b6d9e0c7a28\n  urgency: med\n  summary: ${needle}\n  message:\n    kind: tick\n    issue: LEGSMOKE${
+    list === null ? "" : `\n    openCapabilities[${list.split(",").length}]: ${list}`
+  }\n    held[1]{issue,reason}:\n      LEGSMOKE-3,failure`;
 
 describe("tick_open_capabilities", () => {
   test("a list of one", () => {
@@ -50,7 +51,7 @@ describe("controller_ticks($tick)", () => {
     JSON.stringify({ type: "custom_message", customType: "envoy-message", content });
   // rest is the session after the tick: an envoy-message that is no tick, and a line that is no
   // custom message though it carries the needle.
-  const rest = `${envoy("Envoy message\n  summary: held on LEGSMOKE-3\n  message:\n    kind: held")}\n${JSON.stringify(
+  const rest = `${envoy("envoy:\n  from: agent\n  urgency: med\n  summary: held on LEGSMOKE-3\n  message:\n    kind: held\n    role: planner\n    phase: planning\n    issue: LEGSMOKE-3")}\n${JSON.stringify(
     { type: "message", message: { role: "assistant", content: [{ type: "text", text: needle }] } }
   )}\n`;
   const program = `controller_ticks(${JSON.stringify(needle)})`;
@@ -60,7 +61,7 @@ describe("controller_ticks($tick)", () => {
       {
         open: ["secrets"],
         delivery:
-          "Envoy message summary: tick on LEGSMOKE message: kind: tick openCapabilities[1]: secrets from: legion-daemon",
+          'envoy: from: agent at: "2026-11-14T21:05:01Z" id: c2f0e1a4b7d94c3e8a1f5b6d9e0c7a28 urgency: med summary: tick on LEGSMOKE message: kind: tick issue: LEGSMOKE openCapabilities[1]: secrets held[1]{issue,reason}: LEGSMOKE-3,failure',
       },
     ]);
   });

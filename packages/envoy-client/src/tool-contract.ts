@@ -70,6 +70,20 @@ const TOPIC_GUIDE =
   "slack.<team>.<channel>.thread.<ts>.message|mention; ghostwispr.<session>.<kind>; " +
   "whatsapp.<phone>.<jid>.<kind>; envoy.exceptions.<original-topic>.";
 
+// The step a reader takes on each of Envoy's own notices, keyed by the kind the notice's first
+// field states (`notice: <kind>`), which ends with the name of the tool whose description holds
+// the step: the notices hold only their facts (`notice-text.ts`). The session-id notice's step is
+// in envoy_whoami's description.
+const ENVOY_NOTICE_STEPS =
+  "On notice: messages may be missing (envoy_inbox), whatever its cause, read the live source of " +
+  "each thing you wait on. On notice: Envoy inbound unavailable (envoy_inbox), read live sources " +
+  "until a registration is accepted; what the stream stored arrives then. On notice: Envoy " +
+  "inbound restored (envoy_inbox), rely on Envoy messages again. On notice: Envoy topics refused " +
+  "(envoy_inbox), read the live source of each topic it names that you wait on; this session no " +
+  "longer follows those, and every other topic it follows is still delivered. On notice: unread " +
+  "messages (envoy_inbox), read each card above the notice. On notice: message not shown " +
+  "(envoy_inbox), read it now with the command its read_with names.";
+
 export type { SchemaApi, ToolArgumentsShape } from "@legion/contracts";
 
 const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown as readonly [
@@ -210,13 +224,13 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_inbox",
-    description: "List this Pi session's 50 most recent rendered Envoy deliveries, newest first.",
+    description: `List this Pi session's 50 most recent rendered Envoy deliveries, newest first. ${ENVOY_NOTICE_STEPS}`,
     arguments: () => ({}),
     operation: EnvoyToolOperation.inbox,
   },
   {
     name: "envoy_send",
-    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
+    description: `Send an Envoy agent-to-agent message directly to another session by session ID. To reply to a card from another session, send to the session ID at the start of the card's from field. Set in_reply_to to the card's id. A card reads to: you only when it was sent to you directly; a card that came through a role or a topic has no to field. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
     arguments: (schema) => ({
       session_id: schema
         .string()
@@ -233,7 +247,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. To reply to a card from a session that holds a role, publish to notifications.role.<role>. Use the role in the card's role field, or one of the roles in its roles field. Set in_reply_to to the card's id. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },
@@ -253,7 +267,8 @@ export const envoyToolSpecs = [
   {
     name: "envoy_whoami",
     description:
-      "Returns this session's Envoy identity: session ID, machine ID, port, and directory. session_id is the address a reply reaches. Where a host runs a task subagent inside its parent's process, such a subagent registers no Envoy session of its own, so its session_id is the parent session that spawned it and the result says so.",
+      "Returns this session's Envoy identity: session ID, machine ID, port, and directory. session_id is the address a reply reaches. Where a host runs a task subagent inside its parent's process, such a subagent registers no Envoy session of its own, so its session_id is the parent session that spawned it and the result says so. " +
+      "On notice: session id changed (envoy_whoami), run envoy_whoami again and send the new id to your peers.",
     arguments: () => ({}),
     operation: EnvoyToolOperation.whoami,
   },

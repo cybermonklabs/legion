@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -360,11 +361,10 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 			Generation: 1, Status: "in_progress", Rank: "U"})
 		architect := newLiveClaim(t, retries, failureRetryRoot, claim.RoleArchitect)
 		for _, tc := range []struct {
-			name, issue, reason, want string
+			name, issue, reason string
 		}{
-			{name: "with a reason", issue: "LEGION-223", reason: "the node its pod ran on was drained",
-				want: "Reason: the node its pod ran on was drained."},
-			{name: "with none", issue: "LEGION-224", want: "Reason: retry held phase."},
+			{name: "with a reason", issue: "LEGION-223", reason: "the node its pod ran on was drained"},
+			{name: "with none", issue: "LEGION-224"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				heldForRetry(t, retries, tc.issue)
@@ -379,11 +379,16 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 				if task == "" {
 					t.Fatalf("the retry of %s started no implementer, so nothing carries its reason", tc.issue)
 				}
-				if !strings.Contains(task, tc.want) {
-					t.Errorf("the restarted implementer of %s is told %q, want it to carry %q", tc.issue, task, tc.want)
+				lines := strings.Split(task, "\n")
+				for _, want := range []string{"phase: " + string(phase.Implementing), "retried: " + workflow.RetriedByArchitect} {
+					if !slices.Contains(lines, want) {
+						t.Errorf("the restarted implementer of %s is told %q, want the line %q", tc.issue, task, want)
+					}
 				}
-				if !strings.Contains(task, "Phase: "+string(phase.Implementing)+".") {
-					t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", tc.issue, task)
+				block := slices.ContainsFunc(lines, func(line string) bool { return strings.HasPrefix(line, "<reason") })
+				if block != (tc.reason != "") || tc.reason != "" && !slices.Contains(lines, tc.reason) {
+					t.Errorf("the restarted implementer of %s is told %q, want the architect's words %q in a reason block of their own, and no block for none",
+						tc.issue, task, tc.reason)
 				}
 			})
 		}
@@ -421,11 +426,11 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 		if task == "" {
 			t.Fatalf("the todo on %s started no implementer, so nothing carries the reason for its release", failureStatusRoot)
 		}
-		if want := "Reason: the issue was set to todo while its phase was held."; !strings.Contains(task, want) {
-			t.Errorf("the restarted implementer of %s is told %q, want it to carry the daemon's own reason %q", failureStatusRoot, task, want)
-		}
-		if !strings.Contains(task, "Phase: "+string(phase.Implementing)+".") {
-			t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", failureStatusRoot, task)
+		lines := strings.Split(task, "\n")
+		for _, want := range []string{"phase: " + string(phase.Implementing), "retried: " + workflow.RetriedByTodo} {
+			if !slices.Contains(lines, want) {
+				t.Errorf("the restarted implementer of %s is told %q, want the line %q", failureStatusRoot, task, want)
+			}
 		}
 	})
 }

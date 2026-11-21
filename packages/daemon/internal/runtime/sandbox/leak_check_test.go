@@ -469,8 +469,9 @@ func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *te
 // A change of the deployment's manifest digest alone is drift: an issue pod built under one digest
 // is reported drifted, naming both, by a daemon restarted under another, so its update round
 // opens and replaces the pod once its workers have pushed — a corrected digest reaches every pod.
-// A pod built under no setting records none and has not drifted for it, and neither has a pod
-// built under the digest the daemon still runs.
+// The drift's item names the setting by the variable its roles are handed the digest in alone, so
+// the round's ask names that key and no digest. A pod built under no setting records none and has
+// not drifted for it, and neither has a pod built under the digest the daemon still runs.
 func TestAChangedManifestDigestIsDrift(t *testing.T) {
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	for _, tc := range []struct {
@@ -491,12 +492,16 @@ func TestAChangedManifestDigestIsDrift(t *testing.T) {
 				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.built }))
 			loc := g.spawn(workerSpec(t))
 			r2 := restartedOver(t, g, loc, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.now })
-			drifted := driftOf(t, g, r2, loc)
+			drifted := podDriftOf(t, g, r2, loc)
+			reasons := reasonsOf(drifted)
 			switch {
 			case tc.reason == "" && len(drifted) != 0:
-				t.Fatalf("PodDrift = %q, want nothing", drifted)
-			case tc.reason != "" && !slices.Contains(drifted, tc.reason):
-				t.Fatalf("PodDrift = %q, want %q among it", drifted, tc.reason)
+				t.Fatalf("PodDrift = %q, want nothing", reasons)
+			case tc.reason != "" && !slices.Contains(reasons, tc.reason):
+				t.Fatalf("PodDrift = %q, want %q among it", reasons, tc.reason)
+			}
+			if i := slices.Index(reasons, tc.reason); tc.reason != "" && (drifted[i].Key != leakguard.CheckerVar || drifted[i].Image != "") {
+				t.Fatalf("PodDrift = %+v, want the leak check's drift named by the variable %s alone", drifted, leakguard.CheckerVar)
 			}
 		})
 	}

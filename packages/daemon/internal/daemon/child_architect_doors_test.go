@@ -237,16 +237,17 @@ func (r *childArchitectRig) noticesTo(issue string) []record.Notice {
 	return notices
 }
 
-// catchUpKeys is the key of every issue a catch-up lists, in its order.
+// catchUpKeys is the key of every issue a catch-up names, in its order: those it lists with their
+// fields, then the done ones it names by key alone.
 func catchUpKeys(notice record.Notice) []string {
 	if notice.CatchUp == nil {
 		return nil
 	}
-	keys := make([]string, 0, len(notice.CatchUp.Issues))
+	keys := make([]string, 0, len(notice.CatchUp.Issues)+len(notice.CatchUp.Done))
 	for _, listed := range notice.CatchUp.Issues {
 		keys = append(keys, listed.Key)
 	}
-	return keys
+	return append(keys, notice.CatchUp.Done...)
 }
 
 // wantChildsArchitectToldItsIssues is the child's architect claim on the child, in the root's

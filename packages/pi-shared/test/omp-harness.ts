@@ -118,15 +118,16 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
- * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
- * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
- * sends both. */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. The options'
+ * `headers` are optional as `nats`'s own `request` declares them, which is what lets that
+ * connection, whose options take a fuller header set, be one. The options themselves are not:
+ * `sendRelayFrame` always sends them, with their headers, so a connection a case writes itself
+ * can read the timeout from them. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
+    options: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -914,6 +915,27 @@ export interface LegionPaneOptions {
    * result) or that sends a prompt whose run the host does not settle as terminal does it here.
    */
   readonly whileUp?: (rpc: Rpc) => Promise<void>;
+  /**
+   * Runs beside the pane's first life once its session has registered with the stand-in
+   * listener, while the prompts run: what a case publishes to the session as the pane runs, a
+   * card relayed on its deliver subject (`sendRelayFrame`, with the case's own NATS connection)
+   * among them. The life ends only once this has returned and the prompts have settled; a throw
+   * fails the pane.
+   */
+  readonly during?: (pane: RunningLegionPane) => Promise<void>;
+}
+
+/** What `LegionPaneOptions.during` reads of a pane that runs. */
+export interface RunningLegionPane {
+  /** The session the pane registered with the listener, which its deliver subject names. */
+  readonly sessionID: string;
+  /** Every request the stand-in has served so far. */
+  readonly requests: readonly Request[];
+  /** The Messages requests so far that were turns of the conversation, in order. */
+  readonly turns: () => Request[];
+  /** What ended the pane's process, once it ended: a case passes it on as a relay frame's
+   *  `stopped`, so a wait ends at once on a process that died. */
+  readonly stopped: { readonly error?: unknown };
 }
 
 /** What a settled Legion pane left behind. */
@@ -1064,6 +1086,11 @@ export async function runLegionPane(
     });
   });
   await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
+  /** The Messages requests that were turns of the conversation, in order. */
+  const turns = (): Request[] =>
+    requests.filter(
+      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
+    );
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
@@ -1071,11 +1098,14 @@ export async function runLegionPane(
    * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
    * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame.
+   * `quietMs` waits for the gateway to fall silent rather than for the frame. `during` runs beside
+   * the prompts once the session has registered, and the life is left only once it has returned.
+   * `whileUp` runs after that, once the prompts and `during` are done, before the life is left.
    */
   const live = async (
     prompts: readonly string[],
     args: readonly string[],
+    during?: (pane: RunningLegionPane) => Promise<void>,
     whileUp?: (rpc: Rpc) => Promise<void>
   ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
@@ -1124,13 +1154,44 @@ export async function runLegionPane(
       },
       cleanup
     );
+    const stopped: { error?: unknown } = {};
+    rpc.closed.catch((error: unknown) => {
+      stopped.error = error;
+    });
+    const beside =
+      during === undefined
+        ? undefined
+        : (async () => {
+            let sessionID: string | undefined;
+            while (sessionID === undefined) {
+              if (stopped.error !== undefined) throw stopped.error;
+              const registered = requests.find(
+                (request) =>
+                  request.path === "/v1/interests/subscribe" &&
+                  typeof request.body.session_id === "string" &&
+                  request.body.session_id !== ""
+              )?.body.session_id;
+              if (typeof registered === "string") sessionID = registered;
+              // A real clock: the registration reaches the stand-in with no event to await.
+              else await Bun.sleep(50);
+            }
+            await during({ sessionID, requests, turns, stopped });
+          })();
+    // A hook that fails ends the life at once, as the process's own end does; one that returns
+    // waits for the prompts. The rejection is also `beside`'s, which the end of the life awaits.
+    const failed = beside?.then(() => new Promise<never>(() => undefined));
+    failed?.catch(() => undefined);
     for (const prompt of prompts) {
       settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
       rpc.send({ type: "prompt", message: prompt });
       if (options.quietMs === undefined) {
-        await Promise.race([settled.promise, rpc.closed]);
+        await Promise.race([
+          settled.promise,
+          rpc.closed,
+          ...(failed === undefined ? [] : [failed]),
+        ]);
       } else {
         const quietMs = options.quietMs;
         const deadline = Date.now() + 90_000;
@@ -1146,19 +1207,17 @@ export async function runLegionPane(
             throw new Error(`the stand-in gateway never went quiet for ${quietMs} ms`);
           })(),
           rpc.closed,
+          ...(failed === undefined ? [] : [failed]),
         ]);
       }
     }
+    await beside;
     if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, [], options.whileUp);
+  await live(prompts, [], options.during, options.whileUp);
 
-  const turns = (): Request[] =>
-    requests.filter(
-      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
-    );
   return {
     requests,
     turns,

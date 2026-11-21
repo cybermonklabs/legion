@@ -209,11 +209,12 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 }
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
-// build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts`, `disk` or `sandbox`, with what the pod holds and would be handed now.
-// `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so a pod whose
-// issue moved from one sandbox to the other reads null on one side.
-// Nil means nothing drifted.
+// build a pod from otherwise now (want, podShape), one runtime.Drift per key: the image, which the
+// item names by the image a pod is built from now, and the settings `resources`, `volumes`,
+// `mounts`, `disk` and `sandbox`, which it names by their keys alone. Each reason is the key with
+// what the pod holds and would be handed now. `sandbox` is where a microVM pod runs (sandboxShape)
+// and null for a gVisor pod, so a pod whose issue moved from one sandbox to the other reads null
+// on one side. Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
 // requirements at admission, so a pod need not match the template it was made from, which is why
@@ -222,12 +223,13 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 // A template carrying no shape at all was written before this release, and is compared by image
 // alone, exactly as imageDrift compares a pod: such a Sandbox never reads as having drifted
 // resources, volumes or mounts, whatever its pod holds, since nothing recorded what it was built
-// from and a guess would replace pods the operator never changed.
+// from and a guess would replace pods the operator never changed. A recorded shape that cannot be
+// read is drift of the shape as a whole, under the key `shape`.
 //
 // Equality is semantic, not textual: a quantity spelled otherwise (1024Mi for 1Gi) is the same
 // reservation and the same disk, and a configuration that encodes differently but means the same
 // is no drift.
-func podShapeDrift(s *sandbox, want string) []string {
+func podShapeDrift(s *sandbox, want string) []runtime.Drift {
 	held := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
 	if held == want {
 		return nil
@@ -241,26 +243,41 @@ func podShapeDrift(s *sandbox, want string) []string {
 	}
 	var was podShapeRecord
 	if err := json.Unmarshal([]byte(held), &was); err != nil {
-		return []string{fmt.Sprintf("its recorded shape %q cannot be read: %v", held, err)}
+		return []runtime.Drift{movedSetting("shape", fmt.Sprintf("its recorded shape %q cannot be read: %v", held, err))}
 	}
-	var drifted []string
+	var drifted []runtime.Drift
 	named := func(key string, inPod, handed any) {
 		if equality.Semantic.DeepEqual(inPod, handed) {
 			return
 		}
-		drifted = append(drifted, key+" "+shapeValue(inPod)+", now "+shapeValue(handed))
+		drifted = append(drifted, movedSetting(key, key+" "+shapeValue(inPod)+", now "+shapeValue(handed)))
 	}
 	if was.Image != now.Image {
-		drifted = append(drifted, "image "+was.Image+", now "+now.Image)
+		drifted = append(drifted, movedImage(was.Image, now.Image))
 	}
 	named("resources", was.Resources, now.Resources)
 	named("volumes", was.Volumes, now.Volumes)
 	named("mounts", was.Mounts, now.Mounts)
 	if !sameQuantity(was.Disk, now.Disk) {
-		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
+		drifted = append(drifted, movedSetting("disk", "disk "+was.Disk+", now "+now.Disk))
 	}
 	named("sandbox", was.Sandbox, now.Sandbox)
 	return drifted
+}
+
+// movedImage is the drift of the image a pod was built from, held, against the one a pod is built
+// from now, handed: the item names the image now, and the reason both.
+func movedImage(held, handed string) runtime.Drift {
+	return runtime.Drift{
+		DriftItem: runtime.DriftItem{Key: runtime.DriftImage, Image: handed},
+		Reason:    "image " + held + ", now " + handed,
+	}
+}
+
+// movedSetting is the drift of the setting key, which the item names by its key alone, with the
+// reason an operator reads.
+func movedSetting(key, reason string) runtime.Drift {
+	return runtime.Drift{DriftItem: runtime.DriftItem{Key: key}, Reason: reason}
 }
 
 // shapeValue is one part of a shape as a drift reason names it: its own JSON, which is how the
@@ -288,11 +305,11 @@ func sameQuantity(held, want string) bool {
 
 // templateImageDrift is how a Sandbox written before this release is compared: the first container
 // of its stored template — an init container or the pod's own — running an image other than the
-// one this runtime launches every container with, as one reason. A pod is built whole from one
+// one this runtime launches every container with, as one drift. A pod is built whole from one
 // image, so one container's drift is the pod's.
-func templateImageDrift(s *sandbox, image string) []string {
+func templateImageDrift(s *sandbox, image string) []runtime.Drift {
 	if other, drifted := imageOtherThan(&s.Spec.PodTemplate.Spec, image); drifted {
-		return []string{"image " + other + ", now " + image}
+		return []runtime.Drift{movedImage(other, image)}
 	}
 	return nil
 }
@@ -306,13 +323,13 @@ func templateImageDrift(s *sandbox, image string) []string {
 // into a live pod no round covers replaces that pod when it answers anything (relaunch,
 // launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's shape has
 // moved, or about which kind's shape, in which sandbox, it is compared with.
-func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
+func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []runtime.Drift {
 	return podShapeDrift(s, r.podShapes[key])
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
-// configuration a pod created now is built from, each reason a phrase an operator reads in a task
-// and in a log line, nil when nothing drifted.
+// configuration a pod created now is built from, each a runtime.Drift whose reason is a phrase an
+// operator reads in a log line, nil when nothing drifted.
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -353,7 +370,7 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 // sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. The
 // Sandbox itself is decoded only where the two shapes differ, which is the pod a round is about to
 // be opened over.
-func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]runtime.Drift, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
 	}
@@ -389,7 +406,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		// there, and what it was built from is what the replacement is about to build again.
 		return nil, nil
 	}
-	var drifted []string
+	var drifted []runtime.Drift
 	shape := r.storedShapeKey(kind, u)
 	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
 		// Only a template whose recorded shape differs is decoded, which is the pod a round is
@@ -414,10 +431,10 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// kind gate above (!roundCovers) is what keeps the controller's pod out of this reason, as
 	// it does of every other.
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
-		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
+		drifted = append(drifted, movedSetting("account", "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount)))
 	}
 	for _, moved := range r.driftedInPod(pod, role) {
-		drifted = append(drifted, moved.String())
+		drifted = append(drifted, movedSetting(moved.key, moved.String()))
 	}
 	return drifted, nil
 }

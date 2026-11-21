@@ -1,16 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { renderInbound } from "@legion/envoy-client/delivery";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
+import { decode } from "@toon-format/toon";
 
 import {
   type CardDelivery,
+  type CardMode,
   CardWake,
   type CardWakeContext,
+  lowCard,
   STARTUP_CARD_CAP_MS,
   STARTUP_TURN_CAP_MS,
   STARTUP_TURN_POLL_MS,
   unreadCards,
 } from "./card-wake";
+import { UNREAD_MESSAGES_NOTICE, unreadMessagesText } from "./envoy-notices";
 
 type HostMessage = { readonly role: string } & Record<string, unknown>;
 
@@ -30,21 +36,29 @@ interface SentCard {
 const interrupted = { stopReason: "aborted", errorMessage: "Interrupted by user" };
 const aside = { deliverAs: "aside", triggerTurn: true } as const;
 const followUp = { deliverAs: "followUp", triggerTurn: false } as const;
+/** How a `low` card goes, whatever state the host is in: stored with no turn, no card id. */
+const stored = {
+  deliverAs: "nextTurn",
+  triggerTurn: false,
+  details: { handOver: "inert", urgency: "low" },
+} as const;
 /** The session the harness's cards go into, which `isOwnSession` answers for. */
 const OWN_SESSION = "ses_own";
 
 /**
  * A `CardWake` on a host whose branch the test writes and whose managed timer it runs (`fire`),
  * recording the delay each timer was set for (`delays`) and every message the wake sends (`sent`).
- * `card` asks how to send one card, as the host is busy unless `setIdle(true)`, and returns the
- * record the host would fold and the entry it would persist; `message` hands the wake a record's
- * `message_end`, persisted first unless told not to; `fold` marks the host idle and hands it cards'
- * records, persisted in order; `reply` is an assistant message ending a step. `reportsIdle: false`
- * is a host context without `isIdle`; `mode` is the context's `mode` (RPC unless named, `null` for
- * a context without one). The wake starts in its startup phase, and `endStartup` ends it with a
- * startup card a run read. The cards go into `OWN_SESSION`; `markUnsent` and `markSent` set the
- * start-turn mark the wake reads (empty until a test sets it) to name a session, `OWN_SESSION`
- * unless told, with its start unsent or sent at a time, and `startTurn` runs the start turn.
+ * `card` asks how to send one card of a mode (a card unless told), as the host is busy unless
+ * `setIdle(true)`, and returns the record the host would fold and the entry it would persist;
+ * `store` persists a `low` card's entry as an idle host stores it, with no `message_end`;
+ * `message` hands the wake a record's `message_end`, persisted first unless told not to; `fold`
+ * marks the host idle and hands it cards' records, persisted in order; `reply` is an assistant
+ * message ending a step. `reportsIdle: false` is a host context without `isIdle`; `mode` is the
+ * context's `mode` (RPC unless named, `null` for a context without one). The wake starts in its
+ * startup phase, and `endStartup` ends it with a startup card a run read. The cards go into
+ * `OWN_SESSION`; `markUnsent` and `markSent` set the start-turn mark the wake reads (empty until a
+ * test sets it) to name a session, `OWN_SESSION` unless told, with its start unsent or sent at a
+ * time, and `startTurn` runs the start turn.
  */
 function harness(
   options: {
@@ -78,8 +92,8 @@ function harness(
     sessionManager: { getBranch: () => branch },
   };
   let step = 0;
-  const card = (label: string, targeted = false): SentCard => {
-    const delivery = wake.deliveryFor(targeted, context);
+  const card = (label: string, mode: CardMode = "card"): SentCard => {
+    const delivery = wake.deliveryFor(mode, context);
     const fields = {
       customType: "envoy-message",
       content: label,
@@ -121,6 +135,9 @@ function harness(
     clock: () => clock,
     branch,
     card,
+    store: (low: SentCard) => {
+      branch.push(low.entry);
+    },
     context,
     delays,
     fire,
@@ -187,9 +204,10 @@ function harness(
   };
 }
 
-const wakeMessage = (content: unknown) => ({
+/** The wake `CardWake` sends for `unread` cards: the session's own notice, stating the count. */
+const wakeMessage = (unread: number) => ({
   message: {
-    content,
+    content: unreadMessagesText(unread),
     customType: "envoy-message",
     details: LOCAL_ENVOY_NOTICE,
     display: false,
@@ -197,11 +215,17 @@ const wakeMessage = (content: unknown) => ({
   options: { deliverAs: "nextTurn", triggerTurn: true },
 });
 
+/** The fields of a wake that states `unread` cards. */
+const wakeFor = (unread: number) => ({ envoy: { notice: UNREAD_MESSAGES_NOTICE.kind, unread } });
+
 const contentOf = (sent: Sent | undefined): string => {
   const message = sent?.message;
   if (typeof message !== "object" || message === null || !("content" in message)) return "";
   return String(message.content);
 };
+
+/** The fields of the notice `sent` carries. */
+const fieldsOf = (sent: Sent | undefined): unknown => decode(contentOf(sent));
 
 describe("the delivery a card gets", () => {
   test("a card that finds a turn running is an aside that starts a turn", () => {
@@ -229,9 +253,9 @@ describe("the delivery a card gets", () => {
     const host = harness();
     await host.endStartup();
     host.run();
-    const busy = host.card("busy-aside", true).delivery;
+    const busy = host.card("busy-aside", "aside").delivery;
     host.setIdle(true);
-    const idle = host.card("idle-aside", true).delivery;
+    const idle = host.card("idle-aside", "aside").delivery;
 
     expect([busy, idle]).toEqual([
       { ...aside, details: { envoyCard: expect.any(String), handOver: "run-active" } },
@@ -244,7 +268,7 @@ describe("the delivery a card gets", () => {
   test("a host that reports no idle state gets an aside, and a targeted Aside an aside", () => {
     const host = harness({ reportsIdle: false });
 
-    expect([host.card("card").delivery, host.card("targeted", true).delivery]).toMatchObject([
+    expect([host.card("card").delivery, host.card("targeted", "aside").delivery]).toMatchObject([
       aside,
       aside,
     ]);
@@ -264,7 +288,7 @@ describe("the delivery a card gets", () => {
     host.setIdle(false);
     deliveries.push(host.card("setting-up").delivery);
     host.run();
-    deliveries.push(host.card("running").delivery, host.card("running-targeted", true).delivery);
+    deliveries.push(host.card("running").delivery, host.card("running-targeted", "aside").delivery);
     const noIdleState = harness({ reportsIdle: false });
     deliveries.push(noIdleState.card("no-idle-state").delivery);
 
@@ -273,14 +297,140 @@ describe("the delivery a card gets", () => {
     }
   });
 
+  // A `low` card's reader can act on it at its next turn: the host stores it in the context with
+  // no turn, in the startup phase or after it, whatever the host is doing. The extension hands it
+  // only to a settled host (`UnwrittenFrames`), so its hand-over state is `inert`, and no
+  // `message_end` comes for it, so it carries no card id for the wake to track.
+  test("a low card is stored with no turn and no card id, whatever state the host is in", async () => {
+    const host = harness();
+    host.setIdle(true);
+    const deliveries = [host.card("startup-low", "stored").delivery];
+    await host.endStartup();
+    host.setIdle(true);
+    deliveries.push(host.card("idle-low", "stored").delivery);
+    host.setIdle(false);
+    deliveries.push(host.card("setting-up-low", "stored").delivery);
+    host.run();
+    deliveries.push(host.card("running-low", "stored").delivery);
+    const terminal = harness({ mode: "tui" });
+    terminal.markUnsent();
+    terminal.setIdle(true);
+    deliveries.push(terminal.card("marked-low", "stored").delivery);
+    deliveries.push(harness({ reportsIdle: false }).card("no-idle-state-low", "stored").delivery);
+
+    for (const delivery of deliveries) expect(delivery).toEqual(stored);
+  });
+
   test("every card carries an id no other card shares", () => {
     const host = harness();
-    const ids = [host.card("one"), host.card("two")].map(
-      ({ delivery }) => delivery.details.envoyCard
+    const ids = [host.card("one"), host.card("two")].map(({ delivery }) =>
+      "envoyCard" in delivery.details ? delivery.details.envoyCard : undefined
     );
 
     expect(new Set(ids).size).toBe(2);
   });
+});
+
+// Which cards are `low` (`lowCard`), read off what `renderInbound` gives for each frame: the
+// daemon's and a Dispatch event's whose envelope says `low`. A card from another session, a
+// message Dispatch delivers to the session, an ask's card, and a GitHub or a Slack card are
+// delivered as before, whatever their urgency.
+describe("which cards are low", () => {
+  const reader = "ses_reader";
+  const daemon = { kind: "session", id: "legion-daemon:CORE" };
+  const frame = (fields: Record<string, unknown>): string =>
+    JSON.stringify({
+      event_id: "evt-1",
+      topic: `notifications.agent.${reader}`,
+      issued_at: 1,
+      payload_summary: "summary",
+      ...fields,
+    });
+  const dispatchEvent = (type: string, payload: Record<string, unknown>) => ({
+    id: 1,
+    issue_key: "CORE-1",
+    seq: 1,
+    type,
+    actor: daemon,
+    notify: false,
+    quiet: false,
+    created_at: "2026-11-18T00:00:00Z",
+    payload,
+  });
+  const comment = dispatchEvent("comment.created", {
+    id: "comment-1",
+    issue_key: "CORE-1",
+    author: daemon,
+    body: "The plan phase finished.",
+    reply_to: null,
+    resolved: false,
+    created_at: "2026-11-18T00:00:00Z",
+  });
+  const answered = dispatchEvent("ask.answered", {
+    id: "ask-1",
+    issue_key: "CORE-1",
+    author: daemon,
+    question: "Which transport?",
+    options: [{ label: "JSON" }],
+    state: "answered",
+    answer: { user: { kind: "user", id: "sami" }, selected: ["JSON"], at: "2026-11-18T00:01:00Z" },
+  });
+  const delivered = readFileSync(
+    new URL("../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
+    "utf8"
+  );
+  const rows: readonly (readonly [name: string, raw: string, low: boolean])[] = [
+    ["a daemon card that says low", frame({ source: "agent", urgency: "low" }), true],
+    ...(["med", "high", "blocking"] as const).map(
+      (urgency) =>
+        [`a daemon card that says ${urgency}`, frame({ source: "agent", urgency }), false] as const
+    ),
+    ["a daemon card that names no urgency", frame({ source: "agent" }), false],
+    [
+      "another session's card that says low",
+      frame({ source: "agent", source_session: "ses_peer", urgency: "low" }),
+      false,
+    ],
+    [
+      // A session a broker token proved, whose body named no source_session: the listener's sender
+      // stamp names it, and only the daemon's own publish has neither.
+      "another session's card that says low and names its session only in the sender stamp",
+      frame({ source: "agent", sender: { session_id: "ses_peer" }, urgency: "low" }),
+      false,
+    ],
+    [
+      "a Dispatch event's card that says low",
+      frame({ source: "dispatch", urgency: "low", payload: JSON.stringify(comment) }),
+      true,
+    ],
+    [
+      "a Dispatch event's card that says med",
+      frame({ source: "dispatch", urgency: "med", payload: JSON.stringify(comment) }),
+      false,
+    ],
+    [
+      "an ask's card from Dispatch that says low",
+      frame({ source: "dispatch", urgency: "low", payload: JSON.stringify(answered) }),
+      false,
+    ],
+    [
+      "a message Dispatch delivers to the session that says low",
+      frame({ source: "dispatch", urgency: "low", payload: delivered }),
+      false,
+    ],
+    [
+      "a Dispatch card whose event did not parse that says low",
+      frame({ source: "dispatch", urgency: "low", payload: "not json" }),
+      false,
+    ],
+    ["a GitHub card that says low", frame({ source: "github", urgency: "low" }), false],
+    ["a Slack card that says low", frame({ source: "slack", urgency: "low" }), false],
+  ];
+  for (const [name, raw, low] of rows) {
+    test(`${name} is ${low ? "" : "not "}low`, () => {
+      expect(lowCard(renderInbound(raw, reader))).toBe(low);
+    });
+  }
 });
 
 // What state the host was in when the card was handed over, which the card's `details` carry onto
@@ -346,7 +496,7 @@ describe("a card the host folds into the context with no turn", () => {
       if (order === "before") host.end();
       await host.fire();
 
-      expect(host.sent).toEqual([wakeMessage(expect.stringContaining("Envoy message"))]);
+      expect(host.sent).toEqual([wakeMessage(1)]);
     });
   }
 
@@ -360,7 +510,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("3 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(3));
   });
 
   test("counts only the folded card when a card a run read is handled in the same window", async () => {
@@ -376,7 +526,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
   });
 
   test("sends no wake for a card the run read, handled after its agent_end", async () => {
@@ -396,7 +546,7 @@ describe("a card the host folds into the context with no turn", () => {
   test("sends no wake for a folded targeted Aside", async () => {
     const host = harness();
     host.run();
-    const card = host.card("targeted-aside", true);
+    const card = host.card("targeted-aside", "aside");
     host.fold(card);
     await host.fire();
 
@@ -480,7 +630,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
   });
 
   test("sends no wake on a host that reports no idle state", async () => {
@@ -563,12 +713,12 @@ describe("a card the host folds into the context with no turn", () => {
 // host emits only after startup released the send, arms the check that wakes the session for it
 // once the host is idle.
 describe("in the startup phase", () => {
-  for (const targeted of [false, true]) {
-    test(`sends ${targeted ? "a targeted Aside" : "a card"} that finds an RPC host idle as a follow-up that starts no turn`, () => {
+  for (const mode of ["card", "aside"] as const) {
+    test(`sends ${mode === "aside" ? "a targeted Aside" : "a card"} that finds an RPC host idle as a follow-up that starts no turn`, () => {
       const host = harness();
       host.setIdle(true);
 
-      expect(host.card("startup-follow-up", targeted).delivery).toEqual({
+      expect(host.card("startup-follow-up", mode).delivery).toEqual({
         ...followUp,
         details: { envoyCard: expect.any(String), handOver: "startup", wake: "startup" },
       });
@@ -602,9 +752,7 @@ describe("in the startup phase", () => {
 
     host.message(card.message);
     await host.fire();
-    expect(host.sent).toEqual([
-      wakeMessage("1 Envoy message above arrived with no turn to read it: read it and act on it."),
-    ]);
+    expect(host.sent).toEqual([wakeMessage(1)]);
 
     expect(host.card("after-startup").delivery).toMatchObject(aside);
   });
@@ -615,13 +763,13 @@ describe("in the startup phase", () => {
     const cards = [
       host.card("startup-one"),
       host.card("startup-two"),
-      host.card("startup-three", true),
+      host.card("startup-three", "aside"),
     ];
     for (const card of cards) host.message(card.message);
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("3 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(3));
   });
 
   test("leaves startup cards a busy check finds to the run, which read them", async () => {
@@ -656,7 +804,7 @@ describe("in the startup phase", () => {
     host.end();
     await host.fire();
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("2 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(2));
   });
 
   test("wakes for a startup card after an interrupted run", async () => {
@@ -701,8 +849,26 @@ describe("in the startup phase", () => {
     host.advance(STARTUP_CARD_CAP_MS - 20_000);
     await host.fire();
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
     expect(host.card("after-cap").delivery).toMatchObject(aside);
+  });
+
+  // A `low` card the host stores while the session starts emits no `message_end`: it is in no
+  // startup set, so the check neither waits for it nor counts it, and it is owed no wake.
+  test("owes a low card that comes while the session starts no wake, and waits for none", async () => {
+    const host = harness();
+    host.setIdle(true);
+    host.store(host.card("startup-low", "stored"));
+    host.end();
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    const card = host.card("startup-card");
+    host.message(card.message);
+    await host.fire();
+    // One check, at once: no unseen startup card held it back for its cap.
+    expect(host.delays).toEqual([0]);
+    expect(host.sent).toEqual([wakeMessage(1)]);
   });
 });
 
@@ -712,9 +878,8 @@ describe("in the startup phase", () => {
 // once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before the
 // daemon writes the prompt.
 describe("while the start-turn mark names the session", () => {
-  const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
-  const twoCards =
-    "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
+  const oneCard = 1;
+  const twoCards = 2;
 
   test("sends a terminal's idle card as a follow-up that starts no turn while the start is unsent, and wakes for none before the cap, reading the mark again at each poll", async () => {
     const host = harness({ mode: "tui" });
@@ -787,7 +952,7 @@ describe("while the start-turn mark names the session", () => {
     const host = harness({ mode: "tui" });
     host.markUnsent();
     host.setIdle(true);
-    const cards = [host.card("owed-one"), host.card("owed-two", true)];
+    const cards = [host.card("owed-one"), host.card("owed-two", "aside")];
     for (const card of cards) host.message(card.message);
     await host.fire();
     expect(host.sent).toEqual([]);
@@ -1052,6 +1217,28 @@ describe("while the start-turn mark names the session", () => {
       });
     }
   }
+
+  // The start turn reads a `low` card the host stored before it, and no wake is owed for one:
+  // the wake after the start turn counts the startup cards alone.
+  test("owes no wake after the start turn for a low card that came while the mark held", async () => {
+    const host = harness();
+    host.markSent(host.clock());
+    host.setIdle(true);
+    host.store(host.card("marked-low", "stored"));
+    host.startTurn();
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    const marked = harness();
+    marked.markSent(marked.clock());
+    marked.setIdle(true);
+    marked.store(marked.card("marked-low-beside", "stored"));
+    marked.message(marked.card("marked-card").message);
+    await marked.fire();
+    marked.startTurn();
+    await marked.fire();
+    expect(marked.sent).toEqual([wakeMessage(oneCard)]);
+  });
 });
 
 // While the host sets up a prompt (busy, before its run's `agent_start`: the usage preflight,

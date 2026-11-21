@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  A card carries no reply procedure and states nothing twice: the sender's session, title, time and
+  roles each appear once, and a direct card reads `to: you`. Another author's words (a person's, a
+  session's, a worker's summary, a suggested replacement) come in a block of their own after the
+  card's fields, which those words can neither open nor close, and which nothing before them, the
+  card's own fields included, opens or closes. A notice's `words` key draws a block only where it is
+  the path of a field the notice holds, under a tag of its own; a notice whose keys break that shows
+  its fields with no block. A block names its author, its time and that more follows only where the
+  object that holds its field does not, so a catch-up's kept decision whose words were cut says
+  `more` once, in its row. A Dispatch card keeps its reply command, and the `envoy_send`
+  description says how to reply to any other card. Each plugin notice states only the fields of
+  its kind, and the gap notice tells its cause by them (`retention_hours` or `previous_stream`).
+  The `envoy_inbox` and `envoy_whoami` descriptions give the step a reader takes on each of Envoy's
+  own notices, by its kind, and each notice's kind names the tool whose description holds its step
+  (`notice: messages may be missing (envoy_inbox)`): Oh My Pi shows the model only the first line
+  of a tool's description until the model opens the tool's device.

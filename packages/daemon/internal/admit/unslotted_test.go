@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -63,8 +62,8 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 				t.Fatalf("controller notices = %#v, want one on LEGION-5", notices)
 			}
 			told := notices[0].payload.(record.ControllerNotice)
-			if told.Kind != record.UnslottedNotice || !strings.Contains(told.Reason, tc.status) {
-				t.Fatalf("controller notice = %#v, want kind %s naming the status %s", told, record.UnslottedNotice, tc.status)
+			if told.Kind != record.UnslottedNotice || told.Status != tc.status || told.Reason != "" {
+				t.Fatalf("controller notice = %#v, want kind %s with status %s", told, record.UnslottedNotice, tc.status)
 			}
 
 			// The running tree finishes: its slot frees, and the released root does not take it.

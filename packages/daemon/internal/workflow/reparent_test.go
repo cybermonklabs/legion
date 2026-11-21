@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A person who makes a root that already ran a child of a running tree changes nothing in Legion:
@@ -42,8 +43,8 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 	if len(first) != 1 || !strings.Contains(first[0], "LEGION-208") || !strings.Contains(first[0], "stays a tree of its own") {
 		t.Fatalf("the messages on the re-parented root = %q, want one saying it stays its own tree under LEGION-208", first)
 	}
-	if told := noticeReasons(t, pool, "LEGION-208"); len(told) != 1 || told[0] != first[0] {
-		t.Fatalf("the notices to the tree of LEGION-208 = %q, want the one the issue was told", told)
+	if told := noticeReasons(t, pool, "LEGION-208"); len(told) != 1 || told[0] != "reparented LEGION-500 under LEGION-208: "+texts.StaysOwnCarriesRun {
+		t.Fatalf("the notices to the tree of LEGION-208 = %q, want one of LEGION-500 re-parented under LEGION-208 and why it stays its own", told)
 	}
 	if got := toldParent(t, pool, "LEGION-500"); got != "LEGION-208" {
 		t.Fatalf("the parent recorded as told = %q, want LEGION-208", got)
@@ -110,10 +111,12 @@ func dispatchMessages(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	return outboxStrings(t, pool, "select payload->>'body' from outbox where kind = 'dispatch_message' and issue = $1 order by id", issue)
 }
 
-// noticeReasons is the reason of every notice the daemon has queued for issue's architect.
+// noticeReasons is every notice the daemon has queued for issue's architect, as its facts: the
+// change, the child, its parent and why it stays its own tree.
 func noticeReasons(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
-	return outboxStrings(t, pool, "select payload->>'reason' from outbox where kind = 'notice' and issue = $1 order by id", issue)
+	return outboxStrings(t, pool, `select coalesce(payload->>'change', '') || ' ' || coalesce(payload->>'child', '') || ' under ' ||
+		coalesce(payload->>'parent', '') || ': ' || coalesce(payload->>'stays_own', '') from outbox where kind = 'notice' and issue = $1 order by id`, issue)
 }
 
 func outboxStrings(t *testing.T, pool *pgxpool.Pool, query, issue string) []string {

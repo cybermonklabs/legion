@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -250,9 +251,9 @@ type StallBackstop struct {
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
-// about to be replaced, and the role is asked first to do the steps of its update message
-// (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
-// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
+// about to be replaced, and the role is asked first to do the steps its role prompt gives for the
+// update message (UpdateTask) and answer ready_for_update. Round is the round's identity and kind
+// in one string (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
 // so the action is idempotent: the first post of a round records the round, its reasons and its
@@ -265,90 +266,84 @@ type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
 	Reasons string
+	// Drift is the drift the round is opened for as items, which the round records beside the
+	// reasons' text (Claim.UpdateDrift) and its ask names (UpdateTask).
+	Drift []runtime.DriftItem
 }
 
-// UpdateTask is the text a pod's update round asks each role with. round is the round, which the
-// role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
-// the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
-// plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
-// record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// UpdateTask is the ask a pod's update round puts to each role of issue (texts.UpdateAskRecord),
+// which the daemon's sweep publishes on the role's own Envoy topic (record.UpdateAsk). The sweep
+// builds it from the round's record, so every role of one round reads the same ask, and the
+// record an operator reads names the same drift (dispatch://INFRA-2981 R9).
 //
-// The text names the round's own id, and the role passes it back in its answer
-// (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
-// in the role's hand is what says which round it is answering. A role that reads this ask while
-// a later round has already replaced it names the round it read, and is refused rather than
-// counted for the round it never saw (podUpdateSignalled).
+// round is the round's own id, which the role passes back in its answer (PodUpdateSignalled): an
+// answer counts only for the round whose ask the role read, so a role that reads this ask while a
+// later round has already replaced it names the round it read, and is refused rather than
+// counted for the round it never saw (podUpdateSignalled). pod is the pod the round was opened
+// over.
 //
-// An answer from every role brings the round's end forward only while no role reports background
-// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
-// and no role with a process in the round's pod has an activity report that names a subagent or a
-// background job that runs, or no report since its last turn started. internal/daemon's
-// roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
-// holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
-// turn in progress, each subagent, each background job and each named service that still runs,
-// each commit and each file the role did not push, the pod's test database and its caches. A
-// named service is in no activity report, so it holds nothing and goes with the pod.
+// drift is what the round was opened for, as its claims recorded it (Claim.UpdateDrift): each
+// changed image is named by its short digest and each changed setting by its key, the account
+// among them, never by its value (DriftFacts, dispatch://INFRA-321 R5). reasons is the same drift
+// as one text (Claim.UpdateReasons), which the ask names only for a round an older daemon opened:
+// such a round recorded no items.
 //
-// So the text gives five steps, in this order (dispatch://INFRA-4203 R2): push, let each subagent
-// and each background job the role started finish or stop it and push what it made, put a scratch
-// file needed as evidence on Dispatch, answer, and end the turn. The push comes first, so a job
-// that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
-// work, so a role that follows the steps answers with nothing of its own running. A role whose
-// work finishes after its answer pushes what that work made and answers again with the same
-// round, which podUpdateSignalled records in place of the first answer.
+// endsAt is the moment the round ends at the latest: the round's recorded opening
+// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. An answer from every role brings the
+// round's end forward only while no role reports background work: before endsAt the round ends
+// once every role it asks has answered, no role is in a turn, and no role with a process in the
+// round's pod has an activity report that names a subagent or a background job that runs, or no
+// report since its last turn started. internal/daemon's roundEnd.holding is the one statement of
+// that rule. No answer, no turn and no background work holds the pod past endsAt. Only the role's
+// own push keeps its work: the daemon saves nothing of the disk before the pod goes. The ask
+// states as fields (texts.NewUpdateAsk) that moment, the branch to push to, the step of the
+// role's background work before it answers (dispatch://INFRA-4203 R2's step 2: let each subagent
+// and each background job finish, or stop one that cannot end before endsAt, then commit and push
+// what it made), the op that answers, that every answer brings the moment forward only when no
+// role is in a turn or reports background work (dispatch://INFRA-4203 R1, which its R3 has
+// every_answer_brings_it_forward say), that no answer delays it, that only the role's own push
+// keeps its work, what goes with the pod — each subagent, each background job and each named
+// service that still runs among it, since a named service is in no activity report and holds
+// nothing — and that the role's process starts again in the same session, while its next task
+// waits (dispatch://INFRA-2981 R4).
 //
-// The step to answer is the one step a role can be unable to do: the op list its `legion` tool
-// holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
-// ready_for_update in it. Such a role is told to do the first three steps all the same, because
-// its round ends at endsAt whatever it does.
-//
-// Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
-// goes, so the text says that work not pushed before the pod goes is lost.
-//
-// The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
-// daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
-// character. A value put between two constant pieces that both hold that same quote reads as the
-// end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
-// reasons has no quote character in it, and the sentences on each side of it are pieces of their
-// own.
-//
-// Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
-// and no word that has a second reading.
-func UpdateTask(round, reasons string, endsAt time.Time) string {
-	ends := endsAt.UTC().Format(time.RFC3339)
-	return "The daemon must replace the pod that runs this issue's roles. " +
-		fmt.Sprintf("The reasons are: %s.", reasons) +
-		fmt.Sprintf(`
+// The steps a role takes on reading it are its role prompt's, five in this order
+// (dispatch://INFRA-4203 R2): push, let each subagent and each background job the role started
+// finish or stop it and push what it made, put a scratch file needed as evidence on Dispatch,
+// answer, and end the turn. The ask's own fields name the first, the second and the fourth
+// (push_to, background_work, answer). The push comes first, so a job that outlives endsAt never
+// keeps a role from pushing its own commits. The answer comes after the work, so a role that
+// follows the steps answers with nothing of its own running. A role whose work finishes after its
+// answer pushes what that work made and answers again with the same round, which
+// podUpdateSignalled records in place of the first answer. A role whose `legion` tool has no
+// ready_for_update does the first three steps all the same, because its round ends at endsAt
+// whatever it does.
+func UpdateTask(issue, round, pod string, drift []runtime.DriftItem, reasons string, endsAt time.Time) texts.UpdateAskRecord {
+	images, settings := DriftFacts(drift)
+	ask := texts.NewUpdateAsk(issue, round, pod, images, settings, endsAt.UTC())
+	if len(drift) == 0 {
+		ask.Reasons = reasons
+	}
+	return ask
+}
 
-The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
-
-If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
-
-This message can arrive while you are in a turn. Do these five steps, in this order:
-
-1. Push every commit that you want to keep to this issue's branch.
-2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
-3. If you need a scratch file as evidence, put it on Dispatch.
-4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
-5. End your turn.
-
-If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
-
-A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
-
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn. The round ends at %[2]s whatever you do.
-
-These things go with the pod when the round ends:
-
-- The turn that is in progress.
-- Each subagent, each background job and each named service that still runs.
-- Each commit and each file that you did not push.
-- The pod's test database.
-- The pod's caches.
-
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
+// DriftFacts is a round's drift as its texts name it — the ask to each role (UpdateTask) and the
+// controller's update-stalled notice — each once, in the order the drift names them: each changed
+// image by its short digest (texts.ShortDigest), and each changed setting by its key alone, so no
+// text carries a setting's value: an address, a credential's name, a whole volume.
+func DriftFacts(drift []runtime.DriftItem) (images, settings []string) {
+	for _, item := range drift {
+		if item.Key == runtime.DriftImage {
+			if digest := texts.ShortDigest(item.Image); digest != "" && !slices.Contains(images, digest) {
+				images = append(images, digest)
+			}
+			continue
+		}
+		if !slices.Contains(settings, item.Key) {
+			settings = append(settings, item.Key)
+		}
+	}
+	return images, settings
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -2989,6 +2984,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateDrift = slices.Clone(open.Drift)
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3201,6 +3197,7 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 // restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
+	m.claim.UpdateDrift = nil
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
 	m.claim.UpdateLeftRound = ""
@@ -3216,8 +3213,8 @@ func (m *Machine) clearUpdate() {
 // background work.
 //
 // A second answer for the same round records again, the newer head in place of the first: the
-// ask tells a role whose subagent or background job finishes after its answer to push what that
-// work made and to answer again with the same round (UpdateTask).
+// role prompts tell a role whose subagent or background job finishes after its answer to push
+// what that work made and to answer again with the round its update message names (UpdateTask).
 //
 // The answer counts for one round only: the one whose update message the worker read, which that
 // message named and which the answer carries back (UpdateTask). An answer for any other round is

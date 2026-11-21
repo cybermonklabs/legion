@@ -182,7 +182,7 @@ func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
 	if obs.Kind != runtime.Alive || obs.Locator != testerLoc {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
-	want := (movedAddress{"role_config_files.tester " + file, "(unset)", "volume operator-roles from ConfigMap legion-operator-roles items []"}).String()
+	want := (movedAddress{"role_config_files.tester", "role_config_files.tester " + file, "(unset)", "volume operator-roles from ConfigMap legion-operator-roles items []"}).String()
 	drifted := driftOf(t, g, r2, testerLoc)
 	if !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
@@ -310,7 +310,7 @@ func TestAMissingRoleOverlayMountIsDriftForEveryRoleOfThePod(t *testing.T) {
 		o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {"/etc/x/tester.yml"}, claim.RoleImplementer: {"/etc/y/implementer.yml"}}
 	})
 	pod := &corev1.Pod{Spec: podOf(t, before, workerSpec(t))}
-	want := (movedAddress{"role_config_files.implementer /etc/y/implementer.yml", "(unset)", "volume roles-y from ConfigMap roles-y items []"}).String()
+	want := (movedAddress{"role_config_files.implementer", "role_config_files.implementer /etc/y/implementer.yml", "(unset)", "volume roles-y from ConfigMap roles-y items []"}).String()
 	for _, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect, claim.RoleImplementer} {
 		moved := after.driftedInPod(pod, role)
 		if !slices.ContainsFunc(moved, func(m movedAddress) bool { return m.String() == want }) {

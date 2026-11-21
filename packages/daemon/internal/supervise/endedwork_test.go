@@ -12,27 +12,34 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // endedWorkLine is the one line a let-go that records what it ended writes (recordEnd).
 const endedWorkLine = "supervise: the relaunch ended work the agent had running"
 
-// The statements of the sentence a relaunched process is told of its let-go (relaunchSentence):
-// whether it cut a turn off — no turn; a turn the agent was in; and the turn of the task it holds
-// — and what of its background work ended: the kind the record names; that the daemon has no
-// report of the turn, and so that its subagents and jobs are gone; that every other one is gone
-// too, where the record names none; and that the turn's subagents and jobs are gone, where the
-// record holds a report of it.
+// The facts of the note a relaunched process is told of its let-go (EndedWork.Facts), each the
+// line its record renders (RelaunchNote): a turn cut off, the agent's own or the task's; the kind
+// of background work the record names, or background work of no named kind; and a report of the
+// turn on record. A fact that does not hold is no line at all: the note of a let-go that cut no
+// turn off has no in_turn line, and one of a process the daemon holds no report of has no
+// reported line, which is how the note says that what that turn started is unknown.
 const (
-	saysNoTurn             = "You were not in a turn then."
-	saysTurnCut            = "The turn you were in was interrupted."
-	saysTaskTurn           = "Your previous turn on this task was interrupted."
-	saysSubagentStopped    = "Each subagent that you started stopped with that process."
-	saysNoReport           = "The daemon has no report"
-	saysTurnGoneUnreported = "So the subagents and background jobs of that turn are gone."
-	saysEveryOtherGone     = "Every other subagent and background job that you started in that process is gone too."
-	saysTurnGone           = "The subagents and background jobs of that turn are gone."
+	saysTurnCut         = "in_turn: true"
+	saysTaskTurn        = "task_turn: true"
+	saysSubagentStopped = "stopped[1]: subagent"
+	saysStopped         = "stopped["
+	saysBackground      = "background: true"
+	saysReported        = "reported: true"
 )
+
+// saysCause is the line of the note that names cause, as its record renders it.
+func saysCause(cause string) string { return partText(texts.RelaunchFacts{Cause: cause}) }
+
+// relaunchFacts is the facts of the relaunch note the let-go ended records (EndedWork.Facts), each
+// on a line of its own as texts.Render writes it, with no task after it: what the note of a claim
+// relaunched holding nothing says, beside its kind and issue.
+func relaunchFacts(ended EndedWork) string { return partText(ended.Facts(false)) }
 
 // reportActivity is the claim's process reporting what it is doing, through the store's own write
 // onto the launch it runs now (memStore.reportActivity, store's PutClaimActivity): background work
@@ -275,8 +282,8 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 
 // The registration deadline: a process that registered and never said it was ready is retired
 // and relaunched. It ran no turn, so the only work it can end is what its own report named. Its
-// cause names what the agent never did and then the retirement, so the sentence the next process
-// reads has the one "because" (endNeverReady, relaunchSentence).
+// cause names what the agent never did and then the retirement, as the note the next process
+// reads names it (endNeverReady, EndedWork.Facts), with no turn cut off.
 func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 	h := newHarness(t)
 	h.launch()
@@ -293,10 +300,9 @@ func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: retired,
 		Background: true, Kinds: []string{"async-job"}, Reported: true})
 	h.wantEndedLine(cause)
-	because := "Your previous process ended because " + cause + ". " + saysNoTurn
-	if got := RelaunchSentence(h.claim().EndedWork); !strings.HasPrefix(got, because) {
-		t.Errorf("the relaunch is told %q, want it to begin %q", got, because)
-	}
+	told := relaunchFacts(h.claim().EndedWork)
+	wantSays(t, told, saysCause(cause), "stopped[1]: async-job", saysReported)
+	wantSaysNot(t, told, saysTurnCut)
 }
 
 // A suspension records what its stop ended under the source that asked for it: the operator's
@@ -470,9 +476,8 @@ func TestARelaunchRecordsNoReportOfAnEarlierLaunch(t *testing.T) {
 
 // Unknown is not silence: a process that ran a turn and left no report of its launch — a Claude
 // Code worker reports only at its Stop hook, a stale plugin's report is refused — is recorded as
-// one the daemon has no report of (EndedWork.Reported false), whose sentence says that any
-// background work it started is gone (relaunchSentence), though no turn was running and no task
-// was in one when it was let go.
+// one the daemon has no report of (EndedWork.Reported false), whose note states no report of it
+// (EndedWork.Facts), though no turn was running and no task was in one when it was let go.
 func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -493,12 +498,10 @@ func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 // a later turn of the task began after that report; the process then died in it. The record names
 // the turn and the task and says the daemon has no report of that turn (EndedWork.Reported false),
 // and it keeps the old report's background work, which ran in that process (recordEnd). So the
-// task taken back is sent naming the subagent the old report named, saying that the daemon has no
-// report of the turn and that its subagents and background jobs are gone, and — where the old
-// report named nothing — that every other one is gone too (relaunchSentence). The controls are
-// reports read after the turn began: each is the turn's own, counted as a report, and the task goes
-// back saying that the turn's subagents and background jobs are gone, with no word that the daemon
-// has no report, and naming the subagent one of them names.
+// task taken back is sent behind a note that names the turn cut off, the subagent the old report
+// named, and no report of the turn (EndedWork.Facts). The controls are reports read after the
+// turn began: each is the turn's own, counted as a report, and the note states it, naming the
+// subagent one of them names.
 func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -510,13 +513,13 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 		says, saysNot []string
 	}{
 		{name: "a report before the turn began said nothing runs", before: true,
-			says: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}, saysNot: []string{"stopped with that process", saysTurnGone}},
+			says: []string{saysTurnCut, saysTaskTurn}, saysNot: []string{saysReported, saysStopped, saysBackground}},
 		{name: "a report before the turn began named a subagent", before: true, kinds: []string{"subagent"},
-			says: []string{saysSubagentStopped, saysNoReport, saysTurnGoneUnreported}, saysNot: []string{saysEveryOtherGone, saysTurnGone}},
+			says: []string{saysTurnCut, saysTaskTurn, saysSubagentStopped}, saysNot: []string{saysReported, saysBackground}},
 		{name: "a report after the turn began said nothing runs", reported: true,
-			says: []string{saysTurnGone}, saysNot: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone, "stopped with that process"}},
+			says: []string{saysTurnCut, saysTaskTurn, saysReported}, saysNot: []string{saysStopped, saysBackground}},
 		{name: "a report after the turn began named a subagent", kinds: []string{"subagent"}, reported: true,
-			says: []string{saysSubagentStopped, saysTurnGone}, saysNot: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}},
+			says: []string{saysTurnCut, saysTaskTurn, saysSubagentStopped, saysReported}, saysNot: []string{saysBackground}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -554,36 +557,29 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 // process reported — a subagent, or nothing running — then ran a turn of a task to its end, and
 // its turn-end report never landed; it then died in no turn. The record says no turn was cut off
 // and that the daemon has no report of the process's last turn (EndedWork.Reported false), and
-// keeps whatever the older report named (recordEnd). So the sentence its next process is told
-// names the subagent where the report named one, rather than dropping it for an unknown, and
-// either way says that the daemon has no report of the background work of the last turn and that
-// every subagent and background job the agent started in that process is gone (relaunchSentence);
-// where the report named nothing, it names no kind. The control is the same subagent reported
-// after the turn began: the record holds a report of the last turn, and the sentence names the
-// subagent and says nothing of a missing report.
+// keeps whatever the older report named (recordEnd). So the note its next process is told names
+// the subagent where the report named one, rather than dropping it for an unknown, and either way
+// states no turn cut off and no report of the last turn (EndedWork.Facts); where the report named
+// nothing, it names no kind. The control is the same subagent reported after the turn began: the
+// record holds a report of the last turn, and the note states that report and the subagent.
 func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testing.T) {
-	const (
-		saysNoLastTurnReport = "The daemon has no report of the background work of your last turn."
-		saysEveryOneGone     = "So every subagent and background job that you started in that process is gone."
-	)
 	for _, row := range []struct {
 		name string
 		// before is whether the report is read before the last turn begins.
 		before   bool
 		kinds    []string
 		reported bool
-		// says and saysNot are what the relaunch's sentence says, and does not say.
+		// says and saysNot are what the relaunch's note says, and does not say.
 		says, saysNot []string
 	}{
 		{name: "a report before the last turn began named a subagent", before: true, kinds: []string{"subagent"},
-			says:    []string{saysSubagentStopped, saysNoLastTurnReport, saysEveryOneGone},
-			saysNot: []string{"Your tool calls in flight", saysTurnGoneUnreported}},
+			says:    []string{saysSubagentStopped},
+			saysNot: []string{saysTurnCut, saysReported, saysBackground}},
 		{name: "a report before the last turn began said nothing runs", before: true,
-			says:    []string{saysNoTurn, saysNoLastTurnReport, saysEveryOneGone},
-			saysNot: []string{"stopped with that process", "Your tool calls in flight", saysTurnGoneUnreported}},
+			saysNot: []string{saysTurnCut, saysReported, saysStopped, saysBackground}},
 		{name: "a report after the last turn began named a subagent", kinds: []string{"subagent"}, reported: true,
-			says:    []string{saysSubagentStopped, saysNoTurn},
-			saysNot: []string{saysNoReport, saysEveryOneGone}},
+			says:    []string{saysSubagentStopped, saysReported},
+			saysNot: []string{saysTurnCut}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -608,7 +604,7 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
 				Generation: died, Background: len(row.kinds) > 0, Kinds: row.kinds, Reported: row.reported})
 			ended := h.claim().EndedWork
-			sentence := RelaunchSentence(ended)
+			sentence := relaunchFacts(ended)
 			wantSays(t, sentence, row.says...)
 			wantSaysNot(t, sentence, row.saysNot...)
 		})
@@ -642,11 +638,11 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 		says, saysNot []string
 	}{
 		{name: "a report before the busy answer said nothing runs", before: true,
-			says: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}, saysNot: []string{"stopped with that process", saysTurnGone}},
+			says: []string{saysTurnCut}, saysNot: []string{saysTaskTurn, saysReported, saysStopped, saysBackground}},
 		{name: "a report before the busy answer named a subagent", before: true, kinds: []string{"subagent"},
-			says: []string{saysSubagentStopped, saysNoReport, saysTurnGoneUnreported}, saysNot: []string{saysEveryOtherGone, saysTurnGone}},
+			says: []string{saysTurnCut, saysSubagentStopped}, saysNot: []string{saysTaskTurn, saysReported, saysBackground}},
 		{name: "a report after the busy answer said nothing runs", reported: true,
-			says: []string{saysTurnGone}, saysNot: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone, "stopped with that process"}},
+			says: []string{saysTurnCut, saysReported}, saysNot: []string{saysTaskTurn, saysStopped, saysBackground}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -714,13 +710,13 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 			name string
 			// before is whether the report is read before the agent's answer.
 			before bool
-			// says and saysNot are what the sentence of the cut turn says, and does not say.
+			// says and saysNot are what the note of the cut turn says, and does not say.
 			says, saysNot []string
 		}{
 			{name: "a report before the answer said nothing runs", before: true,
-				says: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}, saysNot: []string{saysTurnGone}},
+				says: []string{saysTurnCut}, saysNot: []string{saysReported, saysStopped, saysBackground}},
 			{name: "a report after the answer said nothing runs",
-				says: []string{saysTurnGone}, saysNot: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}},
+				says: []string{saysTurnCut, saysReported}, saysNot: []string{saysStopped, saysBackground}},
 		} {
 			t.Run(through.name+": "+row.name, func(t *testing.T) {
 				h := newBareHarness(t)
@@ -770,7 +766,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 				h.wantState(StateLaunching)
 				h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
 					Generation: died, Turn: true, TaskTurn: !through.drops, Reported: !row.before})
-				sentence := RelaunchSentence(h.claim().EndedWork)
+				sentence := relaunchFacts(h.claim().EndedWork)
 				if !through.drops {
 					p := h.pending()
 					if !p.Interrupted {
@@ -863,7 +859,7 @@ func (h *harness) compactHeld() (release func(), compacted chan error) {
 }
 
 // wantRelaunchTold is the relaunched claim, which holds no task, sent the daemon's own delivery of
-// its record at its ready (queueRelaunch), whose sentence says says. It answers the message that
+// its record at its ready (queueRelaunch), whose note says says. It answers the message that
 // delivery carried.
 func (h *harness) wantRelaunchTold(says string) string {
 	h.t.Helper()
@@ -909,13 +905,14 @@ func TestARelaunchRecordsNoTurnForAProcessLostDuringACompaction(t *testing.T) {
 				t.Fatalf("the compaction whose process was lost answered %v, want ErrCompactProcessGone", err)
 			}
 			h.m.Wait()
-			h.wantRelaunchTold(saysNoTurn)
+			told := h.wantRelaunchTold(saysSubagentStopped)
+			wantSaysNot(t, told, saysTurnCut, saysTaskTurn)
 		})
 	}
 }
 
 // The control: a turn Oh My Pi started under the compaction (compacting.inTurn) is a turn as any
-// other, and the death cuts it off, so the record and the relaunched process's sentence say so.
+// other, and the death cuts it off, so the record and the relaunched process's note say so.
 func TestARelaunchRecordsTheTurnStartedUnderACompaction(t *testing.T) {
 	h, release, compacted := compactingIdle(t)
 	h.must(StreamTurnStart{Claim: h.token})
@@ -972,8 +969,8 @@ func TestARelaunchRecordsNoTurnForASuspensionDuringACompaction(t *testing.T) {
 			h.wantEnded(EndedWork{At: h.clock.Now(), Cause: cause, Generation: stopped,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
-			if got := RelaunchSentence(h.claim().EndedWork); !strings.Contains(got, saysNoTurn) {
-				t.Errorf("the record is told as %q, want it to say %q", got, saysNoTurn)
+			if got := relaunchFacts(h.claim().EndedWork); strings.Contains(got, saysTurnCut) {
+				t.Errorf("the record is told as %q, want no turn cut off: no %q", got, saysTurnCut)
 			}
 		})
 	}
@@ -1008,9 +1005,9 @@ func TestARelaunchRecordsTheStallBackstopDuringACompaction(t *testing.T) {
 		t.Fatalf("the compaction whose process the backstop let go answered %v, want ErrCompactProcessGone", err)
 	}
 	h.m.Wait()
-	told := h.wantRelaunchTold("Your previous process ended because " + cause + ". " + saysNoTurn)
-	if strings.Contains(told, "its turn showed no progress") {
-		t.Errorf("the relaunched claim was told %q, want no word of a turn that showed no progress", told)
+	told := h.wantRelaunchTold(saysCause(cause))
+	if strings.Contains(told, saysTurnCut) || strings.Contains(told, "its turn showed no progress") {
+		t.Errorf("the relaunched claim was told %q, want no turn cut off and no word of a turn that showed no progress", told)
 	}
 }
 
@@ -1053,10 +1050,9 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 		name string
 		land func(h *harness)
 		turn bool
-		says string
 	}{
-		{name: "at the turn's end", land: func(h *harness) { h.must(StreamTurnEnd{Claim: h.token}) }, says: saysNoTurn},
-		{name: "at the hold's deadline, in the turn", land: func(h *harness) { h.advance(testStop) }, turn: true, says: saysTaskTurn},
+		{name: "at the turn's end", land: func(h *harness) { h.must(StreamTurnEnd{Claim: h.token}) }},
+		{name: "at the hold's deadline, in the turn", land: func(h *harness) { h.advance(testStop) }, turn: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -1079,11 +1075,11 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 			h.must(RequestResume{Claim: h.token})
 			h.reach(StateReady)
 			told := h.wantPrompts(sent + 1)[sent]
-			if !strings.Contains(told.Message, tc.says) {
-				t.Errorf("the resumed claim was sent %+v, want it to say %q", told, tc.says)
+			if tc.turn && !strings.Contains(told.Message, saysTaskTurn) {
+				t.Errorf("the resumed claim was sent %+v, want it to say %q", told, saysTaskTurn)
 			}
-			if !tc.turn && strings.Contains(told.Message, saysTaskTurn) {
-				t.Errorf("the resumed claim was sent %+v, want no word of a turn of its task cut off", told)
+			if !tc.turn && (strings.Contains(told.Message, saysTurnCut) || strings.Contains(told.Message, saysTaskTurn)) {
+				t.Errorf("the resumed claim was sent %+v, want no turn cut off, its task's or its own", told)
 			}
 		})
 	}
@@ -1112,11 +1108,10 @@ func idleWithItsResultToCome(t *testing.T, kinds ...string) (h *harness, task st
 // and each records its own cause, the task's turn and no running turn, with what the report named
 // (EndedWork.TaskTurn without Turn: recordEnd, recordGoneEnd). Where the report says nothing
 // runs, that take-back is the whole of what the record holds, and the record is written all the
-// same. The relaunched process is then sent the task behind that record's sentence: its turn on
-// the task was interrupted, why, and the subagent where the report named one. It is never told
-// that the daemon has no report of that turn, nor that no cause was recorded, which is what a task
-// taken back with no record of its own let-go is told (interruptedTask under an older record's
-// cause, or none).
+// same. The relaunched process is then sent the task behind that record's note: its turn on the
+// task was cut off, why, and the subagent where the report named one. It is never sent the
+// cut-turn note, which is what a task taken back with no record of its own let-go is given
+// (CutTurnNote under an older record's cause, or none).
 func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *testing.T) {
 	for _, report := range []struct {
 		name  string
@@ -1126,7 +1121,7 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 		says, saysNot []string
 	}{
 		{name: "its report names a subagent", kinds: []string{"subagent"}, says: []string{saysSubagentStopped}},
-		{name: "its report says nothing runs", saysNot: []string{"stopped with that process"}},
+		{name: "its report says nothing runs", saysNot: []string{saysStopped, saysBackground}},
 	} {
 		for _, tc := range []struct {
 			name  string
@@ -1161,11 +1156,11 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 				h.m.Wait()
 				told := h.wantPrompts(sent + 1)[sent]
 				if told.DeliveryID != h.pending().ID || !strings.HasSuffix(told.Message, "\n\n"+task) {
-					t.Fatalf("the relaunched claim was sent %+v, want the task taken back, %q, behind the sentence of its let-go", told, task)
+					t.Fatalf("the relaunched claim was sent %+v, want the task taken back, %q, behind the note of its let-go", told, task)
 				}
-				wantSays(t, told.Message, append([]string{saysTaskTurn, "Your process ended because " + tc.cause + ".", saysTurnGone},
+				wantSays(t, told.Message, append([]string{saysTaskTurn, saysCause(tc.cause), saysTurnCut, saysReported},
 					report.says...)...)
-				wantSaysNot(t, told.Message, append([]string{saysNoReport, "the daemon recorded no cause"}, report.saysNot...)...)
+				wantSaysNot(t, told.Message, append([]string{"kind: " + string(texts.CutTurnNote)}, report.saysNot...)...)
 				h.wantEndedLine(tc.cause)
 			})
 		}
@@ -1191,7 +1186,7 @@ func TestARelaunchRecordsNoTaskTurnForAnIdleClaimsSuspensionThatTakesNothingBack
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: stopped,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
 	h.wantEndedLine(cause)
-	sentence := RelaunchSentence(h.claim().EndedWork)
-	wantSays(t, sentence, saysNoTurn, saysSubagentStopped)
+	sentence := relaunchFacts(h.claim().EndedWork)
+	wantSays(t, sentence, saysSubagentStopped)
 	wantSaysNot(t, sentence, saysTaskTurn, saysTurnCut)
 }

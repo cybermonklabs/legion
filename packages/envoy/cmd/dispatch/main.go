@@ -803,12 +803,15 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			// The registry a person's reply reads its thread's sessions from, on the Envoy
+			// listener with the credentials the API server's client presents (api.NewDeps).
+			Registry:         dispatchenvoy.New(boot.EnvoyURL, listenerCredentials(boot)...),
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
@@ -1893,6 +1896,20 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
+}
+
+// listenerCredentials are the credentials a listener client of main's presents, as the API
+// server's client presents them (api.NewDeps): the shared token, and Dispatch's own identity
+// where boot names one, which the client presents in the shared token's place.
+func listenerCredentials(boot bootConfig) []dispatchenvoy.Option {
+	options := []dispatchenvoy.Option{dispatchenvoy.WithToken(boot.EnvoyToken)}
+	if boot.EnvoyAccountTokenFile != "" {
+		options = append(options, dispatchenvoy.WithAccountTokenFile(boot.EnvoyAccountTokenFile))
+	}
+	if boot.EnvoyGoogleAudience != "" {
+		options = append(options, dispatchenvoy.WithGoogleIdentity(boot.EnvoyGoogleAudience))
+	}
+	return options
 }
 
 // loadEnvoyConfig is envoy.json as Dispatch reads it: the files config.Load finds, the user file

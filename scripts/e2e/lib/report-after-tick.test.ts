@@ -39,11 +39,13 @@ const start: Entry = {
     content: [{ type: "text", text: "Legion controller start: follow the start procedure now." }],
   },
 };
-// tick is pi-envoy's delivery of the daemon's tick, idle or steered into a running turn alike.
+// tick is pi-envoy's delivery of the daemon's tick, idle or steered into a running turn alike: the
+// head `summary: tick on <project>`, and the tick's record under `message:`.
 const tick: Entry = {
   type: "custom_message",
   customType: "envoy-message",
-  content: "envoy:\n  from: agent\n  summary: tick on LEGSMOKE\n  message:\n    kind: tick",
+  content:
+    "envoy:\n  from: agent\n  urgency: med\n  summary: tick on LEGSMOKE\n  message:\n    kind: tick\n    issue: LEGSMOKE",
   display: true,
 };
 // The controller reads the daemon's state with its legion tool (read_state), never `legion` from

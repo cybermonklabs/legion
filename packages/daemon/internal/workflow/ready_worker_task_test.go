@@ -232,25 +232,3 @@ func noticeKindFailures(t *testing.T, pool *pgxpool.Pool, issue string) map[stri
 	}
 	return failures
 }
-
-// noticeKindReasons is the reason of each kind of notice the outbox holds for issue.
-func noticeKindReasons(t *testing.T, pool *pgxpool.Pool, issue string) map[string]string {
-	t.Helper()
-	rows, err := pool.Query(t.Context(), "select payload->>'kind', coalesce(payload->>'reason', '') from outbox where kind = 'notice' and issue = $1", issue)
-	if err != nil {
-		t.Fatalf("read the notices of %s: %v", issue, err)
-	}
-	defer rows.Close()
-	reasons := map[string]string{}
-	for rows.Next() {
-		var kind, reason string
-		if err := rows.Scan(&kind, &reason); err != nil {
-			t.Fatalf("scan a notice of %s: %v", issue, err)
-		}
-		reasons[kind] = reason
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the notices of %s: %v", issue, err)
-	}
-	return reasons
-}

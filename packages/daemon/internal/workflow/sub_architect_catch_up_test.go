@@ -78,12 +78,12 @@ func seedArchitectClaimIn(t *testing.T, pool *pgxpool.Pool, issue string, state 
 // A child's own architect is told, at each launch's ready, the child and every issue under it:
 // the catch-up is queued on the child, states the child's generation and the launch, names no
 // gate (a child registers none) and no decision (a decision kept while nobody could hear it is the
-// tree's, and stays its root architect's), and its reason names the child. Its parent and its
-// sibling are not its own. A relaunch drops the catch-up its earlier launch never had delivered,
-// so the agent is given one, the current one. A child that is out of the workflow or done, and a
-// child of a lingering tree, is told nothing.
+// tree's, and stays its root architect's). Its parent and its sibling are not its own. A relaunch
+// drops the catch-up its earlier launch never had delivered, so the agent is given one, the
+// current one. A child that is out of the workflow or done, and a child of a lingering tree, is
+// told nothing.
 func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
-	const told = "gen=2 launch=%d gates= issues=LEGION-2,LEGION-3 reason=the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"
+	const told = "gen=2 launch=%d gates= issues=LEGION-2,LEGION-3 done= accepting="
 	t.Run("a live child", func(t *testing.T) {
 		ctx := context.Background()
 		pool := migratedPool(t)
@@ -162,31 +162,26 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 
 // An issue in accepting waits for the acceptance of the architect that owns it: the one the
 // phase-finished notice that moved it there reaches, which is its own architect while that claim
-// holds its role, and else the nearest architect above it that does. So a root's catch-up names
+// holds its role, and else the nearest architect above it that does. So a root's catch-up lists
 // no accepting child whose own architect holds its role — running, or released by the idle rule
-// and woken by the next wake — and that architect's catch-up names it instead; and the root's
-// does name a child directly under it whose architect has failed, retired or been suspended, or
+// and woken by the next wake — and that architect's catch-up lists it instead; and the root's
+// does list a child directly under it whose architect has failed, retired or been suspended, or
 // never started, since that child's acceptance then walks up to the root's.
 func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
-	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
-	const child = "the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"
-	awaiting := func(base, keys string) string {
-		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
-	}
 	accepting := func(child *record.Issue) { child.Phase, child.Status = phase.Accepting, "needs_review" }
 	for _, tc := range []struct {
-		name        string
-		state       supervise.ClaimState
-		by          supervise.SuspendSource
-		rootReason  string
-		childReason string
+		name           string
+		state          supervise.ClaimState
+		by             supervise.SuspendSource
+		rootAccepting  string
+		childAccepting string
 	}{
-		{name: "its architect working", state: supervise.StateWorking, rootReason: root, childReason: awaiting(child, "LEGION-2")},
-		{name: "its architect released by the idle rule", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, rootReason: root, childReason: awaiting(child, "LEGION-2")},
-		{name: "its architect failed", state: supervise.StateFailed, rootReason: awaiting(root, "LEGION-2"), childReason: child},
-		{name: "its architect retired", state: supervise.StateRetired, rootReason: awaiting(root, "LEGION-2"), childReason: child},
-		{name: "its architect suspended with it", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon, rootReason: awaiting(root, "LEGION-2"), childReason: child},
-		{name: "its architect never started", rootReason: awaiting(root, "LEGION-2"), childReason: child},
+		{name: "its architect working", state: supervise.StateWorking, childAccepting: "LEGION-2"},
+		{name: "its architect released by the idle rule", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, childAccepting: "LEGION-2"},
+		{name: "its architect failed", state: supervise.StateFailed, rootAccepting: "LEGION-2"},
+		{name: "its architect retired", state: supervise.StateRetired, rootAccepting: "LEGION-2"},
+		{name: "its architect suspended with it", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon, rootAccepting: "LEGION-2"},
+		{name: "its architect never started", rootAccepting: "LEGION-2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -197,12 +192,12 @@ func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
-			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2,LEGION-3,LEGION-4 reason=%s", tc.rootReason)
+			want := "gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2,LEGION-3,LEGION-4 done= accepting=" + tc.rootAccepting
 			if got := catchUps(t, pool); len(got) != 1 || got[0] != want {
 				t.Fatalf("the root's catch-up %v; want [%s]", got, want)
 			}
 			claimReady(t, pool, engine, "LEGION-2", claim.RoleArchitect, 1)
-			want = "gen=2 launch=1 gates= issues=LEGION-2,LEGION-3 reason=" + tc.childReason
+			want = "gen=2 launch=1 gates= issues=LEGION-2,LEGION-3 done= accepting=" + tc.childAccepting
 			if got := catchUps(t, pool); len(got) != 2 || got[1] != want {
 				t.Fatalf("the catch-ups %v; want the child's second, [%s]", got, want)
 			}

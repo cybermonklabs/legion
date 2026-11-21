@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // ControllerStartMessage is the controller's first prompt at every start, so every start and
@@ -23,8 +24,9 @@ import (
 // that command, which runs after Oh My Pi's startup, sends it once the controller is registered,
 // right before the controller role's Envoy claim and the live Envoy subscription a wake could
 // arrive on). The daemon delivers it to its own controller (`controller: daemon`) as an RPC prompt
-// each time that controller reports ready, after its claims.
-const ControllerStartMessage = "Legion controller start: follow skill://legion-controller's start procedure now (\"What happened before you started\"), then end the turn."
+// each time that controller reports ready, after its claims. Its words are the kind's own
+// (texts.ControllerStartMessage), held there once.
+const ControllerStartMessage = texts.ControllerStartMessage
 
 // ControllerStartCommand is the positional word `legion controller start` passes to the operator's
 // Oh My Pi, which runs command-line words as prompts once its startup is over and its TUI listens.

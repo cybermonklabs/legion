@@ -239,12 +239,14 @@ outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
-holds the reviewer's prompt to, the GitHub App helper
+holds the reviewer's prompt to, the three pages whose passages
+internal/daemon/texts_steps_test.go holds to the steps taken out of the daemon's texts
+(a RULES row of .github/scripts/ci_job_reads.py), the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
-No bun_install and no skills/** - the two pages of skills/ this filter names are all
-this job reads of it: the tests of this suite that packed the two plugins - and so
+No bun_install and no skills/** - the five pages of skills/ this filter names, each
+named alone, are all this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
 this job installs nothing (dispatch://INFRA-1413, A4).

@@ -55,7 +55,7 @@ func TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons(t *testing.
 		},
 		{
 			name:    "a task of this release naming its round",
-			task:    before + reviewround.Sentences(reviewed, 2),
+			task:    before + "\n" + reviewround.CommitLabel + ": " + reviewed + ". " + reviewround.EntryLabel + ": 2.",
 			payload: `{"op":"start","tree":"LEGION-208","role":"reviewer","task":%q,"generation":1,"phase":"reviewing","entry":2,"needsSlot":true,"roundNamed":true}`,
 		},
 	} {
@@ -63,7 +63,7 @@ func TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons(t *testing.
 			named := strings.Contains(tc.payload, `"roundNamed":true`)
 			want := tc.task
 			if !named {
-				want = tc.task + reviewround.Sentences("", 0)
+				want = tc.task + "\n" + reviewround.CommitLabel + ": none. " + reviewround.EntryLabel + ": none."
 			}
 			prompt, stored := sentToTheReviewer(t, strings.Replace(tc.payload, "%q", jsonString(t, tc.task), 1))
 			if prompt != want {

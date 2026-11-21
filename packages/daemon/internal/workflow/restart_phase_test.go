@@ -26,7 +26,7 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 		role      claim.Role
 		lingers   bool
 		wantPhase phase.Phase
-		wantTask  string
+		wantTask  []string
 		wantCode  string
 	}{
 		{
@@ -34,14 +34,14 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			issue:     record.Issue{Phase: phase.Implementing},
 			role:      claim.RoleImplementer,
 			wantPhase: phase.Implementing,
-			wantTask:  "Continue child. Issue: LEGION-209. Phase: implementing. Reason: the operator retried this phase's worker.",
+			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: implementing", "retried: " + RetriedByOperator},
 		},
 		{
 			name:      "the issue is held from the phase",
 			issue:     record.Issue{Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}},
 			role:      claim.RoleTester,
 			wantPhase: phase.Testing,
-			wantTask:  "Continue child. Issue: LEGION-209. Phase: testing. Reason: the operator retried this phase's worker.",
+			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: testing", "retried: " + RetriedByOperator},
 		},
 		{
 			name:      "another role's phase",
@@ -118,8 +118,8 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			if gotPhase != tc.wantPhase || heldFrom != nil {
 				t.Fatalf("after the restart the child is in %s held from %v, want %s and no hold", gotPhase, heldFrom, tc.wantPhase)
 			}
-			if len(starts) != 1 || starts[0].Role != tc.role || starts[0].Phase != tc.wantPhase || starts[0].Task != tc.wantTask {
-				t.Fatalf("the restart queued %+v, want one start of the %s on %s with %q", starts, tc.role, tc.wantPhase, tc.wantTask)
+			if len(starts) != 1 || starts[0].Role != tc.role || starts[0].Phase != tc.wantPhase || !hasLines(starts[0].Task, tc.wantTask...) {
+				t.Fatalf("the restart queued %+v, want one start of the %s on %s naming %q", starts, tc.role, tc.wantPhase, tc.wantTask)
 			}
 		})
 	}

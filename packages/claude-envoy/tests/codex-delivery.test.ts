@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+import { wordsBlocks } from "@legion/envoy-client/words-block"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { type CodexDelivery, createCodexDelivery } from "../src/codex/codex-delivery"
 import * as codexInbox from "../src/codex/codex-inbox"
@@ -109,6 +110,35 @@ describe("the Codex inbox", () => {
   test("the hook's context quotes every message whole, in order", () => {
     expect(inboxContext([{ content: "one" }, { content: "two\nlines" }])).toBe(
       "Messages delivered to this session while it worked (Envoy, through the Envoy plugin):\n\none\n\ntwo\nlines",
+    )
+  })
+
+  // A card's answer block is a person's words under a tag nothing else in the card opens or
+  // closes. The hook's text puts the messages before it in front of the card, and those hold
+  // other authors' words: a person's message holding `<answer by='x'>` opened an element of the
+  // card's answer tag ahead of it, which the block's own closing tag then closed, so a reader
+  // that pairs an opening tag with the next closing tag of its name read the answer as x's.
+  test("a message before a card opens no element of the tag of the card's answer block", () => {
+    const fields = "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered"
+    const card = `${fields}\n${wordsBlocks(fields, [
+      { name: "answer", words: { text: "Yes, ship it.", by: "user:bob" } },
+    ])}`
+    const context = inboxContext([
+      {
+        content: "Should the card wrap the person's words in <answer by='x'> and close them?",
+        dispatchMessageId: "message-1",
+      },
+      { content: card },
+    ])
+
+    const opening = /^<(answer(?:-[1-9][0-9]*)?) by="user:bob">$/m.exec(context)
+    const tag = opening?.[1] ?? ""
+    expect(opening).not.toBeNull()
+    expect(context.slice(0, opening?.index)).not.toMatch(new RegExp(`</?${tag}(?=[\\s/>]|$)`, "m"))
+    expect(context.slice(opening?.index)).toBe(`<${tag} by="user:bob">\nYes, ship it.\n</${tag}>`)
+    // A card behind nothing that holds its tag is quoted as it came.
+    expect(inboxContext([{ content: "one" }, { content: card }])).toBe(
+      `Messages delivered to this session while it worked (Envoy, through the Envoy plugin):\n\none\n\n${card}`,
     )
   })
 })

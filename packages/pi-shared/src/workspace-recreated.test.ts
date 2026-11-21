@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
+import { noticeFields } from "@legion/test-fixtures/notice-fields";
 import { WORKSPACE_RECREATED_VARIABLE, workspaceRecreatedNotice } from "./workspace-recreated";
 
 test("a launcher that recreated the workspace earns a notice naming the issue's branch", () => {
   const notice = workspaceRecreatedNotice({ [WORKSPACE_RECREATED_VARIABLE]: "true" }, "REPO-43");
-  expect(notice?.content).toContain("it holds what was pushed to legion/REPO-43");
-  expect(notice?.content).toContain("anything you had not pushed is gone");
+  expect(noticeFields(notice?.content ?? "")).toEqual({
+    notice: "workspace recreated",
+    issue: "REPO-43",
+    branch: "legion/REPO-43",
+    unpushed_work: "lost",
+  });
   expect(notice?.id).toMatch(/^[0-9a-f-]{36}$/);
 });
 

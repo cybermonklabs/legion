@@ -9,12 +9,19 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
+
+// outOfMemoryNote is the out-of-memory note of h's claim, as a prompt carries it
+// (texts.NewOutOfMemoryNote).
+func (h *harness) outOfMemoryNote() string {
+	return partText(texts.NewOutOfMemoryNote(h.claim().Issue))
+}
 
 // A worker whose process dies mid-turn is relaunched as the same session, and Oh My Pi does not
 // continue an interrupted turn on resume. So the task goes back to waiting: unconfirmed, under a
 // new id the new process's shim has no record of, and re-sent when the relaunched agent is ready,
-// behind the one sentence that says its turn was interrupted — once, however often that happens,
+// behind the one note that says its turn was cut off — once, however often that happens,
 // and never written into the task text, which stays the workflow's. The task is not retired and
 // its run is not marked served until a turn of it ends.
 func TestATaskInterruptedByADeathIsResentToTheRelaunchedAgent(t *testing.T) {
@@ -33,9 +40,11 @@ func TestATaskInterruptedByADeathIsResentToTheRelaunchedAgent(t *testing.T) {
 		if resent.DeliveryID == sent {
 			t.Fatalf("death %d: the task was re-sent as %s, the id the dead process's turn ran under", death, sent)
 		}
-		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; resent.Message != want {
+		if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "implement the plan"; resent.Message != want {
 			t.Fatalf("death %d: re-sent %q, want %q", death, resent.Message, want)
 		}
+		// The note states, in the lines of its own record, that the task's own turn was cut off.
+		wantSays(t, resent.Message, "kind: relaunch-note\n", "\nin_turn: true\n", "\ntask_turn: true\n", "\ntask: true\n")
 		if p := h.pending(); !p.ConfirmedAt.IsZero() || p.ID != resent.DeliveryID {
 			t.Fatalf("death %d: pending %+v, want the re-sent task, unconfirmed until its turn starts", death, p)
 		}
@@ -74,9 +83,11 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 		Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true,
 	}})
 	h.relaunched()
-	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
+	if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + h.outOfMemoryNote() + "\n\n" + "implement the plan"; h.wantPrompts(2)[1].Message != want {
 		t.Fatalf("after the out-of-memory end the task was re-sent as %q, want %q", h.wantPrompts(2)[1].Message, want)
 	}
+	wantSays(t, h.wantPrompts(2)[1].Message, "kind: relaunch-note\n", "\ntask_turn: true\n",
+		"kind: out-of-memory-note\n", "\nreason: OOMKilled\n")
 	if p := h.store.load(testToken).Pending; p == nil || !p.OutOfMemory {
 		t.Fatalf("stored task %+v, want the out-of-memory mark kept for the relaunch", p)
 	}
@@ -85,10 +96,12 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	h.wantState(StateWorking)
 	h.observe(runtime.Gone)
 	h.relaunched()
-	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
+	if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "implement the plan"; h.wantPrompts(3)[2].Message != want {
 		t.Fatalf("after the ordinary end the task was re-sent as %q, want %q: the note describes no end of this turn",
 			h.wantPrompts(3)[2].Message, want)
 	}
+	wantSays(t, h.wantPrompts(3)[2].Message, "kind: relaunch-note\n", "\ntask_turn: true\n")
+	wantSaysNot(t, h.wantPrompts(3)[2].Message, "out-of-memory-note", "OOMKilled")
 	if p := h.store.load(testToken).Pending; p == nil || p.OutOfMemory {
 		t.Fatalf("stored task %+v, want the out-of-memory mark taken back", p)
 	}

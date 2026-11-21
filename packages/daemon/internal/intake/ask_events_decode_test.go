@@ -39,7 +39,8 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 	for _, eventType := range []string{"comment.created", "comment.answered"} {
 		decoded := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-1", "ask_id": "ask-approval", "ask_state": "open", "ask_waiting_on": "human"})
 		want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", WaitingOn: "human",
-			Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark, Comment: "comment-1"}
+			Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark, Comment: "comment-1",
+			Words: &record.ActWords{By: "session:session-architect", At: askEventMark.At}}
 		if !reflect.DeepEqual(decoded.Fact, want) {
 			t.Fatalf("%s decoded to %#v, want %#v", eventType, decoded.Fact, want)
 		}
@@ -67,8 +68,9 @@ func TestARestoredAskEventIsNobodysAct(t *testing.T) {
 		restored  Fact
 	}{
 		{name: "an answer", eventType: "ask.answered", actor: map[string]any{"kind": "user", "id": "alice"},
-			payload:  map[string]any{"id": "ask-question", "kind": "question", "state": "answered"},
-			act:      DispatchAskClosed{Key: "LEGION-7", Ask: "ask-question", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark},
+			payload: map[string]any{"id": "ask-question", "kind": "question", "state": "answered"},
+			act: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-question", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+				Words: &record.ActWords{By: "user:alice", At: askEventMark.At}},
 			restored: DispatchAskRestored{Key: "LEGION-7", Ask: "ask-question", Kind: "question", Mark: askEventMark}},
 		{name: "a question opened", eventType: "ask.opened", actor: map[string]any{"kind": "session", "id": "session-architect"},
 			payload:  map[string]any{"id": "ask-question", "kind": "question", "author": map[string]any{"kind": "session", "id": "session-architect"}},
@@ -118,7 +120,7 @@ func TestAnApprovalRequestsEventsCarryItsDocument(t *testing.T) {
 	}{
 		{eventType: "ask.opened", want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", Mark: askEventMark}},
 		{eventType: "ask.answered", want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", State: "answered",
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark, Words: &record.ActWords{By: "user:alice", At: askEventMark.At}}},
 		{eventType: "ask.handed_back", want: DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", WaitingOn: "human",
 			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
 	} {
@@ -188,7 +190,8 @@ func TestAnUnknownAskKindDecodesWithNoKindAndIsReported(t *testing.T) {
 		{eventType: "ask.opened", payload: map[string]any{"id": "ask-old", "kind": "action"},
 			want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-old", Mark: askEventMark}},
 		{eventType: "ask.answered", payload: map[string]any{"id": "ask-old", "kind": "action"},
-			want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-old", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-old", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+				Words: &record.ActWords{By: "user:alice", At: askEventMark.At}}},
 		{eventType: "ask.handed_back", payload: map[string]any{"id": "ask-old", "kind": "action"},
 			want: DispatchAskReply{Key: "LEGION-7", Ask: "ask-old", WaitingOn: "human", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
 	} {
@@ -217,11 +220,12 @@ const declineDispatchWords = "The person chose not to answer this question. " +
 // close decodes as the decline it is, with both kept apart, and a decline the person wrote no note
 // with carries the sentences and an empty note. A close whose payload has no resolution, and one
 // whose resolution kind this daemon does not know, decode as a close carrying no decline at all.
+// Each close carries the resolution's note as its words.
 func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	person := map[string]any{"kind": "user", "id": "alice"}
-	closed := func(decline *record.AskDecline) Fact {
+	closed := func(decline *record.AskDecline, note string) Fact {
 		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
+			Words: &record.ActWords{Text: note, By: "user:alice", At: askEventMark.At}, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
 	}
 	for _, tc := range []struct {
 		name       string
@@ -230,14 +234,14 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	}{
 		{name: "a decline with the person's note",
 			resolution: map[string]any{"kind": "declined", "reason": "The vendor owns that date; I do not.", "dispatch_words": declineDispatchWords},
-			want:       closed(&record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords})},
+			want:       closed(&record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords}, "The vendor owns that date; I do not.")},
 		{name: "a decline the person wrote no note with",
 			resolution: map[string]any{"kind": "declined", "reason": "", "dispatch_words": declineDispatchWords},
-			want:       closed(&record.AskDecline{Words: declineDispatchWords})},
+			want:       closed(&record.AskDecline{Words: declineDispatchWords}, "")},
 		{name: "a resolution kind this daemon does not know",
 			resolution: map[string]any{"kind": "withdrawn", "reason": "the asker took it back"},
-			want:       closed(nil)},
-		{name: "a close with no resolution at all", resolution: nil, want: closed(nil)},
+			want:       closed(nil, "the asker took it back")},
+		{name: "a close with no resolution at all", resolution: nil, want: closed(nil, "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := map[string]any{"id": "ask-q", "kind": "question", "state": "resolved"}
@@ -251,6 +255,83 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 			if len(decoded.Unread) != 0 {
 				t.Fatalf("%s reported %q, want nothing unread: a resolution the daemon does not act on is no defect", tc.name, decoded.Unread)
 			}
+		})
+	}
+}
+
+// Each act of a person that the daemon keeps carries the person's words as the act's Dispatch
+// event carried them, whole, by the event's actor at the act's own time: an answer its text and
+// the options it chose, at the answer's time; a reply its body at the comment's time, with more to
+// follow where Dispatch marked the body cut (body_truncated); a resolution its note at the
+// resolution's time. An event that reached the daemon as a payload_omitted stand-in, which leaves
+// every long field out, is still the act it is, with no words and more to follow. Words the
+// decoder cannot read are reported, and the act is kept with more to follow rather than lost.
+func TestAPersonsActCarriesItsWordsFromTheEvent(t *testing.T) {
+	person := map[string]any{"kind": "user", "id": "alice"}
+	answeredAt := time.Date(2026, 10, 25, 11, 59, 30, 0, time.UTC)
+	writtenAt := time.Date(2026, 10, 25, 11, 58, 0, 0, time.UTC)
+	body := "Use the second plan.\nKeep the first as the fallback, </reply> and all."
+	for _, tc := range []struct {
+		name      string
+		eventType string
+		payload   map[string]any
+		want      record.ActWords
+		unread    int
+	}{
+		{name: "an answer with an option and a text", eventType: "ask.answered",
+			payload: map[string]any{"id": "ask-q", "kind": "question", "state": "answered",
+				"answer": map[string]any{"user": "alice", "selected": []string{"ship", "tell the vendor"}, "text": "Ship it on Friday.", "at": answeredAt}},
+			want: record.ActWords{Text: "Ship it on Friday.", Options: []string{"ship", "tell the vendor"}, By: "user:alice", At: answeredAt}},
+		{name: "an answer that chose no option", eventType: "ask.answered",
+			payload: map[string]any{"id": "ask-q", "kind": "question", "state": "answered",
+				"answer": map[string]any{"user": "alice", "selected": []string{}, "text": "No.", "at": answeredAt}},
+			want: record.ActWords{Text: "No.", By: "user:alice", At: answeredAt}},
+		{name: "a reply with its whole body", eventType: "comment.created",
+			payload: map[string]any{"id": "comment-1", "ask_id": "ask-q", "ask_state": "open", "ask_waiting_on": "agent",
+				"body": body, "created_at": writtenAt},
+			want: record.ActWords{Text: body, By: "user:alice", At: writtenAt}},
+		{name: "a reply whose body Dispatch cut", eventType: "comment.answered",
+			payload: map[string]any{"id": "comment-2", "ask_id": "ask-q", "ask_state": "open", "ask_waiting_on": "agent",
+				"body": body, "body_truncated": true, "created_at": writtenAt},
+			want: record.ActWords{Text: body, By: "user:alice", At: writtenAt, More: true}},
+		{name: "a reply that reached the daemon as a stand-in", eventType: "comment.created",
+			payload: map[string]any{"id": "comment-3", "ask_id": "ask-q", "ask_state": "open", "ask_waiting_on": "agent", "payload_omitted": true},
+			want:    record.ActWords{By: "user:alice", At: askEventMark.At, More: true}},
+		{name: "an answer that reached the daemon as a stand-in", eventType: "ask.answered",
+			payload: map[string]any{"id": "ask-q", "kind": "question", "state": "answered", "payload_omitted": true},
+			want:    record.ActWords{By: "user:alice", At: askEventMark.At, More: true}},
+		{name: "a resolution with the person's note", eventType: "ask.resolved",
+			payload: map[string]any{"id": "ask-q", "kind": "question", "state": "resolved",
+				"resolution": map[string]any{"kind": "declined", "reason": "Ask the vendor.", "dispatch_words": declineDispatchWords, "at": answeredAt}},
+			want: record.ActWords{Text: "Ask the vendor.", By: "user:alice", At: answeredAt}},
+		{name: "a reply whose words cannot be read", eventType: "comment.created",
+			payload: map[string]any{"id": "comment-4", "ask_id": "ask-q", "ask_state": "open", "ask_waiting_on": "agent", "body": 7},
+			want:    record.ActWords{By: "user:alice", At: askEventMark.At, More: true}, unread: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded := decodeEvent(t, tc.eventType, person, tc.payload)
+			var words *record.ActWords
+			switch fact := decoded.Fact.(type) {
+			case DispatchAskClosed:
+				if fact.Ask != "ask-q" || fact.State != strings.TrimPrefix(tc.eventType, "ask.") {
+					t.Fatalf("%s decoded to %#v, want the close of ask-q", tc.eventType, fact)
+				}
+				words = fact.Words
+			case DispatchAskReply:
+				if fact.Ask != "ask-q" || fact.WaitingOn != "agent" || fact.Comment != tc.payload["id"] {
+					t.Fatalf("%s decoded to %#v, want the reply on ask-q that leaves the turn with the agent", tc.eventType, fact)
+				}
+				words = fact.Words
+			default:
+				t.Fatalf("%s decoded to %#v, want a person's act on ask-q", tc.eventType, decoded.Fact)
+			}
+			if words == nil || !reflect.DeepEqual(*words, tc.want) {
+				t.Fatalf("%s carries the words %#v, want %#v", tc.name, words, tc.want)
+			}
+			if len(decoded.Unread) != tc.unread {
+				t.Fatalf("%s reported %q, want %d unread", tc.name, decoded.Unread, tc.unread)
+			}
+			t.Logf("%s: %+v", tc.name, *words)
 		})
 	}
 }

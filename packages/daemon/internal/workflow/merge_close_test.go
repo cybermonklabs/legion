@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
@@ -75,26 +76,10 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 	if lead, _, _ := strings.Cut(start.Task, "\n"); lead != "Production check of LEGION-209: child." {
 		t.Fatalf("the check task opens %q, want the line a resumed session tells the check by", lead)
 	}
-	for _, want := range []string{"sjawhar/legion", "#43", "merge-43", "Look 1, woken by the merge.", "handoff_complete", "pass", "pending", "fail",
-		// Nothing the daemon reads from a deployment wakes a look any more, so the task asks the
-		// checking agent for the time of its own next look and tells it to wait for nothing here.
-		"A pending report also carries wake_at", "Wait for nothing in this session",
-		// A defect with a clear fix goes to the controller topic, which hands it to the tree that
-		// owns the code and files it for Legion only when none does; one that needs a decision is a
-		// finding ask on the report issue, whose reference the checking agent publishes to the
-		// controller, which files only on a person's answer.
-		"a defect with a clear fix goes to the controller topic", "dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {
-		if !strings.Contains(start.Task, want) {
-			t.Fatalf("the check task lacks %q:\n%s", want, start.Task)
-		}
+	if want := []string{"look: 1", "woken_by: " + texts.WokenByMerge, "pull_request: sjawhar/legion#43", "merge_commit: merge-43"}; !hasLines(start.Task, want...) {
+		t.Fatalf("the check task lacks one of %q:\n%s", want, start.Task)
 	}
-	// The implementer never files an issue for a defect the check finds: the controller does.
-	for _, never := range []string{"dispatch issue", "issue of its own"} {
-		if strings.Contains(start.Task, never) {
-			t.Fatalf("the check task still says %q:\n%s", never, start.Task)
-		}
-	}
-	if strings.Contains(start.Task, "last look") {
+	if strings.Contains(start.Task, "last: true") {
 		t.Fatalf("the first look's task says it is the last:\n%s", start.Task)
 	}
 	if got := issueSuspensions(t, pool, "LEGION-209"); len(got) != 0 {
@@ -632,9 +617,8 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
-	if len(got) != 1 || got[0].Reason != want {
-		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
+	if len(got) != 1 || strings.Join(got[0].WaitingFor, ", ") != waiting || got[0].PullRequest == "" || got[0].Reason != "" {
+		t.Fatalf("pr-merged notices = %+v, want one naming its pull request and waiting for %s", got, waiting)
 	}
 }
 

@@ -37,7 +37,7 @@ func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *t
 			held.GivenEntry, held.ServedEntry)
 	}
 
-	wake := workflow.WakeTask(pods.WakeBackstop, "nothing else asked for it", workflow.StoppedByRelease)
+	wake := workflow.WakeTask(r.key, pods.WakeBackstop, string(claim.RoleArchitect), workflow.StoppedByRelease)
 	// The wake's start row, which runStarts runs as the supervise lane does.
 	enqueueOutbox(t, r.pool, r.records, mustOutboxRow(t, r.key, record.SuperviseRequest{Op: "start", Tree: mainPathRoot,
 		Role: claim.RoleArchitect, Generation: r.issue().Generation, Task: wake}, time.Now().UTC()))

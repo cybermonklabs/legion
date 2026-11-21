@@ -37,6 +37,29 @@ and its token reaches no repository.` Read it before you rely on your gh. An iss
 repository is the one Dispatch resolves for it, as `skill://legion-controller` says, and it may be
 any `owner/name`. `legion state` names each repository the daemon refused and why.
 
+A task can begin with notes of what ended your last process or session, each a record of its own kind.
+A `relaunch-note` names why your process ended (`cause`).
+`in_turn: true` means that you were in a turn, and `task_turn: true` means that the turn was this task's.
+`stopped` names each kind of background work that stopped with the process, and `background: true` means that background work of no named kind stopped too.
+A `cut-turn-note` says that a turn on this task was cut short.
+A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it.
+It names the HTTP status that the provider answered (`http_status`), where it answered one.
+Your tool calls in flight, and the subagents and background jobs that stopped, give you no result, and your transcript does not say so.
+Before you do any of that work again, check what it already did, with `read_state` and in Dispatch.
+Then continue the task.
+An `abandoned-session-note` names the session that this claim left behind (`session`) and why (`why`).
+This session is new: the turns, tool calls, subagents and background jobs of that session are gone, and only what it wrote in Dispatch survives.
+Before you repeat any of that work, read the issue.
+
+A `session-lost` notice says that a role of the issue lost the session it recorded (`detail`): the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it.
+A `session-forgotten` notice says that a role of the issue forgot the session it recorded (`session`) because its pod's launcher, older than the daemon, could not look that session up by its id (`launcher_lookup: failed`), and Oh My Pi did not resume it by that id (`resumed_by_id: false`): the daemon deleted nothing of that session, and the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it.
+A `session-store-fault` notice says that a role of the issue cannot start because the session store could not be asked for its session (`detail`): nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report.
+An `unslotted` notice says that a root left Legion's workflow, moved to the status `status` names or unable to resume its wait on a person (`unresumable`): the daemon set its phase to `done` and starts nothing for it, and `todo` with the `legion` label queues it again, so re-admit nothing.
+An `awaiting-person` notice names a root that waits only on a person, for an ask (`ask`) or for the review of a document at its `version` (`document`): take nothing for its slot, which it keeps while it waits.
+A `tree-stalled` notice names a tree of which nothing has moved for `quiet_for`, with each of its issues the workflow still runs (`members`): read the tree and decide what it needs, as `skill://legion-controller` says: ask a role what it waits on, move an issue back a phase, or ask whether to park the tree.
+An `architect-stalled` notice whose count a pause of the project moved names the moment it counted its bound from (`counted_from`), what that moment is (`counted_from_event`: `pause-end` is the end of the pause, `launch-let-out` is when the wake pacing let out the architect's launch that the pause held, and `entry-confirmed` is when a turn of the architect first confirmed a task of its entry) and the pause (`pause_id`): the time before that moment is no time the architect failed to use.
+A `project-paused` notice says that the operator paused the project: its `pause` names the pause (`id`), who paused (`by`) and when (`at`), and the operator's reason is in a block of its own. A `project-resumed` notice says that the operator ended that pause: its `pause` names the pause, who resumed and when.
+
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 
 Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.

@@ -67,7 +67,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
 			"enqueuePullRequest", "squash_merge_commit_message",
 			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest(input:{id:$pr})",
-			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
+			"A `gate-moved` message with `gate: closed` and `merge: held`",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
 			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
 	} {
@@ -888,10 +888,11 @@ func checkRuleFaults(clause string) []string {
 // close (workflow.checkBound). A requirement that only the deploy can show is a fail when a look
 // observes it as not met. It is also a fail when it is still unobserved at the last look, whether
 // or not production carries the merge, and that look's pending is only for an issue with no such
-// requirement (workflow.checkTask). So the composed prompt of each role a look reaches, the
-// tester's and the implementer's, holds that rule clause by clause. No clause states a limit the
-// rule no longer has, and no fail clause, one that holds "unobserved", "last" and "fail", holds
-// "production carries the merge" outside the words "whether or not production carries the merge"
+// requirement. The look's task (workflow.CheckLook) states the facts of the look alone, so the
+// composed prompt of each role a look reaches, the tester's and the implementer's, holds that rule
+// clause by clause. No clause states a limit the rule no longer has, and no fail clause, one that
+// holds "unobserved", "last" and "fail", holds "production carries the merge" outside the words
+// "whether or not production carries the merge"
 // (checkRuleFaults). Each prompt holds one fail clause with those words at least, and one fail
 // clause for a requirement observed as not met, so a matcher that stopped finding the rule fails
 // here rather than passing on nothing. The unit is the clause, cut at `; ` as well as at full stops

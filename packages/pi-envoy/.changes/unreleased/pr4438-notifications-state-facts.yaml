@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A `low` card of the Legion daemon, or of a Dispatch event whose envelope says `low`, goes into the
+  session's stored context with no turn and is read at the next turn, whatever starts it, under file
+  and SQL session storage alike. Every other card starts a turn as before. The plugin's own notices
+  state only the fields of their kind, and the `envoy_whoami` and `envoy_inbox` descriptions give
+  the step their reader takes. Each notice's kind names that tool (`notice: session id changed
+  (envoy_whoami)`, `notice: unread messages (envoy_inbox)`), since Oh My Pi shows the model only the
+  first line of a tool's description until the model opens its `xd://` device.

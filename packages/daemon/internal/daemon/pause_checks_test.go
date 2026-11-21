@@ -6,6 +6,7 @@ package daemon
 // (`k1: …`), failing when a count it reads is 0.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // k1: a pause holds every start of the project but the controller's, and stops every role it
@@ -86,7 +88,10 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// D takes its task in a turn; E's boot launch is let straight out by the burst, its process
 	// dies, and its relaunch waits in the pacing for the interval after it.
 	dShim := r.dialShim(pauseRigBootToken(D))
-	dPrompt := r.startTurn(dShim, "Resume the existing phase work.")
+	dPrompt := r.startTurn(dShim, "\nphase: "+string(phase.Implementing))
+	if !strings.HasPrefix(dPrompt.Message, "kind: "+string(texts.PhaseResume)+"\n") {
+		t.Fatalf("D was prompted %q, want its phase-resume task (kind: %s)", dPrompt.Message, texts.PhaseResume)
+	}
 	r.awaitState(D, supervise.StateWorking, "D's turn has started")
 	r.parkRelaunch(E)
 	if started := r.linesOf(turnStartedLine(), A); len(started) != 0 {
@@ -159,7 +164,8 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	dDelivery, _, _ := strings.Cut(dPrompt.ID, ".")
 	r.handle(D, supervise.StreamPromptResult{Claim: D, DeliveryID: dDelivery, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
 	d := r.awaitState(D, supervise.StateSuspended, "D stops when its turn ends")
-	if !d.Released() || d.Pending == nil || !strings.HasSuffix(d.Pending.Task, "Resume the existing phase work.") {
+	if !d.Released() || d.Pending == nil || !strings.HasPrefix(d.Pending.Task, "kind: "+string(texts.PhaseResume)+"\n") ||
+		!strings.HasSuffix(d.Pending.Task, "\nphase: "+string(phase.Implementing)) {
 		t.Fatalf("D after its turn = %s by %s holding %+v; want released and holding its task", d.State, d.SuspendedBy, d.Pending)
 	}
 
@@ -512,9 +518,13 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 			return len(r.envoy.publishedTo(token)) > 0
 		})
 		notice := r.envoy.publishedTo(token)[0]
-		if notice.at.Before(launchedAt[token]) || !strings.HasPrefix(notice.message, "Legion hook ") {
-			t.Fatalf("role %d's notice %q was delivered at %s, want the hook's prompt delivered after its launch at %s",
-				n, notice.message, notice.at, launchedAt[token])
+		var text string
+		if err := json.Unmarshal([]byte(notice.payload), &text); err != nil {
+			t.Fatalf("role %d's notice %q carries the payload %q, want the hook prompt's text: %v", n, notice.message, notice.payload, err)
+		}
+		if notice.at.Before(launchedAt[token]) || notice.message != string(texts.HookPrompt)+" on "+r.issue(n) || !strings.HasPrefix(text, "Legion hook ") {
+			t.Fatalf("role %d's notice %q (%q) was delivered at %s, want the hook's prompt delivered after its launch at %s",
+				n, notice.message, text, notice.at, launchedAt[token])
 		}
 		delivered++
 	}

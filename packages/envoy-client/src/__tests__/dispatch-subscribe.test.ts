@@ -56,7 +56,9 @@ describe("the follow notice", () => {
     const follows =
       "Following ask ask-1 on DSP-42: its answer and replies reach you directly (dispatch follow --ask ask-1 --action unfollow to stop).";
     const subscribe =
-      " For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>.";
+      " For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.> " +
+      "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, " +
+      "which an Oh My Pi host holds for your next turn).";
     expect(followedAsk(details)).toEqual({ ask: "ask-1", owner: issueTopic("DSP-42") });
     expect(notice(details, ["notifications.agent.ses-1"])).toBe(`${follows}${subscribe}`);
     expect(notice(details, [])).toBe(`${follows}${subscribe}`);

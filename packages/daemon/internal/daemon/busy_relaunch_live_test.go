@@ -83,6 +83,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -136,30 +137,27 @@ const relaunchReportWithin = time.Minute
 // own pin test does (packages/pi-legion/extensions/legion-session-activity-omp.test.ts).
 const deepWorkerSystemLine = "You are an autonomous coding worker"
 
-// The words of the relaunch sentence a step reads, as supervise's relaunchSentence
-// (supervise/relaunch.go) writes them at this head for a death (endDied, supervise/endedwork.go).
-// They are literals rather than calls of supervise.RelaunchSentence because this driver is also
-// built over the base commit, which has no such function, and a sentence whose words change fails
-// this proof here, naming the words it looked for.
+// The lines of the relaunch note a step reads, as supervise.RelaunchNote renders them at this head
+// for a death (endDied, supervise/endedwork.go). They are literals rather than calls of
+// supervise.RelaunchNote because this driver is also built over the base commit, which has no such
+// function, and a note whose lines change fails this proof here, naming the line it looked for.
 const (
-	// relaunchDiedWords is the cause, in either sentence: "Your previous process ended because
-	// the process died: …" alone, and "Your process ended because the process died: …" in front
-	// of a task whose turn the death cut off.
-	relaunchDiedWords = "ended because the process died: "
-	// relaunchCatchUpOpens is how the sentence alone opens, which is how a root architect's
-	// catch-up reason opens (workflow's QueueCatchUp).
-	relaunchCatchUpOpens = "Your previous process ended because the process died: "
+	// relaunchDiedWords is the cause line, quoted, since the runtime's account carries quotes.
+	relaunchDiedWords = `cause: "the process died: `
+	// relaunchCatchUpDiedCause opens the cause of the relaunch facts a root architect's catch-up
+	// carries (workflow's QueueCatchUp, the notice's `relaunch` object).
+	relaunchCatchUpDiedCause = "the process died: "
 	// relaunchSubagentWords and relaunchJobWords name each kind of background work the process's
-	// own last report named (backgroundKinds).
-	relaunchSubagentWords = "Each subagent that you started stopped with that process."
-	relaunchJobWords      = "Each background job that you started stopped with that process."
-	// relaunchCutTaskWords opens the sentence in front of a task the death cut off in its turn.
-	relaunchCutTaskWords = "Your previous turn on this task was interrupted."
-	// relaunchNoTurnReportWords and relaunchTurnGoneWords are what the sentence of a turn cut off
-	// says when no report covers that turn: the daemon has none, so its subagents and background
-	// jobs are gone (supervise's relaunchSentence).
-	relaunchNoTurnReportWords = "The daemon has no report of the background work of that turn."
-	relaunchTurnGoneWords     = "So the subagents and background jobs of that turn are gone."
+	// own last report named (EndedWork.Facts).
+	relaunchSubagentWords = "stopped[1]: subagent"
+	relaunchJobWords      = "stopped[1]: async-job"
+	// relaunchCutTaskWords is the line in front of a task the death cut off in its turn.
+	relaunchCutTaskWords = "task_turn: true"
+	// relaunchReportedWords is the line a note has only where a report covers the turn cut off:
+	// the note of a turn no report covers lacks it (holdsNoLine).
+	relaunchReportedWords = "reported: true"
+	// relaunchTurnCutWords is the line of a turn cut off.
+	relaunchTurnCutWords = "in_turn: true"
 	// endedWorkDiedCause opens the cause the claim row records for a death (endDied).
 	endedWorkDiedCause = "the process died: "
 )
@@ -687,7 +685,8 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	killed, ready = r.killAndRelaunch(pane)
 	prompt = r.firstPromptAfter(pane, killed, ready)
 	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchSubagentWords,
-		relaunchNoTurnReportWords, relaunchTurnGoneWords, held)
+		relaunchTurnCutWords, held)
+	r.holdsNoLine(prompt, relaunchReportedWords)
 	r.note("holding a task in its turn: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
 	r.catchUpOpensWithTheSentence(pane, told)
@@ -876,22 +875,52 @@ func (r *busyRelaunchLive) holdsTheSentence(prompt seenRequest, words ...string)
 	}
 }
 
+// holdsNoLine holds that the prompt carries none of lines.
+func (r *busyRelaunchLive) holdsNoLine(prompt seenRequest, lines ...string) {
+	r.t.Helper()
+	for _, line := range lines {
+		if strings.Contains(prompt.last, line) {
+			r.fails("sentence", "the first prompt the relaunched process was sent says %q; it reads:\n%s", line, indentOutput(prompt.last))
+		}
+	}
+}
+
 // catchUpOpensWithTheSentence waits for the catch-up the daemon publishes to the root architect at
 // the relaunched process's ready — read at the run's Envoy listener stand-in, which records every
-// notice the daemon publishes — and holds that its reason opens with the sentence.
+// notice the daemon publishes — and holds that it carries the relaunch's facts, the death and the
+// subagent, in its `relaunch` object, decoded here by its keys alone, so the driver names no
+// symbol the base commit lacks.
 func (r *busyRelaunchLive) catchUpOpensWithTheSentence(pane *busyPane, told int) {
 	r.t.Helper()
-	var notices []listenerPublish
 	r.await(pane.issue+"'s architect's catch-up for the relaunched process", time.Minute, func() bool {
-		notices = r.architectNotices(pane.issue, "catch-up")
-		return len(notices) > told
+		return len(r.architectNotices(pane.issue, "catch-up")) > told
 	})
-	reason := notices[len(notices)-1].Payload
-	if !strings.HasPrefix(reason, relaunchCatchUpOpens) || !strings.Contains(reason, relaunchSubagentWords) {
-		r.fails("catch-up", "the catch-up published at the relaunched process's ready does not open with the sentence naming the subagent; it reads:\n%s",
-			indentOutput(reason))
+	architect, err := claim.NewToken(r.project, pane.issue, claim.RoleArchitect)
+	if err != nil {
+		r.t.Fatal(err)
 	}
-	r.note("the catch-up published at the relaunched process's ready opens with the sentence:\n%s", indentOutput(firstParagraph(reason)))
+	type relaunchFacts struct {
+		Cause   string   `json:"cause"`
+		Stopped []string `json:"stopped"`
+	}
+	var last *relaunchFacts
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
+		var notice struct {
+			Kind     string         `json:"kind"`
+			Relaunch *relaunchFacts `json:"relaunch"`
+		}
+		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
+			r.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
+		}
+		if notice.Kind == "catch-up" {
+			last = notice.Relaunch
+		}
+	}
+	if last == nil || !strings.HasPrefix(last.Cause, relaunchCatchUpDiedCause) || !slices.Contains(last.Stopped, "subagent") {
+		r.fails("catch-up", "the catch-up published at the relaunched process's ready does not carry the death and the subagent; it carries %+v", last)
+		return
+	}
+	r.note("the catch-up published at the relaunched process's ready carries the relaunch %+v", *last)
 }
 
 // claimRowHolds reads the claim row's `ended_work` and holds that it records a death and that want
@@ -1045,12 +1074,6 @@ func requestTimes(requests []seenRequest, start time.Time) []string {
 		times = append(times, "+"+seen.at.Sub(start).Round(100*time.Millisecond).String())
 	}
 	return times
-}
-
-// firstParagraph is text up to its first blank line: the sentence a catch-up opens with.
-func firstParagraph(text string) string {
-	paragraph, _, _ := strings.Cut(text, "\n\n")
-	return paragraph
 }
 
 // ---- the claim row's record of a relaunch ----------------------------------------------------------

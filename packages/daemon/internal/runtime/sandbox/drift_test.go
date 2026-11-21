@@ -19,12 +19,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// driftOf is why loc's pod has drifted from the configuration r would build one from now
-// (PodDrift). A runtime that cannot be asked fails the test: an error is never a statement that
-// something drifted.
+// driftOf is the reason of each part of loc's pod that has drifted from the configuration r would
+// build one from now (PodDrift, podDriftOf).
+func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
+	t.Helper()
+	return reasonsOf(podDriftOf(t, g, r, loc))
+}
+
+// podDriftOf is what PodDrift answers of loc's pod. A runtime that cannot be asked fails the
+// test: an error is never a statement that something drifted.
 //
 // PodDrift reads loc's Sandbox and the pod of the same name from r's informer stores. A write gets
-// to those stores through the watch, after the API has it. Thus driftOf first waits until r's
+// to those stores through the watch, after the API has it. Thus podDriftOf first waits until r's
 // stores hold the Sandbox and the pod that g's trackers hold, within Eventually's bound. Where
 // the tracker holds no such pod, the wait holds until the store holds none too. Without
 // the wait, a test that reads a write from the tracker can ask PodDrift about the Sandbox before
@@ -34,7 +40,7 @@ import (
 // (controller_test.go, setResourceVersion), and "the fake's tracker leaves the version alone"
 // (lifecycle_test.go, versionedTracker). Stores that already hold the trackers' objects give the
 // answer they gave before this wait.
-func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
+func podDriftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []runtime.Drift {
 	t.Helper()
 	name := loc.Sandbox.Name
 	// differs names what the stores held unlike the trackers at the last read: the Sandbox, the
@@ -64,6 +70,15 @@ func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
 		t.Fatalf("PodDrift %s: %v", loc.Claim, err)
 	}
 	return drifted
+}
+
+// reasonsOf is the reason of each drift, in order.
+func reasonsOf(drifted []runtime.Drift) []string {
+	var reasons []string
+	for _, d := range drifted {
+		reasons = append(reasons, d.Reason)
+	}
+	return reasons
 }
 
 // operatorVolume is an operator's own volume (runtime.kubernetes.pod.volumes), and operatorMount a
@@ -275,7 +290,7 @@ func TestPodShapeEncodesEqualConfigurationsIdentically(t *testing.T) {
 		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: podShape(first, issuePod{}, nil)}},
 	}}}
 	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{}, nil)); len(drifted) > 0 {
-		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", drifted)
+		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", reasonsOf(drifted))
 	}
 }
 
@@ -339,9 +354,11 @@ func TestPodDriftIsNothingForAPodALaunchJustCreated(t *testing.T) {
 	}
 }
 
-// Each key of a pod's shape reads as drifted on its own, and the reason names that key: a daemon
-// restarted onto another image, another reservation for the issue pod, an operator volume or mount
-// added, or another disk size, over the pod the release before it left running. A deployment
+// Each key of a pod's shape reads as drifted on its own, the item names that key and the reason
+// names it with both values: a daemon restarted onto another image, another reservation for the
+// issue pod, an operator volume or mount added, or another disk size, over the pod the release
+// before it left running. The image's item names the image a pod is built from now, and a
+// setting's item its key alone, which is all a text about the round names of it. A deployment
 // restarted on the configuration it already ran has drifted from nothing.
 func TestPodDriftNamesEachConfigurationKeyThatMoved(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -359,15 +376,19 @@ func TestPodDriftNamesEachConfigurationKeyThatMoved(t *testing.T) {
 			g := newRig(t, nil, withOptions(tc.before))
 			loc := g.spawn(workerSpec(t))
 			r2 := secondRuntime(t, g, tc.now)()
-			drifted := driftOf(t, g, r2, loc)
+			drifted := podDriftOf(t, g, r2, loc)
 			switch {
 			case tc.key == "" && len(drifted) > 0:
-				t.Fatalf("PodDrift = %q, want nothing: the configuration did not move", drifted)
+				t.Fatalf("PodDrift = %+v, want nothing: the configuration did not move", drifted)
 			case tc.key == "":
-			case len(drifted) != 1 || !strings.HasPrefix(drifted[0], tc.key+" "):
-				t.Fatalf("PodDrift = %q, want exactly one reason naming %s", drifted, tc.key)
-			case !strings.Contains(drifted[0], ", now "):
-				t.Fatalf("PodDrift = %q, want it to name what the pod holds and what it would be handed now", drifted)
+			case len(drifted) != 1 || drifted[0].Key != tc.key || !strings.HasPrefix(drifted[0].Reason, tc.key+" "):
+				t.Fatalf("PodDrift = %+v, want exactly one drift of the key %s, whose reason names it", drifted, tc.key)
+			case !strings.Contains(drifted[0].Reason, ", now "):
+				t.Fatalf("PodDrift = %+v, want its reason to name what the pod holds and what it would be handed now", drifted)
+			case tc.key == runtime.DriftImage && drifted[0].Image != nextImage:
+				t.Fatalf("PodDrift = %+v, want the image's item to name the image a pod is built from now, %s", drifted, nextImage)
+			case tc.key != runtime.DriftImage && drifted[0].Image != "":
+				t.Fatalf("PodDrift = %+v, want the setting's item to name its key alone", drifted)
 			}
 		})
 	}
@@ -394,12 +415,12 @@ func TestPodDriftComparesASandboxWithoutAPodShapeByImageAlone(t *testing.T) {
 			loc := g.spawn(workerSpec(t))
 			r2 := secondRuntime(t, g, tc.now)()
 			forgetPodShape(t, g, r2, loc.Sandbox.Name)
-			drifted := driftOf(t, g, r2, loc)
+			drifted := podDriftOf(t, g, r2, loc)
 			if (len(drifted) > 0) != tc.drifted {
-				t.Fatalf("PodDrift = %q, want drifted %t of a sandbox that records no shape", drifted, tc.drifted)
+				t.Fatalf("PodDrift = %+v, want drifted %t of a sandbox that records no shape", drifted, tc.drifted)
 			}
-			if tc.drifted && !strings.HasPrefix(drifted[0], "image ") {
-				t.Fatalf("PodDrift = %q, want its one reason to name the image", drifted)
+			if tc.drifted && (drifted[0].Key != runtime.DriftImage || drifted[0].Image != nextImage || !strings.HasPrefix(drifted[0].Reason, "image ")) {
+				t.Fatalf("PodDrift = %+v, want its one drift to be the image, %s now", drifted, nextImage)
 			}
 		})
 	}
@@ -629,21 +650,24 @@ func TestAKeepVolumeChangeDriftsMicroVMPodsAlone(t *testing.T) {
 // supervisor repoint it mid-turn. A deployment that enrolls with the broker only now moves no
 // address of the running generation either: that generation runs in a pod carrying no enrollment,
 // so it was handed no AGENT_SECRETS_URL and is handed none now (Runtime.enrollsIn,
-// movedEnvironment). Each role of such a pod is Alive until its round replaces the pod.
+// movedEnvironment). Each role of such a pod is Alive until its round replaces the pod. The drift's
+// item names the setting by its key alone (runtime.DriftItem), never by the overlay's file or in
+// words.
 func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 	const overlay = "/etc/legion-operator-extra/fallback.yml"
 	for name, tc := range map[string]struct {
 		now  func(*Options)
 		says string
+		key  string
 	}{
 		"a role's overlays": {now: func(o *Options) {
 			withOperatorMount(o)
 			o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {overlay}}
-		}, says: "role_config_files.tester " + overlay},
+		}, says: "role_config_files.tester " + overlay, key: "role_config_files.tester"},
 		"the broker's enrollment": {now: func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-		}, says: agentSecretsTokenVolume},
-		"the session store": {now: func(o *Options) { o.SessionStore = cloudSQLStore }, says: "the session store"},
+		}, says: agentSecretsTokenVolume, key: agentSecretsTokenVolume},
+		"the session store": {now: func(o *Options) { o.SessionStore = cloudSQLStore }, says: "the session store", key: "session_store"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
@@ -654,9 +678,13 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			drifted := strings.Join(driftOf(t, g, r2, loc), "; ")
+			items := podDriftOf(t, g, r2, loc)
+			drifted := strings.Join(reasonsOf(items), "; ")
 			if !strings.Contains(drifted, tc.says+" ") {
 				t.Errorf("PodDrift = %q, want a reason naming %s", drifted, tc.says)
+			}
+			if !slices.ContainsFunc(items, func(d runtime.Drift) bool { return d.Key == tc.key && strings.HasPrefix(d.Reason, tc.says+" ") }) {
+				t.Errorf("PodDrift = %+v, want the reason naming %s keyed %s", items, tc.says, tc.key)
 			}
 			obs := readopt(t, g.ctx, r2, loc)[0]
 			if strings.Contains(obs.Detail, tc.says) {

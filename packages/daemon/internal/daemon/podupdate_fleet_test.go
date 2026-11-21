@@ -236,7 +236,7 @@ func (r *fleetRig) drifts(issue string, reasons ...string) {
 	r.t.Helper()
 	for key, token := range r.tokens {
 		if key.issue == issue {
-			r.rt.ScriptPodDrift(token, reasons...)
+			r.rt.ScriptPodDrift(token, driftOf(reasons...)...)
 		}
 	}
 }

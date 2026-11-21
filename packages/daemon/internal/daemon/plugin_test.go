@@ -676,8 +676,8 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 	// The notice names the failure as well as the death: stale_plugin, the sentence the
 	// supervisor wrote, and the launch failures at the limit they ran out at, which is what says
 	// this planner is not coming back of its own accord (record.NoticeFailure).
-	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
+	died := record.Notice{Kind: "worker-died", Issue: "LEGION-208", Role: claim.RolePlanner, Phase: phase.Implementing,
+		Working: phase.Implementing,
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseStalePlugin), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
 			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2}}}

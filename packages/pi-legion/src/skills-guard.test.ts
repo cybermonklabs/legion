@@ -103,7 +103,7 @@ test("no skill or prompt says the daemon merges", () => {
 
 // An issue's disk dies with its pod (INFRA-80), so nothing writes the recovery marker
 // `.legion/<issue>/workspace-recovered.json` any more: `workspace-init` lost it with the lost-disk
-// verdict. The `Your workspace was recreated…` notice now reaches every resume in a new pod, so a
+// verdict. The `workspace recreated` notice now reaches every resume in a new pod, so a
 // skill or prompt that still sends an agent to the marker sends every resumed agent after a file
 // that never exists.
 test("no skill or prompt sends an agent to the workspace recovery marker, which nothing writes", () => {

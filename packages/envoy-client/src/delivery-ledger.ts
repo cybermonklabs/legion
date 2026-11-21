@@ -1,5 +1,4 @@
 import { DELIVERY_DUPLICATE_WINDOW_MS, dedupeKeyNamesItsEvent } from "@legion/contracts";
-import { encode } from "@toon-format/toon";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -9,6 +8,7 @@ import {
 } from "./delivery";
 import { subscriptionRemovedTopics } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { noticeKind, noticeText } from "./notice-text";
 
 /**
  * How long the ledger remembers a frame, from when it recorded it. The stream keeps a message no
@@ -85,7 +85,7 @@ export type FailureNoticeEnvelope = Pick<
 
 /**
  * What the host shows in place of a frame it could not show: enough to find the message again,
- * since the frame itself is not coming back. The host renders it.
+ * since the frame itself is not coming back. The host renders it with `failureNoticeText`.
  */
 export interface FailureNotice {
   readonly eventId: string;
@@ -430,31 +430,32 @@ export function storedText(content: string, publishedAt: string): string {
   return `${content}\nPublished at ${publishedAt} ${STORED_WHILE_AWAY_SUFFIX}`;
 }
 
-/** What the notice shown in place of a frame the session could not be shown says, field by field. */
-export function failureNoticeFields(notice: FailureNotice): Readonly<Record<string, string>> {
-  const readWith =
-    notice.readWith === "dispatch read"
-      ? "Read it with the `dispatch read` command on the issue or ask it concerns."
-      : "Read it with the envoy_inbox tool.";
-  return {
-    notice: "message not shown",
+/**
+ * The notice shown in place of a frame the session could not be shown: the message's id, sender,
+ * summary and publish time, the error that kept it from the session, and what reads it
+ * (`read_with`: the `dispatch read` command or the `envoy_inbox` tool). The message does not come
+ * back on its own; the step its reader takes is in `envoy_inbox`'s description
+ * (`tool-contract.ts`), which its kind names.
+ */
+export const MESSAGE_NOT_SHOWN_NOTICE = noticeKind("envoy", "message not shown (envoy_inbox)", [
+  "event_id",
+  "from",
+  "summary",
+  "published_at",
+  "error",
+  "read_with",
+]);
+
+/** The text of `notice`, as each host shows it. */
+export function failureNoticeText(notice: FailureNotice): string {
+  return noticeText(MESSAGE_NOT_SHOWN_NOTICE, {
     event_id: notice.eventId,
     from: notice.sender,
     summary: notice.summary,
     published_at: notice.publishedAt,
     error: notice.error,
-    detail: `This session could not be shown this message, so it is not coming back on its own. ${readWith}`,
-  };
-}
-
-/**
- * A notice's text, as each host shows it: its fields (`failureNoticeFields`, `gapNoticeFields`)
- * under `envoy:` in TOON, as every live card is rendered. TOON quotes a value that holds a newline
- * or would read as structure, so a sender-controlled field (`summary`, `from`, `error`) can never
- * start a field of its own inside the block.
- */
-export function envoyNoticeText(fields: Readonly<Record<string, string>>): string {
-  return encode({ envoy: fields });
+    read_with: notice.readWith,
+  });
 }
 
 /** What `closeReplayedRemoval` asks of the host. */

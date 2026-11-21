@@ -219,10 +219,12 @@ type pauseEnvoy struct {
 	sent       []pauseEnvoyPublish
 }
 
-// pauseEnvoyPublish is one publish the listener took.
+// pauseEnvoyPublish is one publish the listener took: its topic, its message (the summary the
+// daemon publishes it under), its payload, the JSON of what the daemon sends (notify.Publish), and
+// its urgency, "" where the publish names none.
 type pauseEnvoyPublish struct {
-	topic, message string
-	at             time.Time
+	topic, message, payload, urgency string
+	at                               time.Time
 }
 
 func newPauseEnvoy(t *testing.T, clock *waveClock) *pauseEnvoy {
@@ -239,8 +241,10 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/publish":
 		var body struct {
-			Topic   string `json:"topic"`
-			Message string `json:"message"`
+			Topic   string  `json:"topic"`
+			Message string  `json:"message"`
+			Payload *string `json:"payload"`
+			Urgency *string `json:"urgency"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -258,7 +262,14 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprintf(w, `{"error":"the role's holder is not live","reason":"holder_lapsed","holder":"a-stopped-session","holder_state":%q}`, state)
 			return
 		}
-		e.sent = append(e.sent, pauseEnvoyPublish{topic: body.Topic, message: body.Message, at: e.clock.Now()})
+		published := pauseEnvoyPublish{topic: body.Topic, message: body.Message, at: e.clock.Now()}
+		if body.Payload != nil {
+			published.payload = *body.Payload
+		}
+		if body.Urgency != nil {
+			published.urgency = *body.Urgency
+		}
+		e.sent = append(e.sent, published)
 		_, _ = io.WriteString(w, `{}`)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 		_, _ = io.WriteString(w, `{"deleted":true}`)

@@ -58,10 +58,8 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	if err := pool.QueryRow(ctx, "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''").Scan(&task); err != nil {
 		t.Fatalf("read the tester's start task: %v", err)
 	}
-	for _, want := range []string{"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-208 --phase implement --version 2).", "Handoff commit: round-1."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("tester task %q, want it to carry %q", task, want)
-		}
+	if want := []string{"handoff_phase: implement", "handoff_version: 2", "handoff_commit: round-1"}; !hasLines(task, want...) {
+		t.Fatalf("tester task %q, want it to carry %q", task, want)
 	}
 }
 

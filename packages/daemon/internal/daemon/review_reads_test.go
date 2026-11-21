@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -422,9 +423,9 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 			apply("reviewer", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 			readCapture(t, w)
 			expect("the reviewer's completion and the next read", phase.Reviewing)
-			stuck := noticeReasons(t, pool, "review-stuck")
-			if len(stuck) != 1 || !strings.Contains(stuck[0], "with no review that decides it") {
-				t.Fatalf("review-stuck notices %q, want one saying no review decides the round", stuck)
+			stuck := noticePayloads(t, pool, "review-stuck")
+			if len(stuck) != 1 || stuck[0]["cause"] != texts.CauseUndecided {
+				t.Fatalf("review-stuck notices %v, want one saying no review decides the round", stuck)
 			}
 			if got := reads.Load(); got != 2 {
 				t.Fatalf("the two passes read the reviews %d times, want twice: once in %s, once in reviewing", got, tc.from)

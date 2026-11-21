@@ -94,7 +94,7 @@ type issueRoleHoldersInput struct {
 // dispatch.DaemonSession).
 func legionDaemonSessionOf(key string) string {
 	project, _, _ := strings.Cut(key, "-")
-	return legionDaemonSessionPrefix + project
+	return model.LegionDaemonSessionPrefix + project
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session

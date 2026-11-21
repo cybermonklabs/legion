@@ -46,7 +46,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 
    Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
 
-   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. While the root's design gate is closed, the daemon does not start your pod for the message. The message then waits until the gate opens. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
+   The daemon sends you a `merge-queue-removal` message when GitHub reports that the pull request left the merge queue at the head you hold. It names the pull request (`pull_request`) and that head (`head`). `unread: true` means that the daemon could not read the pull request from GitHub, so it does not know if GitHub merged it. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. While the root's design gate is closed, the daemon does not start your pod for the message. The message then waits until the gate opens. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
 
    ```bash
    gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{__typename ... on AddedToMergeQueueEvent{createdAt actor{login}} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
@@ -79,14 +79,14 @@ You resolve no review thread: the reviewer's approval already judged them, and t
 
 ## A closed design gate
 
-The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
+The root's design gate holds the merge, and you are one of the phase holders told when it moves. A `gate-moved` message with `gate: closed` and `merge: held` names the gated step (`step`), its document (`document` and `artifact`) and the version (`version`) that is now with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
 
 ```bash
 gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}' \
   -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
 ```
 
-Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
+Then wait. The `gate-moved` message with `gate: open` and `merge: released` says that every step the deployment gates now stands open, and it is what releases the merge. It comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
 
 ## Completion
 

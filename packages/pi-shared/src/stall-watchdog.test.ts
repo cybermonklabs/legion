@@ -976,14 +976,23 @@ test("the module imports no Oh My Pi module and no node: module", () => {
   const statements = [...source.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map(
     ([statement, specifier]) => ({ specifier, typeOnly: statement.startsWith("import type ") })
   );
-  // Three imports: two of this package's own leaf modules, type-only, and the error coercion
+  // Four imports: two of this package's own leaf modules, type-only; the error coercion
   // `@legion/envoy-client/errors`, which `src/phase-reminder.ts` imports the same way and which
-  // itself imports nothing at all. Nothing of this module reaches a host module or a Node
+  // itself imports nothing at all; and the notice renderer `@legion/envoy-client/notice-text`,
+  // whose one import is TOON's encoder. Nothing of this module reaches a host module or a Node
   // builtin, so the bundle `packages/claude-envoy` builds with no node_modules keeps resolving
   // (`src/envoy-notice.ts`).
   expect(statements).toEqual([
     { specifier: "@legion/envoy-client/errors", typeOnly: false },
+    { specifier: "@legion/envoy-client/notice-text", typeOnly: false },
     { specifier: "./pi-types", typeOnly: true },
     { specifier: "./stall-limits", typeOnly: true },
   ]);
+  const noticeText = readFileSync(
+    path.resolve(import.meta.dir, "../../envoy-client/src/notice-text.ts"),
+    "utf8"
+  );
+  expect(
+    [...noticeText.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map(([, from]) => from)
+  ).toEqual(["@toon-format/toon"]);
 });

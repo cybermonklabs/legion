@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The plugin's notices follow the daemon's new texts: the workspace-recreated notice and the stall
+  restart state their fields.

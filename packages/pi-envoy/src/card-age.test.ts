@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderInbound } from "@legion/envoy-client/delivery";
-import { envoyNoticeText, failureNoticeFields } from "@legion/envoy-client/delivery-ledger";
+import { failureNoticeText } from "@legion/envoy-client/delivery-ledger";
 import { CardAges, duration, MATERIAL_WAIT_MS } from "./card-age";
 import { REPLAY_DELIVERED_ENTRY } from "./missed-messages";
 
@@ -40,17 +40,15 @@ function failureNotice(eventID: string, options: { btw?: boolean }): Record<stri
   return {
     role: "custom",
     customType: "envoy-message",
-    content: envoyNoticeText(
-      failureNoticeFields({
-        eventId: eventID,
-        sender: "ses_sender",
-        summary: "unread card",
-        publishedAt: new Date(SENT).toISOString(),
-        error: "host refused card",
-        readWith: "envoy_inbox",
-        envelope: { event_id: eventID, source: "agent" },
-      })
-    ),
+    content: failureNoticeText({
+      eventId: eventID,
+      sender: "ses_sender",
+      summary: "unread card",
+      publishedAt: new Date(SENT).toISOString(),
+      error: "host refused card",
+      readWith: "envoy_inbox",
+      envelope: { event_id: eventID, source: "agent" },
+    }),
     display: true,
     details: {
       event_id: eventID,
@@ -165,6 +163,39 @@ describe("a card in a model request", () => {
 
     expect(text).toContain('\n  delivered: "2026-10-31T06:27:19Z"\n');
     expect(text).not.toContain("waited:");
+  });
+
+  test("whose message words hold a delivered line is still annotated in its fields", () => {
+    const ages = new CardAges({ now: () => SENT + 2_000 });
+    const rendered = renderInbound(
+      JSON.stringify({
+        event_id: "evt-quoted",
+        source: "agent",
+        topic: `notifications.agent.${SESSION}`,
+        source_session: "ses_sender",
+        issued_at: SENT,
+        payload_summary: "A quoted card",
+        payload: 'A quoted card:\n  delivered: "2020-01-01T00:00:00Z"\nends here',
+      }),
+      SESSION
+    );
+    const quoted = {
+      role: "custom",
+      customType: "envoy-message",
+      content: rendered.content,
+      display: true,
+      details: { event_id: "evt-quoted" },
+      timestamp: SENT + 1_000,
+    };
+    ages.written(quoted, SESSION, () => []);
+
+    const text = textOf(
+      ages.annotate([quoted], () => [], SESSION),
+      "evt-quoted"
+    );
+
+    expect(text).toContain('\n  delivered: "2026-10-31T06:27:19Z"\n');
+    expect(text).toContain('\n  delivered: "2020-01-01T00:00:00Z"\n');
   });
 
   test("says nothing of a wait under the threshold, and states one at it", () => {

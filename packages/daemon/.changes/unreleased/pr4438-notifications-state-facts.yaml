@@ -1,0 +1,38 @@
+kind: Changed
+body: |-
+  Every task, notice and role message the daemon sends an agent session is now a record of one kind
+  on one list (`internal/texts`), rendered as `key: value` lines in one form, with an urgency for
+  each reader. A text gives the facts of its event as fields and no step the reader's prompt already
+  gives; a list names what its reader acts on and counts the rest. So a CI settlement, a review
+  round GitHub will not merge and the wake of a settlement name each check that did not pass, by
+  GitHub's word for its run (`not_passed`), each check GitHub skipped (`skipped`), with a field that
+  says once that a skipped check ran nothing on that head (`each_skipped_check: ran_nothing`), and
+  each commit status in state `failure` or `error` (`not_passed_statuses`), and count the checks and
+  statuses that passed. A text about a person's act carries the person's words, up to 4,000 UTF-16
+  units of one act or 1,000 of each of several, in a block of its own after the facts; the intake
+  keeps those words on the rows the texts are built from (migration `20261118092930_person_words`).
+  A message-refused notice quotes the first line of the refused write in a block of its own too,
+  named by its author: where that line is the daemon's sentence of a worker's backward move or of
+  the architect's close and then that author's words, the notice gives the sentence as a field
+  (`refused_move: <from>-<to>`, `refused_close: before_first_phase`) and the block holds the
+  worker's or the architect's words alone; any other line is the daemon's own, whole. The block
+  holds no character the daemon added: a line past 200 UTF-16 units is cut with no ellipsis and the
+  words object counts the rest (`rest`), and a worker's words lose the full stop the daemon's
+  sentence adds after words that end with none, so words of one line that end with one `.` lose
+  that `.` too, since the two read alike. A session-forgotten notice says why the session was
+  forgotten (`launcher_lookup: failed`, `resumed_by_id: false`). The task of every look of a
+  production check states that a requirement only the deploy can show that the look observes as not
+  met is a fail (`not_met_requirement: fail`), and the last look's task also states the rest of the
+  rule of its verdict beside `last: true` (`unobserved_requirement: fail`,
+  `pending: only_with_no_deploy_only_requirement`). A notice is published with its kind's urgency,
+  and a `low` text wakes no released pod. Of the role messages to a role whose pod is released, only
+  a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
+  the role. A text that a project's pause held, a `low` one too, launches its reader at the resume,
+  and the pause's two notices to the controller (`project-paused`, `project-resumed`) are records on
+  the list. The update ask names each of its five steps in their order (`push_to`,
+  `background_work`, `evidence`, `answer`, `then`), what to do with background work that ends after
+  the answer (`late_background_work`), when an answer brings the round's end forward
+  (`every_answer_brings_it_forward: when_no_turn_or_background_work`), and that a named service the
+  role started is in no report and holds nothing (`named_services: in_no_report_hold_nothing`). A
+  rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
+  carries a person's words in the daemon's texts").

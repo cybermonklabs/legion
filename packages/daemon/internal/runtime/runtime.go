@@ -116,26 +116,26 @@ type Runtime interface {
 	// tell the daemon's stop from a refusal, and charges that try nothing.
 	LaunchBound() time.Duration
 	// PodDrift is why the place k's process runs in no longer matches the configuration the
-	// runtime would build it from now, one short phrase an operator reads per reason, and nil when
-	// nothing differs. Only a runtime whose processes share a place fixed at its creation has any
-	// — the Sandbox runtime's issue pod, whose image, reservation, operator volumes and mounts,
-	// disk, role overlays, secrets broker enrollment and session store are all fixed for the pod's
-	// life — and only for a claim that runs in one: it answers nothing for a claim with no
-	// process, which records no place at all, and nothing for the project controller's own pod,
-	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to do the steps of its update
-	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
-	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
-	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-	// suspension excepted.
+	// runtime would build it from now, one Drift per part that differs, and nil when nothing
+	// differs. Only a runtime whose processes share a place fixed at its creation has any — the
+	// Sandbox runtime's issue pod, whose image, reservation, operator volumes and mounts, disk,
+	// role overlays, secrets broker enrollment and session store are all fixed for the pod's life
+	// — and only for a claim that runs in one: it answers nothing for a claim with no process,
+	// which records no place at all, and nothing for the project controller's own pod, which has
+	// no issue workspace and nothing to push. The daemon opens an update round on a non-empty
+	// answer: the round asks each role of that place to do the steps its role prompt gives for the
+	// update message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and
+	// replaces the place (ReplacePod) once every asked role has answered, no turn runs and no
+	// claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's
+	// bound (pod_update_grace_minutes) whatever the roles answered and whatever runs, an
+	// operator's suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
 	// nothing can be read of a place that is going, so nothing says it has drifted from nothing,
 	// and the round open over it ends. Any other error means the runtime itself could not be
 	// asked, and is never a statement that something drifted either.
-	PodDrift(ctx context.Context, k Known) ([]string, error)
+	PodDrift(ctx context.Context, k Known) ([]Drift, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is
 	// reported ended by the daemon's own act (Observation.Displaced), and the supervisor's resume
@@ -204,6 +204,29 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // endRoundOverAGonePod, supervise's Claim.UpdateLeftRound), so the sweep that reads this need
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
+
+// DriftImage is the key of the image every container of a place runs (DriftItem.Key).
+const DriftImage = "image"
+
+// DriftItem is one part of the configuration a place was built from that a place created now
+// would not carry, as a text names it: the part's key — the image (DriftImage), or the key of a
+// setting, such as `resources`, `disk`, `account` or the variable an address is handed in — and,
+// for the image, the image a place is built from now. A setting is named by its key alone, never
+// by its value, so a text that names it carries neither a credential nor a whole configuration.
+// It is what an update round records of the drift it was opened for beside the reasons' text
+// (supervise's Claim.UpdateDrift), as JSON with the keys key and image.
+type DriftItem struct {
+	Key   string `json:"key"`
+	Image string `json:"image,omitempty"`
+}
+
+// Drift is one part PodDrift answers: the item, and the reason an operator reads in a log line
+// and in the text the round records (supervise's Claim.UpdateReasons): the key, what the place
+// holds and what a place created now would be handed.
+type Drift struct {
+	DriftItem
+	Reason string
+}
 
 // IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
 // of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and
@@ -765,10 +788,10 @@ type Observation struct {
 	//
 	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
 	// reaches a notice two ways: whole, as the `death` of the failure record a claim that failed
-	// with a cause carries (workflow's noticeFailure), and as its first line alone, quoted, cut
-	// at PodEndRunes and without the header of the log tail, in the tree architect's worker-died
-	// reason, which carries no failure record, for a claim that failed because its process died
-	// and holds no pod end (workflow's deathReason). Where there is one, that reason names this
+	// with a cause carries (workflow's noticeFailure), and as its first line alone, cut at
+	// PodEndRunes and without the header of the log tail, as the `death` of the tree architect's
+	// worker-died, which carries no failure record, for a claim that failed because its process
+	// died and holds no pod end (workflow's diedOf). Where there is one, that notice names this
 	// field in Detail's place: the pod's cause once, on one line, and nothing of the log.
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
@@ -779,13 +802,13 @@ type Observation struct {
 }
 
 // PodEndRunes bounds Observation.PodEnd: a few hundred runes, which is a kubelet's reason and
-// message whole and nothing of a log. The bound exists because the field is what a worker-died's
-// reason names whole, on the one line the architect reads (workflow's deathReason), beside the
-// supervisor's sentence and, where it names one, the first line of the runtime's account of the
-// death, each cut to this same bound before it is quoted (workflow's quoteBounded), so what the
-// reason carries of each is bounded by this number rather than by the size a node's message or a
-// provider's happened to have. The claim keeps the runtime's whole account beside it
-// (supervise.Claim.LastDeathCause); this field is the part of it a reason carries.
+// message whole and nothing of a log. The bound exists because the field is what a worker-died
+// names whole as its pod_end (workflow's diedOf), beside the supervisor's sentence and, where it
+// names one, the first line of the runtime's account of the death, each cut to this same bound
+// (workflow's oneBoundedLine), so what the notice carries of each is bounded by this number rather
+// than by the size a node's message or a provider's happened to have. The claim keeps the
+// runtime's whole account beside it (supervise.Claim.LastDeathCause); this field is the part of it
+// a notice carries.
 const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the

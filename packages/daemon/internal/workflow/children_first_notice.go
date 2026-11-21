@@ -1,61 +1,27 @@
 package workflow
 
 import (
-	"fmt"
-	"strings"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// ChildrenFirstNoticeKind is the kind of the notice below, and the one kind that says a parent's
-// own work waits for the work under it.
-const ChildrenFirstNoticeKind = record.NoticeKind("children-first")
-
-// ChildCycleReason is what the daemon says of a cycle the children-first judgement found
-// (record.ChildWait's Cycle): an open child held by a Dispatch blocked_by link that names an
-// issue above it on its own parent chain, so the child waits for an issue that is waiting for
-// the child. It is one fixed sentence rather than one built per case, so that a person reading
-// two notices reads one rule and a test can hold the daemon to it word for word.
-//
-// The daemon names it and acts no further. Taking the link off decides what the work depends on,
-// which is a person's decision; dropping a Dispatch link of its own accord would lose a fact
-// nobody asked it to lose.
-func ChildCycleReason(child, ancestor string) string {
-	return fmt.Sprintf("%s is blocked_by %s, which stands above it on its own Dispatch parent chain, so neither can start until a person takes that link off", child, ancestor)
-}
-
 // ChildrenFirstNotice is what the architect that owns a parent is told when the parent's own first
-// phase begins to wait for its children: the parent, each open child with the Dispatch status that
-// holds it, what ends the wait, and each cycle among them. It is told once per issue and run of
-// its tree — the mark's key is the issue, its tree and that tree's root generation (admit's
-// tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
-// re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
-// of its own are told anew.
-func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
-	named := make([]string, 0, len(wait.Open))
-	var cycles []string
+// phase begins to wait for its children: the parent, and each open child with the Dispatch status
+// that holds it, whether the daemon released it, and the issue above it on its own parent chain
+// that a blocked_by link of the child names (record.ChildWait's Cycle), empty where there is no
+// such cycle. A cycle holds the child for an issue that is waiting for the child: the daemon names
+// it and acts no further, since taking the link off decides what the work depends on, which is a
+// person's decision, and dropping a Dispatch link of its own accord would lose a fact nobody asked
+// it to lose.
+//
+// It is told once per issue and run of its tree — the mark's key is the issue, its tree and that
+// tree's root generation (admit's tellChildrenFirst) — so a child filed later during one wait
+// tells nobody again, while a re-admitted tree, whose architect writes its spec anew, and a
+// sub-parent handed over to a tree of its own are told anew.
+func ChildrenFirstNotice(wait record.ChildWait) texts.ChildrenFirstRecord {
+	children := make([]texts.OpenChildFacts, 0, len(wait.Open))
 	for _, child := range wait.Open {
-		named = append(named, fmt.Sprintf("%s (%s)", child.Key, child.Status))
-		if child.Cycle != "" {
-			cycles = append(cycles, ChildCycleReason(child.Key, child.Cycle))
-		}
+		children = append(children, texts.OpenChildFacts{Key: child.Key, Status: child.Status, Released: child.Released, Cycle: child.Cycle})
 	}
-	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
-		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has. "+
-		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
-		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
-		"Move out from under %s only a child you have not released and that should not run now. "+
-		"Move it under another issue you own (the root's architect owns every issue of the tree, a child's architect its own issue and the issues under it) "+
-		"that has started a phase and has not reached accepting, and never under an issue it waits on. "+
-		"After the move, have the person on your tree's root asked when that child's work should run or stop: "+
-		"the root's architect asks with dispatch ask, and a child's architect sends the question to the architect above it. "+
-		"Release it when they say to run it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
-		"Until they answer, sign off neither the issue you moved it under nor any issue above it that you accept. "+
-		"Where you own no such issue to move the child under, have the person asked the same way.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
-	if len(cycles) > 0 {
-		reason += " " + strings.Join(cycles, " ") + "."
-	}
-	return record.Notice{Kind: ChildrenFirstNoticeKind, Role: claim.RoleArchitect, Reason: reason}
+	return texts.ChildrenFirstRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildrenFirst, Issue: wait.Parent}, Children: children}
 }

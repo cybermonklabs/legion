@@ -146,7 +146,7 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 			t.Fatalf("the starts written for %s = %+v, want none: the fill settled every role of it at the entry its row names", root, starts)
 		}
 		if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-			t.Fatalf("the architect wakes of %s = %q, want none: the release wakes the controller for no root it does not repair", root, reasons)
+			t.Fatalf("the architect wakes of %s = %+v, want none: the release wakes the controller for no root it does not repair", root, reasons)
 		}
 		marks := architectWakeMarks(t, pool, root, architectUpgradeGeneration)
 		if !slices.Equal(marks, upgradeMarks) {
@@ -339,7 +339,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 
 	sweepAt(t, pool, admission, "readmitted-inside", fixedNow.Add(insideTheGate))
 	if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of the re-admitted %s = %q, want none inside its own bound", root, reasons)
+		t.Fatalf("the architect wakes of the re-admitted %s = %+v, want none inside its own bound", root, reasons)
 	}
 	sweepAt(t, pool, admission, "readmitted-past", fixedNow.Add(pastTheGate))
 
@@ -401,12 +401,12 @@ func TestTheArchitectUpgradeReadmissionOfATreeWhoseArchitectServedNoRunIsAnEarli
 		t.Fatalf("the re-admitted %s = generation %d at %s, want generation 2 at admitted", root, readmitted.Generation, readmitted.Phase)
 	}
 	start := assertArchitectEntry(t, pool, root, 2)
-	if !strings.Contains(start.Task, workflow.ArchitectReadmittedLabel) {
+	if !hasLines(start.Task, workflow.ArchitectReadmittedLabel) {
 		t.Fatalf("the re-admission's architect task of %s = %q, want the shape of a tree that ran at an earlier generation, labelled %q",
 			root, start.Task, workflow.ArchitectReadmittedLabel)
 	}
-	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "while nothing in it runs"} {
-		if strings.Contains(start.Task, untrue) {
+	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "nothing_else_starts_it: true"} {
+		if hasLines(start.Task, untrue) {
 			t.Fatalf("the re-admission's architect task of %s = %q; it holds %q, which is false of a tree whose architect ran and whose "+
 				"mid-phase child this promotion starts again", root, start.Task, untrue)
 		}
@@ -702,7 +702,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the starts written for %s after the roll-forward = %+v, want none: its architect is settled again", root.key, starts)
 				}
 				if reasons := architectWakes(t, pool, root.key); len(reasons) != 0 {
-					t.Fatalf("the architect wakes of %s after the roll-forward = %q, want none of any arm", root.key, reasons)
+					t.Fatalf("the architect wakes of %s after the roll-forward = %+v, want none of any arm", root.key, reasons)
 				}
 				marks := architectWakeMarks(t, pool, root.key, root.generation)
 				if !slices.Equal(marks, upgradeMarks) {

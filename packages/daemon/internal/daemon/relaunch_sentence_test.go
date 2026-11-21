@@ -1,15 +1,16 @@
 package daemon
 
-// The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3), end to end over the real supervision, the real workflow and a real
-// Postgres, with a faked runtime: a root architect relaunched holding a task and holding none,
-// either one's catch-up, and the catch-up of one whose relaunch also lost its session; the
-// daemon-launched controller's start message; a phase worker's resume task behind the daemon's
-// own delivery of the sentence; and the phase task the operator's retry gives a phase worker the
-// operator stopped in its task's turn.
+// The note a relaunched process is told of what the last let-go of its process ended
+// (dispatch://INFRA-3276 R3, supervise.RelaunchNote), end to end over the real supervision, the
+// real workflow and a real Postgres, with a faked runtime: a root architect relaunched holding a
+// task and holding none, either one's catch-up, and the catch-up of one whose relaunch also lost
+// its session; the daemon-launched controller's start message; a phase worker's resume task
+// behind the daemon's own delivery of the note; and the phase task the operator's retry gives a
+// phase worker the operator stopped in its task's turn.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -33,15 +34,38 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// relaunchDeliveryPrefix starts the id of the daemon's own delivery of a relaunch's sentence
+// relaunchDeliveryPrefix starts the id of the daemon's own delivery of a relaunch's note
 // (supervise's relaunchTaskPrefix), for the checks that read an id on its own, as a prompt the
 // shim was sent carries it; a check of a delivery asks it (supervise.Delivery.Relaunch).
 const relaunchDeliveryPrefix = "relaunch:"
+
+// relaunchNote is the relaunch note of issue for the record ended, as a prompt carries it: in
+// front of a task (task true), or as the whole text of the daemon's own delivery of it
+// (supervise.RelaunchNote).
+func relaunchNote(t *testing.T, issue string, ended supervise.EndedWork, task bool) string {
+	t.Helper()
+	text, err := texts.Render(supervise.RelaunchNote(issue, ended, task))
+	if err != nil {
+		t.Fatalf("render the relaunch note of %s: %v", issue, err)
+	}
+	return text
+}
+
+// causeLine is the line of a relaunch note that names cause, as its record renders it.
+func causeLine(t *testing.T, cause string) string {
+	t.Helper()
+	text, err := texts.Render(texts.RelaunchFacts{Cause: cause})
+	if err != nil {
+		t.Fatalf("render the cause %q: %v", cause, err)
+	}
+	return text
+}
 
 // rootArchitectRig is a tree's root architect as the daemon runs one: its root in the workflow,
 // its claim started by the outbox's start row and supervised over a real Postgres, its ready
@@ -159,41 +183,46 @@ func (r *rootArchitectRig) lastPrompt() fake.Prompt {
 	return prompts[len(prompts)-1]
 }
 
-// catchUpReasons is the reason of every catch-up notice the outbox holds, oldest first: the text
-// the architect reads of its catch-up.
-func catchUpReasons(t *testing.T, pool *store.Pool) []string {
+// catchUps is every catch-up notice the outbox holds, oldest first, as its payload decodes.
+func catchUps(t *testing.T, pool *store.Pool) []record.Notice {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
-		"select payload->>'reason' from outbox where kind = $1 and payload->>'kind' = 'catch-up' order by id", string(record.OutboxKindNotice))
+		"select payload from outbox where kind = $1 and payload->>'kind' = 'catch-up' order by id", string(record.OutboxKindNotice))
 	if err != nil {
 		t.Fatalf("read the catch-ups: %v", err)
 	}
-	reasons, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
 	if err != nil {
 		t.Fatalf("scan the catch-ups: %v", err)
 	}
-	return reasons
+	notices := make([]record.Notice, len(payloads))
+	for i, payload := range payloads {
+		if err := json.Unmarshal(payload, &notices[i]); err != nil {
+			t.Fatalf("decode the catch-up %s: %v", payload, err)
+		}
+	}
+	return notices
 }
 
-// wantCatchUpOpensWith is the one catch-up the relaunch's ready queued, opening with sentence and
-// going on with the tree as the daemon records it.
-func wantCatchUpOpensWith(t *testing.T, pool *store.Pool, sentence string) {
+// wantCatchUpCarries is the one catch-up the relaunch's ready queued, of the tree at generation 1,
+// carrying relaunch, the facts of the relaunch note (supervise.EndedWork.Facts), or none.
+func wantCatchUpCarries(t *testing.T, pool *store.Pool, relaunch *texts.RelaunchFacts) {
 	t.Helper()
-	reasons := catchUpReasons(t, pool)
-	if len(reasons) != 1 {
-		t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one", reasons)
+	notices := catchUps(t, pool)
+	if len(notices) != 1 {
+		t.Fatalf("the outbox holds catch-ups %+v, want the relaunch's one", notices)
 	}
-	if !strings.HasPrefix(reasons[0], sentence+"\n\n") || !strings.Contains(reasons[0], "the tree of LEGION-208 at generation 1") {
-		t.Fatalf("the relaunched architect's catch-up reads %q, want it to open with the relaunch's sentence %q and then state the tree",
-			reasons[0], sentence)
+	if got := notices[0]; got.CatchUp == nil || got.CatchUp.Generation != 1 || !reflect.DeepEqual(got.Relaunch, relaunch) {
+		t.Fatalf("the relaunched architect's catch-up is %+v carrying the relaunch %+v, want the tree at generation 1 and the relaunch %+v",
+			got.CatchUp, got.Relaunch, relaunch)
 	}
 }
 
-// A root architect relaunched holding a task is sent that task behind the sentence of what the
-// relaunch ended — the turn of the task interrupted, the death in the runtime's own words, the
+// A root architect relaunched holding a task is sent that task behind the note of what the
+// relaunch ended — the turn of the task cut off, the death in the runtime's own words, the
 // goal-red-team subagent its report named — and no delivery of the daemon's own. The catch-up its
-// ready queued opens with the same record's sentence. The turn that takes the task tells the
-// record; the catch-up's copy tells nothing.
+// ready queued carries the same record's facts. The turn that takes the task tells the record; the
+// catch-up's copy tells nothing.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing.T) {
 	rig := newRootArchitectRig(t)
 	const task = "Decide the acceptance of LEGION-209."
@@ -215,20 +244,17 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 	if sent.DeliveryID != held.ID || !strings.HasSuffix(sent.Message, "\n\n"+task) {
 		t.Fatalf("the relaunched architect was sent %+v, want its task under %s", sent, held.ID)
 	}
-	if !strings.HasPrefix(sent.Message, "Your previous turn on this task was interrupted.") {
-		t.Errorf("the task was sent as %q, want it to open with the relaunch's sentence", sent.Message)
+	if want := relaunchNote(t, rig.claim().Issue, ended, true) + "\n\n" + task; sent.Message != want {
+		t.Errorf("the task was sent as %q, want the relaunch note in front of it, %q", sent.Message, want)
 	}
-	for _, says := range []string{
-		"Your process ended because the process died: " + strconv.Quote(death) + ".",
-		"Each subagent that you started stopped with that process.",
-		"No result of that work will come to you.",
-		"Your transcript does not say so.",
-	} {
+	for _, says := range []string{"kind: relaunch-note", causeLine(t, "the process died: "+strconv.Quote(death)),
+		"task_turn: true", "stopped[1]: subagent"} {
 		if !strings.Contains(sent.Message, says) {
 			t.Errorf("the task was sent as %q, want it to say %q", sent.Message, says)
 		}
 	}
-	wantCatchUpOpensWith(t, rig.pool, supervise.RelaunchSentence(ended))
+	facts := ended.Facts(false)
+	wantCatchUpCarries(t, rig.pool, &facts)
 
 	rig.handle(supervise.StreamTurnStart{Claim: rig.token})
 	if stored, err := rig.st.Claims(context.Background()); err != nil || !storedOf(t, stored, rig.token).EndedWork.Told {
@@ -237,8 +263,8 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 }
 
 // A root architect relaunched holding nothing — its goal-red-team subagent reported running, its
-// process gone — is given a delivery of the daemon's own that carries the sentence alone, with no
-// phase, no run and no entry, and is sent it at once. Its catch-up opens with the same sentence.
+// process gone — is given a delivery of the daemon's own that carries the note alone, with no
+// phase, no run and no entry, and is sent it at once. Its catch-up carries the same facts.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testing.T) {
 	rig := newRootArchitectRig(t)
 	if held := rig.claim().Pending; held != nil {
@@ -252,28 +278,29 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 	if !ended.Tells() || ended.Turn || len(ended.Kinds) != 1 {
 		t.Fatalf("the relaunch recorded %+v, want an untold record of the subagent alone", ended)
 	}
-	sentence := supervise.RelaunchSentence(ended)
+	note := relaunchNote(t, rig.claim().Issue, ended, false)
 	held := rig.claim().Pending
-	if held == nil || !held.Relaunch() || held.Task != sentence ||
+	if held == nil || !held.Relaunch() || held.Task != note ||
 		held.Phase != "" || held.Generation != 0 || held.Entry != 0 {
-		t.Fatalf("the relaunched architect holds %+v, want the daemon's own delivery of the sentence, of no phase, run or entry", held)
+		t.Fatalf("the relaunched architect holds %+v, want the daemon's own delivery of the note, of no phase, run or entry", held)
 	}
-	if sent := rig.lastPrompt(); sent.DeliveryID != held.ID || sent.Message != sentence {
-		t.Fatalf("the relaunched architect was sent %+v, want the sentence alone under %s", sent, held.ID)
+	if sent := rig.lastPrompt(); sent.DeliveryID != held.ID || sent.Message != note {
+		t.Fatalf("the relaunched architect was sent %+v, want the note alone under %s", sent, held.ID)
 	}
-	if !strings.Contains(sentence, "Each subagent that you started stopped with that process.") {
-		t.Errorf("the sentence %q does not name the subagent", sentence)
+	if !strings.Contains(note, "stopped[1]: subagent") {
+		t.Errorf("the note %q does not name the subagent", note)
 	}
-	wantCatchUpOpensWith(t, rig.pool, sentence)
+	facts := ended.Facts(false)
+	wantCatchUpCarries(t, rig.pool, &facts)
 }
 
 // A root architect whose relaunch also lost its session — the resume found the session in no
 // store, so a fresh agent runs in its place (supervise's startFresh) — is not told the old
 // session's record of what the relaunch ended: the forget of that session ends the record, told by
-// no delivery (supervise's forgetSession), since the abandoned session's sentence says that
-// everything of the old session is gone and the fresh session has no transcript of the work the
-// record describes. So the catch-up its ready queues states the tree with no relaunch sentence in
-// front of it, and the claim is given no delivery of the daemon's own.
+// no delivery (supervise's forgetSession), since the abandoned session's note says that the old
+// session was abandoned where it stood and the fresh session has no transcript of the work the
+// record describes. So the catch-up its ready queues states the tree with no relaunch facts, and
+// the claim is given no delivery of the daemon's own.
 func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T) {
 	rig := newRootArchitectRig(t)
 	rig.report()
@@ -299,15 +326,9 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T
 		t.Fatalf("the store holds the record %+v, want it ended by the forget, told by no delivery", ended)
 	}
 	if c.Pending != nil {
-		t.Fatalf("the fresh architect holds %+v, want no delivery of the daemon's own: the old session's record is ended and the abandoned session's sentence waits for its first task", c.Pending)
+		t.Fatalf("the fresh architect holds %+v, want no delivery of the daemon's own: the old session's record is ended and the abandoned session's note waits for its first task", c.Pending)
 	}
-	reasons := catchUpReasons(t, rig.pool)
-	if len(reasons) != 1 {
-		t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one", reasons)
-	}
-	if strings.Contains(reasons[0], supervise.RelaunchSentence(c.EndedWork)) || !strings.Contains(reasons[0], "the tree of LEGION-208 at generation 1") {
-		t.Fatalf("the fresh architect's catch-up reads %q, want the tree with no sentence of what the relaunch ended", reasons[0])
-	}
+	wantCatchUpCarries(t, rig.pool, nil)
 }
 
 // controllerReady connects launch's shim, registers its agent as session and says it is ready, as
@@ -334,8 +355,8 @@ func workTurn(sh *shim, prompt shimwire.Prompt) {
 
 // The daemon-launched controller is given no delivery of the daemon's own at a relaunch: its
 // keeper sends the start message at every ready and only logs a refusal of it, so a delivery
-// queued first would make the start procedure wait behind a sentence. The start message is the
-// delivery that carries the sentence, in front of it, and the turn that takes it tells the record.
+// queued first would make the start procedure wait behind a note. The start message is the
+// delivery that carries the note, in front of it, and the turn that takes it tells the record.
 func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
@@ -373,14 +394,16 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 	if strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) {
 		t.Fatalf("the relaunched controller was sent the daemon's own delivery %s, want its start message", prompt.DeliveryID)
 	}
-	if !strings.HasPrefix(prompt.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(prompt.Message, "The daemon has no report of the background work of your last turn.") ||
-		!strings.HasSuffix(prompt.Message, "\n\n"+ControllerStartMessage) {
-		t.Fatalf("the relaunched controller was prompted %q, want its start message behind the relaunch's sentence", prompt.Message)
-	}
-	if stored := storedClaim(t, cfg, token); stored.Pending == nil || stored.Pending.Task != ControllerStartMessage || !stored.EndedWork.Tells() {
+	stored := storedClaim(t, cfg, token)
+	if stored.Pending == nil || stored.Pending.Task != ControllerStartMessage || !stored.EndedWork.Tells() {
 		t.Fatalf("the relaunched controller's claim holds %+v with record %+v, want the start message pending and the record untold",
 			stored.Pending, stored.EndedWork)
+	}
+	if want := relaunchNote(t, "", stored.EndedWork, true) + "\n\n" + ControllerStartMessage; prompt.Message != want {
+		t.Fatalf("the relaunched controller was prompted %q, want its start message behind the relaunch note, %q", prompt.Message, want)
+	}
+	if strings.Contains(prompt.Message, "reported: true") {
+		t.Errorf("the relaunched controller was prompted %q, want no report of its last turn on record", prompt.Message)
 	}
 
 	workTurn(sh, prompt)
@@ -395,7 +418,7 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 	}
 }
 
-// A phase worker relaunched holding nothing is sent the daemon's own delivery of the sentence, and
+// A phase worker relaunched holding nothing is sent the daemon's own delivery of the note, and
 // still gets its phase's resume task: the ready read the claim holding nothing before that
 // delivery was queued (finishReady), so the workflow queued the task's row, which waits while the
 // delivery's acknowledged prompt is the session's next and goes once its turn is over. That turn
@@ -410,26 +433,26 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 
 	relaunch := rig.claim().Pending
 	if relaunch == nil || !relaunch.Relaunch() {
-		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence", relaunch)
+		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's note", relaunch)
 	}
 	if rows := outboxRows(t, rig.pool); rows != 1 {
 		t.Fatalf("the relaunch left %d outbox rows, want the one start that carries the phase's resume task", rows)
 	}
 	prompts := rig.conn.Prompts()
-	if sent := prompts[len(prompts)-1]; sent.DeliveryID != relaunch.ID || sent.Message != supervise.RelaunchSentence(rig.claim().EndedWork) {
-		t.Fatalf("the relaunched tester was sent %+v, want the sentence alone under %s", sent, relaunch.ID)
+	if sent := prompts[len(prompts)-1]; sent.DeliveryID != relaunch.ID || sent.Message != relaunchNote(t, rig.claim().Issue, rig.claim().EndedWork, false) {
+		t.Fatalf("the relaunched tester was sent %+v, want the note alone under %s", sent, relaunch.ID)
 	}
 
 	// The resume task's row meets the acknowledged delivery and waits for its turn.
 	rig.run()
 	if held := rig.claim().Pending; held == nil || held.ID != relaunch.ID {
-		t.Fatalf("the tester holds %+v after the resume task's row ran, want the acknowledged delivery of the sentence still", held)
+		t.Fatalf("the tester holds %+v after the resume task's row ran, want the acknowledged delivery of the note still", held)
 	}
 
 	handleAll(t, rig.machine, supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token},
 		supervise.StreamPromptResult{Claim: rig.token, DeliveryID: relaunch.ID, AgentInvoked: true})
 	if c := rig.claim(); c.Pending != nil || !c.EndedWork.Told {
-		t.Fatalf("after the sentence's turn the tester holds %+v with record %+v, want nothing pending and the record told", c.Pending, c.EndedWork)
+		t.Fatalf("after the note's turn the tester holds %+v with record %+v, want nothing pending and the record told", c.Pending, c.EndedWork)
 	}
 
 	rig.dueNow()
@@ -444,10 +467,10 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 	}
 }
 
-// A newer task takes the place of the daemon's own delivery of the sentence when no prompt of it
+// A newer task takes the place of the daemon's own delivery of the note when no prompt of it
 // waits on a result — here its send was answered busy, the relaunched agent in a turn of its own —
-// and carries the sentence in front of itself: the phase worker's resume task is not held behind
-// a sentence nobody is reading.
+// and carries the note in front of itself: the phase worker's resume task is not held behind a
+// note nobody is reading.
 func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T) {
 	rig := newReadyWorkerRig(t)
 	rig.workTheTask()
@@ -460,7 +483,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 
 	relaunch := rig.claim().Pending
 	if relaunch == nil || !relaunch.Relaunch() {
-		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence", relaunch)
+		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's note", relaunch)
 	}
 
 	// The resume task's row takes the place of the sentence's delivery, and nothing goes into the
@@ -469,23 +492,24 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	rig.run()
 	held := rig.claim().Pending
 	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Relaunch() {
-		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
+		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the note's delivery", held)
 	}
 	if sent := rig.conn.Prompts(); len(sent) != sentBefore {
 		t.Fatalf("the tester was sent %+v while the turn the busy answer named ran, want nothing more", sent[sentBefore:])
 	}
 
-	// The turn the busy answer named ends, and the resume task goes behind the sentence, once.
+	// The turn the busy answer named ends, and the resume task goes behind the note, once.
 	handleAll(t, rig.machine, supervise.StreamTurnEnd{Claim: rig.token})
 	prompts := rig.conn.Prompts()
 	if len(prompts) != sentBefore+1 {
 		t.Fatalf("the tester was sent %+v once the turn ended, want the resume task alone", prompts[sentBefore:])
 	}
 	sent := prompts[sentBefore]
-	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(sent.Message, "Each subagent that you started stopped with that process.") ||
+	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "kind: relaunch-note\n") ||
+		!strings.Contains(sent.Message, "stopped[1]: subagent") || !strings.Contains(sent.Message, "task: true") ||
+		strings.Contains(sent.Message, "task_turn: true") ||
 		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue)) {
-		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's sentence", sent, held.ID)
+		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's note", sent, held.ID)
 	}
 }
 
@@ -503,10 +527,10 @@ func (r *readyWorkerRig) dueNow() {
 // retry` send them. The stop records on the claim's row what it ended, under its own cause: the
 // turn, that turn's task, and the subagent. The retry starts the worker's phase again (api's
 // retryStart), whose rows relaunch the stopped claim on the session it recorded and hand it the
-// phase's task, and the resumed process's first prompt is that task behind the sentence naming
-// the stop and the subagent. The stop retired the task its turn confirmed, so the phase's task
-// was in no turn of the stopped process, and the sentence says that the turn the agent was in
-// was interrupted, never its previous turn on this task (supervise's EndedWork.inFrontOf).
+// phase's task, and the resumed process's first prompt is that task behind the note naming the
+// stop and the subagent. The stop retired the task its turn confirmed, so the phase's task was in
+// no turn of the stopped process, and the note states that the turn the agent was in was cut off,
+// never that it was this task's (supervise's EndedWork.inFrontOf).
 func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
 	rig := newReadyWorkerRig(t)
 	ctx := context.Background()
@@ -587,19 +611,14 @@ func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded
 	held, sent := rig.claim().Pending, prompts[before]
 	if held == nil || held.Relaunch() || held.Interrupted || held.Phase != phase.Testing || held.ID != sent.DeliveryID ||
 		!strings.HasSuffix(sent.Message, "\n\n"+held.Task) {
-		t.Fatalf("the resumed tester was sent %+v holding %+v, want the testing phase's task behind the stop's sentence", sent, held)
+		t.Fatalf("the resumed tester was sent %+v holding %+v, want the testing phase's task behind the stop's note", sent, held)
 	}
-	for _, says := range []string{
-		"Your previous process ended because its claim was stopped.",
-		"The turn you were in was interrupted.",
-		"Each subagent that you started stopped with that process.",
-		"Then continue the task.",
-	} {
+	for _, says := range []string{causeLine(t, "its claim was stopped"), "in_turn: true", "stopped[1]: subagent", "task: true"} {
 		if !strings.Contains(sent.Message, says) {
 			t.Errorf("the phase's task was sent as %q, want it to say %q", sent.Message, says)
 		}
 	}
-	if strings.Contains(sent.Message, "Your previous turn on this task was interrupted.") {
-		t.Errorf("the phase's task was sent as %q, which says its own turn was interrupted: it was in no turn of the stopped process", sent.Message)
+	if strings.Contains(sent.Message, "task_turn: true") {
+		t.Errorf("the phase's task was sent as %q, which says its own turn was cut off: it was in no turn of the stopped process", sent.Message)
 	}
 }

@@ -14,12 +14,14 @@
 // LEGION_TEST_NATS_MONITOR_URL (the monitoring endpoint's base URL). With both set, URL serves that
 // server, emptied for each test exactly as the container is, starts no container, and Main removes
 // nothing; one set without the other fails the test, since a half-named server is a mistake rather
-// than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, waits for every client connection to it to end, and empties each stream before it
-// deletes it, so the server is the tests' alone and the packages using it run one after another
-// (go test -p 1). The leak check at the end of each test depends on that rule too: with one
-// binary on the server, every connection it holds is this binary's, so one that appeared while a
-// test held the server is that test's own.
+// than a reason to fall back to Docker. Nothing removes that server when the binary ends, and the
+// next suite to use it need not empty it first, so each test empties it again at its end, once its
+// own cleanups have run: a test leaves the server as it found it. The reset holds the server for
+// one test of one test binary at a time, waits for every client connection to it to end, and
+// empties each stream before it deletes it, so the server is the tests' alone and the packages
+// using it run one after another (go test -p 1). The leak check at the end of each test depends on
+// that rule too: with one binary on the server, every connection it holds is this binary's, so one
+// that appeared while a test held the server is that test's own.
 package testnats
 
 import (
@@ -116,11 +118,13 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset then purges each stream and deletes it, so a test creates its own there and finds it
-// empty with CreateStream: a deleted stream's store can outlive the delete that answered, and a
-// purged one carries no message into the next test, though it does carry its sequence. The purge,
-// below, states the mechanism and names the source lines; the comments elsewhere in this package
-// point to it rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
+// The reset then purges each stream and deletes it (emptyStreams), so a test creates its own there
+// and finds it empty with CreateStream: a deleted stream's store can outlive the delete that
+// answered, and a purged one carries no message into the next test, though it does carry its
+// sequence. The purge, in emptyStreams, states the mechanism and names the source lines; the
+// comments elsewhere in this package point to it rather than stating it again. An external server
+// outlives the binary, so on one the same reset runs again when t ends, once t's own cleanups and
+// its leak check have run (emptyAtTheEnd). Last, the reset arms the leak check (leakcheck.go),
 // which fails t at its end for a client connection t left open on the server.
 func URL(t testing.TB) string {
 	t.Helper()
@@ -149,9 +153,42 @@ func URL(t testing.TB) string {
 	}
 	drained(t)
 	fixtureOpenedNone()
-	conn, js := connect(t)
+	conn, js := connect(t.Context(), t)
 	defer conn.Close()
-	names := js.StreamNames(t.Context())
+	emptyStreams(t.Context(), t, js)
+	if shared == nil {
+		// An external server: emptied again when t ends (emptyAtTheEnd). Registered before the
+		// leak check and after take's release, it runs after that check and before the release,
+		// cleanups running in reverse order of their registration.
+		t.Cleanup(func() { emptyAtTheEnd(t) })
+	}
+	armLeakCheck(t)
+	return serverURL
+}
+
+// emptyAtTheEnd empties the external server again at the end of t, exactly as URL's reset
+// empties it when t takes it: it waits for the server to report no client connection (drained),
+// then purges and deletes each stream (emptyStreams). It runs once t's own cleanups have run and
+// its leak check has closed every client the fixture opened for t; a connection that check could
+// not close fails t here at once, as it would fail the next take. Nothing removes an external
+// server when the binary ends, unlike the package's container (Main), and the next suite to use
+// it need not empty it first, so without this the streams the binary's last test made stay on
+// the server for that suite to meet. t's context is done by the time a cleanup runs, so the
+// calls take a context of their own.
+func emptyAtTheEnd(t testing.TB) {
+	t.Helper()
+	ctx := context.Background()
+	drained(t)
+	conn, js := connect(ctx, t)
+	defer conn.Close()
+	emptyStreams(ctx, t, js)
+}
+
+// emptyStreams purges each stream of the server js is a client of and deletes it, and fails t
+// unless the server's account then holds no stream.
+func emptyStreams(ctx context.Context, t testing.TB, js jetstream.JetStream) {
+	t.Helper()
+	names := js.StreamNames(ctx)
 	var streams []string
 	for name := range names.Name() {
 		streams = append(streams, name)
@@ -192,26 +229,24 @@ func URL(t testing.TB) string {
 		// rounds that recovered anything were among those 28. The purge is a lookup of the stream
 		// and one purge request per stream, and the server answers the purge when the store is
 		// empty.
-		stream, err := js.Stream(t.Context(), name)
+		stream, err := js.Stream(ctx, name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
 		}
-		if err := stream.Purge(t.Context()); err != nil {
+		if err := stream.Purge(ctx); err != nil {
 			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
 		}
-		if err := js.DeleteStream(t.Context(), name); err != nil {
+		if err := js.DeleteStream(ctx, name); err != nil {
 			t.Fatalf("empty the NATS server of stream %s: %v", name, err)
 		}
 	}
-	info, err := js.AccountInfo(t.Context())
+	info, err := js.AccountInfo(ctx)
 	if err != nil {
 		t.Fatalf("read the NATS server's account after emptying it: %v", err)
 	}
 	if info.Streams != 0 {
 		t.Fatalf("the NATS server still holds %d streams after emptying it", info.Streams)
 	}
-	armLeakCheck(t)
-	return serverURL
 }
 
 // external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
@@ -374,7 +409,7 @@ func clientURL(container *tcnats.NATSContainer) (string, error) {
 func JetStream(t testing.TB) jetstream.JetStream {
 	t.Helper()
 	URL(t)
-	conn, js := connect(t)
+	conn, js := connect(t.Context(), t)
 	t.Cleanup(conn.Close)
 	return js
 }
@@ -422,11 +457,11 @@ const (
 // the create is retried on exactly that answer, every 50 ms; any other error fails the test at
 // once.
 //
-// The stream the create answers is read once and must be empty; the purge in URL says how a
-// create can come back holding an earlier stream's store. A stream handed to a test holding an
-// earlier test's messages makes that test count them as its own, so the failure names them here,
-// instead of surfacing as a count the test reads later: in the failure this guard was written
-// for, the row took its stream at consumer_lag_test.go:30 and read the count at :50.
+// The stream the create answers is read once and must be empty; the purge in emptyStreams says
+// how a create can come back holding an earlier stream's store. A stream handed to a test holding
+// an earlier test's messages makes that test count them as its own, so the failure names them
+// here, instead of surfacing as a count the test reads later: in the failure this guard was
+// written for, the row took its stream at consumer_lag_test.go:30 and read the count at :50.
 func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamConfig) jetstream.Stream {
 	t.Helper()
 	var stream jetstream.Stream
@@ -488,7 +523,7 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	if err := consumers.Err(); err != nil {
 		held = append(held, fmt.Sprintf("list its consumers: %v", err))
 	}
-	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in URL says how that happens)",
+	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in emptyStreams says how that happens)",
 		name, strings.Join(held, "; "))
 }
 
@@ -664,12 +699,13 @@ func answering(t testing.TB, url string) {
 	}
 }
 
-// connect returns a connection to the server once its JetStream API answers. The connection
-// carries t's name, as a test's own client does, and is the fixture's to close: the reset's
-// client and a test's client are alike the fixture's (leakcheck.go).
-func connect(t testing.TB) (*nats.Conn, jetstream.JetStream) {
+// connect returns a connection to the server once its JetStream API answers, waiting within
+// readinessTimeout of ctx. The connection carries t's name, as a test's own client does, and is
+// the fixture's to close: the reset's client and a test's client are alike the fixture's
+// (leakcheck.go).
+func connect(ctx context.Context, t testing.TB) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
+	ctx, cancel := context.WithTimeout(ctx, readinessTimeout)
 	defer cancel()
 	for {
 		conn, js, err := ready(ctx, serverURL, t.Name())

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -16,7 +17,9 @@ import (
 // nothing else: the ask that the implementer merge the base forward and push, the hold that tells
 // the worker of the phase the issue stays in to stop writing the workspace while it does, and, once
 // the merge lands, the landed to that worker and the review to the reviewer of an issue past its
-// review (payload.Message). It stops nothing it reaches.
+// review. Each is the record of its step's kind (record.MergeForwardMessage.Record), an object,
+// published under the summary `<kind> on <KEY>` at the urgency the list gives the kind for the
+// role (texts.UrgencyOf). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
@@ -64,7 +67,8 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		return nil
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
-		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, pr.Repo),
+		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), summary: noticeSummary(payload.Kind(), row.Issue),
+		payload: payload.Record(row.Issue, pr.Repo), urgency: texts.UrgencyOf(payload.Kind(), payload.Role, texts.Variant{Phase: payload.Phase}),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered"})

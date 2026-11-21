@@ -75,6 +75,20 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
+The resume names the act that answered the wait and carries the person's words in a block, so read those words in the task. Where that block names a `rest` or `more`, the words were cut: read the rest at the ask's link.
+After a retraction (`act: retracted`), no person will answer that ask, because its decision block left the spec: read the spec as it stands, and ask again only if you still need the decision.
+After a close by anyone who is not a person (`act: closed`, where `closed_by` names who closed it), no person will answer that ask either: read its thread, and ask again only if you still need the decision.
+Each ask that the task lists as waiting on you (`waiting_on_you`) is yours to answer: read its thread and reply in it.
+Each item that the task lists as still with the person (`with_person`, and `approval_request` for the approval request) waits for you to hand it back once you have done what the answer asks.
+Hand an item back with a reply in its thread that leaves the turn with the person, or, while the gate is armed and closed, with a new approval request and `register_gate` of that version.
+Close an item that you no longer need instead of handing it back.
+When nothing is still with the person and the gate is armed and closed, hand the request back once the document is ready: request approval again and register that version with `register_gate`, or answer in the request's thread while that thread is open (`request_open`).
+Handing an item back starts your next wait, so end your turn after it.
+Where the gate is not armed (`gate_armed: false`), no person approves the document: when it is ready, register it at its current version, which opens the gate with no approval.
+A changes request asks you to revise the document as the person asks in its reason, except where the gate is open and armed: a person then approved the document after that review, so it asks for no revision now.
+A changes request made after the wait began that did not answer it (`later_changes_version`, with its reason in the `later_reason` block) asks the same revision.
+A newer version that handed the approval request back to you (`act: version`) asks you to read that version and the request's thread.
+Where nothing is with the person, nothing waits on you and the gate is open, continue the tree's work.
 Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
@@ -107,14 +121,14 @@ step your addressing line names; a call naming another of the issue's documents 
 approval event for each, so one such request opens the `spec` step and the `criteria` step
 together, while the `decisions` step takes a request of its own.
 A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
-and a reason, never the step it is of, so when your addressing line names more than one step,
-read `gatedSteps` in your own issue record (the `legion` tool's `read_record`) to see which step
-the review was of before you act on it.
+and the document, a changes request its reason too, but never the step it is of, so when your
+addressing line names more than one step, read `gatedSteps` in your own issue record (the
+`legion` tool's `read_record`) to see which step the review was of before you act on it.
 After approval, follow `skill://legion-architect`, section 1, for whether the root spec changes,
 when to repeat the two reviews, and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
-catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
+catch-up leaves to you is acceptance: an issue its `accepting` names as waiting for your acceptance is
 in `accepting`, where no worker runs and the notice that moved it there may never have reached you,
 so read its evidence and `sign_off` it — a parent only on an approved head that carries the merges
 of every child its criteria need, and otherwise run its last round

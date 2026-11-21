@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The issue every case of this file stands on, the role that works its phase, and the phase
@@ -257,19 +258,16 @@ func silenceSuperviseRows(t *testing.T, pool *pgxpool.Pool) []silenceSuperviseRo
 	return read
 }
 
-// namesTheSilence is every part of the record R2 asks the notice to name and that the case's
-// own clause adds: the issue, the role, the phase, the moment of the last step and the length
-// of the silence, then what the daemon wrote about it (workerSilentDid).
-func namesTheSilence(t *testing.T, reason string, outcome string, absent string) {
+// namesTheSilence is every fact R2 asks the notice to name, as fields: the issue, the role, the
+// phase, the moment of the last step, the length of the silence, the bound, the start the daemon
+// wrote (a texts.Sent word) and the entries it weighed, and no reason.
+func namesTheSilence(t *testing.T, notice record.Notice, sent string, entry, given int64) {
 	t.Helper()
-	for _, part := range []string{silenceIssue, string(claim.RoleTester), string(phase.Testing),
-		silenceStep().Format(time.RFC3339), "2h0m0s", outcome} {
-		if !strings.Contains(reason, part) {
-			t.Errorf("the notice's reason %q names no %q, which the architect needs to act on it", reason, part)
-		}
-	}
-	if absent != "" && strings.Contains(reason, absent) {
-		t.Errorf("the notice's reason %q says %q, which is not what the daemon did", reason, absent)
+	if notice.Issue != silenceIssue || notice.Role != claim.RoleTester || notice.Phase != phase.Testing || !notice.LastStep.Equal(silenceStep()) ||
+		notice.SilentFor != "2h0m0s" || notice.Bound != silenceBound.String() || notice.Sent != sent || notice.Entry != entry ||
+		notice.Given != given || notice.Reason != "" {
+		t.Errorf("the notice %+v, want %s's tester in testing silent 2h0m0s since %s past %s, start %s, entry %d, given %d, and no reason",
+			notice, silenceIssue, silenceStep(), silenceBound, sent, entry, given)
 	}
 }
 
@@ -293,14 +291,11 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task at no entry, the claim being on the entry its row names already",
 			silenceIssue, got, want)
 	}
-	notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
+	notices := noticesOfKind(t, pool, silenceIssue, texts.WorkerSilent)
 	if len(notices) != 1 {
-		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerSilentNotice, silenceIssue, len(notices))
+		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", texts.WorkerSilent, silenceIssue, len(notices))
 	}
-	if notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing {
-		t.Errorf("the notice names role %q and phase %q, want the tester of testing", notices[0].Role, notices[0].Phase)
-	}
-	namesTheSilence(t, notices[0].Reason, fmt.Sprintf("wrote the start row that sends the phase's task again, on phase entry %d its phase row names", silenceEntry), "")
+	namesTheSilence(t, notices[0], texts.SentPhaseTask, silenceEntry, silenceEntry)
 	if rows := noticeRows(t, pool); len(rows) != 1 {
 		t.Fatalf("the notice rows = %d, want the architect's one: the project's controller is told this fact on its own periodic wake", len(rows))
 	}
@@ -505,19 +500,15 @@ func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T
 	if got := silenceSuperviseRows(t, pool); len(got) != 0 {
 		t.Fatalf("the supervise rows of %s = %+v, want none: this worker is told of and never prompted", silenceIssue, got)
 	}
-	notices := noticesOfKind(t, pool, silenceIssue, workerBackgroundNotice)
+	notices := noticesOfKind(t, pool, silenceIssue, texts.WorkerBackgroundStalled)
 	if len(notices) != 1 {
-		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerBackgroundNotice, silenceIssue, len(notices))
+		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", texts.WorkerBackgroundStalled, silenceIssue, len(notices))
 	}
-	if notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing {
-		t.Errorf("the notice names role %q and phase %q, want the tester of testing", notices[0].Role, notices[0].Phase)
-	}
-	for _, part := range []string{silenceIssue, string(claim.RoleTester), string(phase.Testing), "async-job",
-		silenceReport().Format(time.RFC3339), "5h0m0s",
-		"sent that worker nothing and will send it nothing for this"} {
-		if !strings.Contains(notices[0].Reason, part) {
-			t.Errorf("the notice's reason %q names no %q, which the architect needs to act on it", notices[0].Reason, part)
-		}
+	if got := notices[0]; got.Issue != silenceIssue || got.Role != claim.RoleTester || got.Phase != phase.Testing ||
+		!slices.Equal(got.Work, []string{"async-job"}) || !got.ReportedAt.Equal(silenceReport()) || got.StoodFor != "5h0m0s" ||
+		got.Bound != backgroundBound.String() || got.Reason != "" {
+		t.Errorf("the notice %+v, want %s's tester in testing on async-job reported at %s and standing 5h0m0s past %s, and no reason",
+			got, silenceIssue, silenceReport(), backgroundBound)
 	}
 	if rows := noticeRows(t, pool); len(rows) != 1 {
 		t.Fatalf("the notice rows = %d, want the architect's one", len(rows))

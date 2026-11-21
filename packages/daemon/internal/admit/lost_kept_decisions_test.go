@@ -17,8 +17,8 @@ import (
 
 // namings is everything the architect of tree is told of what a person decided while nobody in
 // that tree could hear it: the task of each architect start queued for it
-// (workflow.Engine.ParkedDecisionTask) and what each of its catch-ups says was decided
-// (record.CatchUp.Decided). Those are the only two texts that name a kept decision to an
+// (workflow.Engine.ParkedDecisionTask) and the decisions each of its catch-ups keeps, by
+// reference (record.CatchUp.Kept). Those are the only two texts that name a kept decision to an
 // architect, so a decision named in none of them reaches that architect never.
 func namings(t *testing.T, pool *pgxpool.Pool, tree string) []string {
 	t.Helper()
@@ -34,7 +34,13 @@ func namings(t *testing.T, pool *pgxpool.Pool, tree string) []string {
 			}
 		case record.Notice:
 			if payload.CatchUp != nil {
-				told = append(told, payload.CatchUp.Decided)
+				var refs []string
+				if payload.CatchUp.Kept != nil {
+					for _, decision := range payload.CatchUp.Kept.Decisions {
+						refs = append(refs, decision.Ref)
+					}
+				}
+				told = append(told, strings.Join(refs, " "))
 			}
 		}
 	}

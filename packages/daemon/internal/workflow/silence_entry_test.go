@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -9,6 +8,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A silent phase worker whose claim stands behind the phase entry its row names is sent the
@@ -31,16 +31,13 @@ func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
 		want   func(record.Issue) string
 		entry  int64
 		resume bool
-		// did is what the architect's notice must say the daemon wrote.
-		did string
+		// sent is the start the architect's notice must say the daemon wrote.
+		sent string
 	}{
 		{name: "behind the entry its row names", given: silenceEntry - 1,
-			want: func(record.Issue) string { return silenceEntryTask }, entry: silenceEntry,
-			did: fmt.Sprintf("sends the work of phase entry %d its phase row names, which its claim, last given entry %d, never had",
-				silenceEntry, silenceEntry-1)},
+			want: func(record.Issue) string { return silenceEntryTask }, entry: silenceEntry, sent: texts.SentOwedEntry},
 		{name: "level with the entry its row names", given: silenceEntry,
-			want: ResumePhaseTask, entry: 0, resume: true,
-			did: fmt.Sprintf("sends the phase's task again, on phase entry %d its phase row names", silenceEntry)},
+			want: ResumePhaseTask, entry: 0, resume: true, sent: texts.SentPhaseTask},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -63,11 +60,11 @@ func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
 					tc.given, silenceEntry, start.Task, start.Entry, start.ResumeTask, start.ResendEntry, start.RuleResume, start.NeedsSlot,
 					tc.want(issue), tc.entry, tc.resume)
 			}
-			notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
+			notices := noticesOfKind(t, pool, silenceIssue, texts.WorkerSilent)
 			if len(notices) != 1 {
-				t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerSilentNotice, silenceIssue, len(notices))
+				t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", texts.WorkerSilent, silenceIssue, len(notices))
 			}
-			namesTheSilence(t, notices[0].Reason, tc.did, "")
+			namesTheSilence(t, notices[0], tc.sent, silenceEntry, tc.given)
 			var row record.PhaseRow
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				rows, err := record.NewStore().Phases(t.Context(), tx, silenceIssue)

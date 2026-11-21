@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,32 +14,32 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// The catch-up a relaunched root architect's ready writes opens with the sentence of what the last
-// let-go of its process ended, which the ready carries while the claim's record of it is untold
+// The catch-up a relaunched root architect's ready writes carries what the last let-go of its
+// process ended, which the ready carries while the claim's record of it is untold
 // (intake.ClaimReady.Relaunch, the daemon's applyTerminal): the first turn of such an architect
-// can be its catch-up's, and it reads that its subagent died before it reads its tree
+// can be its catch-up's, and it reads that its subagent died with its tree
 // (dispatch://INFRA-3276 R3). The rest of the catch-up is what it always was. A ready that carries
-// no sentence — the record told, or nothing recorded — composes the reason as before.
-func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
+// none — the record told, or nothing recorded — writes a catch-up with no relaunch.
+func TestARelaunchsFactsRideTheRootArchitectsCatchUp(t *testing.T) {
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	sentence := supervise.RelaunchSentence(supervise.EndedWork{Cause: "its pod was replaced", Turn: true,
-		Background: true, Kinds: []string{"subagent"}, Reported: true})
-	const tree = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
-	reasons := func() []string {
+	facts := supervise.EndedWork{Cause: "its pod was replaced", Turn: true,
+		Background: true, Kinds: []string{"subagent"}, Reported: true}.Facts(false)
+	catchUps := func() []record.Notice {
 		t.Helper()
-		got := []string{}
+		var got []record.Notice
 		for _, payload := range noticeRows(t, pool) {
 			if notice, ok := payload.(record.Notice); ok && notice.Kind == "catch-up" {
-				got = append(got, notice.Reason)
+				got = append(got, notice)
 			}
 		}
 		return got
 	}
-	ready := func(launch int, relaunch string) {
+	ready := func(launch int, relaunch *texts.RelaunchFacts) {
 		t.Helper()
 		token, err := claim.NewToken("legion", "LEGION-1", claim.RoleArchitect)
 		if err != nil {
@@ -50,14 +51,16 @@ func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 		}
 	}
 
-	ready(2, sentence)
-	if got, want := reasons(), sentence+"\n\n"+tree; len(got) != 1 || got[0] != want {
-		t.Fatalf("the relaunched architect's catch-up reasons %q, want the one %q: the sentence, then the tree as before", got, want)
+	ready(2, &facts)
+	got := catchUps()
+	if len(got) != 1 || got[0].Relaunch == nil || !reflect.DeepEqual(*got[0].Relaunch, facts) || got[0].Reason != "" ||
+		got[0].CatchUp == nil || got[0].CatchUp.Generation != 1 || got[0].CatchUp.Launch != 2 {
+		t.Fatalf("the relaunched architect's catch-ups %+v, want the one of launch 2 carrying %+v and no reason", got, facts)
 	}
 
-	ready(3, "")
-	if got := reasons(); len(got) != 1 || got[0] != tree {
-		t.Fatalf("a ready that carries no sentence wrote catch-up reasons %q, want the tree alone", got)
+	ready(3, nil)
+	if got := catchUps(); len(got) != 1 || got[0].Relaunch != nil || got[0].CatchUp == nil || got[0].CatchUp.Launch != 3 {
+		t.Fatalf("a ready that carries no relaunch wrote catch-ups %+v, want the one of launch 3 with none", got)
 	}
 }
 

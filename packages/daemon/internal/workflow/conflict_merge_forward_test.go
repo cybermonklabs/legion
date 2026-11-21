@@ -156,8 +156,10 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 		if len(notices) != 1 || notices[0] != "checks-red" {
 			t.Fatalf("notices %v, want the one checks-red", notices)
 		}
-		if reason, stays := checksRedNotice(t, pool); stays != at || reason == "" {
-			t.Fatalf("the checks-red notice names phase %q with reason %q, want %s, the phase the issue stays in, and a reason", stays, reason, at)
+		if red := checksRedNotice(t, pool); red.Phase != at || red.Head != conflictHead || red.ConflictsWith != "main" ||
+			red.PullRequest != "sjawhar/legion#42" || red.Why != string(why) || red.Reason != "" {
+			t.Fatalf("the checks-red notice is %+v, want %s, the phase the issue stays in, naming %s conflicting with main on sjawhar/legion#42 for %s, and no reason",
+				red, at, conflictHead, why)
 		}
 	}
 	assertOutboxCount(t, pool, "supervise", 0)
@@ -443,8 +445,8 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 			if told := capNotices(t, pool, "checks-red"); told != 1 {
 				t.Fatalf("%d checks-red notices, want one", told)
 			}
-			if _, stays := checksRedNotice(t, pool); stays != phase.Accepting {
-				t.Fatalf("the checks-red notice names %s, want accepting, the phase the issue stays in", stays)
+			if red := checksRedNotice(t, pool); red.Phase != phase.Accepting || red.Why != string(record.ConflictMergeNext) {
+				t.Fatalf("the checks-red notice is %+v, want accepting, the phase the issue stays in, for %s", red, record.ConflictMergeNext)
 			}
 		}
 		askedInAccepting()
@@ -519,8 +521,8 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		if told := capNotices(t, pool, "checks-red"); told != 1 {
 			t.Fatalf("%d checks-red notices, want one", told)
 		}
-		if _, stays := checksRedNotice(t, pool); stays != phase.Testing {
-			t.Fatalf("the checks-red notice names %s, want testing, the phase the issue stays in", stays)
+		if red := checksRedNotice(t, pool); red.Phase != phase.Testing || red.Why != string(record.ConflictCheckNotGreen) {
+			t.Fatalf("the checks-red notice is %+v, want testing, the phase the issue stays in, for %s", red, record.ConflictCheckNotGreen)
 		}
 	})
 }
@@ -694,8 +696,9 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 // record keeps that the review was asked for. The merger, the worker of merging, is told the merge
 // landed; the architect in accepting and the implementer in retro are told nothing, since the
 // one asked for the merge and the other made it. A merger that enters merging while that review
-// stands for the head is told to merge the head only once the reviewer's approval of it is on the
-// pull request.
+// stands for the head is told in its task the base that merge brought forward and that head as
+// the one whose approval it waits for (merged_forward, approval_owed), which its prompt holds the
+// merge to.
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
@@ -750,8 +753,9 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 		if got := issuePhase(t, pool); got != phase.Merging {
 			t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 		}
-		if task := startTask(t, pool, claim.RoleMerger); !strings.Contains(task, "merge head "+forwardHead+" only once the reviewer's approval of it is on the pull request") {
-			t.Fatalf("the merger's task reads %q, want it to hold the merge of %s to the reviewer's approval", task, forwardHead)
+		task := readTaskOf(t, startTask(t, pool, claim.RoleMerger))
+		if task.fields["merged_forward"] != "main" || task.fields["approval_owed"] != forwardHead {
+			t.Fatalf("the merger's task has fields %v, want it to name main merged forward and %s as the head whose approval it waits for", task.fields, forwardHead)
 		}
 	})
 }

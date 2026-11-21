@@ -18,9 +18,11 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -652,6 +654,125 @@ func wakeNamed(report wakeReport, kind, name string) bool {
 	return false
 }
 
+// wakeReportRole is the role a role wake report names, empty for any other report.
+func wakeReportRole(t *testing.T, msg *natsgo.Msg) string {
+	t.Helper()
+	var item contracts.Envelope
+	if err := json.Unmarshal(msg.Data, &item); err != nil {
+		t.Fatalf("decode a wake report: %v", err)
+	}
+	var report wakeReport
+	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
+		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
+	}
+	if report.Kind != wakeKindRole {
+		return ""
+	}
+	return report.Role
+}
+
+// A publish of the Legion daemon's at urgency low, which carries no source_session, to a role that
+// no live session holds raises no wake report. That holds where the listener keeps the message:
+// the 202's envelope and the copy on the role's kept lane carry urgency low, and the sweep reads
+// no wake in that copy. It holds where the publish asks for keep: false, as the daemon's does, and
+// is answered 404. Two controls raise one report each: the same publish at urgency med, and a low
+// publish that carries a sender session. Each publish goes to a role of its own, since a wake
+// report names the role alone.
+func TestALowDaemonPublishToARoleWithNoHolderRaisesNoWakeReport(t *testing.T) {
+	d, client := keptRoleDeps(t)
+	wakesCtx, stopWakes := context.WithCancel(context.Background())
+	t.Cleanup(stopWakes)
+	d.wakes = newWakeReporter(wakesCtx, client)
+	wakes, err := client.Conn.SubscribeSync(bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+	const (
+		lowKept        = "wake-low-kept"
+		lowRefused     = "wake-low-refused"
+		medKept        = "wake-med-kept"
+		lowFromSession = "wake-low-session"
+		sender         = "ses_wake_low_sender"
+	)
+	body := func(role, fields string) string {
+		return `{"topic":"` + contracts.RoleTopicPrefix + role + `","message":"phase-finished on T-1",` + fields + `}`
+	}
+	sweepWakes := func(role string) bool {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		wakesRole, err := keptLaneWakesItsRole(ctx, client, role, 1, time.Now())
+		if err != nil {
+			t.Fatalf("read role %s's kept lane for a wake: %v", role, err)
+		}
+		return wakesRole
+	}
+
+	recorder, answer := publishToRole(t, d, lowKept, body(lowKept, `"urgency":"low"`))
+	if recorder.Code != http.StatusAccepted || !answer.Kept {
+		t.Fatalf("a low publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
+	}
+	if answer.Urgency != "low" || answer.SourceSession != "" {
+		t.Fatalf("the kept answer's envelope carries urgency %q and source_session %q, want low and none", answer.Urgency, answer.SourceSession)
+	}
+	if kept := waitForKeptRoleMessage(t, client, lowKept, answer.EventID); kept.Urgency != "low" {
+		t.Fatalf("the kept copy carries urgency %q, want low", kept.Urgency)
+	}
+	if sweepWakes(lowKept) {
+		t.Fatalf("the sweep reads a wake in role %s's kept low copy, which carries no sender session", lowKept)
+	}
+
+	refused, _ := publishThrough(d, body(lowRefused, `"urgency":"low","keep":false`))
+	if refused.Code != http.StatusNotFound {
+		t.Fatalf("a low publish with keep: false to an unheld role: status %d, body %s; want 404", refused.Code, refused.Body.String())
+	}
+
+	recorder, answer = publishToRole(t, d, medKept, body(medKept, `"urgency":"med"`))
+	if recorder.Code != http.StatusAccepted || answer.Urgency != "med" {
+		t.Fatalf("a med publish to an unheld role: status %d, body %s; want 202 kept at med", recorder.Code, recorder.Body.String())
+	}
+	waitForKeptRoleMessage(t, client, medKept, answer.EventID)
+	if !sweepWakes(medKept) {
+		t.Fatalf("the sweep reads no wake in role %s's kept med copy", medKept)
+	}
+
+	recorder, answer = publishToRole(t, d, lowFromSession, body(lowFromSession, `"urgency":"low","source_session":"`+sender+`"`))
+	if recorder.Code != http.StatusAccepted || answer.Urgency != "low" || answer.SourceSession != sender {
+		t.Fatalf("a low publish from %s to an unheld role: status %d, body %s; want 202 kept at low from it", sender, recorder.Code, recorder.Body.String())
+	}
+
+	// Each report is published off the route's path, so the two the controls raised are awaited,
+	// and then every report that is still to come is read until none arrives for 500ms.
+	raised := map[string]int{}
+	deadline := time.Now().Add(10 * time.Second)
+	for raised[medKept] == 0 || raised[lowFromSession] == 0 {
+		msg, err := wakes.NextMsg(time.Until(deadline))
+		if err != nil {
+			t.Fatalf("the controls' wake reports did not arrive (read so far: %v): %v", raised, err)
+		}
+		raised[wakeReportRole(t, msg)]++
+	}
+	for {
+		msg, err := wakes.NextMsg(500 * time.Millisecond)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports: %v", err)
+		}
+		raised[wakeReportRole(t, msg)]++
+	}
+	for role, want := range map[string]int{lowKept: 0, lowRefused: 0, medKept: 1, lowFromSession: 1} {
+		if raised[role] != want {
+			t.Errorf("role %s raised %d wake reports, want %d (every report: %v)", role, raised[role], want, raised)
+		}
+	}
+}
+
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
 // stopped answer as on a 404, since a released Legion pod's sessions leave the session bucket with
 // the pod and this send is the only sight of the message meant for them. Both ways of having no
@@ -840,5 +961,79 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/registry/ses_registry_unknown?include=unresponsive,stopped: status %d, body %s; want 404",
 			unknown.Code, unknown.Body.String())
+	}
+}
+
+// dispatch://INFRA-3686/spec R5 has the listener raise no wake for "a low publish of the
+// daemon's" to a role no live session holds, and every other publish and send wakes as today. An
+// agent session whose broker token proves it publishes at urgency low to such a role and leaves
+// source_session out of the body (pi-envoy's envoy_publish leaves it out where replyAddress gives
+// ""). The publish is that session's, not the daemon's: the sender limit already counts it as the
+// token's session, and the daemon publishes under the shared listener bearer, which proves no
+// session. So it raises the role's wake report, as the same publish naming source_session does.
+func TestALowPublishOfATokenSessionWithNoSourceSessionWakesTheRole(t *testing.T) {
+	d, client := keptRoleDeps(t)
+	wakesCtx, stopWakes := context.WithCancel(context.Background())
+	t.Cleanup(stopWakes)
+	d.wakes = newWakeReporter(wakesCtx, client)
+	wakes, err := client.Conn.SubscribeSync(bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+	const (
+		omitted = "wake-token-omits-session"
+		named   = "wake-token-names-session"
+		sender  = "ses_wake_token_sender"
+	)
+	publishAs := func(role, fields string) *httptest.ResponseRecorder {
+		body := `{"topic":"` + contracts.RoleTopicPrefix + role + `","source":"agent","message":"take a look"` + fields + `}`
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(withBrokerCaller(request.Context(), ciphertoken.Caller{Session: sender, Person: "ada@example.com"}))
+		publishHandler(d, logging.New("test")).ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	recorder := publishAs(omitted, `,"urgency":"low"`)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("a low publish with no source_session: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
+	}
+	var kept keptPublishAnswer
+	if err := json.Unmarshal(recorder.Body.Bytes(), &kept); err != nil {
+		t.Fatalf("decode the 202: %v", err)
+	}
+	waitForKeptRoleMessage(t, client, omitted, kept.EventID)
+	sweepCtx, cancelSweep := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSweep()
+	sweepWakes, err := keptLaneWakesItsRole(sweepCtx, client, omitted, 1, time.Now())
+	if err != nil {
+		t.Fatalf("read role %s's kept lane for a wake: %v", omitted, err)
+	}
+	if recorder := publishAs(named, `,"urgency":"low","source_session":"`+sender+`"`); recorder.Code != http.StatusAccepted {
+		t.Fatalf("a low publish naming source_session: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
+	}
+
+	raised := map[string]int{}
+	for {
+		msg, err := wakes.NextMsg(1500 * time.Millisecond)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports: %v", err)
+		}
+		raised[wakeReportRole(t, msg)]++
+	}
+	if raised[named] != 1 {
+		t.Fatalf("control: the low publish naming its session raised %d wake reports, want 1", raised[named])
+	}
+	if raised[omitted] != 1 || !sweepWakes {
+		t.Fatalf("the low publish of session %s, which its broker token proved, with no source_session raised %d wake reports and its kept copy wakes on the sweep: %t; want 1 and true",
+			sender, raised[omitted], sweepWakes)
 	}
 }

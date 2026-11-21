@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const (
@@ -329,7 +330,7 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 		}
 	}
 	notices := rig.notices()
-	if len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended") {
+	if len(notices) != 1 || notices[0].Holds != texts.HoldsOperator {
 		t.Fatalf("the controller was told %+v, want one notice naming the operator's suspension", notices)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})

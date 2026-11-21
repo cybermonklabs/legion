@@ -2,35 +2,61 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// Each shape of the start task carries one label of its own, as testerVerdictLabel ties a task's
-// text to its reader: a test reads the shape a root was given by the label its text carries. No
-// label is part of another, so a task carries the label of its own shape and of no other.
+// Each shape of the start task names itself in its shape field (texts.ArchitectStartRecord.Shape),
+// and these are those fields as the task renders them: a test reads the shape a root was given by
+// the line its text carries. No label is part of another, so a task carries the label of its own
+// shape and of no other.
 const (
 	// ArchitectFreshTreeLabel is in the task of a tree nobody has architected.
-	ArchitectFreshTreeLabel = "its tree is open at generation"
+	ArchitectFreshTreeLabel = "shape: " + texts.ShapeFreshTree
 	// ArchitectCarriedPhaseLabel is in the task of a root a hand-over carried in.
-	ArchitectCarriedPhaseLabel = "in the run a hand-over carried it into"
+	ArchitectCarriedPhaseLabel = "shape: " + texts.ShapeCarriedPhase
 	// ArchitectGateRowsLabel is in the task of a root that holds design gate rows while its gate
 	// is not open.
-	ArchitectGateRowsLabel = "its design gate already stands part way"
+	ArchitectGateRowsLabel = "shape: " + texts.ShapeGateStanding
 	// ArchitectGateOpenLabel is in the task of a root at admitted whose design gate is open
 	// (record.TreeGate.Open).
-	ArchitectGateOpenLabel = "its design gate is open"
+	ArchitectGateOpenLabel = "shape: " + texts.ShapeGateOpen
 	// ArchitectReadmittedLabel is in the task of a tree that ran at an earlier generation.
-	ArchitectReadmittedLabel = "ran at an earlier generation"
-	// ArchitectDecompositionLabel is the sentence that asks for a decomposition. Only a tree
-	// nobody has architected is asked for one, so this label stands in that shape alone.
-	ArchitectDecompositionLabel = "every child of your decomposition filed"
+	ArchitectReadmittedLabel = "shape: " + texts.ShapeEarlierGeneration
+	// ArchitectDecompositionLabel is the field that asks for a decomposition. Only a tree nobody
+	// has architected is asked for one, so this label stands in that shape alone.
+	ArchitectDecompositionLabel = "decompose: true"
+)
+
+// The acts a start task names first, in order (texts.ArchitectStartRecord.FirstAct): claim the
+// root in Dispatch, have its root spec written, file every child of the decomposition, request
+// approval of each document the deployment gates, register the design gate's steps, resume the
+// tree from the phase a hand-over carried the root in with, carry a gate that stands part way on
+// from where it stands, and take the tree up from where it stands.
+const (
+	FirstActClaim           = "claim"
+	FirstActWriteSpec       = "write_spec"
+	FirstActDecompose       = "decompose"
+	FirstActRequestApproval = "request_approval"
+	FirstActRegisterGate    = "register_gate"
+	FirstActResumePhase     = "resume_phase"
+	FirstActCarryGate       = "carry_gate"
+	FirstActTakeUpTree      = "take_up_tree"
+)
+
+// What a root's own first phase waits for (texts.ArchitectStartRecord.FirstPhaseWaitsFor): its
+// design gate to open, an admission slot, the open children under it, and the issues it is
+// blocked by.
+const (
+	WaitsForGate     = "gate"
+	WaitsForSlot     = "slot"
+	WaitsForChildren = "children"
+	WaitsForBlockers = "blockers"
 )
 
 // ArchitectStart is everything the first task of a root architect is derived from, which is the
@@ -164,11 +190,10 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // something on its tree while nobody in that tree could hear it (ParkedDecisionTask), which is
 // rare: the common fresh admission launched an architect with nothing at all, and the first thing
 // the daemon ever gave it was the catch-up its ready writes. That catch-up states the tree and
-// ends "start or resume it as your role says", which leaves the first act to the agent to infer
-// from a context it has just been born into — and an architect that infers nothing holds its tree's
-// admission slot while it sits idle, with the root unclaimed and its design gate unregistered,
-// until a person messages the session. So the start says it instead, and the catch-up goes on
-// stating the tree.
+// names no first act, which leaves the first act to the agent to infer from a context it has just
+// been born into — and an architect that infers nothing holds its tree's admission slot while it
+// sits idle, with the root unclaimed and its design gate unregistered, until a person messages the
+// session. So the start says it instead, and the catch-up goes on stating the tree.
 //
 // The derivation serves two roots: one standing at phase.Admitted, which is where every tree the
 // workflow opens stands, and one a hand-over carried in, past phase.Admitted in the run that
@@ -181,13 +206,12 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     nothing (internal/prompts/roles/architect-root.md, "decompose nothing and release no
 //     child"). It is asked for no spec. The phase it stands in is the phase that came with it or
 //     one it has moved to since, which the record does not tell apart, so the task says what
-//     holds of either (writeCarriedPhase).
+//     holds of either (carriedPhase).
 //  2. The root is past phase.Admitted under its own power. It stands in a working phase, waits on
 //     a person, or stands in accepting, and its work is told by that phase's own role, by the
 //     resume the daemon composes when a person answers, or by the notice that moved it. A
 //     first-act statement would be false of it, so this writes none: the answer is Decided alone,
-//     which is the empty string where a person has decided nothing, and which carries no closing
-//     sentence.
+//     which is the empty string where a person has decided nothing.
 //  3. The root holds design gate rows. The task reports its gate step by step. Where the gate is
 //     not open it stands part way, and the architect carries it on from there. Where it is open
 //     (record.TreeGate.Open), the root stands at admitted only while its first phase waits, for an
@@ -202,7 +226,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     so the spec is registered again and nothing is decomposed anew.
 //  5. Otherwise nobody has architected this tree, and the task asks for the whole first act. A
 //     member of the tree can run here only at generation 1 (rule 4 takes it after), and the task
-//     then says nothing that member makes false (writeFreshTree).
+//     then says nothing that member makes false (freshTree).
 //
 // A root a hand-over carried in that stands at phase.Admitted falls past rule 1 to rules 3, 4 and
 // 5. That is right: a child handed over before it ever started has no phase of its own to take up,
@@ -250,214 +274,191 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // first task, whose tree's children ran all the same. At generation 1 there is no earlier run to
 // carry on from, so a member that runs there leaves the root at rule 5.
 //
-// Each shape ends in a closing sentence of its own, which says what starts the tree's next work,
-// and every clause of it holds of the root the shape is written for (dispatch://INFRA-2614, R3).
-// Only the fresh tree is told that nothing else starts it and that no message is coming, and only
-// while no member of its tree runs: it holds no gate row, so no person has a step of it to review,
-// and a child released under its closed gate waits for that gate (api's WaveReleaseResponse). A
-// fresh tree whose member runs is told instead that its own first phase waits for its gate. A
-// carried root is told whether the daemon starts the worker of the phase it stands in
-// (admit's startMidPhaseMembers for the phase that came with it, the transition that moved it for
-// any phase after): it does, except where the phase is the architect's own, no role
-// works it, or its merge has ended it. A root whose gate stands part way hears a person's review
-// of a registered step as a notice. A root whose gate is open has its first phase started by the
-// daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
-// again by its re-admission, whose notices reach the architect. The text is for the architect
-// alone, and no reader of a task reads it back: what wrote an entry's task is a fact of the record
-// (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads), and whether a held task carries
-// the first-task instruction is the entry it is of (NarrowRootTask).
+// Each shape names what starts the tree's next work, and every fact of it holds of the root the
+// shape is written for (dispatch://INFRA-2614, R3). Only the fresh tree is told that nothing else
+// starts it (and so that no message is coming), and only while no member of its tree runs: it
+// holds no gate row, so no person has a step of it to review, and a child released under its
+// closed gate waits for that gate (api's WaveReleaseResponse). A fresh tree whose member runs is
+// told instead that its own first phase waits for its gate. A carried root is told whether the
+// daemon starts the worker of the phase it stands in (admit's startMidPhaseMembers for the phase
+// that came with it, the transition that moved it for any phase after): it does, except where the
+// phase is the architect's own, no role works it, or its merge has ended it. A root whose gate
+// stands part way hears a person's review of a registered step as a notice. A root whose gate is
+// open has its first phase started by the daemon. A tree that ran at an earlier generation has its
+// members that stood mid-phase started again by its re-admission, whose notices reach the
+// architect. The text is for the architect alone, and no reader of a task reads it back: what
+// wrote an entry's task is a fact of the record (record.PhaseRow.EntryVerbatim, which
+// SendArchitectStart reads), and whether a held task carries the first-task instruction is the
+// entry it is of (NarrowRootTask).
 //
-// Decided leads every shape rather than replacing it, since a person's decision is read first and
-// a tree that owes one still has to be taken up.
+// Decided, the kept-decisions task (KeptDecisionsTask), leads every shape rather than replacing
+// it, a blank line between the two, since a person's decision is read first and a tree that owes
+// one still has to be taken up.
 func ArchitectStartTask(start ArchitectStart) string {
-	if start.Root.Phase != phase.Admitted && !start.Carried {
+	facts, served := ArchitectStartFacts(start)
+	if !served {
 		return start.Decided
 	}
-	var task strings.Builder
+	task := taskText(facts)
 	if start.Decided != "" {
-		task.WriteString(start.Decided)
-		task.WriteString("\n\n")
+		task = start.Decided + "\n\n" + task
 	}
+	return task
+}
+
+// ArchitectStartFacts is the architect-start task of start's root, as the record of its kind, in
+// the shape the derivation gives it (ArchitectStartTask), and false for a root the derivation
+// serves no task.
+func ArchitectStartFacts(start ArchitectStart) (texts.ArchitectStartRecord, bool) {
+	if start.Root.Phase != phase.Admitted && !start.Carried {
+		return texts.ArchitectStartRecord{}, false
+	}
+	task := texts.ArchitectStartRecord{TaskHead: texts.TaskHead{Kind: texts.ArchitectStart, Issue: start.Root.Key},
+		Generation: start.Root.Generation, Phase: start.Root.Phase, MembersRun: start.MembersRun}
 	switch {
 	case start.Root.Phase != phase.Admitted:
-		writeCarriedPhase(&task, start)
+		carriedPhase(&task, start)
 	case start.Gate.Open():
-		writeGateOpen(&task, start)
+		gateOpenShape(&task, start)
 	case len(start.Gate.Rows) > 0:
-		writeGateStanding(&task, start)
+		gateStandingShape(&task, start)
 	case start.Root.TakenBack, start.Served > 0 && start.Served < start.Root.Generation, start.ServedEntry > 0,
 		start.MembersRun && start.Root.Generation > 1:
-		writeEarlierGeneration(&task, start)
+		earlierGeneration(&task, start)
 	default:
-		writeFreshTree(&task, start)
+		freshTree(&task, start)
 	}
-	return task.String()
+	return task, true
 }
 
-// writeFreshTree writes the task of a tree nobody has architected: the whole first act, since
-// nothing of this tree has been claimed, decomposed or registered.
+// freshTree is the task of a tree nobody has architected: the whole first act, since nothing of
+// this tree has been claimed, decomposed or registered, while the root holds an admission slot.
 //
 // Where a member of the tree runs (MembersRun, which reaches here at generation 1 alone), the
-// task says neither that nothing in the tree runs nor that nothing else starts it and no message
-// is coming: that member's worker runs, and its notices reach the architect. It closes on what
-// holds of the root itself, that its own first phase starts only once its design gate opens. It
-// still asks for the decomposition, since the architect files the children its spec names and
-// reads the ones already filed in Dispatch.
-func writeFreshTree(task *strings.Builder, start ArchitectStart) {
-	runs, closing := " while nothing in it runs", " Nothing else starts this tree, and no message is coming."
+// task does not say that nothing else starts the tree: that member's worker runs, and its notices
+// reach the architect. It names what holds of the root itself, that its own first phase waits for
+// its design gate. It still asks for the decomposition, since the architect files the children its
+// spec names and reads the ones already filed in Dispatch.
+func freshTree(task *texts.ArchitectStartRecord, start ArchitectStart) {
+	task.Shape, task.HoldsSlot, task.Decompose = texts.ShapeFreshTree, true, true
+	task.Gated = gatedNames(start.Gate.Steps)
+	task.FirstAct = append([]string{FirstActClaim, FirstActWriteSpec, FirstActDecompose}, gateActs(start.Gate.Steps)...)
 	if start.MembersRun {
-		runs, closing = "", " Its own first phase starts only once its design gate opens."
+		task.FirstPhaseWaitsFor = []string{WaitsForGate}
+	} else {
+		task.NothingElseStarts = true
 	}
-	fmt.Fprintf(task, "%s is yours and %s %d, holding an admission slot%s. "+
-		"Take it up in this turn, as your role says: claim it in Dispatch, have its root spec written and %s, then",
-		start.Root.Key, ArchitectFreshTreeLabel, start.Root.Generation, runs, ArchitectDecompositionLabel)
-	writeGateAsk(task, start.Gate.Steps, "")
-	task.WriteString(closing)
 }
 
-// writeCarriedPhase writes the task of a root a hand-over carried in. It stands in the run that
-// hand-over carried it into, with the phase records and the pull request the carry brought and,
-// where the hand-over row says so, the design gate (GateCarried), so it is asked for no spec and
-// no decomposition (internal/prompts/roles/architect-root.md).
+// carriedPhase is the task of a root a hand-over carried in. It stands in the run that hand-over
+// carried it into, with the phase records and the pull request the carry brought and, where the
+// hand-over row says so, the design gate (GateCarried), so it is asked for no spec and no
+// decomposition (internal/prompts/roles/architect-root.md).
 //
 // The phase it names is the phase the root stands in now, which is the phase that came with it
 // until the root moves on and one of that same run after. The record does not tell the two apart
 // — the hand-over row names no phase, and nothing else the promotion writes says the root still
-// stands where the carry put it (ArchitectAtWork says what was read) — so every clause here holds
-// of either. What its closing sentence says turns on that phase. A phase its own terminating fact
-// has already ended (PhaseFinished: merging, its pull request merged) starts no worker: the
-// promotion that opens the root's tree passes it over (admit's startMidPhaseMembers) and the merge
-// ended the work, and the root stands in it until the rest of its tree has left the workflow,
-// when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the role
-// that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
+// stands where the carry put it (ArchitectAtWork says what was read) — so every fact here holds of
+// either. Whether the daemon starts that phase's worker turns on that phase. A phase its own
+// terminating fact has already ended (PhaseFinished: merging, its pull request merged) starts no
+// worker: the promotion that opens the root's tree passes it over (admit's startMidPhaseMembers)
+// and the merge ended the work, and the root stands in it until the rest of its tree has left the
+// workflow, when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the
+// role that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
 // daemon — by that promotion where the carry put the root there, by the transition that moved it
 // where it moved on — accepting is the architect's own phase, and a phase no role works, which is
 // held or a wait on a person, starts no worker until the architect retries it or the person
 // answers.
-func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
-	gate := ", and that hand-over brought no design gate"
-	if start.GateCarried {
-		gate = ", with the design gate that hand-over brought"
-	}
-	fmt.Fprintf(task, "%s is yours and stands in %s, %s%s. "+
-		"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. "+
-		"Decompose nothing and release no child.",
-		start.Root.Key, start.Root.Phase, ArchitectCarriedPhaseLabel, gate)
-	if start.PhaseFinished {
-		task.WriteString(" Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
-			"there until the rest of its tree has left the workflow, when the daemon closes it.")
-		return
-	}
-	switch phase.RoleFor(start.Root.Phase) {
-	case "":
-		task.WriteString(" No worker works that phase, so the daemon starts none for it.")
-	case claim.RoleArchitect:
-		task.WriteString(" That phase is your own, so the daemon starts no worker for it.")
-	default:
-		task.WriteString(" The daemon starts that phase's own worker itself.")
-	}
+func carriedPhase(task *texts.ArchitectStartRecord, start ArchitectStart) {
+	role := phase.RoleFor(start.Root.Phase)
+	starts := !start.PhaseFinished && role != "" && role != claim.RoleArchitect
+	task.Shape, task.GateCarried, task.Merged, task.DaemonStartsWorker = texts.ShapeCarriedPhase, &start.GateCarried, start.PhaseFinished, &starts
+	task.FirstAct = []string{FirstActClaim, FirstActResumePhase}
 }
 
-// writeGateStanding writes the task of a root that holds design gate rows while its gate is not
-// open: where its gate stands, step by step, and then the tree taken up from there. A spec is
-// registered under those rows already, so the task asks for no decomposition.
-func writeGateStanding(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours and %s: %s. "+
-		"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands "+
-		"and take the tree up from there. Its own first phase starts only once its design gate opens.",
-		start.Root.Key, ArchitectGateRowsLabel, gateStanding(start.Gate))
+// gateStandingShape is the task of a root that holds design gate rows while its gate is not open:
+// where its gate stands, step by step, and then the tree taken up from there, while its own first
+// phase waits for the gate. A spec is registered under those rows already, so the task asks for no
+// decomposition.
+func gateStandingShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
+	task.Shape, task.Gates, task.Gated = texts.ShapeGateStanding, gateSteps(start.Root.Key, start.Gate), gatedNames(start.Gate.Steps)
+	task.FirstAct = []string{FirstActClaim, FirstActCarryGate}
+	task.FirstPhaseWaitsFor = []string{WaitsForGate}
 }
 
-// writeGateOpen writes the task of a root at admitted whose design gate is open: where each step
+// gateOpenShape is the task of a root at admitted whose design gate is open: where each step
 // stands, which says why it is open, and then the tree taken up from where it stands. Such a root
-// stands at admitted only while its first phase waits, so the task says what the daemon waits
-// for before it starts that phase: an admission slot, which a root released for the wait holds
-// none of, and the open children under it and the issues it is blocked by, which the waiting line
-// reads (blockers.waitsOf).
-func writeGateOpen(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours and %s: %s. "+
-		"Take it up in this turn, as your role says: claim it in Dispatch and take the tree up from where it stands. "+
-		"The daemon starts its first phase itself once it holds an admission slot and neither an open child under it "+
-		"nor an issue it is blocked by holds that phase back.",
-		start.Root.Key, ArchitectGateOpenLabel, gateStanding(start.Gate))
+// stands at admitted only while its first phase waits, so the task names what the daemon waits for
+// before it starts that phase: an admission slot, which a root released for the wait holds none
+// of, and the open children under it and the issues it is blocked by, which the waiting line reads
+// (blockers.waitsOf).
+func gateOpenShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
+	task.Shape, task.Gates, task.Gated = texts.ShapeGateOpen, gateSteps(start.Root.Key, start.Gate), gatedNames(start.Gate.Steps)
+	task.FirstAct = []string{FirstActClaim, FirstActTakeUpTree}
+	task.FirstPhaseWaitsFor = []string{WaitsForSlot, WaitsForChildren, WaitsForBlockers}
 }
 
-// writeEarlierGeneration writes the task of a tree that ran at an earlier generation. Re-admission
-// cleared that generation and its design gate with it, so the spec is registered again; the
-// children of the old decomposition are not filed again. The task says nothing of what runs in
-// the tree, since the re-admission starts again each member that stood mid-phase (admit's
-// startMidPhaseMembers), and says only what the root's own first phase waits for.
-func writeEarlierGeneration(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours and its tree %s and is open again at generation %d, holding an admission slot. "+
-		"Re-admission cleared the old generation and its design gate with it. "+
-		"Take it up in this turn, as your role says: claim it in Dispatch, then",
-		start.Root.Key, ArchitectReadmittedLabel, start.Root.Generation)
-	writeGateAsk(task, start.Gate.Steps, " again")
-	task.WriteString(" Decompose nothing anew. Its own first phase starts only once its design gate opens again.")
+// earlierGeneration is the task of a tree that ran at an earlier generation, open again at its
+// generation while the root holds an admission slot. Re-admission cleared that generation and its
+// design gate with it, so the spec is registered again; the children of the old decomposition are
+// not filed again. The task names nothing of what runs in the tree, since the re-admission starts
+// again each member that stood mid-phase (admit's startMidPhaseMembers), and names only what the
+// root's own first phase waits for.
+func earlierGeneration(task *texts.ArchitectStartRecord, start ArchitectStart) {
+	task.Shape, task.HoldsSlot, task.Gated = texts.ShapeEarlierGeneration, true, gatedNames(start.Gate.Steps)
+	task.FirstAct = append([]string{FirstActClaim}, gateActs(start.Gate.Steps)...)
+	task.FirstPhaseWaitsFor = []string{WaitsForGate}
 }
 
-// writeGateAsk writes what the architect does about the design gate once the spec is written: a
-// request for approval of each document the deployment gates and a registration of each of their
-// steps, or, where it gates none, the one registration that opens the gate with no approval
-// (skills/legion-architect/references/design-gate.md, "Which steps are gated" and "The armed
-// gate"). again is " again" for a tree
-// whose earlier generation's gate re-admission cleared, and empty for a tree registering a first
-// time.
-func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string) {
-	switch {
-	case len(steps) == 1:
-		fmt.Fprintf(task, " request approval of %s and register that step of its design gate%s.", gatedDocuments(steps), again)
-	case len(steps) > 1:
-		fmt.Fprintf(task, " request approval of each document this deployment gates and register each of their steps of its design gate%s: %s.",
-			again, gatedDocuments(steps))
-	default:
-		fmt.Fprintf(task, " register that spec%s at its current version, which opens the design gate with no approval.", again)
+// gatedNames is the name of each step the deployment gates, in its order, and none where it gates
+// no step.
+func gatedNames(steps []record.DesignStep) []string {
+	if len(steps) == 0 {
+		return nil
 	}
+	return record.StepNames(steps)
 }
 
-// gateStanding says where a root's design gate stands, one clause per step, in the deployment's
-// order: whether the root has registered the step, at which document version, and what a person
-// has said of that version. It reads record.RequiredSteps rather than the gated list, so a
-// deployment that gates no step still reports the one registration that opens its gate; under
-// that deployment no person approves anything, so no clause of it names one. A changes request
-// below the registered version is an answer to a document the architect has moved past, which
-// leaves the current version unanswered.
-func gateStanding(gate record.TreeGate) string {
+// gateActs is what the architect does about the design gate once the spec is written: a request
+// for approval of each document the deployment gates and a registration of each of their steps,
+// or, where it gates none, the one registration that opens the gate with no approval
+// (skills/legion-architect/references/design-gate.md, "Which steps are gated" and "The armed
+// gate").
+func gateActs(steps []record.DesignStep) []string {
+	if len(steps) == 0 {
+		return []string{FirstActRegisterGate}
+	}
+	return []string{FirstActRequestApproval, FirstActRegisterGate}
+}
+
+// gateSteps is where a root's design gate stands, one step per entry, in the deployment's order:
+// the step, its document as a dispatch:// link, the version registered (0 where it is not), and
+// its state: unregistered, approved, changes requested or unanswered. It reads
+// record.RequiredSteps rather than the gated list, so a deployment that gates no step still
+// reports the one registration that opens its gate, whose state is registered, since under that
+// deployment no person approves anything. A changes request below the registered version is an
+// answer to a document the architect has moved past, which leaves the current version unanswered.
+func gateSteps(root string, gate record.TreeGate) []texts.ArchitectGate {
 	steps := record.RequiredSteps(gate.Steps)
-	said := make([]string, 0, len(steps))
+	gates := make([]texts.ArchitectGate, 0, len(steps))
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
+		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: stepRef(root, step), Version: row.LatestVersion}
 		switch {
 		case !registered:
-			said = append(said, fmt.Sprintf("its %s is not registered", step.Document()))
+			at.State = texts.GateUnregistered
 		case len(gate.Steps) == 0:
-			said = append(said, fmt.Sprintf("its %s is registered at version %d, which opened the gate with no approval",
-				step.Document(), row.LatestVersion))
+			at.State = texts.GateRegistered
 		case record.GateOpen(row):
-			said = append(said, fmt.Sprintf("its %s is registered at version %d and a person has approved that version",
-				step.Document(), row.LatestVersion))
+			at.State = texts.GateApproved
 		case row.ToldChangesVersion != nil && *row.ToldChangesVersion == row.LatestVersion:
-			said = append(said, fmt.Sprintf("its %s is registered at version %d and a person has asked for changes to it",
-				step.Document(), row.LatestVersion))
+			at.State = texts.GateChangesRequested
 		default:
-			said = append(said, fmt.Sprintf("its %s is registered at version %d and no person has answered it",
-				step.Document(), row.LatestVersion))
+			at.State = texts.GateUnanswered
 		}
+		gates = append(gates, at)
 	}
-	return strings.Join(said, "; ")
-}
-
-// gatedDocuments names every gated step's own document, in the deployment's order, as a sentence
-// lists them: "its decisions document and its Verification document".
-func gatedDocuments(steps []record.DesignStep) string {
-	named := make([]string, len(steps))
-	for i, step := range steps {
-		named[i] = "its " + step.Document()
-	}
-	if len(named) == 1 {
-		return named[0]
-	}
-	return strings.Join(named[:len(named)-1], ", ") + " and " + named[len(named)-1]
+	return gates
 }
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's

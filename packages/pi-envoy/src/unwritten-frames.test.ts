@@ -57,6 +57,9 @@ function harness() {
     refuseHand: false,
     refuseRecord: false,
     matched: undefined as string | undefined,
+    // The entries of the session's branch once the session's store holds it; undefined before
+    // that, as before the session's first assistant message.
+    stored: undefined as unknown[] | undefined,
   };
   // Each frame the host was asked to record, with the session whose ledger it names. The real
   // host binds the write to that session (`DeliveryLedger.recordDeliveredFor`) and records nothing
@@ -76,6 +79,7 @@ function harness() {
     sessionID: () => state.session,
     hostIsOn: (id) => id === (state.hostSession ?? state.session),
     settled: () => state.settled,
+    storedEntries: () => state.stored,
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });
     },
@@ -393,6 +397,125 @@ describe("an inert card", () => {
 
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(false);
+    expect(became).toEqual(["released"]);
+  });
+});
+
+// A `low` card goes as `nextTurn` with no turn: an idle host stores it in the context and the
+// session file at once, with no `message_end`, and a busy host keeps it in memory only. So it is
+// handed only to a settled host, and the session file is the witness that it was written.
+describe("a stored card", () => {
+  /** The entry the host writes for a card that names `details`, as the branch holds it. */
+  const storedEntry = (details: Record<string, string>) => ({
+    type: "custom_message",
+    ...writtenCard(details),
+  });
+
+  test("sent while the host is not settled is held, and the first settled check hands it", async () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+    state.settled = false;
+
+    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
+    expect(handed).toEqual([]);
+    expect(await frames.storedCheck()).toBe(true);
+    expect(handed).toEqual([]);
+
+    state.settled = true;
+    expect(await frames.storedCheck()).toBe(true);
+    expect(handed).toEqual([{ content: "card", deliverAs: "stored", identity: frame }]);
+    expect(claimState(frame)).toBe("pending");
+  });
+
+  test("is written once the session's store holds its entry, and never handed again before that", async () => {
+    const { frames, state, handed, recorded, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+
+    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
+    expect(handed).toHaveLength(1);
+    // Not stored yet: the host stores no session before its first assistant message.
+    expect(await frames.storedCheck()).toBe(true);
+    state.stored = [storedEntry({ event_id: "event-2" })];
+    expect(await frames.storedCheck()).toBe(true);
+    for (const _moment of [1, 2, 3]) frames.handBackWithdrawn();
+    expect(handed).toHaveLength(1);
+    expect(claimState(frame)).toBe("pending");
+
+    state.stored = [
+      storedEntry({ event_id: "event-2" }),
+      storedEntry({ dedupe_key: "dispatch-1" }),
+    ];
+    expect(await frames.storedCheck()).toBe(false);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
+    expect(frames.waitsOnStored()).toBe(false);
+  });
+
+  test("held is handed before a card that starts a turn, in the order it came", () => {
+    const { frames, state, handed, claim } = harness();
+    const [first, second, card] = [dispatchFrame(1), dispatchFrame(2), dispatchFrame(3)];
+    state.settled = false;
+    frames.sendCard("s1", "first", "stored", first, claim(first));
+    frames.sendCard("s1", "second", "stored", second, claim(second));
+
+    state.settled = true;
+    frames.sendCard("s1", "card", "card", card, claim(card));
+
+    expect(handed.map(({ content, deliverAs }) => [content, deliverAs])).toEqual([
+      ["first", "stored"],
+      ["second", "stored"],
+      ["card", "card"],
+    ]);
+  });
+
+  test("held holds back no later card", () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const [low, card] = [dispatchFrame(1), dispatchFrame(2)];
+    state.settled = false;
+    frames.sendCard("s1", "low", "stored", low, claim(low));
+    frames.sendCard("s1", "card", "card", card, claim(card));
+
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+    expect(claimState(low)).toBe("pending");
+  });
+
+  // The host reads idle until it starts the turn a card asked for, after its own awaits; a
+  // stored card handed in between would find it streaming and stay in its memory.
+  test("is held while a card handed to start a turn has not started it", async () => {
+    const { frames, handed, claim } = harness();
+    const card = dispatchFrame(1);
+    const low = dispatchFrame(2);
+    const later = dispatchFrame(3);
+    const last = dispatchFrame(4);
+    frames.sendCard("s1", "card", "card", card, claim(card));
+    frames.sendCard("s1", "low", "stored", low, claim(low));
+    await frames.storedCheck();
+    frames.handBackWithdrawn();
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+
+    // Once that turn has started, the stored card goes at the first settled check.
+    frames.runStarted();
+    await frames.storedCheck();
+    expect(handed.map(({ content }) => content)).toEqual(["card", "low"]);
+
+    // A card the host folds with no turn, which it writes with no run, ends the wait as well.
+    frames.sendCard("s1", "card", "card", later, claim(later));
+    frames.sendCard("s1", "later-low", "stored", last, claim(last));
+    await frames.written(writtenCard({ event_id: "event-3" }));
+    await frames.storedCheck();
+    expect(handed.map(({ content }) => content)).toEqual(["card", "low", "card", "later-low"]);
+  });
+
+  test("whose frame the ledger keeps nothing of, sent while the host is busy, is not handed and its claim is released", () => {
+    const { frames, state, handed } = harness();
+    const frame: DedupeIdentity = { dedupe_key: "content-hash", source: "mcp" };
+    const { claim, became } = notingClaim();
+    state.settled = false;
+
+    frames.sendCard("s1", "card", "stored", frame, claim);
+
+    expect(handed).toEqual([]);
+    expect(frames.waitsOnStored()).toBe(false);
     expect(became).toEqual(["released"]);
   });
 });

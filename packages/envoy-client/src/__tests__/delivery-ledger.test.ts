@@ -5,12 +5,12 @@ import {
   DELIVERY_LEDGER_LIMIT,
   DELIVERY_LEDGER_TTL_MS,
   type DeliveryLedger,
-  envoyNoticeText,
   type FailureNotice,
   type FailureNoticeOutcome,
-  failureNoticeFields,
+  failureNoticeText,
   type LedgerChange,
   type LedgerSnapshot,
+  MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
 
 const SESSION = "ses-1";
@@ -252,15 +252,16 @@ describe("a frame the session could not be shown", () => {
     await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"));
 
     expect(host.notices).toHaveLength(1);
-    expect(failureNoticeFields(host.notices[0] as FailureNotice)).toEqual({
-      notice: "message not shown",
-      event_id: "evt-lost",
-      from: "alice",
-      summary: "DSP-1 needs review",
-      published_at: "2026-10-26T11:59:00Z",
-      error: "the transcript write failed",
-      detail:
-        "This session could not be shown this message, so it is not coming back on its own. Read it with the `dispatch read` command on the issue or ask it concerns.",
+    expect(decode(failureNoticeText(host.notices[0] as FailureNotice))).toEqual({
+      envoy: {
+        notice: MESSAGE_NOT_SHOWN_NOTICE.kind,
+        event_id: "evt-lost",
+        from: "alice",
+        summary: "DSP-1 needs review",
+        published_at: "2026-10-26T11:59:00Z",
+        error: "the transcript write failed",
+        read_with: "dispatch read",
+      },
     });
     expect(ledger.delivered({ event_id: "evt-lost" })).toBe(true);
     expect(host.writes.at(-1)?.delivered).toEqual([{ event_id: "evt-lost", at: T0 }]);
@@ -390,16 +391,15 @@ describe("a frame the session could not be shown", () => {
     );
 
     const notice = host.notices[0] as FailureNotice;
-    expect(decode(envoyNoticeText(failureNoticeFields(notice)))).toEqual({
+    expect(decode(failureNoticeText(notice))).toEqual({
       envoy: {
-        notice: "message not shown",
+        notice: MESSAGE_NOT_SHOWN_NOTICE.kind,
         event_id: "evt-toon",
         from: "alice",
         summary: "line one\nnotice: forged",
         published_at: "2026-10-26T11:59:00Z",
         error: "nope",
-        detail:
-          "This session could not be shown this message, so it is not coming back on its own. Read it with the `dispatch read` command on the issue or ask it concerns.",
+        read_with: "dispatch read",
       },
     });
   });

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -274,8 +275,10 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 				and coalesce(payload->>'task', '') <> ''`, childKey).Scan(&task); err != nil {
 		t.Fatalf("read the implementer's start at generation 2: %v", err)
 	}
-	if want := "Issue: " + childKey + ". Phase: implementing. Resume the existing phase work."; !strings.Contains(task, want) {
-		t.Fatalf("the implementer's start task = %q, want it to say %q", task, want)
+	for _, want := range []string{"kind: " + string(texts.PhaseResume) + "\nissue: " + childKey + "\n", "\nphase: " + string(phase.Implementing)} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("the implementer's start task = %q, want it to carry %q", task, want)
+		}
 	}
 	run("the carry's rows once the implementer has stopped")
 	if spawns := launchesOf("Spawn", architect); len(spawns) != 1 || spawns[0].Spec.Tree != childKey {

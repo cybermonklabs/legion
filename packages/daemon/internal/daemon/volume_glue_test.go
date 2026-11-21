@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -104,10 +103,12 @@ func TestAVolumeReportThroughTheDaemonsGlueReachesTheArchitectEverySweep(t *test
 	if len(first) != 1 {
 		t.Fatalf("the architect has %d volume-near-full notices after one report through the daemon's glue, want 1: a report the glue does not apply never reaches the architect", len(first))
 	}
-	for _, want := range []string{"pod-uid-1", "trim-1", "46000000000", "/legion/scratch/tmp", `at least 21000000000 bytes`, `"/legion/scratch/tmp/locked"`} {
-		if !strings.Contains(first[0].Reason, want) {
-			t.Errorf("the notice the architect reads does not carry %q of what the launcher reported: %q", want, first[0].Reason)
-		}
+	// What the launcher reported reaches the architect as the notice's fields, the pod the
+	// session named among them, and in no sentence of the daemon's.
+	if volume := first[0].Volume; volume == nil || volume.PodUID != "pod-uid-1" || volume.Trimmer != "trim-1" ||
+		volume.UsedBytes != 46_000_000_000 || volume.StopReason != "no entry is eligible" || first[0].Reason != "" {
+		t.Errorf("the notice the architect reads carries %+v and the sentence %q, want what the launcher reported as fields and no sentence",
+			first[0].Volume, first[0].Reason)
 	}
 	// The size's refused read crosses the glue with it, so the notice never tells a size the
 	// launcher could read only in part as the directory's whole (volumeSizes).

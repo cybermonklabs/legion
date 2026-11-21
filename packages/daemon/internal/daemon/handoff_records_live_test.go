@@ -46,6 +46,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -441,9 +442,11 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := handoffLine(r.a7, "test", rewritten.version)
-	if !strings.Contains(task.Message, want) {
-		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
+	lines := strings.Split(task.Message, "\n")
+	for _, want := range []string{"kind: phase-assignment", "handoff_phase: test", fmt.Sprintf("handoff_version: %d", rewritten.version)} {
+		if !slices.Contains(lines, want) {
+			t.Fatalf("the reviewer was prompted %q, want its phase-assignment record to carry the line %q", task.Message, want)
+		}
 	}
 	r.note("the reviewer's shim was prompted: %q", task.Message)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))
@@ -1046,10 +1049,11 @@ func holdsAll(text string, parts []string) bool {
 	return true
 }
 
-// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
-// task).
-func handoffLine(key, word string, version int) string {
-	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
+// handoffLine is the part of a task that names the handoff of word at version: the two fields of
+// its record (texts.PhaseAssignmentRecord's handoff_phase and handoff_version), each a line of its
+// own. The issue the caller names is the task's issue field, which this part does not hold.
+func handoffLine(_, word string, version int) string {
+	return fmt.Sprintf("handoff_phase: %s\nhandoff_version: %d", word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`

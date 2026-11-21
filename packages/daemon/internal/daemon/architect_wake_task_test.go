@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -55,7 +54,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply the listener's report %s = %#v, %v", report, result, err)
 	}
-	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token), workflow.StoppedByRelease)
+	return workflow.WakeTask(r.key, pods.WakeRoleMessage, string(r.token), workflow.StoppedByRelease)
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
@@ -189,9 +188,9 @@ func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.
 
 	r.takeTheTask()
 	r.runStarts()
-	resume := fmt.Sprintf("A person answered your ask %s on %s", ask, r.key)
+	resume := []string{"kind: root-resume", "act: ask", `ask: "dispatch://` + r.key + "/ask/" + ask + `"`}
 	prompts = r.prompts()[sent:]
-	if len(prompts) != 2 || !strings.Contains(prompts[1].Message, resume) {
+	if len(prompts) != 2 || !hasTaskLines(prompts[1].Message, resume...) {
 		t.Fatalf("prompts once the wake's turn ended and the resume's row ran again = %+v, want the resume's task after the wake's", prompts)
 	}
 	if p := r.machine().Claim().Pending; p == nil || p.Entry != 2 || p.Generation != 1 {
@@ -296,9 +295,9 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 	// what the release's let-go ended (supervise's queueRelaunch), which is no entry's work; the
 	// agent takes it, and nothing else reaches it before the sweep sends the entry.
 	r.bringUp()
-	answered := fmt.Sprintf("A person answered your ask %s on %s", mainPathAsk, r.key)
+	answered := []string{"kind: root-resume", "act: ask", `ask: "dispatch://` + r.key + "/ask/" + mainPathAsk + `"`}
 	for _, prompt := range r.prompts()[sent:] {
-		if !strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) || strings.Contains(prompt.Message, answered) {
+		if !strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) || hasTaskLines(prompt.Message, answered...) {
 			t.Fatalf("the resumed architect was prompted %+v, want nothing but the record of the release's let-go before the sweep sends its entry",
 				r.prompts()[sent:])
 		}
@@ -312,7 +311,7 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes", starts)
 	}
 	r.runStarts()
-	if prompts := r.prompts()[sent:]; len(prompts) != 1 || !strings.Contains(prompts[0].Message, answered) {
+	if prompts := r.prompts()[sent:]; len(prompts) != 1 || !hasTaskLines(prompts[0].Message, answered...) {
 		t.Fatalf("prompts once the sweep sent entry 2 = %+v, want the resume's task alone", prompts)
 	}
 }

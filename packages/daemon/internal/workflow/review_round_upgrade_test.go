@@ -10,8 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -73,10 +72,12 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 // and this release sends a stored task as it was stored (record.SuperviseRequest.RoundNamed), so
 // the migration that adds the reviewed commit appends the round's two sentences to each task a
 // reviewer's row stores: the commit `none`, since the new column is empty on every row, and the
-// row's entry. Its text is the one namingTheReviewRound writes for that row, so the two cannot
-// drift. A reviewer's row that stores no task and a row of another role are left as they were.
-// The owed entry sent after the upgrade (SendOwedEntry) delivers the stored task word for word,
-// ending with the two sentences.
+// row's entry. The migration is the release that shipped it, cybermonklabs/legion#4328, and
+// writes the sentences after a space, as that release's namingTheReviewRound did: a stored task of
+// that age is prose, where the space form is the one its reader reads. A task this release writes
+// puts them on a line of their own (reviewround.Ending). A reviewer's row that stores no task and
+// a row of another role are left as they were. The owed entry sent after the upgrade
+// (SendOwedEntry) delivers the stored task word for word, ending with the two sentences.
 func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t *testing.T) {
 	ctx := context.Background()
 	st, pool := storeBeforeTheReviewedHead(t)
@@ -106,11 +107,10 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 	}
 
 	reviewer := reviewerRow(t, pool)
-	want := namingTheReviewRound(reviewerTask, claim.RoleReviewer, phase.Reviewing,
-		record.PhaseRow{Role: claim.RoleReviewer, Entry: 2, EntryTask: reviewerTask})
-	if reviewer.EntryTask != want || want != reviewerTask+reviewedPartOf("none")+reviewEntryPartOf(2) {
+	want := reviewerTask + " " + reviewround.CommitLabel + ": none." + reviewEntryPartOf(2)
+	if reviewer.EntryTask != want {
 		t.Errorf("the reviewer's stored task after the upgrade = %q, want %q: the task the release before stored, "+
-			"then the two sentences namingTheReviewRound writes for its row", reviewer.EntryTask, want)
+			"then the two sentences after a space, as the migration's release wrote them", reviewer.EntryTask, want)
 	}
 	if got := roleRow(t, pool, claim.RoleTester).EntryTask; got != testerTask {
 		t.Fatalf("the tester's stored task after the upgrade = %q, want %q as the release before stored it", got, testerTask)

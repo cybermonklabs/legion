@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // gatesStep says whether the deployment gates step, so a person must approve that step's document
@@ -147,7 +149,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// whatever version it was told at: it rebuilds the gate from Dispatch, and the gate seed or a
 	// late live event that follows may carry the same review again.
 	if !classify.DesignGateOpen(gate) && sameDocument && stored.ToldChangesVersion != nil {
-		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesMark)
+		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesBy, stored.ToldChangesMark)
 	}
 	// The changes request the read shows is the review its live event carries, so it meets a root
 	// waiting on a person by the same rules (applyArtifact): unplaceable, it is neither told nor
@@ -162,7 +164,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
-		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
+		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ReviewedBy.Name(), fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
@@ -210,7 +212,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
 	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step)}); err != nil {
+		if err := e.notice(ctx, tx, fact.Issue, DesignApprovedNotice(fact.Issue, step, gate.LatestVersion, reviewer, gate.ApprovedMark.At)); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -266,7 +268,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if !notify {
 		return nil
 	}
-	if err := e.notice(ctx, tx, key, record.Notice{Kind: "design-changes-requested", Version: version, Reason: reason, Actor: reviewer, Ref: stepRef(key, step)}); err != nil {
+	if err := e.notice(ctx, tx, key, ChangesRequestedNotice(key, step, version, reason, reviewer, mark.At)); err != nil {
 		return err
 	}
 	if issue.Phase != phase.Admitted || !claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -276,6 +278,46 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 		return e.store.TakeInThrough(ctx, tx, issue.Key, mark.Seq)
 	}
 	return e.store.StartHandout(ctx, tx, issue.Key)
+}
+
+// ChangesRequestedNotice is the design-changes-requested notice of key: the person's decision on
+// the document step reviews at version (gateDecision), and the reason the person gave, cut to
+// texts.OneAct, named in the words object as the reviewer's at at with the count of the rest. The
+// decision's reference is where the rest is read.
+func ChangesRequestedNotice(key string, step record.DesignStep, version int, reason, reviewer string, at time.Time) texts.DesignChangesRequestedRecord {
+	notice := texts.DesignChangesRequestedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignChangesRequested, Issue: key},
+		GateDecision: gateDecision(key, step, version, reviewer, at)}
+	if reason != "" {
+		head, rest := texts.Bound(reason, texts.OneAct)
+		notice.Reason = head
+		notice.Words = map[string]texts.WordsMeta{"reason": {By: reviewer, At: at.UTC(), Rest: rest}}
+	}
+	return notice
+}
+
+// DesignApprovedNotice is the design-approved notice of key: the person's decision that opened the
+// document step reviews at version (gateDecision).
+func DesignApprovedNotice(key string, step record.DesignStep, version int, actor string, at time.Time) texts.DesignApprovedRecord {
+	return texts.DesignApprovedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignApproved, Issue: key},
+		GateDecision: gateDecision(key, step, version, actor, at)}
+}
+
+// CarriedGateOpenedNotice is the carried-gate-opened notice of key: the person's decision that
+// opened the gate key's root carried, whose reference names approved, the issue whose document
+// step reviews the person approved at version (gateDecision).
+func CarriedGateOpenedNotice(key, approved string, step record.DesignStep, version int, actor string, at time.Time) texts.CarriedGateOpenedRecord {
+	return texts.CarriedGateOpenedRecord{NoticeHead: texts.NoticeHead{Kind: texts.CarriedGateOpened, Issue: key},
+		GateDecision: gateDecision(approved, step, version, actor, at)}
+}
+
+// gateDecision is a person's decision on the document step reviews on key at version: who made
+// it (actor, empty where nobody decided), the document's reference (stepRef) and when (at, zero
+// where the daemon holds no time of it).
+func gateDecision(key string, step record.DesignStep, version int, actor string, at time.Time) texts.GateDecision {
+	if !at.IsZero() {
+		at = at.UTC()
+	}
+	return texts.GateDecision{Version: version, Actor: actor, Ref: stepRef(key, step), At: at}
 }
 
 // unplaceable says whether an act or review at mark cannot be placed against root's wait: the root
@@ -479,7 +521,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 		}
 		e.logOnCommit(ctx, "workflow: a changes request whose resume never ran is no longer recorded as told", "issue", root.Key,
 			"step", gate.Step, "version", *gate.ToldChangesVersion)
-		gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = nil, "", record.EventMark{}
+		gate = classify.ClearChangesTold(gate)
 		if err := e.store.PutGate(ctx, tx, gate); err != nil {
 			return err
 		}
@@ -876,7 +918,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
 		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark)
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
-		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
+		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Actor.Name(), fact.Mark)
 	}
 	// The pairs as the event found them: it moves a version, a review mark or the opened mark and
 	// leaves every step on the document it named, so the comparison queues nothing, which is what
@@ -915,21 +957,19 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
 		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
-		// decision then goes to the controller instead (the outbox's parkDecision).
+		// decision then goes to the controller instead (the outbox's parkDecision). A carried
+		// gate's notice names, by its reference, the issue whose document the person approved.
 		reviewer := fact.Actor.Name()
-		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step)}
+		var opened any = DesignApprovedNotice(key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		switch {
 		case carried:
-			opened = &record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
-				"a human approved %s's spec document at version %d, which opens the gate %s carried; any child waiting on it starts", fact.Key, fact.Version, key)}
+			opened = CarriedGateOpenedNotice(key, fact.Key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		case issue.AwaitingPerson():
 			opened = nil
 			e.logOnCommit(ctx, "workflow: a root waiting on a person is told its gate's opening by its resume", "issue", key, "version", fact.Version)
 		}
-		if opened != nil {
-			if err := e.notice(ctx, tx, key, *opened); err != nil {
-				return err
-			}
+		if err := e.notice(ctx, tx, key, opened); err != nil {
+			return err
 		}
 		// The members the opening releases take their first phase from admission's pass over this
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
@@ -991,27 +1031,30 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The step and its own document, never "spec version": under more than one gated step the
-	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
-	var body string
-	if open {
-		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
-		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
-	}
+	moved := GateMovedMessage(root.Tree, step, document, version, open)
 	for _, to := range told {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		if err := e.roleMessage(ctx, tx, to.issue, to.token, moved, texts.UrgencyOf(texts.GateMoved, to.role, texts.Variant{})); err != nil {
 			return err
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
+}
+
+// GateMovedMessage is the gate-moved message of tree's design gate: whether it opened or closed
+// (a texts.Gate word), the step and its own document's reference with the artifact id, never "spec
+// version" (under more than one gated step the version the event carries is that step's
+// document's, and a message naming the spec would send a reader to the wrong one, INFRA-1272),
+// the version, and what the move does to a merge the gate holds: released at the opening, held
+// while it is closed.
+func GateMovedMessage(tree string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
+	gate, merge := texts.GateClosed, texts.MergeHeld
+	if open {
+		gate, merge = texts.GateOpened, texts.MergeReleased
+	}
+	return texts.GateMovedRecord{RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: tree}, Gate: gate, Step: string(step.OrSpec()),
+		Document: stepRef(tree, step), Artifact: artifact, Version: version, Merge: merge}
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
@@ -49,10 +50,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
-// caller of phase.RoleFor, since that is the one definition and this forwards to it.
+// Until then this name has callers of its own inside this module: readyWorkerTask (catch_up.go),
+// leftItsPhase and NoticeFor (engine.go), tellGateMoved (gate.go), tellChecks (review.go), admit's
+// TreeStalledNotice, and tests. Each reads the same table as a caller of phase.RoleFor, since that
+// is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -267,17 +268,74 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
 // it went to, the role that asked (the role running the phase left, which backward holds the
-// requester to) and that role's own words, or that it gave none.
+// requester to) and that role's own words, or that it gave none. A person reads it on the issue as
+// a sentence, so words that end with no stop (endsWithStop) get a full stop of the daemon's own
+// after them; BackwardMoveOf, which reads the words back, drops it.
 func backwardMoveReason(from, to phase.Phase, reason string) string {
-	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+	asked := backwardMoveAsked(from, to)
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
 	}
-	if strings.HasSuffix(reason, ".") || strings.HasSuffix(reason, "!") || strings.HasSuffix(reason, "?") {
+	if endsWithStop(reason) {
 		return asked + ": " + reason
 	}
 	return asked + ": " + reason + "."
+}
+
+// endsWithStop says whether words end with a stop of a sentence: a full stop, an exclamation mark
+// or a question mark. backwardMoveReason adds a full stop of its own to words that end with none.
+func endsWithStop(words string) bool {
+	return strings.HasSuffix(words, ".") || strings.HasSuffix(words, "!") || strings.HasSuffix(words, "?")
+}
+
+// backwardMoveAsked is the daemon's own sentence that a backward move's reason opens with
+// (backwardMoveReason): the move, and the role that asked for it.
+func backwardMoveAsked(from, to phase.Phase) string {
+	return fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+}
+
+// AskedMove is a worker's backward move as the daemon's sentence that opens its reason states it
+// (backwardMoveReason): the phase it left, the phase it went to, the role that asked (the role
+// running the phase left), and that role's own words after the sentence as BackwardMoveOf reads
+// them, "" where it gave none.
+type AskedMove struct {
+	From  phase.Phase
+	To    phase.Phase
+	Asker claim.Role
+	Words string
+}
+
+// BackwardMoveOf is the backward move that text states, for a text that opens with the daemon's
+// sentence of a move back the daemon counts (backwardMoveAsked, phase.BackwardPairs), such as the
+// whole reason a refused post quotes; false for a text that opens with no such sentence. It reads
+// the sentence with backwardMoveAsked itself, so it reads what backwardMoveReason writes and
+// nothing else: the words are what follows the sentence's ": " to the end of text, and a move that
+// gave none, whose sentence the daemon closes on its own, has none.
+//
+// The words hold only characters the asker wrote. backwardMoveReason adds a full stop to words
+// that end with none, so a final "." after words that end with no other stop is the daemon's or
+// the asker's, and the reader cannot tell the two apart: it drops that one final "." either way.
+// The words then lose at most the asker's own final stop, and never hold the daemon's. A final
+// "." alone or after another stop (".", "..", "!.") is the asker's, since the writer adds none
+// there, and stays.
+func BackwardMoveOf(text string) (AskedMove, bool) {
+	for _, pair := range phase.BackwardPairs() {
+		from, to, _ := phase.ParsePair(pair)
+		rest, asked := strings.CutPrefix(text, backwardMoveAsked(from, to))
+		if !asked {
+			continue
+		}
+		words, said := strings.CutPrefix(rest, ": ")
+		if !said {
+			words = ""
+		}
+		if stopless, stopped := strings.CutSuffix(words, "."); stopped && stopless != "" && !endsWithStop(stopless) {
+			words = stopless
+		}
+		return AskedMove{From: from, To: to, Asker: phase.RoleFor(from), Words: words}, true
+	}
+	return AskedMove{}, false
 }
 
 // backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
@@ -299,25 +357,45 @@ func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string)
 	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
 }
 
-// notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
-// that tells it nothing) enqueues nothing.
-func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
-	if notice.Kind == "" {
+// notice tells the architect that owns the issue rec, the record of a notice kind on the list
+// (texts.PhaseFinishedRecord and the others), as the notice that carries it (record.NoticeOf); a
+// nil record (NoticeFor's, for a move that tells it nothing) enqueues nothing.
+func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
+	if rec == nil {
 		return nil
+	}
+	notice, err := record.NoticeOf(rec)
+	if err != nil {
+		return err
 	}
 	return e.enqueue(ctx, tx, issue, notice)
 }
 
-// noticeWithController tells the architect that owns the issue and, in an outbox row of its own,
-// the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
-// the architect the same notice again. Every hold is told this way, since the architect answers one
-// with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every notice of the tree that no child's own architect takes reaches that architect.
-func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
-	if err := e.notice(ctx, tx, issue, notice); err != nil {
+// noticeWithController tells the architect that owns the issue rec and, in an outbox row of its
+// own, the project's controller: the two publishes retry apart, so a controller topic that keeps
+// failing never sends the architect the same notice again. Every hold is told this way, since the
+// architect answers one with a retry or an escalation to the controller, and so is the tree
+// architect's own failed claim, since every notice of the tree that no child's own architect takes
+// reaches that architect.
+func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
+	notice, err := record.NoticeOf(rec)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue, notice); err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue, record.ControllerNotice(notice))
+}
+
+// roleMessage tells the holder of token rec, the record of a role-message kind on the list, at
+// urgency, the urgency the kind's rule gives that reader (texts.UrgencyOf), in a row of issue.
+func (e *Engine) roleMessage(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, rec any, urgency texts.Urgency) error {
+	message, err := record.NewRoleMessage(string(token), rec, urgency)
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, tx, issue, message)
 }
 
 // logOnCommit writes one Info line once the fact's transaction commits (intake.OnCommit), so a
@@ -406,11 +484,6 @@ func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
-
-// testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
-// prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it.
-const testerVerdictLabel = "Tester's verdict"
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
@@ -989,53 +1062,175 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 	return entry, err
 }
 
-// task is what a started worker is told. It names the phase the worker starts, which the issue
-// record already holds: one role runs several phases (the implementer runs implementing and
-// retro), and a resumed session cannot otherwise tell a new phase from its last.
-// The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
-// its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
-// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
-// the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
+// The words a phase-assignment task names who retried its phase by (texts.PhaseAssignmentRecord
+// Retried): the architect's retry_or_escalate with retry, the operator's `legion claims retry`,
+// and a todo written on a held root (releaseHeldRoot), which a person in the Dispatch dashboard,
+// the controller's set_status and an operator's `legion status` all write.
+const (
+	RetriedByArchitect = "architect"
+	RetriedByOperator  = "operator"
+	RetriedByTodo      = "todo"
+)
+
+// PhaseMove is what a phase-assignment task says of how its phase was reached, beyond the handoff
+// the phase before it ended with and the pull request (PhaseAssignment). The zero value says
+// nothing more: the phase a worker's completion, an approval or the gate's opening started.
+type PhaseMove struct {
+	// BackFrom is the phase a worker's backward move left (TriggerBackward). The role that works
+	// that phase asked for the move, and its words are Reason, given at At.
+	BackFrom phase.Phase
+	// Review is the decision of the review round a request for changes ended
+	// (TriggerReviewRejected): the head it reviewed, and its body by its author.
+	Review *record.ReviewDecision
+	// Retried names who retried the phase (RetriedByArchitect and the others). The architect's own
+	// words, where it gave any, are Reason, given at At.
+	Retried string
+	// Stuck is the review round a retry of reviewing found stuck, nil for none.
+	Stuck  *StuckRound
+	Reason string
+	At     time.Time
+}
+
+// StuckRound is a review round that nothing on its way ends, as the task of its restarted reviewer
+// names it: its cause (a texts.Cause word), the head it is stuck at, the head the reviewer approved
+// where its approval is of other code, and whether an APPROVE of the head or a REQUEST_CHANGES ends
+// it, which they do for every cause but a merge state GitHub will not merge from. For a round no
+// review decided, it names why the daemon set aside a review that would otherwise have decided it
+// (record.ReviewDecision.Refused), the only thing that says why the round has no decision; for a
+// round GitHub will not merge from, the merge state GitHub reported for the head.
+type StuckRound struct {
+	Cause      string
+	Head       string
+	Approved   string
+	EndsRound  bool
+	SetAside   string
+	MergeState string
+}
+
+// PhaseAssignment is what a started worker is told, as the record of its kind: the issue, its
+// title and the phase the worker starts, which the issue record already holds — one role runs
+// several phases (the implementer runs implementing and retro), and a resumed session cannot
+// otherwise tell a new phase from its last.
+//
+// The handoff a phase ended with is a Dispatch handoff record on the issue, which the task names
+// by its phase word and version (decision 9 of dispatch://INFRA-3686's plan): the record the daemon
+// accepted, whatever was written to the phase since, which the reader's prompt reads with
+// `dispatch handoff-read`. A commit is named whenever the completion reported one: the head the
+// planner's, the implementer's, the tester's or the reviewer's record names, and the commit retro
+// and the merger stand on. A handoff's verdict is always the tester's, since the daemon accepts
+// one from no other role on a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the
+// implementer's check report is no phase completion and starts nobody), so the field names the
+// tester: the reviewer it starts on a pass reads it as the tester's report, never as a field of
+// its own completion. The pull request is named owner/name#n.
+//
+// move says how the phase was reached (PhaseMove). A worker's backward move names the phase it
+// left, and its role's words go in the reason block by that role, whole: Dispatch's own bound
+// already holds them, since the move posts them on the issue (backwardReasonRefusal). A review's
+// request for changes names the head it reviewed, and its whole body goes in the body block by
+// its author, cut to texts.OneAct where that author is a person and whole where it is the
+// reviewer, as the reviewer's own review always went. A retry names who retried, with the
+// architect's words in the reason block, and a retry of a stuck review round names the round's
+// cause, its head and the review that ends it; for a round GitHub will not merge from, the merge
+// state and the head's checks and commit statuses, as the review-stuck notice names them.
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
-// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
-// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
+// the base that merge brought forward and that head as the one whose approval it waits for: the
+// daemon records no decision outside reviewing, so the approval is the merger's to read on GitHub,
+// and its prompt says to merge that head only once the approval is on the pull request. The
 // merger's task is built at retro's completion, the one move into merging, and at the retry of a
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue)
+func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) texts.PhaseAssignmentRecord {
+	task := texts.PhaseAssignmentRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseAssignment, Issue: issue.Key}, Title: issue.Title,
+		Phase: issue.Phase, HandoffCommit: handoff.HandoffCommit, TesterVerdict: handoff.Verdict}
 	if handoff.HandoffRecord != "" {
-		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
-	}
-	if handoff.HandoffCommit != "" {
-		text += " Handoff commit: " + handoff.HandoffCommit + "."
-	}
-	if handoff.Verdict != "" {
-		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
+		task.HandoffPhase, task.HandoffVersion = handoffWord(handoff.Role), handoff.HandoffVersion
 	}
 	if pr != nil && pr.Number != 0 {
-		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
+		task.PullRequest = pullRequestRef(*pr)
 	}
 	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
-		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
-			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
+		task.MergedForward, task.ApprovalOwed = pr.MergeForward.Base, pr.HeadSHA
 	}
-	if reason != "" {
-		text += " Reason: " + reason + "."
+	switch {
+	case move.BackFrom != "":
+		task.MovedBackFrom = move.BackFrom
+		task.Reason = wordsOf(move.Reason, string(phase.RoleFor(move.BackFrom)), move.At)
+	case move.Review != nil:
+		task.ReviewedHead = move.Review.Head
+		task.Body = rejectionBody(*move.Review)
+	case move.Retried != "":
+		task.Retried = move.Retried
+		task.Reason = wordsOf(move.Reason, "", move.At)
+		if stuck := move.Stuck; stuck != nil {
+			task.StuckRound, task.Head, task.ReviewedHead, task.SetAside = stuck.Cause, stuck.Head, stuck.Approved, stuck.SetAside
+			if stuck.EndsRound {
+				task.EndsRound = texts.EndsRound(stuck.Head)
+			}
+			if stuck.Cause == texts.CauseMergeState && pr != nil {
+				tally := tallyChecks(headRuns(*pr), headStatuses(*pr))
+				task.MergeState, task.NotPassed, task.Skipped = stuck.MergeState, tally.notPassed, tally.skipped
+				task.EachSkippedCheck = texts.EachSkippedCheck(tally.skipped)
+				task.NotPassedStatuses, task.Passed, task.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
+			}
+		}
 	}
-	return text
+	return task
 }
 
-func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+// wordsOf is text as a block carries another author's words whole, by by at at, where the task's
+// fields name neither; nil where there are no words.
+func wordsOf(text, by string, at time.Time) *texts.Words {
+	if text == "" {
+		return nil
+	}
+	if !at.IsZero() {
+		at = at.UTC()
+	}
+	return &texts.Words{Text: text, By: by, At: at}
+}
+
+// rejectionBody is the body of the review that requested changes as the next implementer's task
+// carries it: by its author — the reviewer for the review App's, whose review is the reviewer's
+// own (DecidesRound), and the login of anyone else, a person with write access — at the time GitHub
+// says it was submitted. A person's body is cut to texts.OneAct (texts.Carry), with the count of the
+// rest, or the mark that more follows where Envoy's normalizer cut it before the daemon saw it; the
+// reviewer's goes whole, as it always did. A decision an older daemon wrote names no author, and
+// its body goes whole with none.
+func rejectionBody(review record.ReviewDecision) *texts.Words {
+	if review.Body == "" && !review.BodyCut {
+		return nil
+	}
+	words := texts.Words{Text: review.Body}
+	switch {
+	case review.Person:
+		words = texts.Carry(review.Body, texts.OneAct, review.BodyCut)
+		words.By = review.Author
+	case review.Author != "":
+		words.By = string(claim.RoleReviewer)
+	}
+	if !review.SubmittedAt.IsZero() {
+		words.At = review.SubmittedAt.UTC()
+	}
+	return &words
+}
+
+// task is PhaseAssignment's record as the started worker reads it.
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) string {
+	return taskText(PhaseAssignment(issue, handoff, pr, move))
+}
+
+// taskText is a task record as its kind renders it (texts.Render). Every record this package
+// builds holds what the store and the decoded events gave it, which is valid UTF-8, in the field
+// types the renderer takes, so a refusal is a defect of a record type, which this package's tests
+// render: it panics naming the type.
+func taskText(record any) string {
+	text, err := texts.Render(record)
+	if err != nil {
+		panic(fmt.Sprintf("workflow: the task %T does not render: %v", record, err))
+	}
+	return text
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
@@ -1049,65 +1244,61 @@ func handoffWord(role claim.Role) string {
 	return ""
 }
 
-// ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
-// begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last.
+// PhaseResume is what a worker started for a phase already under way is told, as the record of
+// its kind: the issue, its title and the phase. No handoff begins that phase — the run that did is
+// over — so the task names the phase, which is what a resumed session needs to tell this phase
+// from its last, and its kind says to carry the work on.
+func PhaseResume(issue record.Issue) texts.PhaseResumeRecord {
+	return texts.PhaseResumeRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseResume, Issue: issue.Key}, Title: issue.Title, Phase: issue.Phase}
+}
+
+// ResumePhaseTask is PhaseResume's record as the started worker reads it.
 func ResumePhaseTask(issue record.Issue) string {
-	return continueLine(issue) + " Resume the existing phase work."
+	return taskText(PhaseResume(issue))
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
-// escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice was routed in the
-// tree the root was handed over from, where it reached an architect above the root unless the
-// root's own architect held its role then.
-func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+// escalation: the phase the hold came from, the role that works it, and the hold's reason word.
+// Admission tells a carried root's own architect with it, since the hold's first notice was
+// routed in the tree the root was handed over from, where it reached an architect above the root
+// unless the root's own architect held its role then; so its variant is texts.HoldCarried.
+func HeldNotice(issue record.Issue) texts.HeldRecord {
+	return texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key}, Role: phase.RoleFor(issue.Hold.From),
+		Phase: issue.Hold.From, Hold: texts.HoldCarried, Reason: string(issue.Hold.Reason)}
 }
 
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
-func ChildReenteredNotice(child, root string) record.Notice {
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
+// root's own promotion made the tree live. The child is todo again, and runs again under root.
+func ChildReenteredNotice(child, root string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: child}, Change: texts.ChangeTodo, Tree: root}
 }
 
 // ChildStartedNotice is the notice the architect above a child is told whenever the child starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now and that the
-// child's own architect starts with it. waited is every issue the child's mirror row still names,
-// in Dispatch's own order, all of them done by now: the last of them closed, which is what freed
-// the child.
+// its first phase (Engine.StartFirstPhase): the child starts planning under root, and waited is
+// every issue the child's mirror row still names, in Dispatch's own order, all of them done by
+// now: the last of them closed, which is what freed the child.
 //
-// Empty, the child's own links say nothing about why it starts, and the reason says what is true
-// of every child the line starts instead: it reached the front of the waiting line and took a
-// slot. That covers both an issue that never named a blocker — which is most of them now that a
-// child waits for a slot like any other issue — and one whose blocked-by links a person or the
-// architect took off while it waited, which the record cannot tell apart from the first. Naming
-// links that were taken off would be a guess, and a reason the architect reads and cannot check
-// is worse than a plain one.
+// Empty, the child's own links say nothing about why it starts, and the notice names none: the
+// child reached the front of the waiting line and took a slot. That covers both an issue that
+// never named a blocker — which is most of them now that a child waits for a slot like any other
+// issue — and one whose blocked-by links a person or the architect took off while it waited,
+// which the record cannot tell apart from the first. Naming links that were taken off would be a
+// guess, and a fact the architect reads and cannot check is worse than none.
 //
-// The reason then says what the reader keeps of the child: from this start the child's own
-// architect owns it — its decomposition, its children and its acceptance — while that architect
-// holds its role. So the reader hears the child's child-status and child-closed and that
-// architect's worker-died and worker-stalled, and, while that architect does not hold its role,
-// every other notice of the child too (record.OwningArchitect).
+// From this start the child's own architect owns it — its decomposition, its children and its
+// acceptance — while that architect holds its role (record.OwningArchitect); the architect's
+// prompt says what the reader keeps of the child.
 //
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
 // with — the daemon's notice routing starts the walk for one at the child's parent, so it reaches
 // the architect above the child — and not phase-finished: no phase of the child ended, it is
 // beginning its first.
-func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	why := fmt.Sprintf("every issue it waited on (%s) is done", strings.Join(waited, ", "))
-	if len(waited) == 0 {
-		why = "it reached the front of the waiting line and took an admission slot"
-	}
-	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it while that architect "+
-		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
-		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
-		"hold its role, which the daemon's holdsRole decides", child, root, why)
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
+func ChildStartedNotice(child, root string, waited []string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: child}, Change: texts.ChangeStarted,
+		Tree: root, WaitedOn: waited}
 }
 
 func (e *Engine) lingerAt() time.Time { return e.now().Add(e.cfg.Linger) }

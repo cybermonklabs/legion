@@ -127,6 +127,13 @@ type Actor struct {
 	Credential *Credential `json:"-"`
 }
 
+// LegionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
+// lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
+// conversation: it is nobody to ask and never a collaborator (internal/dispatch/api), and the
+// outbox sends its events at urgency low, apart from the types that must be heard at once
+// (internal/dispatch/outbox, envelope).
+const LegionDaemonSessionPrefix = "legion-daemon:"
+
 // Recorded is the actor as a write records it: the request's credential dropped. A stored actor
 // is decoded from JSON, which carries no credential, so the credential never reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those

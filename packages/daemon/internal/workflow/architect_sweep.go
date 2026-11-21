@@ -36,7 +36,7 @@ import (
 //     (record.Issue.TakenBack) nor its phase records hold a fact the promotion writes and a
 //     transition changes. Holding the reach to the carried phase would take a column of its own.
 //     So the task the derivation writes for such a root says
-//     only what holds in every phase of that run (writeCarriedPhase), and what the reach does
+//     only what holds in every phase of that run (carriedPhase), and what the reach does
 //     past the carried phase holds of such a root wherever it stands: the sweep sends its
 //     architect an entry the claim was not given, and the first stall arm reads the task of the
 //     entry the row names. The mark on the issue (record.Issue.HandedOverFrom) is no use here:

@@ -16,7 +16,7 @@ import (
 )
 
 // architectStalledWakes is every architect-stalled controller notice of issue the outbox holds,
-// oldest first, as the reason each carries (record.ArchitectStalledNotice, admit's
+// oldest first, as the arm that raised each (record.ArchitectStalledNotice, admit's
 // architectStalls). A proof reads it to say that a root the daemon served raises no wake of
 // any arm: each arm is a reading that the architect did not take its work, is not there, or has
 // not moved, and none of the three is true of a root whose architect holds the task it was sent.
@@ -24,25 +24,25 @@ import (
 // registers one first (registerProjectController), or the read could never see a wake.
 func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'reason', '') from outbox
+	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'arm', '') from outbox
 		where issue = $1 and kind = $2 and payload->>'kind' = $3 order by id`,
 		issue, string(record.OutboxKindControllerNotice), string(record.ArchitectStalledNotice))
 	if err != nil {
 		t.Fatalf("list the architect wakes of %s: %v", issue, err)
 	}
 	defer rows.Close()
-	var reasons []string
+	var arms []string
 	for rows.Next() {
-		var reason string
-		if err := rows.Scan(&reason); err != nil {
+		var arm string
+		if err := rows.Scan(&arm); err != nil {
 			t.Fatalf("read an architect wake of %s: %v", issue, err)
 		}
-		reasons = append(reasons, reason)
+		arms = append(arms, arm)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("list the architect wakes of %s: %v", issue, err)
 	}
-	return reasons
+	return arms
 }
 
 // architectStallArmsOf is every arm of the architect-stalled reading that holds for root now, as

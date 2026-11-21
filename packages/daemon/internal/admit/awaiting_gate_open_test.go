@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // childStarts counts what LEGION-209's first phase queued: its planner's starts, its branch rows
@@ -99,19 +99,19 @@ func TestAnOpenGateAnswersAQuestionWaitWhateverOpenedIt(t *testing.T) {
 		name   string
 		policy config.DesignGate
 		open   intake.Fact
-		task   string
+		task   []string
 	}{
 		{"an approval recorded before the hand-back, applied after it", config.DesignGateRootIssues,
 			intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 3,
 				Mark: record.EventMark{Seq: 4, At: approvedAt}},
-			"was approved"},
+			[]string{"act: approved", "document_version: 3", "gate_open: true", "gate_armed: true"}},
 		{"a registration that reads an approval", config.DesignGateRootIssues,
 			intake.GateRegistered{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 3, DispatchVersion: 3, ApprovedVersion: 3,
 				ApprovedMark: record.EventMark{Seq: 4, At: approvedAt}, Since: record.EventMark{Seq: 6}},
-			"was approved"},
+			[]string{"act: approved", "document_version: 3", "gate_open: true", "gate_armed: true"}},
 		{"a registration with the design gate off", config.DesignGateOff,
 			intake.GateRegistered{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 6}},
-			"the design gate is off"},
+			[]string{"act: approved", "document_version: 3", "gate_open: true", "gate_armed: false"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -139,8 +139,8 @@ func TestAnOpenGateAnswersAQuestionWaitWhateverOpenedIt(t *testing.T) {
 					resumes = append(resumes, request)
 				}
 			}
-			if len(resumes) != 1 || !strings.Contains(resumes[0].Task, tc.task) {
-				t.Fatalf("architect starts = %+v, want one resume naming %q", resumes, tc.task)
+			if len(resumes) != 1 || !hasLines(resumes[0].Task, tc.task...) {
+				t.Fatalf("architect starts = %+v, want one resume with the lines %q", resumes, tc.task)
 			}
 			if told := gateNotices(t, pool, "LEGION-208", "design-approved"); len(told) != 0 {
 				t.Fatalf("design-approved notices = %+v, want the resume task alone to say it", told)
@@ -235,17 +235,18 @@ func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 			Mark: record.EventMark{Seq: seq, At: at.Add(time.Duration(seq) * time.Second)}}
 	}
 	for _, tc := range []struct {
-		name     string
-		reviews  []intake.DispatchArtifact
-		contains []string
-		absent   []string
+		name    string
+		reviews []intake.DispatchArtifact
+		lines   []string
+		// later says the resume names the changes request as one made after the wait began.
+		later bool
 	}{
 		{"a later approval superseded it",
 			[]intake.DispatchArtifact{review(intake.DispatchArtifactChangesRequested, 8, "wait no"), review(intake.DispatchArtifactApproved, 9, "")},
-			[]string{workflow.DesignApprovedWake}, []string{"revise"}},
+			[]string{"act: ask", "gate_open: true", texts.DesignApprovedWake}, false},
 		{"no approval followed it",
 			[]intake.DispatchArtifact{review(intake.DispatchArtifactChangesRequested, 8, "wait no")},
-			[]string{"wait no", "revise the primary document"}, []string{workflow.DesignApprovedWake}},
+			[]string{"act: ask", "gate_open: false", "later_changes_version: 3", "wait no", "</later_reason>"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, admission := waitingRoot(t, config.DesignGateRootIssues)
@@ -263,15 +264,8 @@ func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 			if len(resumes) != 1 {
 				t.Fatalf("architect starts = %q, want one resume", resumes)
 			}
-			for _, want := range tc.contains {
-				if !strings.Contains(resumes[0], want) {
-					t.Errorf("resume %q does not say %q", resumes[0], want)
-				}
-			}
-			for _, unwanted := range tc.absent {
-				if strings.Contains(resumes[0], unwanted) {
-					t.Errorf("resume %q says %q", resumes[0], unwanted)
-				}
+			if !hasLines(resumes[0], tc.lines...) || hasField(resumes[0], "later_changes_version") != tc.later {
+				t.Errorf("resume %q, want the lines %q and the later changes request named %t", resumes[0], tc.lines, tc.later)
 			}
 		})
 	}
@@ -293,15 +287,8 @@ func TestTheResumeUnderGateOffSaysNoPersonApproved(t *testing.T) {
 	if len(resumes) != 1 {
 		t.Fatalf("architect starts = %q, want one resume", resumes)
 	}
-	for _, want := range []string{"revise the primary document", workflow.DesignApprovedWake} {
-		if !strings.Contains(resumes[0], want) {
-			t.Errorf("resume %q does not say %q", resumes[0], want)
-		}
-	}
-	for _, unwanted := range []string{"approved the primary document", "is approved"} {
-		if strings.Contains(resumes[0], unwanted) {
-			t.Errorf("resume %q says %q under gates.design: off", resumes[0], unwanted)
-		}
+	if want := []string{"act: changes_requested", "gate_open: true", "gate_armed: false", "<reason>", "split it", "</reason>", texts.DesignApprovedWake}; !hasLines(resumes[0], want...) {
+		t.Errorf("resume %q, want the lines %q: the changes request answered the wait, and the gate is open with the design gate off", resumes[0], want)
 	}
 }
 
@@ -330,7 +317,7 @@ func TestAGateWaitAnsweredByTheGateSwitchedOffResumesInThatPass(t *testing.T) {
 			resumes = append(resumes, request.Task)
 		}
 	}
-	if len(resumes) != 1 || !strings.Contains(resumes[0], "closed at version 3") {
+	if len(resumes) != 1 || !hasLines(resumes[0], "gate_open: false", "gate_armed: false", "document_version: 3") {
 		t.Fatalf("architect starts = %q, want one resume saying the gate is closed at version 3", resumes)
 	}
 }

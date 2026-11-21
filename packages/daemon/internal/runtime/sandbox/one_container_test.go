@@ -901,7 +901,7 @@ func TestTheStreamIsReadFromTheRolesContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	if want := (movedAddress{connectFlag, movedStreamURL, testOptions().StreamURL}).String(); obs.Kind != runtime.StaleAddress || !strings.Contains(obs.Detail, want) {
+	if want := (movedAddress{connectFlag, connectFlag, movedStreamURL, testOptions().StreamURL}).String(); obs.Kind != runtime.StaleAddress || !strings.Contains(obs.Detail, want) {
 		t.Fatalf("%s %q, want StaleAddress naming %q", obs.Kind, obs.Detail, want)
 	}
 }

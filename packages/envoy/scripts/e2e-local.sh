@@ -1510,14 +1510,16 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
     for (const suffix of obsolete) require(withTopic(topic(suffix)).length === 0, `obsolete topic was published: ${suffix}`);
 
     const renderedText = readFileSync(renderedTSFile, "utf8");
-    // One card per envelope, in the order the bus carried them. No card holds a blank line, so
-    // the blank line before the next card opens is the only boundary there is to split on.
+    // One card per envelope, in the order the bus carried them. A card opens with envoy: on a line
+    // of its own, so the blank line before that line is the boundary to split on; a blank line in
+    // the words of a message stays inside its block, before a line that is not envoy:.
     const cards = renderedText.trimEnd().split(/\n{2,}(?=envoy:\n)/);
     const tsFirst = cards[0];
-    // The direct summary is the message head, so the renderer drops the separate summary line and
-    // prints the full message once: the summary text appears only where the message opens.
-    const fullMessage = `message: ${JSON.stringify(directBody)}`;
-    require(tsFirst.split(fullMessage).length === 2, "the renderer did not render the full direct message exactly once");
+    // The direct summary is the message head, so the renderer prints no summary line and draws
+    // the full message once, in a block after the fields: the summary text appears only where the
+    // message opens.
+    const fullMessage = `\n<message>\n${directBody}\n</message>`;
+    require(tsFirst.endsWith(fullMessage) && tsFirst.split(fullMessage).length === 2, "the renderer did not end the direct card with the full message in a block, once");
     require(tsFirst.split(directSummary).length === 2, "the renderer repeats the direct summary outside the message it opens");
 
     // What the session reads is one spelling, whichever word its sender wrote. The whole evidence
@@ -1527,11 +1529,15 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
       const card = cards.filter((text) => text.includes(item.payload_summary));
       require(card.length === 1, `rendered cards naming ${item.payload_summary} = ${card.length}, want 1`);
       require(card[0].split("\n").includes("  expects_reply: false"), `the card for ${item.payload_summary} carries no expects_reply: false line:\n${card[0]}`);
-      // And it carries no ready-made way to send something. A card that says the sender wants
-      // nothing back while printing a filled-in envoy_send under that line invites the reader to
-      // do what the line says is not wanted, which is the post this issue counts.
-      require(!card[0].includes("reply_with:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_with:\n${card[0]}`);
-      require(!card[0].includes("reply_role:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_role:\n${card[0]}`);
+    }
+    // A card from another session carries no ready-made reply, whatever its sender wants back:
+    // the reader replies from the from, role and id fields of the card. A filled-in envoy_send
+    // under expects_reply: false invited the reader to do what the line says is not wanted.
+    for (const item of directAll) {
+      const card = cards.filter((text) => text.includes(item.payload_summary));
+      require(card.length === 1, `rendered cards naming ${item.payload_summary} = ${card.length}, want 1`);
+      require(!card[0].includes("reply_with:"), `the card for ${item.payload_summary} prints a reply_with:\n${card[0]}`);
+      require(!card[0].includes("reply_role:"), `the card for ${item.payload_summary} prints a reply_role:\n${card[0]}`);
     }
     require(!renderedText.includes("expects_reply: none"), "a rendered card still spells wanting no reply as none");
 

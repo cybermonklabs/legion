@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // awaitingRoot is askRoot waiting on question ask-q, from the hand-back at since.
@@ -645,17 +645,12 @@ func TestAGateWaitIsDecidedOnceTheGateIsSwitchedOff(t *testing.T) {
 			if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval {
 				t.Fatalf("wait = %#v, want it answered", got.Awaiting)
 			}
-			task := resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec,
-				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, nil, false)
-			for _, want := range []string{"no approval of your primary document version 3 is asked for", "closed at version 3", "register it at its current version, which opens the gate"} {
-				if !strings.Contains(task, want) {
-					t.Errorf("resume task = %q, want it to name %q", task, want)
-				}
-			}
-			for _, not := range []string{"is registered", "register_gate", "request approval"} {
-				if strings.Contains(task, not) {
-					t.Errorf("resume task = %q, want no %q: the gate is closed, and no approval is asked for", task, not)
-				}
+			got2 := RootResume("LEGION-208", *got.Awaiting, record.DesignStepSpec,
+				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, []string{"artifact-208"}, nil, false)
+			readTaskOf(t, resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec,
+				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, []string{"artifact-208"}, nil, false))
+			if got2.Act != texts.ActApproved || got2.Version != 3 || got2.DocumentVersion != 3 || got2.GateOpen || got2.GateArmed {
+				t.Errorf("resume task = %+v, want the wait answered at version 3 with the gate closed and not armed", got2)
 			}
 		})
 	}
@@ -692,17 +687,10 @@ func TestAGateWaitTheGateOffAnsweredClaimsNoApprovalOnceTheGateIsOnAgain(t *test
 	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval {
 		t.Fatalf("wait = %#v, want it answered, as approved on the wire", got.Awaiting)
 	}
-	task := resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, nil, true)
-	for _, want := range []string{"design gate on LEGION-208 was off", "no person approved your primary document version 3 then;",
-		"Your primary document is not approved at version 3", "register that version with register_gate"} {
-		if !strings.Contains(task, want) {
-			t.Errorf("resume task = %q, want it to name %q", task, want)
-		}
-	}
-	for _, not := range []string{"was approved", "That approval no longer stands"} {
-		if strings.Contains(task, not) {
-			t.Errorf("resume task = %q, want no %q: no person approved the spec", task, not)
-		}
+	task := RootResume("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, []string{"artifact-208"}, nil, true)
+	readTaskOf(t, resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, []string{"artifact-208"}, nil, true))
+	if task.Act != texts.ActApproved || !task.GateOffAtAnswer || task.Version != 3 || task.DocumentVersion != 3 || task.GateOpen || !task.GateArmed {
+		t.Errorf("resume task = %+v, want the wait answered with the gate off at version 3, the gate armed and closed now: no person approved the spec", task)
 	}
 }
 

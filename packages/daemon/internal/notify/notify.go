@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/roleholder"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const requestTimeout = 10 * time.Second
@@ -167,10 +168,11 @@ func ControllerTopic(project string) string {
 
 // Publisher delivers a notice to one listener topic. Publish asks the listener to keep nothing
 // for a role no live session holds, and PublishKept asks it to keep the message for the role's
-// next holder and says whether it did.
+// next holder and says whether it did. urgency is the envelope's urgency, the one the list gives
+// the text's kind for its reader (texts.UrgencyOf), and "" for none.
 type Publisher interface {
-	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
-	PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (kept bool, err error)
+	Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) error
+	PublishKept(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) (kept bool, err error)
 }
 
 // HTTPPublisher calls the Envoy listener's publish route.
@@ -188,18 +190,24 @@ func New(baseURL, token string) *HTTPPublisher {
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
 //
+// It sends urgency as the envelope's urgency (listenerwire.MessageBody.Urgency), and sends none
+// where it is "": the listener refuses an empty urgency (validateMessageBody,
+// packages/envoy/cmd/listener/api.go), and an envelope with none is read as med. A low publish,
+// which carries no sender session, raises no wake report for a role no live session holds (the
+// listener's wakesItsRole).
+//
 // It sends keep: false, so the listener keeps nothing for a role no live session holds, and its
 // 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
 // listener to keep the message for the role's next live holder.
-func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) error {
+	_, err := p.publish(ctx, topic, message, payload, urgency, dedupeKey, false)
 	return err
 }
 
-// PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
-// live session holds the role for is kept on the role's kept lane for one hour and handed to the
-// role's next live holder. The listener says a sender tells its answers apart by status alone
-// (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), and this reads them so:
+// PublishKept posts the envelope as Publish does, at urgency, but with keep: true: a role message
+// that no live session holds the role for is kept on the role's kept lane for one hour and handed
+// to the role's next live holder. The listener says a sender tells its answers apart by status
+// alone (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), and this reads them so:
 //
 //   - 200 is a live holder that took the message: not kept, and no error.
 //   - 202 is a message the listener kept: kept, and no error, the listener being its keeper. The
@@ -216,15 +224,15 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 // with that copy and stores nothing new. Once the listener has handed the copy to the role's
 // holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
 // publish reaches its holder at least once, and can reach it twice.
-func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
-	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) (bool, error) {
+	return p.publish(ctx, topic, message, payload, urgency, dedupeKey, true)
 }
 
-// publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
-// request's keep field, and answers whether the listener kept the message rather than
+// publish is the one body of Publish and PublishKept: it posts the envelope at urgency with keep
+// as the request's keep field, and answers whether the listener kept the message rather than
 // delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
 // is not a 200 is the refusal it maps to (publishRefusal).
-func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string, keep bool) (bool, error) {
 	// The listener carries a payload as a JSON document in a string
 	// (listenerwire.MessageBody.Payload); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
@@ -232,11 +240,16 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	payloadText := string(encoded)
-	body, err := json.Marshal(listenerwire.PublishRequest{
+	publish := listenerwire.PublishRequest{
 		MessageBody: listenerwire.MessageBody{Message: message, Payload: &payloadText, DedupeKey: dedupeKey},
 		Topic:       topic,
 		Keep:        &keep,
-	})
+	}
+	if urgency != "" {
+		level := string(urgency)
+		publish.Urgency = &level
+	}
+	body, err := json.Marshal(publish)
 	if err != nil {
 		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}

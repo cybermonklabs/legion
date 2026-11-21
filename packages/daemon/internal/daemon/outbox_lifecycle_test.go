@@ -486,7 +486,7 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 		t.Helper()
 		count := 0
 		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, reason) {
+			if strings.Contains(prompt.Message, "\nphase: "+string(phase.Implementing)) && strings.Contains(prompt.Message, reason) {
 				count++
 			}
 		}
@@ -606,8 +606,8 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
 	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
 	// holding no task dies uncounted — which the record says in as many words.
-	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
+	died := record.Notice{Kind: "worker-died", Issue: "LEGION-208", Role: claim.RolePlanner, Phase: phase.Implementing,
+		Working: phase.Implementing,
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
 			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},

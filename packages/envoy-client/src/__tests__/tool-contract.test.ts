@@ -6,6 +6,13 @@ import {
 } from "@legion/contracts";
 import { z } from "zod";
 import {
+  GAP_NOTICE,
+  INBOUND_RESTORED_NOTICE,
+  INBOUND_UNAVAILABLE_NOTICE,
+} from "../consumer-delivery";
+import { MESSAGE_NOT_SHOWN_NOTICE } from "../delivery-ledger";
+import { TOPICS_REFUSED_NOTICE } from "../relay-registration";
+import {
   envoyToolSpecs,
   MessageMetadataSchema,
   messageMetadataShape,
@@ -185,6 +192,63 @@ describe("envoyToolSpecs", () => {
       "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
     );
     expect(publish?.description).toContain("a role topic names its holder instead");
+  });
+
+  // A card from another session carries no reply command: the reader replies from its from, its
+  // role or roles and its id, and its to says whether it was sent to the reader directly.
+  test("says how to reply to a card, and when a card reads to: you", () => {
+    const send = envoyToolSpecs.find((spec) => spec.name === "envoy_send")?.description;
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description;
+
+    expect(send).toContain("send to the session ID at the start of the card's from field");
+    expect(publish).toContain("publish to notifications.role.<role>");
+    for (const description of [send, publish]) {
+      expect(description).toContain("Set in_reply_to to the card's id.");
+    }
+    expect(send).toContain(
+      "A card reads to: you only when it was sent to you directly; a card that came through a role or a topic has no to field."
+    );
+  });
+
+  // Envoy's own notices hold only their facts (R2 of dispatch://INFRA-3686), so the one step
+  // each one's reader takes is in the description of the tool that reader holds, keyed by the kind
+  // the notice states as `notice: <kind>`, and the kind ends with that tool's name, since a host
+  // that mounts the tool as a device shows only the first line of its description. The session-id
+  // notice and the wake for unread cards are pi-envoy's (`src/envoy-notices.ts`), which this
+  // package cannot import.
+  test("gives the step of each of Envoy's own notices, keyed by the notice's kind", () => {
+    const steps = [
+      ["envoy_inbox", GAP_NOTICE.kind, "read the live source of each thing you wait on"],
+      [
+        "envoy_inbox",
+        INBOUND_UNAVAILABLE_NOTICE.kind,
+        "read live sources until a registration is accepted; what the stream stored arrives then",
+      ],
+      ["envoy_inbox", INBOUND_RESTORED_NOTICE.kind, "rely on Envoy messages again"],
+      [
+        "envoy_inbox",
+        TOPICS_REFUSED_NOTICE.kind,
+        "read the live source of each topic it names that you wait on; this session no longer follows those, and every other topic it follows is still delivered",
+      ],
+      ["envoy_inbox", "unread messages (envoy_inbox)", "read each card above the notice"],
+      [
+        "envoy_inbox",
+        MESSAGE_NOT_SHOWN_NOTICE.kind,
+        "read it now with the command its read_with names",
+      ],
+      [
+        "envoy_whoami",
+        "session id changed (envoy_whoami)",
+        "run envoy_whoami again and send the new id to your peers",
+      ],
+    ] as const;
+    for (const [tool, kind, step] of steps) {
+      expect(kind, tool).toEndWith(` (${tool})`);
+      const description = envoyToolSpecs.find((spec) => spec.name === tool)?.description ?? "";
+      const named = kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const sentence = new RegExp(`On notice: ${named}(?:, [^,.]+)?, ${step}\\.`);
+      expect(description, `${tool}: ${kind}`).toMatch(sentence);
+    }
   });
 });
 
@@ -521,8 +585,10 @@ describe("message metadata", () => {
     ]);
   });
 
-  // Nothing in Envoy orders, holds or delivers a message by its urgency: the renderers only show
-  // it. A sender told nothing more takes a "high" for a faster lane that does not exist.
+  // A host delivers a session's message whatever its urgency, and its card shows the urgency the
+  // sender set: only a `low` card of the Legion daemon or of a Dispatch event waits for the
+  // reader's next turn, and these tools send neither. A sender told nothing more takes a "high"
+  // for a faster lane that does not exist.
   test("tells a sender that urgency is for the reader and does not deliver a message sooner", () => {
     // The JSON schema is what a model is shown for the tool's arguments.
     const shown = JSON.stringify(z.toJSONSchema(MessageMetadataSchema));

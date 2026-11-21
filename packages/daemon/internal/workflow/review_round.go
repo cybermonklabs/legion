@@ -8,16 +8,16 @@ import (
 )
 
 // namingTheReviewRound is task as role is given it, standing in phase at with row its phases row.
-// For the reviewer it is task followed by the daemon's two sentences of the review round
-// (reviewround.Sentences), always its last two, in each phase. In reviewing they name the commit
-// the daemon last recorded for the reviewer (record.PhaseRow.ReviewedHead), or `none` where the row
-// holds none, as in the first round of a generation, and then the entry the row stands at while
-// the row holds the task of that entry (record.PhaseRow.EntryTask), or `none` where it holds no
-// entry's task, as a row a clear emptied (record.Store.ClearGeneration) does until the next entry
-// is raised. Outside reviewing they name `none` for both: a wake queued there is no task of the
-// round, and the outbox can deliver it after the issue is back in reviewing, since a wake names no
-// phase (wakeRow). The entry's sentence is the task's last, the shape the reviewer reads it in.
-// For any other role it is task as it is.
+// For the reviewer it is task followed by the daemon's two sentences of the review round on a
+// line of their own (reviewround.Ending), always its last two, in each phase. In reviewing they
+// name the commit the daemon last recorded for the reviewer (record.PhaseRow.ReviewedHead), or
+// `none` where the row holds none, as in the first round of a generation, and then the entry the
+// row stands at while the row holds the task of that entry (record.PhaseRow.EntryTask), or `none`
+// where it holds no entry's task, as a row a clear emptied (record.Store.ClearGeneration) does
+// until the next entry is raised. Outside reviewing they name `none` for both: a wake queued there
+// is no task of the round, and the outbox can deliver it after the issue is back in reviewing,
+// since a wake names no phase (wakeRow). The entry's sentence is the task's last, the shape the
+// reviewer reads it in. For any other role it is task as it is.
 //
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
 // stand where one of the daemon's sentences stands: a retry's reason or a title that ends with the
@@ -44,11 +44,11 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 		return task
 	}
 	if at != phase.Reviewing {
-		return task + reviewround.Sentences("", 0)
+		return reviewround.Ending(task, "", 0)
 	}
 	var entry int64
 	if row.EntryTask != "" {
 		entry = row.Entry
 	}
-	return task + reviewround.Sentences(row.ReviewedHead, entry)
+	return reviewround.Ending(task, row.ReviewedHead, entry)
 }

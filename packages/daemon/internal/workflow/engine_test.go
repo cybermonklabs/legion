@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 type admissionStub struct{}
@@ -333,19 +335,22 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	if len(messages) != 1 || messages[0] != want || blocked != 1 {
 		t.Fatalf("the cap posted %q and %d pr-blocked notices, want one message %q and one notice", messages, blocked, want)
 	}
-	var reason string
-	if err := pool.QueryRow(ctx, "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").Scan(&reason); err != nil {
+	var cap, counted string
+	var conflicts *string
+	if err := pool.QueryRow(ctx, "select payload->>'cap', payload->>'counted', payload->>'conflict_rounds' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").
+		Scan(&cap, &counted, &conflicts); err != nil {
 		t.Fatalf("read the architect's pr-blocked notice: %v", err)
 	}
-	if reason != want {
-		t.Fatalf("the pr-blocked notice reads %q, want %q: the architect reads the same two numbers", reason, want)
+	if cap != "3" || counted != "3" || conflicts != nil && *conflicts != "0" {
+		t.Fatalf("the pr-blocked notice names cap %s, counted %s, conflict rounds %v; want 3, 3 and none: the architect reads the same numbers", cap, counted, conflicts)
 	}
 }
 
-// A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
-// bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
-// from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// A reviewer started on the tester's pass is told the tester's verdict as the tester's
+// (tester_verdict), never as a bare verdict it could take for a field of its own completion, which
+// the daemon refuses from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the
+// Dispatch record it reads with `dispatch handoff-read`, by its phase word and version, with no
+// commit, since this completion of the tester's names none.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -356,13 +361,14 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
-	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
-		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
-		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
+	task := readTaskOf(t, startTask(t, pool, claim.RoleReviewer))
+	want := map[string]string{"kind": string(texts.PhaseAssignment), "issue": "LEGION-208", "title": "root", "phase": string(phase.Reviewing),
+		"handoff_phase": "test", "handoff_version": "3", "tester_verdict": "pass", "pull_request": "sjawhar/legion#42"}
+	if !reflect.DeepEqual(task.fields, want) || len(task.blocks) != 0 {
+		t.Fatalf("reviewer task fields %v and blocks %+v, want %v and no block", task.fields, task.blocks, want)
 	}
-	if strings.Contains(task, "Handoff verdict") {
-		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
+	if round := reviewRoundLine("none", phaseRowOf(t, pool, claim.RoleReviewer).Entry); task.round != round {
+		t.Fatalf("reviewer task ends with %q, want the daemon's two sentences of its round on the last line, %q", task.round, round)
 	}
 }
 
@@ -389,11 +395,17 @@ func reviewerPrompt(t *testing.T) string {
 	return prompt.String()
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
+// The reviewer's prompt names the field its task's verdict is in (texts.PhaseAssignmentRecord's
+// TesterVerdict, read from its json tag) as the tester's result and says its own completion
+// carries none, so a rename on either side alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	field, ok := reflect.TypeFor[texts.PhaseAssignmentRecord]().FieldByName("TesterVerdict")
+	if !ok {
+		t.Fatal("the phase-assignment record has no TesterVerdict field")
+	}
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 	prompt := reviewerPrompt(t)
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
+	for _, want := range []string{"`" + name + "`", "`VERDICT_ROLE_FORBIDDEN`"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
@@ -457,6 +469,40 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 	}
 	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" || notice["verdict"] != "pass" {
 		t.Fatalf("phase-finished notice = %s, want the tester's summary and its verdict pass", payload)
+	}
+}
+
+// R1: a worker's summary reaches the architect cut to its first 1,000 UTF-16 units, the count of
+// the rest in the notice's words object, by the worker at its completion's time, beside the
+// handoff's reference (its phase word and version), which holds the whole of what the worker
+// wrote.
+func TestAPhaseFinishedSummaryIsCutAtOneThousandCharacters(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	summary := strings.Repeat("s", 3000)
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-passed", intake.HandoffComplete{
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: summary, Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 4,
+	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact tester completion: %v", err)
+	}
+	var finished []record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice := asNotice(payload); notice.Kind == texts.PhaseFinished {
+			finished = append(finished, notice)
+		}
+	}
+	if len(finished) != 1 {
+		t.Fatalf("phase-finished notices %+v, want one", finished)
+	}
+	notice := finished[0]
+	t.Logf("notice: summary of %d bytes, words %+v, handoff %s version %d", len(notice.Summary), notice.Words, notice.HandoffPhase, notice.HandoffVersion)
+	words := notice.Words["summary"]
+	if notice.Summary != summary[:1000] || words.Rest != 2000 || words.By != string(claim.RoleTester) ||
+		notice.HandoffPhase != "test" || notice.HandoffVersion != 4 {
+		t.Fatalf("the notice carries %d bytes of summary with %+v and handoff %s version %d, want the first 1000, rest 2000 by the tester and the test handoff at version 4",
+			len(notice.Summary), words, notice.HandoffPhase, notice.HandoffVersion)
 	}
 }
 
@@ -707,7 +753,7 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 		if err := rows.Scan(&task); err != nil {
 			t.Fatalf("scan start task: %v", err)
 		}
-		if !strings.Contains(task, "Phase: "+string(want)+".") {
+		if !hasLines(task, "phase: "+string(want)) {
 			t.Fatalf("start task %q does not name phase %s", task, want)
 		}
 	}
@@ -1013,11 +1059,12 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "merging-reviewing", intake.BackwardMove{Issue: "LEGION-208", Requester: phase.RoleFor(phase.Merging), To: phase.Reviewing, Reason: reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact backward: %v", err)
 	}
-	task := startTask(t, pool, phase.RoleFor(phase.Reviewing))
-	for _, want := range []string{"Phase: reviewing.", "Pull request: #42.", "Reason: " + reason + "."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("task = %q, want it to carry %q", task, want)
-		}
+	read := readTaskOf(t, startTask(t, pool, phase.RoleFor(phase.Reviewing)))
+	if read.fields["phase"] != string(phase.Reviewing) || read.fields["pull_request"] != "sjawhar/legion#42" || read.fields["moved_back_from"] != string(phase.Merging) {
+		t.Fatalf("task names %v, want reviewing moved back from merging on the pull request", read.fields)
+	}
+	if block := read.block(t, "reason"); block.text != reason || block.attrs["by"] != string(claim.RoleMerger) {
+		t.Fatalf("task carries the reason block %+v, want the merger's words", block)
 	}
 }
 
@@ -1062,9 +1109,11 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode notice %s: %v", payload, err)
 	}
-	want := "moved back to implementing by the tester: the harness needs a fixture the plan does not name"
-	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["reason"] != want {
-		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing reading %q", payload, want)
+	words, _ := notice["words"].(map[string]any)
+	by, _ := words["reason"].(map[string]any)
+	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["to"] != "implementing" ||
+		notice["reason"] != "the harness needs a fixture the plan does not name" || by["by"] != "tester" {
+		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing to implementing, carrying its words by the tester", payload)
 	}
 	if notice["summary"] != nil || notice["verdict"] != nil {
 		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)

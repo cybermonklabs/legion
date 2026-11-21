@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -124,11 +126,12 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	if got := publisher.topics(); !slices.Equal(got, []string{topic}) {
 		t.Fatalf("the note was published to %q, want once to %q alone", got, topic)
 	}
-	message := publisher.publishes()[0].message
-	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
-		if !strings.Contains(message, part) {
-			t.Fatalf("the note %q does not name %q", message, part)
-		}
+	published := publisher.publishes()[0]
+	kill := memoryKillOf(t, published)
+	if published.message != "memory-kill on "+memoryGuardIssue || kill.Kind != texts.MemoryKill || kill.Issue != memoryGuardIssue ||
+		kill.Cause != texts.KillGuard || kill.Process != "python3" || kill.PID != 4242 ||
+		kill.Size != "812.40 MiB" || kill.PodMemory != "3.13 GiB" || kill.Limit != "4.00 GiB" {
+		t.Fatalf("the note %q carries %+v, want the guard's kill of python3 (pid 4242) at 812.40 MiB, the pod at 3.13 GiB of 4.00 GiB", published.message, kill)
 	}
 
 	// The guard's next kill is another fact, and another note.
@@ -166,11 +169,23 @@ func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *t
 	if err := runner.execute(ctx, rows[0]); err != nil {
 		t.Fatalf("run the note's row: %v", err)
 	}
-	message := publisher.publishes()[0].message
-	if !strings.HasPrefix(message, "The pod's kernel stopped one of your processes because the pod ran out of memory: `python3` (pid 4242)") ||
-		strings.Contains(message, "SIGKILL") {
-		t.Fatalf("the note is %q, want the kernel's note of `python3` (pid 4242), not the guard's", message)
+	if kill := memoryKillOf(t, publisher.publishes()[0]); kill.Cause != texts.KillKernel || kill.Process != "python3" || kill.PID != 4242 {
+		t.Fatalf("the note carries %+v, want the kernel's kill of python3 (pid 4242), not the guard's", kill)
 	}
+}
+
+// memoryKillOf is the memory-kill record a role message's publish carried.
+func memoryKillOf(t *testing.T, published outboxPublish) texts.MemoryKillRecord {
+	t.Helper()
+	raw, err := json.Marshal(published.payload)
+	if err != nil {
+		t.Fatalf("encode the published payload %#v: %v", published.payload, err)
+	}
+	var kill texts.MemoryKillRecord
+	if err := json.Unmarshal(raw, &kill); err != nil {
+		t.Fatalf("decode the published memory-kill %s: %v", raw, err)
+	}
+	return kill
 }
 
 // A holder the boot never bound has no fact path, and says so to the launcher session, which logs

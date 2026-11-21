@@ -3,7 +3,6 @@ package admit
 import (
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -65,8 +64,8 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", writes, want)
 		}
 		if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing ||
-			!strings.Contains(starts[0].Task, "Reason: the issue was set to todo while its phase was held.") {
-			t.Fatalf("start rows = %+v, want one implementer start of implementing whose task carries the daemon's own reason", starts)
+			!hasLines(starts[0].Task, "phase: "+string(phase.Implementing), "retried: "+workflow.RetriedByTodo) {
+			t.Fatalf("start rows = %+v, want one implementer start of implementing whose task says a todo retried it", starts)
 		}
 		assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	})

@@ -389,7 +389,9 @@ func (r *mainPathRig) prompts() []fake.Prompt { return r.conn.Prompts() }
 // phase, which is the only delivery Deps.RootHears is asked about.
 type mainPath struct {
 	name string
-	// run drives the path and returns the text the one prompt it causes must carry.
+	// run drives the path and returns the text the one prompt it causes must carry: the reference
+	// of the decision a start names, or the ask field of the resume task (the ask whose answer or
+	// reply the resume is of).
 	run func(r *mainPathRig) string
 }
 
@@ -465,7 +467,7 @@ func answeredResumePath(r *mainPathRig) string {
 		r.t.Fatalf("the resumed root = %+v, want it admitted and running again on the resume's handout", got)
 	}
 	r.runStarts()
-	return fmt.Sprintf("A person answered your ask %s on %s", mainPathAsk, r.key)
+	return `ask: "dispatch://` + r.key + "/ask/" + mainPathAsk + `"`
 }
 
 // toldInPlacePath: the root runs, holding its slot, with a child of its tree in a phase, which is
@@ -503,7 +505,7 @@ func toldInPlacePath(r *mainPathRig) string {
 		r.t.Fatalf("the root told in place = %+v, want it admitted, holding its slot", got)
 	}
 	r.runStarts()
-	return fmt.Sprintf("A person answered or replied in the thread of ask %s on %s", "ask-a", r.key)
+	return `ask: "dispatch://` + r.key + `/ask/ask-a"`
 }
 
 // A task main's own code gives a tree-root architect — admission's fresh start for a root that
@@ -606,7 +608,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		rig.runStarts()
 		prompts := rig.prompts()
 		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
-			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
+			!hasTaskLines(prompts[0].Message, workflow.ArchitectFreshTreeLabel, "generation: 2") || strings.Contains(prompts[0].Message, ref) {
 			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
 				prompts, pending.ID)
 		}
@@ -638,7 +640,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				t.Fatalf("decode the catch-up %d of %s: %v", row.ID, rig.key, err)
 			}
 			notice, ok := payload.(record.Notice)
-			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref))
+			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(catchUpKeptRefs(notice.CatchUp), ref))
 		}
 		if !named {
 			t.Fatalf("no catch-up of %s claims and names %s, want the one the re-admission's start wrote", rig.key, ref)

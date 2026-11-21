@@ -491,18 +491,21 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 	return requested
 }
 
-// senderStamp is the sender a send or a publish carries: the session, the machine and directory it
-// runs in (its interest record, or its session entry where that record cannot be read), the roles
-// whose claims name it (store.Registry.RolesHeldBy), and its title (its session entry). It only
-// enriches the envelope, so no read it makes may cost the message. The interest record is read
-// from the cache, and a miss - a sender that subscribed to nothing, or any sender while the cache
-// refills after a reconnect - is read through to the bucket within senderStampReadTimeout of ctx,
-// the route's own (store.Registry.Get bounds that read alone). A read that does not answer leaves
-// the stamp with what is already known, the session id and the title, machine and directory of
-// the entry the session cache holds, and leaves the rest of the budget to the publish that
-// follows, which meets the same silent bus itself and is answered as the named 503. The roles come
-// from the registry's watched view of the claims, with no bucket call, and a view that is not
-// complete (store.ErrRoleViewNotReady) leaves them out rather than refusing the send.
+// senderStamp is the sender a send or a publish carries, nil for a message with no sender: the
+// session that sends it (messageSender: the session a broker token proved, else the body's
+// source_session), the machine and directory it runs in (its interest record, or its session
+// entry where that record cannot be read), the roles whose claims name it
+// (store.Registry.RolesHeldBy), and its title (its session entry). It only enriches the envelope,
+// so no read it makes may cost the message, and it is how a role's kept copy still tells a
+// session's message from the daemon's (wakesItsRole). The interest record is read from the cache,
+// and a miss - a sender that subscribed to nothing, or any sender while the cache refills after a
+// reconnect - is read through to the bucket within senderStampReadTimeout of ctx, the route's own
+// (store.Registry.Get bounds that read alone). A read that does not answer leaves the stamp with
+// what is already known, the session id and the title, machine and directory of the entry the
+// session cache holds, and leaves the rest of the budget to the publish that follows, which meets
+// the same silent bus itself and is answered as the named 503. The roles come from the registry's
+// watched view of the claims, with no bucket call, and a view that is not complete
+// (store.ErrRoleViewNotReady) leaves them out rather than refusing the send.
 //
 // The machine and directory are the interest record's wherever its read answers it, and the
 // session entry's where that read finds no record, does not answer, or answers a record this build
@@ -528,20 +531,20 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // same drop point (session.SessionRegistry.Get), so a row this cache calls expired is one the
 // bucket no longer holds. A registration that carries no title is a hit with an empty value rather
 // than a miss, so it reaches the bucket not at all.
-func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
-	if sourceSession == "" {
+func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, senderSession string) *contracts.EnvelopeSender {
+	if senderSession == "" {
 		return nil
 	}
-	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
+	sender := &contracts.EnvelopeSender{SessionID: senderSession}
 	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
 	defer cancel()
-	interest, interestErr := registry.Get(readCtx, sourceSession)
-	if held, err := registry.RolesHeldBy(sourceSession); err == nil {
+	interest, interestErr := registry.Get(readCtx, senderSession)
+	if held, err := registry.RolesHeldBy(senderSession); err == nil {
 		sender.Roles = held
 	}
-	entry, entryErr := sessions.Get(sourceSession)
+	entry, entryErr := sessions.Get(senderSession)
 	if errors.Is(entryErr, nats.ErrKeyNotFound) {
-		entry, entryErr = sessions.Refresh(readCtx, sourceSession)
+		entry, entryErr = sessions.Refresh(readCtx, senderSession)
 	}
 	if entryErr == nil {
 		sender.Title = entry.Title
@@ -837,7 +840,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		} else {
 			connected <- hasEntry
 		}
-		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+		item.Sender = senderStamp(ctx, d.registry, d.sessions, messageSender(r, item.SourceSession))
 		state, lastSeen := sessionStateConnected, target.UpdatedAt
 		if !hasEntry {
 			lastSeen = known.LastSeen
@@ -1096,6 +1099,14 @@ const publishDedupePrefix = "publish."
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
 // keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+//
+// For a role with no live holder, a message at urgency low with no sender raises no wake report
+// for the role, on the 202 and on the 404 alike, and every other message raises one
+// (roleSend.noHolder, wakesItsRole). Such a message is a text of the Legion daemon's that its
+// reader acts on at its next turn: it names no source_session, and the shared listener bearer it
+// is published under proves no session. The session a broker token proved is the sender of a
+// message whose body names none, and the envelope's sender stamp names it (messageSender), so such
+// a message raises the report as one naming that session does.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
@@ -1220,7 +1231,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, messageSender(r, item.SourceSession), expectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -1233,7 +1244,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// spending the caller's attempt.
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
-		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+		item.Sender = senderStamp(ctx, d.registry, d.sessions, messageSender(r, item.SourceSession))
 		ack, err := d.client.PublishAckWithin(ctx, item)
 		charge.published(ack, err)
 		if err != nil {

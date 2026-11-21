@@ -10,29 +10,40 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The architect-stalled wake is a controller notice and no architect's. The architect is the
 // role a notice would otherwise go to, and every arm of the wake is a reading that it did not
 // take its work, is not there, or has not moved, so there is nobody inside the tree to tell. The
-// validation takes it in a ControllerNotice and refuses it in a Notice, which is what that split
-// of the two notice-kind lists means.
+// list marks the kind a controller notice, and the validation takes it in a ControllerNotice and
+// refuses it in a Notice. The wake names its arm as a field; a row an older daemon queued names
+// it in its reason, and still validates.
 func TestTheArchitectStalledWakeIsOneOfTheControllerOnlyNoticeKinds(t *testing.T) {
-	if !controllerOnlyNoticeKind(ArchitectStalledNotice) {
-		t.Fatalf("the %s kind is not controller-only, so a notice of it would be queued to an architect's topic", ArchitectStalledNotice)
-	}
-	if validNoticeKind(ArchitectStalledNotice) {
-		t.Fatalf("the %s kind is on the architect's own list, so an architect would be told a wake meant for the controller", ArchitectStalledNotice)
+	if !texts.IsControllerNotice(ArchitectStalledNotice) {
+		t.Fatalf("the list does not mark the %s kind a controller notice, so a notice of it would be queued to an architect's topic", ArchitectStalledNotice)
 	}
 	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
-	reason := ArchitectTookNothing.Words() + ": the task of phase entry 3 was first queued to the architect's claim of LEGION-208"
-	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err != nil {
+	wake, err := NoticeOf(texts.ArchitectStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ArchitectStalled, Issue: "LEGION-208"},
+		Role: claim.RoleArchitect, Arm: string(ArchitectTookNothing), Phase: "implementing", Entry: 3, QueuedAt: at.Add(-time.Hour), Bound: "30m0s"})
+	if err != nil {
+		t.Fatalf("the wake's record does not convert to a notice: %v", err)
+	}
+	if _, err := NewOutboxRow("LEGION-208", ControllerNotice(wake), at); err != nil {
 		t.Fatalf("the wake the daemon writes is refused: %v", err)
 	}
-	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, at); err == nil {
-		t.Fatalf("a wake carrying no reason is taken, and a controller reading it would learn nothing of which arm raised it")
+	older := ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
+		Reason: ArchitectTookNothing.Words() + ": the task of phase entry 3 was first queued to the architect's claim of LEGION-208"}
+	if _, err := NewOutboxRow("LEGION-208", older, at); err != nil {
+		t.Fatalf("the wake an older daemon queued is refused: %v", err)
 	}
-	if _, err := NewOutboxRow("LEGION-208", Notice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err == nil {
+	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, at); err == nil {
+		t.Fatalf("a wake naming no arm is taken, and a controller reading it would learn nothing of which arm raised it")
+	}
+	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Arm: "took-everything"}, at); err == nil {
+		t.Fatalf("a wake naming an arm the wake has not is taken")
+	}
+	if _, err := NewOutboxRow("LEGION-208", wake, at); err == nil {
 		t.Fatalf("the wake is taken as an architect's notice, which is the one reader that cannot act on it")
 	}
 }

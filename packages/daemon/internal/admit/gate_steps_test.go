@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The documents of the steps these tests gate: artifact-root is the root's primary document,
@@ -209,11 +210,12 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 
 	readmitRoot(t, pool, admission)
 
-	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
-		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
+	kept := workflow.KeptDecisionsTask("LEGION-ROOT", record.KeptDecisions{
+		KeptApproval: record.KeptApproval{Step: record.DesignStepDecisions, Approved: 2, Latest: 3}})
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
-		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)
+	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", kept) ||
+		!hasLines(starts[0].Task, "kind: kept-decisions", "approval_step: decisions", "approved: 2", "latest: 3") {
+		t.Fatalf("architect starts %#v, want one led by the kept approval of the decisions document, version 2 of 3: %q", starts, kept)
 	}
 	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepDecisions || kept.Approved != 2 || kept.Latest != 3 {
 		t.Fatalf("the start's kept record %#v, want the decisions step's own pair", kept)

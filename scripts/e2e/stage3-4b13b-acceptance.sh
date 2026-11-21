@@ -519,7 +519,20 @@ reviewer_approved() {
 # never main), testers, reviewers, retro, and a hold for each merger until its merge scenario is set
 # up. It also retargets any proof pull request whose base is not the scratch base, and logs it.
 # Planners and architects are instructed by the script, where each scenario needs them.
-assigned_in() { jq -e -s --arg a "Issue: $2. Phase: $3." 'any(.[]; .type == "message" and .message.role == "user" and ([.message.content[]? | .text? // empty] | join(" ") | contains($a)))' "$1" >/dev/null; }
+# assigned_in FILE ISSUE PHASE: a user message of the session FILE holds the daemon's task of ISSUE's
+# PHASE. The task is a record that opens with its kind and issue on two lines of their own,
+# `kind: phase-assignment` (or `kind: phase-resume`) and `issue: <ISSUE>`, then its `title` and
+# `phase: <PHASE>` lines; a note the delivery puts in front of the task is a record of another kind.
+assigned_in() {
+  jq -e -s --arg issue "$2" --arg phase "$3" '
+    def task_of:
+      split("\n") as $l | any(range(0; $l | length);
+        ($l[.] | IN("kind: phase-assignment", "kind: phase-resume"))
+          and $l[. + 1] == "issue: " + $issue and $l[. + 3] == "phase: " + $phase);
+    any(.[]; .type == "message" and .message.role == "user"
+      and (.message.content | if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end
+        | task_of))' "$1" >/dev/null
+}
 instruction_for() {
   local issue=$1 role=$2 phase=$3
   case "$role:$phase" in
@@ -1046,7 +1059,9 @@ printf '%s\n' "$tester_own" >"$evidence/tester-own-summary-head-$root1.txt"
 instructed "$root1" tester testing || note "$root1's tester was not instructed before it completed; its summary is its own"
 [ -n "$planner_line" ] || soft "no planning phase-finished notice reached $root1's architect"
 grep -qF 'verdict:' <<<"$planner_line" && soft "the planner's phase-finished notice carries a verdict"
-note "tester notice: $({ grep -o 'summary: \\"TESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / $(grep -o 'verdict: [a-z]*' <<<"$tester_line" || true)"
+# The tester's summary is the worker's own words, so the card carries them in a `<summary …>` block
+# after its fields; the session line holds the card as a JSON string, where each line break is `\n`.
+note "tester notice: $({ grep -o '<summary[^>]*>\\nTESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / $(grep -o 'verdict: [a-z]*' <<<"$tester_line" || true)"
 note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$planner_line" || true)"
 pass
 

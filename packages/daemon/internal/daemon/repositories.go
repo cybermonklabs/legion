@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -1471,8 +1472,8 @@ type letGo struct {
 }
 
 // letGoWhy is why a pass let a repository left unread go, which is the first thing its architects
-// are told (tellLetGoWaits): each kind has its own opening, so the notice says what is true of the
-// repository it names.
+// are told (tellLetGoWaits): each kind has its own stall word (texts.StallLetGoNoTodo,
+// texts.StallLetGoAnswered), so the notice says what is true of the repository it names.
 type letGoWhy uint8
 
 const (
@@ -1741,50 +1742,53 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) bool {
 }
 
 // tellReleaseWaits tells the architects of the children of waits the recovery of repos left
-// unrecorded what to release again, each child with whether its parent is recorded now: one
-// child-release-stalled notice for each issue a child's notice is queued on, which is its parent
-// when the record holds that parent in the child's tree, and else the tree root. The owner walk
-// takes a notice on the parent to the architect that owns the parent, which is the architect that
-// releases the parent's children; a parent the record does not hold, or holds in another tree, has
-// no architect of this tree, so the child is the tree's architect's to release.
+// unrecorded what to release again, each child with its parent and whether that parent is recorded
+// now: one child-release-stalled notice for each issue a child's notice is queued on, which is its
+// parent when the record holds that parent in the child's tree, and else the tree root
+// (tellWaitingArchitects). The owner walk takes a notice on the parent to the architect that owns
+// the parent, which is the architect that releases the parent's children; a parent the record
+// does not hold, or holds in another tree, has no architect of this tree, so the child is the
+// tree's architect's to release.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
-	return w.tellWaitingArchitects(ctx, []waitTelling{{waits: waits, why: fmt.Sprintf(
-		"GitHub answered for %s again (both role Apps' installation reads, and the read of its name and default branch), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded",
-		strings.Join(repos, ", "))}},
-		func(child string, wait releaseWait, parentRecorded bool) string {
-			if !parentRecorded {
-				return fmt.Sprintf("%s (%s)", child, releaseParentFirst(child, wait))
+	return w.tellWaitingArchitects(ctx, []waitTelling{{waits: waits,
+		notice: func(issue string, children []waitingChild) texts.ChildReleaseStalledRecord {
+			unrecorded := make([]texts.UnrecordedChild, 0, len(children))
+			for _, c := range children {
+				unrecorded = append(unrecorded, texts.UnrecordedChild{Child: c.child, Parent: c.wait.parent, ParentRecorded: c.parentRecorded})
 			}
-			return fmt.Sprintf("%s (its parent %s is recorded now: release %s again)", child, wait.parent, child)
-		})
+			return recoveredUnrecordedNotice(issue, repos, unrecorded)
+		}}})
 }
 
-// tellLetGoWaits tells the architects, in the same notices tellReleaseWaits writes, which children a
-// release_children left to the recovery of the repositories a pass has just let go
-// (settleRecovery), so that no recovery will ever record them. The notice opens with why the
-// repository was let go, since that is what decides what is true of it (letGoWhy): no todo issue
-// labelled for Legion or under a parent names it now, the only issues whose preparation reads
-// GitHub for such a repository, or such an issue does and an earlier answer of GitHub's answers
-// for it without that read. Repositories let go for the two are told in two
-// notices, each with its own opening, written in one transaction.
+// tellLetGoWaits tells the architects, in notices of the kind tellReleaseWaits writes, which
+// children a release_children left to the recovery of the repositories a pass has just let go
+// (settleRecovery), so that no recovery will ever record them. The notice's stall word says why
+// the repository was let go, since that is what decides what is true of it (letGoWhy): no todo
+// issue labelled for Legion or under a parent names it now, the only issues whose preparation
+// reads GitHub for such a repository (texts.StallLetGoNoTodo), or such an issue does and an
+// earlier answer of GitHub's answers for it without that read (texts.StallLetGoAnswered).
+// Repositories let go for the two are told in two notices, each with its own stall, written in
+// one transaction.
 //
 // Each child is named with the status listing, Dispatch's own project listing of this pass, gives
 // it, since that status is why nothing records it: a child a person moved out of todo is recorded
 // again only once it is todo again. A child whose parent the workflow does not record is named
-// with that parent instead, as tellReleaseWaits names it: a release_children files a child under
-// its parent's unread repository when the parent is what waits (enterOnUnreadRepository), and the
+// with that parent, as tellReleaseWaits names it: a release_children files a child under its
+// parent's unread repository when the parent is what waits (enterOnUnreadRepository), and the
 // child, todo all along, is recorded only under a recorded parent, so the step is the parent's
-// release first. A child no wait is left for is told nothing, and so is a repository whose waits
-// are empty.
+// release first. Each child is named with the repository its wait was filed under. A child no
+// wait is left for is told nothing, and so is a repository whose waits are empty.
 //
 // It is the pair of tellReleaseWaits and not a second telling of its kind: the two share one
 // body, which decides which children are still unrecorded, reads each one's parent and writes one
-// notice per issue a child's notice is queued on, and differ in the reason's opening and in the line each child is named on
-// alone. The architect hears child-release-stalled either way, so no reader of the notices learns
-// a new kind.
+// notice per issue a child's notice is queued on, and differ in the stall and in the facts each
+// child is named with alone. The architect hears child-release-stalled either way, so no reader
+// of the notices learns a new kind.
 func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, listing []dispatch.IssueSummary) error {
 	repos := map[letGoWhy][]string{}
 	waits := map[letGoWhy]map[string]releaseWait{}
+	// childRepo is the repository each child's wait was filed under.
+	childRepo := map[string]string{}
 	for _, gone := range dropped {
 		if len(gone.waits) == 0 {
 			continue
@@ -1794,6 +1798,9 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 			waits[gone.why] = map[string]releaseWait{}
 		}
 		maps.Copy(waits[gone.why], gone.waits)
+		for child := range gone.waits {
+			childRepo[child] = gone.repo
+		}
 	}
 	if len(waits) == 0 {
 		return nil
@@ -1802,56 +1809,62 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 	for _, summary := range listing {
 		listed[summary.Key] = summary.Status
 	}
-	openings := map[letGoWhy]string{
-		letGoNoTodo:            "the daemon no longer waits for GitHub to answer for %s, because no todo issue labelled for Legion or under a parent names it now; these children a release_children released while it was unread were never recorded",
-		letGoAnsweredElsewhere: "the daemon no longer waits for GitHub to answer for %s, because a read GitHub answered for it at another issue's preparation answers for it now; these children a release_children released while it was unread were never recorded",
-	}
+	stalls := map[letGoWhy]string{letGoNoTodo: texts.StallLetGoNoTodo, letGoAnsweredElsewhere: texts.StallLetGoAnswered}
 	var tellings []waitTelling
 	for _, why := range []letGoWhy{letGoNoTodo, letGoAnsweredElsewhere} {
-		if len(waits[why]) != 0 {
-			tellings = append(tellings, waitTelling{waits: waits[why], why: fmt.Sprintf(openings[why], strings.Join(repos[why], ", "))})
+		if len(waits[why]) == 0 {
+			continue
 		}
+		stall, gone := stalls[why], repos[why]
+		tellings = append(tellings, waitTelling{waits: waits[why], notice: func(issue string, children []waitingChild) texts.ChildReleaseStalledRecord {
+			letGo := make([]texts.LetGoChild, 0, len(children))
+			for _, c := range children {
+				letGo = append(letGo, texts.LetGoChild{Child: c.child, Parent: c.wait.parent, ParentRecorded: c.parentRecorded,
+					Status: listed[c.child], Repo: childRepo[c.child]})
+			}
+			return letGoNotice(issue, stall, gone, letGo)
+		}})
 	}
-	return w.tellWaitingArchitects(ctx, tellings, func(child string, wait releaseWait, parentRecorded bool) string {
-		status := listed[child]
-		if status == "" {
-			status = "no longer listed"
-		}
-		if !parentRecorded {
-			return fmt.Sprintf("%s (%s in Dispatch now, and %s)", child, status, releaseParentFirst(child, wait))
-		}
-		return fmt.Sprintf("%s (%s in Dispatch now: release it again once it is todo)", child, status)
-	})
+	return w.tellWaitingArchitects(ctx, tellings)
 }
 
-// releaseParentFirst is the step for a child whose parent the workflow does not record, which
-// both tellings name it with: the daemon records a child only under a recorded parent.
-func releaseParentFirst(child string, wait releaseWait) string {
-	return fmt.Sprintf("its parent %s is not recorded: release %s first, then %s", wait.parent, wait.parent, child)
+// letGoNotice is the child-release-stalled notice on issue that the letting go of repos, for the
+// reason stall names (texts.StallLetGoNoTodo, texts.StallLetGoAnswered), leaves each child of
+// letGo to, which no recovery will record.
+func letGoNotice(issue, stall string, repos []string, letGo []texts.LetGoChild) texts.ChildReleaseStalledRecord {
+	return texts.ChildReleaseStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildReleaseStalled, Issue: issue},
+		Stall: stall, Repos: repos, LetGo: letGo}
 }
 
-// waitTelling is the children of waits, told in notices that open with why.
+// waitingChild is one child of a telling's waits the workflow still does not record, with its wait
+// and whether the workflow records its parent now (tellWaitingArchitects).
+type waitingChild struct {
+	child          string
+	wait           releaseWait
+	parentRecorded bool
+}
+
+// waitTelling is the children of waits, told in the child-release-stalled notices notice builds:
+// one for each issue a child's notice is queued on, naming the children queued there.
 type waitTelling struct {
-	why   string
-	waits map[string]releaseWait
+	waits  map[string]releaseWait
+	notice func(issue string, children []waitingChild) texts.ChildReleaseStalledRecord
 }
 
 // tellWaitingArchitects is the body both tellings share: for each of tellings, one
 // child-release-stalled notice for each issue a child's notice is queued on, naming every child of
-// its waits the workflow still does not record, as its why opens the notice and line names each
-// child, with whether the workflow records that child's parent, read here once for both callers.
-// A child's notice is queued on its parent when the record holds that parent in the child's tree,
-// and else on the tree root, so the owner walk takes it to the architect that releases the
-// parent's children, or to the tree's architect where no architect of the tree owns the parent
-// (tellReleaseWaits). A child recorded since is told nothing; its record's own notices carry it. Every notice is written in one transaction, so a
-// failure tells no architect anything and the caller's put-back leaves nothing half told, and
-// nothing is written where every child is recorded.
-func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []waitTelling,
-	line func(child string, wait releaseWait, parentRecorded bool) string) error {
-	type notice struct{ issue, reason string }
-	var notices []notice
+// its waits the workflow still does not record, as the telling's notice builds it, with whether
+// the workflow records that child's parent, read here once for both callers. A child's notice is
+// queued on its parent when the record holds that parent in the child's tree, and else on the
+// tree root, so the owner walk takes it to the architect that releases the parent's children, or
+// to the tree's architect where no architect of the tree owns the parent (tellReleaseWaits). A
+// child recorded since is told nothing; its record's own notices carry it. Every notice is
+// written in one transaction, so a failure tells no architect anything and the caller's put-back
+// leaves nothing half told, and nothing is written where every child is recorded.
+func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []waitTelling) error {
+	var notices []texts.ChildReleaseStalledRecord
 	for _, telling := range tellings {
-		byIssue := map[string][]string{}
+		byIssue := map[string][]waitingChild{}
 		for _, child := range slices.Sorted(maps.Keys(telling.waits)) {
 			wait := telling.waits[child]
 			recorded, err := w.recordOf(ctx, child)
@@ -1869,10 +1882,10 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 			if parent != nil && parent.Tree == wait.tree {
 				on = parent.Key
 			}
-			byIssue[on] = append(byIssue[on], line(child, wait, parent != nil))
+			byIssue[on] = append(byIssue[on], waitingChild{child: child, wait: wait, parentRecorded: parent != nil})
 		}
 		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
-			notices = append(notices, notice{issue: issue, reason: telling.why + ": " + strings.Join(byIssue[issue], "; ")})
+			notices = append(notices, telling.notice(issue, byIssue[issue]))
 		}
 	}
 	if len(notices) == 0 {
@@ -1882,7 +1895,11 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, told := range notices {
-			row, err := record.NewOutboxRow(told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
+			notice, err := record.NoticeOf(told)
+			if err != nil {
+				return err
+			}
+			row, err := record.NewOutboxRow(told.Issue, notice, now)
 			if err != nil {
 				return err
 			}
@@ -1896,6 +1913,13 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	}
 	committed()
 	return nil
+}
+
+// recoveredUnrecordedNotice is the child-release-stalled notice on issue that the recovery of repos
+// left each child of unrecorded still not recorded (texts.StallRecoveredUnrecorded).
+func recoveredUnrecordedNotice(issue string, repos []string, unrecorded []texts.UnrecordedChild) texts.ChildReleaseStalledRecord {
+	return texts.ChildReleaseStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildReleaseStalled, Issue: issue},
+		Stall: texts.StallRecoveredUnrecorded, Repos: repos, Unrecorded: unrecorded}
 }
 
 // recoveredOn is recoverRepositories' scope over listing: an issue records does not hold whose

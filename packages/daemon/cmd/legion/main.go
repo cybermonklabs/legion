@@ -1320,7 +1320,7 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 // entrySummary is the one line an operator reads for the roles that have not been given the work
 // their phase entry names and for the roots a wake names: how many, and each by issue and role
 // with the two numbers where they are that role's, a root with the words of each arm the state
-// names for it (record.ArchitectStallArm.Words, the words the wake's reason begins with). For a
+// names for it (record.ArchitectStallArm.Words; the wake's notice names the arm itself). For a
 // role a phase worker works on an issue that is not its tree's root, a difference here is one of
 // four things. An entry raised seconds ago, which the next pass closes: the daemon sends that
 // entry's work on every admission pass and on a sweep of its own each minute (admit's

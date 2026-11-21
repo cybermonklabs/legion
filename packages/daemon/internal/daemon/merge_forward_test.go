@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The log lines of the merge-forward executor (mergeForwardMessage) these tests read.
@@ -91,7 +93,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		publisher.setAbsent()
 		drainAt(t, runner, 10*time.Minute, "the row's attempt once the session holds the role")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") ||
+		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != noticeSummary(texts.MergeForwardAsk, "LEGION-208") ||
+			!reflect.DeepEqual(delivered[0].payload, ask.Record("LEGION-208", "acme/widgets")) || delivered[0].urgency != texts.Med ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, topic)
 		}
@@ -154,7 +157,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 		drainAt(t, runner, 0, "the row's attempt")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != told.Message("LEGION-208", "acme/widgets") ||
+		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != noticeSummary(texts.MergeForwardLanded, "LEGION-208") ||
+			!reflect.DeepEqual(delivered[0].payload, told.Record("LEGION-208", "acme/widgets")) || delivered[0].urgency != texts.Med ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the landed once to %s under its row's key", delivered, tester)
 		}

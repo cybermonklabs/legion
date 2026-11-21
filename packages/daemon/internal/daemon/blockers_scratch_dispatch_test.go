@@ -452,12 +452,11 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		t.Fatalf("the child %s left %s into %s; want its first phase, %s\nstate %s", child, phase.Admitted, got, phase.Planning, body)
 	}
 	// The tree's architect is told the child it held starts, and why: the child-status notice the
-	// daemon queued on the child, in the very transaction that started it, naming the issue it
-	// waited on and saying that the child's own architect owns it while that architect holds its
-	// role.
+	// daemon queued on the child, in the very transaction that started it, naming the tree and the
+	// issue it waited on.
 	notices := childStatusNotices(t, pool, child)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", child, notices)
-	wantNotice := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, free, blocked) + childStartedOwnership
+	wantNotice := fmt.Sprintf("%s started tree=%s waited_on=%s", child, free, blocked)
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once %s closed and queued its tree's architect the child-status notices %q; "+
 			"want the one reading %q\nstate %s", child, blocked, notices, wantNotice, body)
@@ -669,7 +668,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	notices = childStatusNotices(t, pool, unlinked)
 	t.Logf("the child-status notices the daemon queued on %s for its tree's architect: %q", unlinked, notices)
-	wantNotice = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", unlinked, free) + childStartedOwnership
+	wantNotice = fmt.Sprintf("%s started tree=%s waited_on=", unlinked, free)
 	if !slices.Equal(notices, []string{wantNotice}) {
 		t.Fatalf("Legion started the held child %s once a person took its links off and queued its tree's architect the child-status "+
 			"notices %q; want the one reading %q: a start nobody hears of is the silence the hold's report exists to remove\nstate %s",
@@ -897,22 +896,17 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 	return nil, false
 }
 
-// childStartedOwnership is how every child-status notice of a child's start ends, after its
-// reason: the child's own architect starts with it and owns it while that architect holds its
-// role, so the architect it tells hears only what goes above that architect
-// (workflow.ChildStartedNotice).
-const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
-	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-	"holdsRole decides"
-
-// childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
-// the architect above it, oldest first, read off the daemon's own outbox, where a notice stands
-// until the architect's role topic takes it. Nothing in this harness answers the Envoy address the
-// notice runner publishes to, so no row is finished by a delivery while the test reads it.
+// childStatusNotices is every child-status notice the daemon has queued on issue for the
+// architect above it, oldest first, as its facts (`<issue> <change> tree=<tree> waited_on=<keys>`),
+// read off the daemon's own outbox, where a notice stands until the architect's role topic takes
+// it. Nothing in this harness answers the Envoy address the notice runner publishes to, so no row
+// is finished by a delivery while the test reads it. A notice that still carries a reason reads
+// with it, so it fails the comparison.
 func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox
+	rows, err := pool.Query(t.Context(), `select concat_ws(' ', issue, payload->>'change', 'tree=' || coalesce(payload->>'tree', ''),
+		'waited_on=' || coalesce((select string_agg(value, ',') from jsonb_array_elements_text(payload->'waited_on')), ''),
+		'reason=' || (payload->>'reason')) from outbox
 		where kind = 'notice' and issue = $1 and payload->>'kind' = 'child-status' order by id`, issue)
 	if err != nil {
 		t.Fatalf("read the child-status notices queued on %s: %v", issue, err)

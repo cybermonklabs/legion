@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -62,8 +61,8 @@ func TestALostReadmissionStartIsWrittenAgainPastTheTaskOfTheRunBefore(t *testing
 	if len(prompts) == 0 {
 		t.Fatalf("the re-admitted architect was sent nothing; it holds %#v", r.machine().Claim().Pending)
 	}
-	if first := prompts[0]; strings.Contains(first.Message, workflow.ArchitectFreshTreeLabel+" 1") ||
-		!strings.Contains(first.Message, workflow.ArchitectFreshTreeLabel+" 2") {
+	if first := prompts[0]; hasTaskLines(first.Message, "generation: 1") ||
+		!hasTaskLines(first.Message, workflow.ArchitectFreshTreeLabel, "generation: 2") {
 		t.Fatalf("the re-admitted architect's first prompt is %s: %q, want the task of generation 2", first.DeliveryID, first.Message)
 	}
 	held := r.machine().Claim()

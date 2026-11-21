@@ -13,6 +13,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -119,7 +120,7 @@ type Runtime struct {
 	resumes      []SpawnResult
 	probes       []ProbeResult
 	failures     map[string]error
-	drift        map[claim.Token][]string
+	drift        map[claim.Token][]runtime.Drift
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
 	keptVolumes  map[string]time.Time
@@ -151,7 +152,7 @@ func NewRuntime() *Runtime {
 	fake := &Runtime{
 		Now:         time.Now,
 		failures:    map[string]error{},
-		drift:       map[claim.Token][]string{},
+		drift:       map[claim.Token][]runtime.Drift{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
 		keptVolumes: map[string]time.Time{},
@@ -222,18 +223,18 @@ func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", e
 // FailCleanupTree makes every later CleanupTree return err; nil clears it.
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
 
-// ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
-// runtime answers a pod built from a configuration the runtime has since moved on from. A claim no
-// call named has drifted from nothing, which is the uninteresting case; nil clears this claim's
+// ScriptPodDrift makes every later PodDrift of token's claim answer drift, as the Sandbox runtime
+// answers a pod built from a configuration the runtime has since moved on from. A claim no call
+// named has drifted from nothing, which is the uninteresting case; no drift clears this claim's
 // answer.
-func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
+func (r *Runtime) ScriptPodDrift(token claim.Token, drift ...runtime.Drift) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if reasons == nil {
+	if len(drift) == 0 {
 		delete(r.drift, token)
 		return
 	}
-	r.drift[token] = reasons
+	r.drift[token] = slices.Clone(drift)
 }
 
 // ScriptPodGone makes every later PodDrift of token's claim answer runtime.ErrPodGone, as a
@@ -713,7 +714,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // call named and for one with no process, as a runtime answers a claim that runs nowhere, and
 // runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
 // recorded pod is not there.
-func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]runtime.Drift, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
@@ -726,7 +727,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if r.gone[k.Claim] {
 		return nil, runtime.ErrPodGone
 	}
-	return append([]string(nil), r.drift[k.Claim]...), nil
+	return slices.Clone(r.drift[k.Claim]), nil
 }
 
 // IssuePod records its call and answers what ScriptIssuePod set for the issue, followed to the pod

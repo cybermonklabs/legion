@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -259,11 +266,26 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 // fails that event rather than publishing it.
 func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipientCheck) {
 	t.Helper()
+	checkSessionRecipientsReading(t, database, nil, checks)
+}
+
+// checkSessionRecipientsReading is checkSessionRecipients on a batch whose Envoy registry is
+// registry (Deps.Registry, nil for none), and returns every envelope the batch sent.
+func checkSessionRecipientsReading(t *testing.T, database *store.Store, registry RegistryReader, checks []recipientCheck) []contracts.Envelope {
+	t.Helper()
 	publisher := &recordingPublisher{}
-	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Registry: registry}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
 		t.Fatalf("scan batch: %v", err)
 	}
+	return checkSentRecipients(t, database, publisher, checks)
+}
+
+// checkSentRecipients checks, after a batch sent through publisher, that each event of checks was
+// published, sent to the topics its row records, and reached the sessions it must reach, and
+// returns every envelope the batch sent.
+func checkSentRecipients(t *testing.T, database *store.Store, publisher *recordingPublisher, checks []recipientCheck) []contracts.Envelope {
+	t.Helper()
 	byEvent := map[string][]string{}
 	for _, item := range publisher.all() {
 		byEvent[item.SourceEventID] = append(byEvent[item.SourceEventID], item.Topic)
@@ -285,6 +307,7 @@ func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipi
 			t.Fatalf("%s event %d reached sessions %v, want %v (every topic: %v)", check.event.Type, check.event.ID, got, want, topics)
 		}
 	}
+	return publisher.all()
 }
 
 // seedSpec inserts issueKey's primary document, which creator made, with one version per entry of
@@ -433,6 +456,380 @@ func TestAPersonsCommentOnAnIssueNobodyRoutesOrClaimsReachesItsSpecsSessions(t *
 				[]model.Actor{specWriter}, []model.Actor{alice, {Kind: "session"}}, []model.Actor{editor, specWriter})
 			checkSessionRecipients(t, database, tc.arrange(t, database, broker, spec))
 		})
+	}
+}
+
+// fakeRegistry is Envoy's registry as a test sets it (Deps.Registry): each session's answer to a
+// read, and how often each session was read. A session it holds no answer for is one the registry
+// holds no record of, which envoy.Client.Session answers envoy.ErrNotFound.
+type fakeRegistry struct {
+	answers map[string]registryAnswer
+	mu      sync.Mutex
+	reads   map[string]int
+}
+
+// registryAnswer is one session's answer: its record's state, or err.
+type registryAnswer struct {
+	state string
+	err   error
+}
+
+func newFakeRegistry(answers map[string]registryAnswer) *fakeRegistry {
+	return &fakeRegistry{answers: answers, reads: map[string]int{}}
+}
+
+func (r *fakeRegistry) Session(_ context.Context, sessionID string) (envoy.Session, error) {
+	r.mu.Lock()
+	r.reads[sessionID]++
+	r.mu.Unlock()
+	answer, ok := r.answers[sessionID]
+	if !ok {
+		return envoy.Session{}, envoy.ErrNotFound
+	}
+	if answer.err != nil {
+		return envoy.Session{}, answer.err
+	}
+	return envoy.Session{SessionID: sessionID, State: answer.state}, nil
+}
+
+func (r *fakeRegistry) readsOf(sessionID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reads[sessionID]
+}
+
+// threadRuleIssue is the issue the thread rule's tests share: T-1, which no route and no session
+// claims, whose primary document session A created and session C edited, with a second document
+// of the issue that session D created. Session B writes in each thread a person replies in.
+type threadRuleIssue struct {
+	person, a, b, c, d model.Actor
+	notes              string
+}
+
+func seedThreadRuleIssue(t *testing.T, database *store.Store) threadRuleIssue {
+	t.Helper()
+	issue := threadRuleIssue{
+		person: model.Actor{Kind: "user", ID: "sami"},
+		a:      model.Actor{Kind: "session", ID: "session-a"},
+		b:      model.Actor{Kind: "session", ID: "session-b"},
+		c:      model.Actor{Kind: "session", ID: "session-c"},
+		d:      model.Actor{Kind: "session", ID: "session-d"},
+	}
+	seedIssue(t, database, "T-1", nil)
+	seedSpec(t, database, "T-1", issue.a, []model.Actor{issue.a}, []model.Actor{issue.c})
+	issue.notes = seedDocument(t, database, new("T-1"), "notes", issue.d, []model.Actor{issue.d})
+	return issue
+}
+
+// replyAndEdit appends the person's reply as the API writes it, and then its edit.
+func (issue threadRuleIssue) replyAndEdit(t *testing.T, database *store.Store, broker *events.Broker, reply model.Comment) (model.Event, model.Event) {
+	t.Helper()
+	created := appendCommentEvent(t, database, broker, "comment.created", issue.person, reply)
+	reply.Body = "Edited."
+	edited := appendCommentEvent(t, database, broker, "comment.edited", issue.person, reply)
+	return created, edited
+}
+
+// inIssueThread is the person's reply, and its edit, in a comment thread on the issue whose root
+// B wrote.
+func (issue threadRuleIssue) inIssueThread(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
+	t.Helper()
+	root := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+	return issue.replyAndEdit(t, database, broker, model.Comment{ID: reply, ReplyTo: &root})
+}
+
+// inNotesThread is the person's reply, and its edit, in a comment thread anchored on D's
+// document, where a person wrote the root and B replied.
+func (issue threadRuleIssue) inNotesThread(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
+	t.Helper()
+	root := seedThreadComment(t, database, "T-1", issue.notes, model.Actor{Kind: "user", ID: "alice"}, nil)
+	seedThreadComment(t, database, "T-1", "", issue.b, &root)
+	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+	return issue.replyAndEdit(t, database, broker, model.Comment{ID: reply, ReplyTo: &root})
+}
+
+// inAskThread is the person's comment, and its edit, in the thread of an ask B asked, which B
+// follows as its asker unless unfollow says it stopped.
+func (issue threadRuleIssue) inAskThread(t *testing.T, database *store.Store, broker *events.Broker, unfollow bool) (model.Event, model.Event) {
+	t.Helper()
+	askID := seedAsk(t, database, "T-1", issue.b, "Ship it?")
+	if unfollow {
+		if _, err := asks.Unfollow(context.Background(), database.Pool, askID, issue.b.ID); err != nil {
+			t.Fatalf("unfollow ask %s for %s: %v", askID, issue.b.ID, err)
+		}
+	}
+	return issue.replyAndEdit(t, database, broker, model.Comment{ID: "8f14e45f-ceea-467a-9c1e-1b4d9a3f1c2b", AskID: &askID})
+}
+
+// inEveryThread appends the person's reply and its edit in each of the three threads, and checks
+// each against the sessions it must reach: inIssueThread's and inAskThread's against onIssue,
+// inNotesThread's against onNotes.
+func (issue threadRuleIssue) inEveryThread(t *testing.T, database *store.Store, broker *events.Broker, onIssue, onNotes []string) []recipientCheck {
+	t.Helper()
+	var checks []recipientCheck
+	for _, thread := range []struct {
+		events func() (model.Event, model.Event)
+		want   []string
+	}{
+		{func() (model.Event, model.Event) { return issue.inIssueThread(t, database, broker) }, onIssue},
+		{func() (model.Event, model.Event) { return issue.inNotesThread(t, database, broker) }, onNotes},
+		{func() (model.Event, model.Event) { return issue.inAskThread(t, database, broker, false) }, onIssue},
+	} {
+		created, edited := thread.events()
+		checks = append(checks, recipientCheck{event: created, want: thread.want}, recipientCheck{event: edited, want: thread.want})
+	}
+	return checks
+}
+
+// A person's reply in a thread whose session B is live, or unresponsive, answers the thread: the
+// reply and its edit reach B and none of the sessions that only a document credits - A and C,
+// which the issue's primary document credits, and D, which the document the thread is anchored on
+// credits - in a thread on the issue, in a thread on D's document and in the thread of an ask B
+// asked and follows (takesThreadRule, threadHearing.hear, creditFilter). The batch reads B once
+// for all six events, and reads no session that only a document credits.
+func TestAPersonsReplyInAThreadOfALiveOrUnresponsiveSessionReachesTheThreadAndNotTheCredits(t *testing.T) {
+	for _, state := range []string{envoy.StateLive, envoy.StateUnresponsive} {
+		t.Run("B "+state, func(t *testing.T) {
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			issue := seedThreadRuleIssue(t, database)
+			registry := newFakeRegistry(map[string]registryAnswer{issue.b.ID: {state: state}})
+			onlyB := []string{issue.b.ID}
+			checkSessionRecipientsReading(t, database, registry, issue.inEveryThread(t, database, broker, onlyB, onlyB))
+			if reads := registry.readsOf(issue.b.ID); reads != 1 {
+				t.Fatalf("the batch read %s %d times, want once for every thread it is in", issue.b.ID, reads)
+			}
+			for _, credited := range []model.Actor{issue.a, issue.c, issue.d} {
+				if reads := registry.readsOf(credited.ID); reads != 0 {
+					t.Fatalf("the batch read %s, which only a document credits, %d times", credited.ID, reads)
+				}
+			}
+		})
+	}
+}
+
+// A person's reply in a thread none of whose sessions counts - B gone, stopped, or unknown to the
+// registry - reaches whom it reaches without the thread rule: B, A and C in the thread on the issue
+// and in the ask's thread, and B, A, C and D in the thread on D's document. The primary
+// document's sessions come first (addPrimaryDocumentAuthors), then the thread's and its document's
+// (addAuthorRoutes), then the ask's followers (addFollowerRoutes).
+func TestAPersonsReplyInAThreadWithNoLiveSessionReachesTheCredits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer *registryAnswer
+	}{
+		{name: "B gone", answer: &registryAnswer{state: envoy.StateGone}},
+		// envoy.Client.Session answers a session that stopped as one it holds no record of: only
+		// SessionIncludingStopped names it stopped.
+		{name: "B stopped", answer: &registryAnswer{err: envoy.ErrNotFound}},
+		{name: "B unknown to the registry"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			issue := seedThreadRuleIssue(t, database)
+			answers := map[string]registryAnswer{}
+			if tc.answer != nil {
+				answers[issue.b.ID] = *tc.answer
+			}
+			registry := newFakeRegistry(answers)
+			checkSessionRecipientsReading(t, database, registry, issue.inEveryThread(t, database, broker,
+				[]string{issue.a.ID, issue.c.ID, issue.b.ID},
+				[]string{issue.a.ID, issue.c.ID, issue.b.ID, issue.d.ID}))
+			if reads := registry.readsOf(issue.b.ID); reads != 1 {
+				t.Fatalf("the batch read %s %d times, want once", issue.b.ID, reads)
+			}
+		})
+	}
+}
+
+// Where Envoy's registry does not answer, a person's reply reaches the credits of its documents as
+// it does without the thread rule, whatever B's state: a listener that answers 503, a read the
+// client's own window ends, and an outbox with no registry client at all. The first two read
+// through envoy.Client, so its own timeout is what bounds the batch's wait.
+func TestAFailedRegistryReadSendsTheCreditCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		registry func(t *testing.T) RegistryReader
+	}{
+		{
+			name: "the listener answers 503",
+			registry: func(t *testing.T) RegistryReader {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					http.Error(w, "starting", http.StatusServiceUnavailable)
+				}))
+				t.Cleanup(server.Close)
+				return envoy.New(server.URL)
+			},
+		},
+		{
+			name: "the read times out",
+			registry: func(t *testing.T) RegistryReader {
+				server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					<-r.Context().Done()
+				}))
+				t.Cleanup(server.Close)
+				return envoy.New(server.URL, envoy.WithTimeout(200*time.Millisecond))
+			},
+		},
+		{
+			name:     "no registry client",
+			registry: func(*testing.T) RegistryReader { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			issue := seedThreadRuleIssue(t, database)
+			checkSessionRecipientsReading(t, database, tc.registry(t), issue.inEveryThread(t, database, broker,
+				[]string{issue.a.ID, issue.c.ID, issue.b.ID},
+				[]string{issue.a.ID, issue.c.ID, issue.b.ID, issue.d.ID}))
+		})
+	}
+}
+
+// hungRegistry is Envoy's registry when its listener takes a read and never answers it: every
+// read waits until the test lets it go, or until its own context ends, and then fails as the
+// client's timeout fails it. started is closed at the first read.
+type hungRegistry struct {
+	started chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func (r *hungRegistry) Session(ctx context.Context, sessionID string) (envoy.Session, error) {
+	r.once.Do(func() { close(r.started) })
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+	}
+	return envoy.Session{}, fmt.Errorf("read session %s: %w", sessionID, context.DeadlineExceeded)
+}
+
+// A registry that does not answer costs the person's reply whose thread it is asked about its
+// wait, and holds no other event of the batch: the issue.released of T-2, in the same batch as the
+// reply and its edit in a thread on T-1 whose session B the batch reads, is published to the
+// session that lost the claim and recorded while the read of B is still open, and the reply waits.
+// Once the read fails, as the client's timeout fails it, the reply and its edit reach the credits
+// of their documents, as they do where the registry does not answer
+// (TestAFailedRegistryReadSendsTheCreditCopy).
+func TestAHungRegistryHoldsNoIssueReleasedOfAnotherIssue(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	seedSecondIssue(t, database, "T-2")
+	created, edited := issue.inIssueThread(t, database, broker)
+	released := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-2"), Type: "issue.released", Actor: model.Actor{Kind: "user", ID: "alice"},
+		Payload: map[string]any{
+			"reason": "released",
+			"previous_claim": map[string]any{
+				"actor": map[string]any{"kind": "session", "id": "session-one"},
+				"at":    "2026-11-18T05:00:00Z",
+			},
+		},
+	})
+	registry := &hungRegistry{started: make(chan struct{}), release: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(registry.release) })
+	publisher := &recordingPublisher{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Registry: registry}
+	holder := holding(t, deps).instance
+	scanned := make(chan struct{})
+	var scanErr error
+	go func() {
+		defer close(scanned)
+		_, scanErr = scanBatch(context.Background(), deps, unfenced{}, holder)
+	}()
+	// However the test ends, the registry lets the read go and the batch ends before the
+	// database it writes to is dropped.
+	t.Cleanup(func() {
+		letGo()
+		select {
+		case <-scanned:
+		case <-time.After(10 * time.Second):
+		}
+	})
+
+	select {
+	case <-registry.started:
+	case <-scanned:
+		t.Fatalf("the batch ended (%v) before it read %s from the registry", scanErr, issue.b.ID)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the batch did not read %s from the registry", issue.b.ID)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for readEventRow(t, database, released.ID).publishedAt == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("issue.released of T-2 was not published while the registry read of %s was open", issue.b.ID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, item := range publisher.all() {
+		if item.SourceEventID == fmt.Sprint(created.ID) || item.SourceEventID == fmt.Sprint(edited.ID) {
+			t.Fatalf("event %s went to %s before the registry answered for %s", item.SourceEventID, item.Topic, issue.b.ID)
+		}
+	}
+
+	letGo()
+	select {
+	case <-scanned:
+		if scanErr != nil {
+			t.Fatalf("scan batch: %v", scanErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the batch did not end once the registry read failed")
+	}
+	credits := []string{issue.a.ID, issue.c.ID, issue.b.ID}
+	checkSentRecipients(t, database, publisher, []recipientCheck{
+		{event: created, want: credits},
+		{event: edited, want: credits},
+		{event: released, want: []string{"session-one"}},
+	})
+}
+
+// The thread rule takes copies away and adds none. B asked an ask and stopped following it, so no
+// rule reaches B, and B does not count as the ask thread's session although the registry reads it
+// live: the person's comment in that thread, and its edit, reach A and C, as they do without the
+// rule, and not B. The registry is not asked about B at all.
+func TestAnAskerThatStoppedFollowingDoesNotCount(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	registry := newFakeRegistry(map[string]registryAnswer{issue.b.ID: {state: envoy.StateLive}})
+	created, edited := issue.inAskThread(t, database, broker, true)
+	credits := []string{issue.a.ID, issue.c.ID}
+	checkSessionRecipientsReading(t, database, registry, []recipientCheck{
+		{event: created, want: credits},
+		{event: edited, want: credits},
+	})
+	if reads := registry.readsOf(issue.b.ID); reads != 0 {
+		t.Fatalf("the batch read %s, which no rule reaches, %d times", issue.b.ID, reads)
+	}
+}
+
+// A person's reply in the thread on the issue, whose session B is live, names C, which the
+// primary document credits, and C's mention fails. C still gets the copy that the author route
+// sends, under the key of the failed mention, so a host the send reached before it failed drops
+// it (dispatch://INFRA-1368's R2; creditFilter, addPrimaryDocumentAuthors). A, which only the
+// document credits, does not, and B does.
+func TestAReplyThatNamesACreditedSessionWhoseMentionFailedStillReachesIt(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	registry := newFakeRegistry(map[string]registryAnswer{issue.b.ID: {state: envoy.StateLive}})
+	root := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+	seedMentionDelivery(t, database, reply, issue.c.ID, "failed")
+	created := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: reply, ReplyTo: &root}, issue.c.ID)
+	items := checkSessionRecipientsReading(t, database, registry, []recipientCheck{
+		{event: created, want: []string{issue.c.ID, issue.b.ID}},
+	})
+	wantKey := contracts.AgentSendDedupeKey(issue.c.ID, model.CommentMentionIdempotencyKey(reply, "session:"+issue.c.ID, "steer"))
+	for _, item := range items {
+		if item.Topic == contracts.LegacyAgentSubject(issue.c.ID) && item.DedupeKey != wantKey {
+			t.Fatalf("the copy to %s is keyed %q, want the failed mention's key %q", issue.c.ID, item.DedupeKey, wantKey)
+		}
 	}
 }
 
@@ -1111,4 +1508,100 @@ func TestAStoppingBatchReleasesTheEventsWhoseRecipientQueryFailed(t *testing.T) 
 		stop()
 		assertReleased(t, database, commented, message)
 	})
+}
+
+// R6: a thread's sessions "count while Envoy's registry reads them as live or unresponsive. Where
+// none of them counts, or the registry does not answer, the reply reaches the sessions that the
+// documents credit" (dispatch://INFRA-3686/spec). One session X, the root author of a thread on
+// T-1, has an interest record the listener cannot read: GET /v1/registry/session-x answers 500
+// (writeInterestRecordUnreadable), while the registry answers every other read. The person replies
+// in X's thread and, in the same batch, in the thread of session B, which the registry reads live.
+// B's thread has a session that counts and a registry that answers for it, so the reply in it
+// reaches B and none of A and C, whatever X's read answered.
+func TestOneSessionsUnreadableRecordLeavesAnotherThreadsRuleAlone(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	x := model.Actor{Kind: "session", ID: "session-x"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
+		switch {
+		case id == x.ID:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"envoy: the interest record of session session-x is unreadable: malformed interest"}`))
+		case id == issue.b.ID:
+			_, _ = w.Write([]byte(`{"session_id":"session-b","state":"live"}`))
+		default:
+			// The other writers of X's thread are gone from the registry; their reads answer a
+			// little later than X's.
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session ` + id + `","state":"gone"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	rootX := seedThreadComment(t, database, "T-1", "", x, nil)
+	for i := 2; i <= 8; i++ {
+		seedThreadComment(t, database, "T-1", "", model.Actor{Kind: "session", ID: fmt.Sprintf("session-gone-%d", i)}, &rootX)
+	}
+	replyX := seedThreadComment(t, database, "T-1", "", issue.person, &rootX)
+	appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: replyX, ReplyTo: &rootX})
+	rootB := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	replyB := seedThreadComment(t, database, "T-1", "", issue.person, &rootB)
+	inB := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: replyB, ReplyTo: &rootB})
+	checkSessionRecipientsReading(t, database, envoy.New(server.URL), []recipientCheck{
+		{event: inB, want: []string{issue.b.ID}},
+	})
+}
+
+// A registry whose answers stop after their headers - the body never comes, so each read ends at
+// the client's timeout - is a registry that does not answer (registryUnanswered), and costs one
+// read's wait: "A registry that hangs then costs one read's wait, which the reader's own timeout
+// bounds" (countedSessions). The reply's thread holds 24 sessions, three rounds of
+// registryReadsAtOnce, and the client's timeout is 700 ms; no read starts after the first round's,
+// and the reply reaches the credits (A and C), as R6 says where the registry does not answer.
+func TestAReadThatRunsOutOfTimeInItsBodyStopsFurtherReads(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	var reads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "200")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_id":`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	root := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	for i := range 23 {
+		seedThreadComment(t, database, "T-1", "", model.Actor{Kind: "session", ID: fmt.Sprintf("session-stall-%02d", i)}, &root)
+	}
+	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+	created := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: reply, ReplyTo: &root})
+	publisher := &recordingPublisher{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Registry: envoy.New(server.URL, envoy.WithTimeout(700*time.Millisecond))}
+	start := time.Now()
+	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
+		t.Fatalf("scan batch: %v", err)
+	}
+	took := time.Since(start)
+	var toA, toC bool
+	for _, item := range publisher.all() {
+		if item.SourceEventID != fmt.Sprint(created.ID) {
+			continue
+		}
+		toA = toA || item.Topic == contracts.LegacyAgentSubject(issue.a.ID)
+		toC = toC || item.Topic == contracts.LegacyAgentSubject(issue.c.ID)
+	}
+	t.Logf("24 sessions, each read ending at the client's 700 ms timeout in its body: %d reads, batch %s; credit copy to A %v, C %v", reads.Load(), took.Round(time.Millisecond), toA, toC)
+	if !toA || !toC {
+		t.Fatalf("the reply reached A %v, C %v: want the credit copy where the registry does not answer", toA, toC)
+	}
+	if n := reads.Load(); n > registryReadsAtOnce {
+		t.Fatalf("%d reads were made after reads that never got their answer: want at most %d, one read's wait", n, registryReadsAtOnce)
+	}
 }

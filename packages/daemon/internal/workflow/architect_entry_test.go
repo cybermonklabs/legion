@@ -18,7 +18,7 @@ import (
 
 // seededArchitectTask is the work the architect's seeded entry names: the text the transition
 // that raised that entry sent it.
-const seededArchitectTask = "LEGION-208 is yours. Take it up in this turn."
+const seededArchitectTask = "kind: architect-start\nissue: LEGION-208\nshape: fresh-tree\ngeneration: 1"
 
 // architectEntryRoot is the root these cases stand on: an admitted root of a tree of its own,
 // whose architect holds a phases row as every phase worker does.
@@ -296,7 +296,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeRoleMessage, string(token))
 	start := architectStartOf(t, rig.pool)
-	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token), StoppedByRelease) {
+	if start.Entry != 0 || start.Task != WakeTask(entryIssue, pods.WakeRoleMessage, string(token), StoppedByRelease) {
 		t.Fatalf("the wake's start = entry %d carrying %q, want no entry and the wake's own task: a wake hands no phase entry's work",
 			start.Entry, start.Task)
 	}

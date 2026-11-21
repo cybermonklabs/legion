@@ -1,12 +1,15 @@
 // Package reviewround writes the two sentences that end each task a reviewer is given: the
 // commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
-// places write them, and both through Sentences: the workflow, onto each task of the reviewer it
+// places write them, and both through Ending: the workflow, onto each task of the reviewer it
 // queues (workflow's namingTheReviewRound), and the claim's send of a task that no such queue
 // named, a task the release before this one queued or an operator wrote (supervise's
 // Delivery.message), which names neither.
 package reviewround
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // CommitLabel labels the commit a reviewer's task names (record.PhaseRow.ReviewedHead). The
 // reviewer's prompt and the merge gate of skill://legion-worker name it to the reviewer, which a
@@ -36,4 +39,18 @@ func Sentences(commit string, entry int64) string {
 		named = strconv.FormatInt(entry, 10)
 	}
 	return " " + CommitLabel + ": " + commit + ". " + EntryLabel + ": " + named + "."
+}
+
+// Ending is task followed by the two sentences (Sentences) on a line of their own, the task's
+// last line, with no space in front of them. A task of the daemon is a record rendered as lines
+// of fields and blocks (texts.Render), so the sentences stand after everything else, a block of
+// another author's words included, and join no field. The two sentences stay word for word as
+// the reviewer's prompt names them, so ` Review entry: <n>.` is still the task's last sentence.
+// An empty task is the line alone.
+func Ending(task, commit string, entry int64) string {
+	line := strings.TrimPrefix(Sentences(commit, entry), " ")
+	if task == "" {
+		return line
+	}
+	return task + "\n" + line
 }

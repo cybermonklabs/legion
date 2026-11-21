@@ -72,6 +72,7 @@ import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subs
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
+import { splitWordsBlocks } from "@legion/envoy-client/words-block";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
   envoyPluginInterface,
@@ -960,6 +961,27 @@ function forwardedRoleEnvelope(role: string, summary: string, label: string) {
   });
 }
 
+/** A notice or role message the daemon published, as the listener relays it: `agent` its source,
+ *  as the listener writes for a publish that names none, no sender session unless `fields` name
+ *  one, and the urgency `fields` name. */
+function daemonEnvelope(
+  summary: string,
+  label: string,
+  fields: { readonly urgency?: string; readonly source_session?: string } = {}
+) {
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_event_id: `source-${label}`,
+    topic: "notifications.role.legion-controller",
+    dedupe_key: `daemon-${label}`,
+    issued_at: 1,
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    ...fields,
+  });
+}
+
 /** A Dispatch delivery frame addressed to ses_delivery, on issue CORE-1. `bodyTruncated` says
  *  the event carries the body's first part alone, so the session reads the message whole before
  *  it renders it (`wholeCarriedBody`). */
@@ -1196,9 +1218,10 @@ function acceptResponse(
  * Boots ses_delivery against a Dispatch whose accept answers `accept` for the nth accept
  * (Dispatch's own once-only rule by default), recording every accept and every other Dispatch
  * message call. `entries` are what the session's file already holds, as a restarted session reads
- * them, and `branch` its active branch (the entries by default); every entry the session appends
- * is read back with them. `delivered(n)` resolves once the session has taken `n` deliveries, cards
- * and user turns together, `recordedWhenDelivered` says how many handled-attempt entries the
+ * them, and `branch` its active branch (the entries by default), whose entries are entries of the
+ * session too, as on a host; every entry the session appends is read back with them.
+ * `delivered(n)` resolves once the session has taken `n` deliveries, cards and user turns
+ * together, `recordedWhenDelivered` says how many handled-attempt entries the
  * session had appended when each went out, and `sends` holds each of them, in the order the host
  * was handed them. `idle` is the host's `ctx.isIdle()`, which a context without it lacks.
  */
@@ -1244,6 +1267,12 @@ async function bootDirectSession(
      *  a written one is read before the broker route, and the trade that names the session
      *  would never happen. */
     readonly dispatchCredential?: "broker";
+    /** The host's `ctx.hasPendingMessages()`, which a context without it lacks: with `idle`
+     *  answering true and this false, the host is settled, and a stored card is handed to it. */
+    readonly pending?: () => boolean;
+    /** The session file the host names (`getSessionFile`), a path that exists once the host
+     *  wrote it; none by default, as before a session's first assistant message. */
+    readonly sessionFile?: string;
   } = {}
 ) {
   process.env.DISPATCH_URL = "http://dispatch.test";
@@ -1351,6 +1380,7 @@ async function bootDirectSession(
   const context: SessionContext = {
     ...base,
     ...(options.idle !== undefined && { isIdle: options.idle }),
+    ...(options.pending !== undefined && { hasPendingMessages: options.pending }),
     ...(options.contextUsage !== undefined && { getContextUsage: options.contextUsage }),
     ...(options.cwd !== undefined && { cwd: options.cwd }),
     ...(options.sideTurn !== undefined && {
@@ -1361,7 +1391,14 @@ async function bootDirectSession(
     sessionManager: {
       ...base.sessionManager,
       getBranch: () => options.branch ?? [...prior, ...fixture.entries],
-      getEntries: () => [...prior, ...fixture.entries],
+      ...(options.sessionFile !== undefined && {
+        getSessionFile: () => options.sessionFile,
+      }),
+      getEntries: () => {
+        const known = new Set([...prior, ...fixture.entries]);
+        const branchOnly = (options.branch ?? []).filter((entry) => !known.has(entry));
+        return [...prior, ...branchOnly, ...fixture.entries];
+      },
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
@@ -6825,7 +6862,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("structured delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "envoy",
         at: "1970-01-01T00:00:00Z",
         id: "evt-toon-structured",
@@ -6869,7 +6906,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("plain-text delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "envoy",
         at: "1970-01-01T00:00:00Z",
         id: "evt-toon-plain-text",
@@ -6879,7 +6916,7 @@ console.log(JSON.stringify(args));
     });
   });
 
-  test("names the sender and injects a reply instruction for a peer agent message", async () => {
+  test("names the sender of a peer agent message and puts its words in a block, with no reply command", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
     const { default: envoyExtension } = await import("./envoy.ts?sender-reply-hint");
     const fixture = createPi();
@@ -6910,19 +6947,16 @@ console.log(JSON.stringify(args));
     await injected.promise;
     const content = fixture.messages[0];
     if (content === undefined) throw new Error("peer delivery was not injected");
-    expect(decode(content)).toEqual({
+    const { head, blocks } = splitWordsBlocks(content);
+    expect(decode(head)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "ses_peer",
         at: "1970-01-01T00:00:00Z",
         id: "evt-peer-message",
-        reply_with: {
-          tool: "envoy_send",
-          args: { session_id: "ses_peer", in_reply_to: "evt-peer-message", message: "..." },
-        },
-        summary: "hello from a peer",
       },
     });
+    expect(blocks).toEqual([{ tag: "message", name: "message", text: "hello from a peer" }]);
   });
 
   test("renders a human envelope without reply metadata", async () => {
@@ -6957,7 +6991,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("human delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "human",
         at: "1970-01-01T00:00:00Z",
         id: "evt-human-message",
@@ -6997,18 +7031,16 @@ console.log(JSON.stringify(args));
     await injected.promise;
     const content = fixture.messages[0];
     if (content === undefined) throw new Error("echo delivery was not injected");
-    const note = decode(content) as { envoy: Record<string, unknown> };
-    expect(note.envoy).toEqual({
-      to: "you (ses_omp)",
-      from: "ses_omp",
-      at: "1970-01-01T00:00:00Z",
-      id: "evt-self-echo",
-      reply_with: {
-        tool: "envoy_send",
-        args: { session_id: "ses_omp", in_reply_to: "evt-self-echo", message: "..." },
+    const { head, blocks } = splitWordsBlocks(content);
+    expect(decode(head)).toEqual({
+      envoy: {
+        to: "you",
+        from: "ses_omp",
+        at: "1970-01-01T00:00:00Z",
+        id: "evt-self-echo",
       },
-      summary: "note to self",
     });
+    expect(blocks).toEqual([{ tag: "message", name: "message", text: "note to self" }]);
   });
   test("deduplicates a webhook redelivery without suppressing a later envelope", async () => {
     const { default: envoyExtension } = await import("./envoy.ts?dispatch-echo");
@@ -14126,6 +14158,177 @@ console.log(JSON.stringify(args));
         );
       });
     }
+  });
+
+  // A `low` card of the daemon or of a Dispatch event goes into the session's stored context with
+  // no turn (`../src/card-wake.ts`, `lowCard`): `nextTurn` with no `triggerTurn`, handed only to a
+  // settled host, since a busy one keeps such a card in memory only (`../src/unwritten-frames.ts`,
+  // the `stored` hand-over). The host emits no `message_end` for it, so its frame is settled once
+  // the session's store holds its entry.
+  describe("a low card", () => {
+    /** Runs the host's managed timers until none is left: the stored-card check re-arms itself. */
+    const drainTimers = async (): Promise<void> => {
+      while (contextTimers.length > 0) await Promise.all(contextTimers.splice(0));
+    };
+
+    test("is stored with no turn on a settled host, its details naming the urgency, and every other card starts a turn", async () => {
+      const { agent, delivered, fixture } = await bootDirectSession("low-idle", {
+        idle: () => true,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("low notice", "low-idle", { urgency: "low" }));
+      await delivered(1);
+      agent.push(daemonEnvelope("med notice", "med-idle", { urgency: "med" }));
+      agent.push(
+        daemonEnvelope("peer low", "peer-low", { urgency: "low", source_session: "ses_peer" })
+      );
+      await delivered(3);
+
+      expect(fixture.deliveries.map((delivery) => delivery.options)).toEqual([
+        { deliverAs: "nextTurn", triggerTurn: false },
+        { deliverAs: "aside", triggerTurn: true },
+        { deliverAs: "aside", triggerTurn: true },
+      ]);
+      expect(fixture.deliveries[0]?.details).toMatchObject({
+        event_id: "evt-low-idle",
+        handOver: "inert",
+        urgency: "low",
+      });
+      expect(fixture.deliveries[0]?.details).not.toHaveProperty("envoyCard");
+      expect(fixture.deliveries[0]?.details).not.toHaveProperty("wake");
+    });
+
+    test("that comes while a turn runs is held, a later card is not, and the run's end hands it once the host settles", async () => {
+      let idle = false;
+      const { agent, context, delivered, fixture } = await bootDirectSession("low-busy", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-busy", { urgency: "low" }));
+      agent.push(daemonEnvelope("later notice", "med-busy", { urgency: "med" }));
+      await delivered(1);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(1);
+      expect(String(fixture.deliveries[0]?.content)).toContain("later notice");
+      expect(fixture.deliveries[0]?.options).toEqual({ deliverAs: "aside", triggerTurn: true });
+
+      idle = true;
+      await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+      await delivered(2);
+      expect(String(fixture.deliveries[1]?.content)).toContain("held notice");
+      expect(fixture.deliveries[1]?.options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+    });
+
+    test("held while the host was busy is handed ahead of a card that starts a turn", async () => {
+      let idle = false;
+      const { agent, delivered, fixture } = await bootDirectSession("low-first", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-first", { urgency: "low" }));
+      agent.push(daemonEnvelope("busy notice", "med-first", { urgency: "med" }));
+      await delivered(1);
+      await drainTimers();
+      idle = true;
+      agent.push(daemonEnvelope("waking notice", "med-waking", { urgency: "med" }));
+      await delivered(3);
+
+      expect(
+        fixture.deliveries.map((delivery) => [
+          String(delivery.content).match(/(held|busy|waking) notice/)?.[1],
+          delivery.options,
+        ])
+      ).toEqual([
+        ["busy", { deliverAs: "aside", triggerTurn: true }],
+        ["held", { deliverAs: "nextTurn", triggerTurn: false }],
+        ["waking", { deliverAs: "aside", triggerTurn: true }],
+      ]);
+    });
+
+    test("is recorded shown once the session file holds its entry, and not before", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-card-"));
+      const sessionFile = join(directory, "session.jsonl");
+      const branch: unknown[] = [];
+      try {
+        const { agent, context, delivered, fixture } = await bootDirectSession("low-witness", {
+          idle: () => true,
+          pending: () => false,
+          branch,
+          sessionFile,
+        });
+        const recorded = () =>
+          fixture.entries.filter(
+            (entry) =>
+              entry.customType === REPLAY_DELIVERED_ENTRY &&
+              JSON.stringify(entry).includes("evt-low-witness")
+          );
+
+        agent.push(daemonEnvelope("stored notice", "low-witness", { urgency: "low" }));
+        await delivered(1);
+        await drainTimers();
+        const { options: _options, ...stored } = fixture.deliveries[0] ?? {};
+        // The host stored the card in memory; its file is written only at the first reply.
+        branch.push({ type: "custom_message", ...stored });
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toEqual([]);
+
+        writeFileSync(sessionFile, "");
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toHaveLength(1);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    // Every Legion workflow session runs Oh My Pi with OMP_SESSION_STORAGE=sql
+    // (packages/daemon/internal/podsafety/podsafety.go): the session is rows in a database, and
+    // the path `getSessionFile()` names is never written to disk. The host still holds the stored
+    // card's entry in the session (`getBranch`), and keeps it in the database. A frame that is never
+    // settled holds one of the session consumer's ack-pending places for the life of the process,
+    // and keeps the resume point below it (dispatch://INFRA-3686/spec R5: every other card is
+    // delivered as today).
+    test("is recorded shown once the session holds its entry, under SQL session storage too", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-sql-"));
+      // The path the host names; SQL storage never writes a file there.
+      const sessionFile = join(directory, "session.jsonl");
+      const branch: unknown[] = [];
+      try {
+        const { agent, context, delivered, fixture } = await bootDirectSession("low-sql", {
+          idle: () => true,
+          pending: () => false,
+          branch,
+          sessionFile,
+        });
+        const recorded = () =>
+          fixture.entries.filter(
+            (entry) =>
+              entry.customType === REPLAY_DELIVERED_ENTRY &&
+              JSON.stringify(entry).includes("evt-low-sql")
+          );
+
+        agent.push(daemonEnvelope("stored notice", "low-sql", { urgency: "low" }));
+        await delivered(1);
+        await drainTimers();
+        const { options: _options, ...stored } = fixture.deliveries[0] ?? {};
+        // The host stored the card, and the session has had its first reply since: the session
+        // store holds every entry of the branch.
+        branch.push({ type: "custom_message", ...stored });
+        branch.push({
+          type: "message",
+          message: { role: "assistant", content: [], stopReason: "stop" },
+        });
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toHaveLength(1);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   });
 
   // A person's Send or Aside from the Agents page is the user's own turn, as if typed at the
@@ -23125,6 +23328,11 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /** The session file the host names (`getSessionFile`). With `storesNextTurn`, an idle host
+       *  appends a `nextTurn` card with no turn to the session and emits nothing for it, as Oh My
+       *  Pi's `sendCustomMessage` does (its idle `nextTurn` branch). */
+      readonly sessionFile?: string;
+      readonly storesNextTurn?: boolean;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -23220,7 +23428,18 @@ describe("consumer delivery", () => {
         if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
         fixture.pi.sendMessage(message, sendOptions);
         events.push(`handed ${message.details?.event_id ?? message.content}`);
-        if (turn === "idle") void write(message);
+        const stores =
+          options.storesNextTurn === true &&
+          typeof sendOptions === "object" &&
+          sendOptions !== null &&
+          "deliverAs" in sendOptions &&
+          sendOptions.deliverAs === "nextTurn" &&
+          !("triggerTurn" in sendOptions && sendOptions.triggerTurn === true);
+        if (turn === "idle" && stores) {
+          const { content, customType, display, details } = message;
+          written.push({ type: "custom_message", customType, content, display, details });
+          events.push(`stored ${details?.event_id ?? content}`);
+        } else if (turn === "idle") void write(message);
         else held.push(message);
       },
     });
@@ -23233,6 +23452,7 @@ describe("consumer delivery", () => {
         getBranch: () => [...prior, ...fixture.entries, ...written],
         getEntries: () => [...prior, ...fixture.entries, ...written],
         ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
+        ...(options.sessionFile !== undefined && { getSessionFile: () => options.sessionFile }),
       },
       setInterval: (callback) => {
         intervals.push(callback);
@@ -23423,6 +23643,51 @@ describe("consumer delivery", () => {
     expect(first.cards("evt-restart")).toHaveLength(1);
     expect(second.cards("evt-restart")).toHaveLength(0);
   });
+
+  // A `low` card's frame is settled once the session holds the card's entry. Under
+  // OMP_SESSION_STORAGE=sql, every Legion workflow session's store
+  // (packages/daemon/internal/podsafety/podsafety.go), the session is rows in a database and the
+  // file the host names is never on disk. The file case is the control.
+  for (const storage of ["file", "sql"] as const) {
+    test(`a low card stored on an idle session is answered done and the resume point passes it (${storage} storage)`, async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-consumer-"));
+      const sessionFile = join(directory, "session.jsonl");
+      if (storage === "file") writeFileSync(sessionFile, "");
+      try {
+        const session = await bootConsumer(`consumer-low-${storage}`, {
+          storesNextTurn: true,
+          sessionFile,
+          // The session has had its first reply: its store holds every entry from here on.
+          entries: [
+            {
+              type: "message",
+              message: { role: "assistant", content: [], stopReason: "stop" },
+            },
+          ],
+        });
+        const low = session.relay(
+          5,
+          daemonEnvelope("stored notice", `consumer-low-${storage}`, { urgency: "low" })
+        );
+        await until(
+          () => session.events.includes(`stored evt-consumer-low-${storage}`),
+          "the stored card"
+        );
+        const later = session.relay(6, peer(`after-low-${storage}`));
+        await until(() => session.replies(later).includes("done"), "the later card's done");
+        await session.tick();
+        await session.tick();
+
+        expect(session.replies(low)).toEqual(["received", "done"]);
+        expect(session.registrations.at(-1)?.delivery?.resume).toEqual({
+          stream_id: STREAM,
+          seq: 6,
+        });
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
     const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
@@ -23851,7 +24116,7 @@ describe("consumer delivery", () => {
 
   test("a gap the registration answers is a notice held until the host is settled, held again after a restart", async () => {
     const gapNotices = (deliveries: readonly { readonly content: string }[]) =>
-      deliveries.filter((delivery) => delivery.content.includes("no longer holds some messages"));
+      deliveries.filter((delivery) => delivery.content.includes("retention_hours: "));
     const first = await bootConsumer("consumer-gap-a", { gap: true, turn: "streaming" });
     expect(gapNotices(first.fixture.deliveries)).toHaveLength(0);
     await first.stop();
@@ -24189,9 +24454,9 @@ describe("consumer delivery", () => {
       });
 
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
-      // Byte for byte: the body the route answered, written as the card writes a text holding
-      // blank lines (one quoted scalar), and no note, because nothing is missing.
-      expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
+      // Byte for byte: the body the route answered, in the block after the card's fields that
+      // holds the author's words as they are, and no note, because nothing is missing.
+      expect(card).toContain(`\n<body>\n${WHOLE}\n</body>`);
       expect(card).not.toContain("first part only");
     });
 
@@ -24225,7 +24490,7 @@ describe("consumer delivery", () => {
       );
 
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
-      expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
+      expect(card).toContain(`\n<body>\n${WHOLE}\n</body>`);
       expect(card).not.toContain("too large for the bus");
     });
 
@@ -24533,7 +24798,8 @@ describe("an envelope that carries the role field", () => {
 
     expect(await shown("role-field-card-with", withRole)).toEqual(before);
     expect(before.cards[0]?.content).toContain(`id: ${withoutRole.event_id}`);
-    expect(before.cards[0]?.content).toContain("message: Review the plan before noon.");
+    // A session's words come in a block after the card's fields.
+    expect(before.cards[0]?.content).toContain("<message>\nReview the plan before noon.\n</message>");
     expect(JSON.parse(before.inbox ?? "[]")).toEqual([
       {
         event_id: withoutRole.event_id,

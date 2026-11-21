@@ -481,6 +481,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (f"{DAEMON}/internal/texts/testdata/in-front.json", "packages/claude-envoy/tests/words-in-front.test.ts:70 ('the mod's inFront gives what the cases it shares with the daemon's InFront say') reads the daemon's cases of texts.InFront by relative path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay reads, and holds the mod's copy of inFront to each"),
         (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's "
                                                                  "check of the packed tarball passes a listing longer than a pipe holds\" "
                                                                  "copies it into a root of its own and runs it over a long listing"),
@@ -592,6 +593,18 @@ RULES = {
     f"{DAEMON}/internal/daemon/supervision_test.go": [
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
+    # The fourth test of dispatch://INFRA-3686's c-daemon-texts-are-facts reads the passage of each
+    # step taken out of a daemon text in its reader's prompt or skill, and the golden file of its
+    # own package. The skill files are named one by one, as the daemon-go filter names them, so an
+    # edit of another page of skills/ starts no daemon suite (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/daemon/texts_steps_test.go": reads(
+        *[(path, "internal/daemon/texts_steps_test.go:328 reads each file of goldenSteps under ../../../..")
+          for path in [f"{DAEMON}/internal/prompts/go/{name}.md"
+                       for name in ("architect-common", "architect-root", "architect", "implementer", "reviewer", "tester", "worker-common")]
+          + [f"{DAEMON}/internal/prompts/roles/{name}.md"
+             for name in ("architect-root", "controller-root", "implementer", "mechanics/headless", "merger", "tester")]
+          + ["skills/legion-architect/references/wake-routing.md", "skills/legion-controller/SKILL.md",
+             "skills/legion-controller/references/wakes.md"]]),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
@@ -2914,7 +2927,9 @@ GATES = [
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
         ("packages/cipher-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts imports brokerTokenClient from @legion/cipher-client/environment, chooseSignIn from @legion/cipher-client/signins and isFinalRefusal from @legion/cipher-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:19, dispatch-text.test.ts:128"),
+        (f"{DAEMON}/internal/daemon/testdata/texts.golden.json", "packages/envoy-client/src/__tests__/delivery.test.ts:2853 ('a daemon card renders the golden payloads') reads the daemon's golden file of every text by relative path, the file TestEveryKindOnTheListStatesItsFields writes in packages/daemon/internal/daemon, and renders each notice and role message of it"),
+        (f"{DAEMON}/internal/texts/testdata/in-front.json", "packages/envoy-client/src/__tests__/words-block.test.ts:102 ('inFront gives what the cases it shares with the daemon's InFront say') reads the daemon's cases of texts.InFront by relative path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay reads, and holds inFront to each"),
         (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:12"),
         (f"{FIX}/envelope-without-role.json", "packages/envoy-client/src/__tests__/transport.test.ts:11"),
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),

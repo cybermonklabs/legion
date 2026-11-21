@@ -189,6 +189,20 @@ forwards a role message to no holder that is the message's own source, so a suba
 `envoy_publish` to a role its parent holds reaches no session: the subagent reaches its parent
 with a `write` to the parent's `agent://` address.
 
+A card whose envelope says `low` (`lowCard`) is one the session can act on at its next turn: a
+card of the daemon, or of a Dispatch event that is no message or mention Dispatch delivers to the
+session and no ask's (`ask.*`). It starts no turn: it goes as `nextTurn` with no `triggerTurn`, and
+the next turn reads it, whatever starts that turn. Oh My Pi keeps such a card only in memory while
+a turn streams, where that turn does not take it and a process that ends loses it, so the
+extension hands it only to a settled host (`hostSettled`). One that comes during a turn is held,
+and handed at the first settled check after the run, at a heartbeat that finds the host settled,
+or right before a card that starts a turn (`checkStoredCards`). The host writes it with no
+`message_end`, so its frame counts as shown once the session's store holds its entry, on any
+branch of the session, under SQL session storage as under files (`storeHoldsSession`,
+`storedCheck`); until then its claim stays pending and the stream keeps its copy. Its `details`
+carry the hand-over state `inert` and its urgency, and no card id, so no wake follows it and no
+unread count names it.
+
 ## Session identity
 
 Run `/whoami` to copy the active session ID to the clipboard. OMP copies through its host

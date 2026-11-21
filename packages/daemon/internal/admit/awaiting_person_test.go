@@ -162,8 +162,8 @@ func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 	for _, e := range effects(t, pool) {
 		if notice, ok := e.payload.(record.ControllerNotice); ok && notice.Kind == record.AwaitingPersonNotice {
 			notices++
-			if !strings.Contains(notice.Reason, "LEGION-208") {
-				t.Fatalf("awaiting-person notice %q, want it to name the root", notice.Reason)
+			if notice.Issue != "LEGION-208" || notice.Reason != "" {
+				t.Fatalf("awaiting-person notice %+v, want it on the root, with no reason", notice)
 			}
 		}
 	}
@@ -415,8 +415,8 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 			for _, e := range effects(t, pool) {
 				if notice, ok := e.payload.(record.ControllerNotice); ok && notice.Kind == record.UnslottedNotice {
 					unslotted++
-					if !strings.Contains(notice.Reason, "awaits a person") {
-						t.Fatalf("unslotted notice %q, want it to say the root was waiting on a person", notice.Reason)
+					if notice.Phase != phase.AwaitingPerson || notice.Reason != "" {
+						t.Fatalf("unslotted notice %+v, want it to say the root was waiting on a person (phase awaiting_person)", notice)
 					}
 				}
 			}

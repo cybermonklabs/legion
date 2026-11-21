@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -141,26 +141,30 @@ func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string
 	}
 }
 
-// noticeReasons is the reason of every notice of kind in the outbox.
-func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
+// noticePayloads is the payload of every notice of kind in the outbox, decoded as JSON.
+func noticePayloads(t *testing.T, pool *store.Pool, kind string) []map[string]any {
 	t.Helper()
-	var reasons []string
-	rows, err := pool.Query(context.Background(), "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = $1", kind)
+	var notices []map[string]any
+	rows, err := pool.Query(context.Background(), "select payload from outbox where kind = 'notice' and payload->>'kind' = $1 order by id", kind)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var reason string
-		if err := rows.Scan(&reason); err != nil {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatal(err)
 		}
-		reasons = append(reasons, reason)
+		var notice map[string]any
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("decode a %s notice %s: %v", kind, payload, err)
+		}
+		notices = append(notices, notice)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return reasons
+	return notices
 }
 
 // GitHub sends no event when it computes a pull request's mergeability, so a head that starts
@@ -222,15 +226,16 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 			if asked != tc.asked {
 				t.Fatalf("after the read the record's merge forward is %+v, want one asked of code in merging %t", pr.MergeForward, tc.asked)
 			}
-			reasons := noticeReasons(t, pool, "checks-red")
+			notices := noticePayloads(t, pool, "checks-red")
 			if !tc.asked {
-				if len(reasons) != 0 {
-					t.Fatalf("checks-red notices %q, want none: nothing was acted on", reasons)
+				if len(notices) != 0 {
+					t.Fatalf("checks-red notices %v, want none: nothing was acted on", notices)
 				}
 				return
 			}
-			if want := "the issue stays in merging"; len(reasons) != 1 || !strings.Contains(reasons[0], want) {
-				t.Fatalf("checks-red notices %q, want one saying %q", reasons, want)
+			if len(notices) != 1 || notices[0]["phase"] != string(phase.Merging) || notices[0]["conflicts_with"] != "main" ||
+				notices[0]["head"] != "code" || notices[0]["why"] != string(record.ConflictMergeNext) || notices[0]["reason"] != nil {
+				t.Fatalf("checks-red notices %v, want one naming the head code conflicting with main, merging as the phase the issue stays in, merge-next, and no reason", notices)
 			}
 		})
 	}

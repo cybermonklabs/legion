@@ -1,3 +1,5 @@
+import { noticeKind, noticeText } from "@legion/envoy-client/notice-text";
+
 /**
  * The notice a resumed agent gets when its role launcher found its workspace recreated since its
  * session was last written: `LEGION_WORKSPACE_RECREATED=true`, which the launcher sets on every
@@ -5,7 +7,7 @@
  * Provisioning built that workspace from the issue's branch as pushed, the repository's default
  * branch when nothing was, so what the session remembers doing there may be gone.
  *
- * The text and the identity of one process's notice live here because both harnesses tell a
+ * The notice and the identity of one process's notice live here because both harnesses tell a
  * worker the same thing (INFRA-220 D29): the Oh My Pi entry saves it as a custom message ahead of
  * the next turn, and the Claude Code pane's Legion server writes it into the session over the
  * bridge's inbox once its claim has booted. The helpers that read an Oh My Pi transcript branch
@@ -22,6 +24,18 @@ export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
  * which of the two it has.
  */
 export const WORKSPACE_RESTORED_VARIABLE = "LEGION_WORKSPACE_RESTORED";
+
+/**
+ * The recreated-workspace notice: the issue, the issue's branch (`legion/<KEY>`), which
+ * provisioning built the workspace from where anything was pushed to it, and whether the tracked
+ * work the session had not pushed was put back (`unpushed_work: restored`) or is gone
+ * (`unpushed_work: lost`). What the agent does on it is in its role prompt.
+ */
+export const WORKSPACE_RECREATED_NOTICE = noticeKind("legion", "workspace recreated", [
+  "issue",
+  "branch",
+  "unpushed_work",
+]);
 
 /**
  * One process's notice: its text, and the id every copy it sends carries (`details.id`), which
@@ -49,25 +63,12 @@ export function workspaceRecreatedNotice(
   issue: string
 ): WorkspaceRecreatedNotice | undefined {
   if (!workspaceRecreated(environment)) return undefined;
-  if (environment[WORKSPACE_RESTORED_VARIABLE] === "true") {
-    return {
-      id: crypto.randomUUID(),
-      content:
-        `Your workspace was made again since your last turn: the daemon released this issue's idle ` +
-        `pod and gave its CPU and memory back. It holds what was pushed to legion/${issue} and the ` +
-        "tracked work you had not pushed, which the daemon saved and put back. What is gone is what " +
-        "no commit held: the files your scratch directory held, files git ignores, and anything you " +
-        "started that was running. Check the workspace against what you remember doing before you " +
-        "continue.",
-    };
-  }
   return {
     id: crypto.randomUUID(),
-    content:
-      `Your workspace was recreated since your last turn: it holds what was pushed to legion/${issue} ` +
-      "(the repository's default branch if nothing was), and anything you had not pushed is gone. " +
-      "Before you continue, check the workspace against what you remember doing and re-read the " +
-      `last handoff recorded on ${issue} with \`dispatch handoff-read --issue ${issue} --phase <phase>\` ` +
-      "(plan, implement, test or review); Dispatch keeps it, whatever the workspace lost.",
+    content: noticeText(WORKSPACE_RECREATED_NOTICE, {
+      issue,
+      branch: `legion/${issue}`,
+      unpushed_work: environment[WORKSPACE_RESTORED_VARIABLE] === "true" ? "restored" : "lost",
+    }),
   };
 }

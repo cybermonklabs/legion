@@ -18,9 +18,11 @@ type roleRecipient struct {
 }
 
 // addressedRole is a recipient the daemon can name: the claim token whose role topic the message
-// is published to, and the issue its outbox row belongs to.
+// is published to, the role it holds, which a kind's urgency rule reads (texts.UrgencyOf), and
+// the issue its outbox row belongs to.
 type addressedRole struct {
 	token claim.Token
+	role  claim.Role
 	issue string
 }
 
@@ -59,7 +61,7 @@ func (e *Engine) addressRoles(project string, recipients []roleRecipient, unnama
 		if slices.ContainsFunc(addressed, func(a addressedRole) bool { return a.token == token }) {
 			continue
 		}
-		addressed = append(addressed, addressedRole{token: token, issue: recipient.row})
+		addressed = append(addressed, addressedRole{token: token, role: recipient.role, issue: recipient.row})
 	}
 	return addressed, nil
 }

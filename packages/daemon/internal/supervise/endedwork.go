@@ -13,10 +13,10 @@ import (
 // turn was cut off and whether that turn was the pending task's, what background work the
 // process's own activity report named, whether the daemon held a report of that process that
 // speaks of its last turn at all, and whether the record has been told. The next process is told
-// it in a prompt: the sentence RelaunchSentence composes from it, in front of the task the claim
-// holds or as a delivery of the daemon's own when it holds none (Delivery.message,
+// it in a prompt: the relaunch note built from it (RelaunchNote, EndedWork.Facts), in front of the
+// task the claim holds or as a delivery of the daemon's own when it holds none (Delivery.message,
 // queueRelaunch), and marked told at the confirmation of the prompt that carried it (confirm).
-// This is the record that sentence is built from, written where the machine lets the process go
+// This is the record that note is built from, written where the machine lets the process go
 // (letGo, recordEnd) and persisted on the claim's row (store's ended_work), since that prompt can
 // be a relaunch, a wake and a daemon restart away.
 //
@@ -128,11 +128,11 @@ type ActivityReport struct {
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
 // ended (dispatch://INFRA-3276 R3).
 //
-// The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
-// that is not the daemon's own — the runtime's account of a death, the failure sentence that can
-// carry a provider's or a launcher's text — is quoted as a Go string (strconv.Quote), as
-// abandonedTask quotes the provider's reason: the quotes bound it, and a newline or a quote inside
-// it is escaped rather than read as a sentence of the daemon's own.
+// The cause is read into an agent's prompt as it stands (the relaunch note's cause, EndedWork.Facts,
+// and the cut-turn note's sentence, CutTurnNote), so every word of it that is not the daemon's own
+// — the runtime's account of a death, the failure sentence that can carry a provider's or a
+// launcher's text — is quoted as a Go string (strconv.Quote): the quotes bound it, and a newline
+// or a quote inside it is escaped rather than read as a sentence of the daemon's own.
 const (
 	noEnd          = ""
 	endRetired     = "the daemon retired it after its prompts came to nothing"
@@ -149,8 +149,8 @@ func endDied(cause string) string { return "the process died: " + strconv.Quote(
 // a turn only where the stop finds one (inTurn: the claim reads working, endState). The daemon's
 // sweep posts over any claim stored working past its bound (the daemon's backstopStalledTurns),
 // and that includes a claim working for a compaction with no turn started under it, which endState
-// reads as no turn: there it is the claim that showed no progress, so the sentence the next process
-// reads never says a turn stalled and then that it was in none (relaunchSentence).
+// reads as no turn: there it is the claim that showed no progress, so the note the next process
+// reads never says a turn stalled and then that it was in none (EndedWork.Facts).
 func endStalled(bound time.Duration, inTurn bool) string {
 	if inTurn {
 		return fmt.Sprintf("its turn showed no progress for %s", bound)
@@ -186,14 +186,14 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // ran a turn, a report read before that turn began (Claim.LastTurnStart) is no report of that
 // turn, as the idle rule holds (claim.ReadSessionWork): the record is not Reported, rather than
 // reading the turn before's "nothing runs" as this one's. It still takes that report's background
-// work, which the report saw running in this process, so the sentence of a turn cut off names
-// that work and then says that the daemon has no report of what the turn started
-// (relaunchSentence). Nothing is written when no turn was running, no task was taken back and a
+// work, which the report saw running in this process, so the note of a turn cut off names that
+// work and then that the daemon has no report of what the turn started (EndedWork.Facts).
+// Nothing is written when no turn was running, no task was taken back and a
 // report of the last turn says nothing runs, or when no turn was running, no task was taken back
 // and none had run in this process, which can have started no background work; a process that
 // ran a turn and left no report of it is recorded as unreported rather than as having ended
 // nothing. A take-back always leaves a record of its let-go, since the task it took is sent again
-// behind that record's sentence (Delivery.message). A record still untold is replaced as the
+// behind that record's note (Delivery.message). A record still untold is replaced as the
 // union of the two (joined).
 //
 // A claim stored working is in a turn, except where it is working for nothing that runs

@@ -40,8 +40,8 @@ func TestAnUnrecordedRootInTriageWakesTheControllerWhenItCarriesTheLabel(t *test
 	apply(t, pool, admission, "labeled", labeled, engineStub{})
 	apply(t, pool, admission, "created-labeled", intake.DispatchIssue{Key: "LEGION-305", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.created", Status: "triage", Title: "Handed over at creation", Rank: "B", HandedOver: handed}, engineStub{})
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: "LEGION-300", payload: record.ControllerNotice{Kind: record.TriageNotice}},
-		{kind: record.OutboxKindControllerNotice, issue: "LEGION-305", payload: record.ControllerNotice{Kind: record.TriageNotice}},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-300", payload: record.ControllerNotice{Kind: record.TriageNotice, Issue: "LEGION-300"}},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-305", payload: record.ControllerNotice{Kind: record.TriageNotice, Issue: "LEGION-305"}},
 	})
 	assertWaiting(t, pool, nil)
 	if got := maybeIssue(t, pool, "LEGION-300"); got != nil {
@@ -227,7 +227,7 @@ func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing
 	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "done", Title: "active", Rank: "A"}, engineStub{})
 	assertSlots(t, pool, nil)
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: "LEGION-ACTIVE", payload: record.ControllerNotice{Kind: record.SlotFreeNotice}},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-ACTIVE", payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: "LEGION-ACTIVE"}},
 	})
 
 	apply(t, pool, admission, "next-labeled", intake.DispatchIssue{Key: "LEGION-NEXT", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "next", Rank: "B", HandedOver: handed}, engineStub{})

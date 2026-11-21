@@ -467,26 +467,27 @@ func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
 	topic := notify.ControllerTopic(r.project)
 	var told []listenerPublish
+	var turns int
 	r.await("the controller's notice of a run of provider errors", 3*time.Minute, func() bool {
 		told = nil
 		for _, published := range r.notices.acceptedOn(topic) {
 			var payload struct {
-				Kind   string `json:"kind"`
-				Reason string `json:"reason"`
+				Kind  string `json:"kind"`
+				Turns int    `json:"turns"`
 			}
 			if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
 				t.Fatalf("decode the controller notice %q: %v", published.Payload, err)
 			}
 			if payload.Kind == string(record.ProviderErrorsNotice) {
-				published.Payload = payload.Reason
 				told = append(told, published)
+				turns = payload.Turns
 			}
 		}
 		return len(told) == 1
 	})
-	r.note("the controller was told once on %s: %q", topic, told[0].Payload)
-	if !strings.Contains(told[0].Payload, strconv.Itoa(ladderSends)+" turns in a row") {
-		t.Fatalf("the controller's notice does not name the run of %d turns: %q", ladderSends, told[0].Payload)
+	r.note("the controller was told once on %s: %s", topic, told[0].Payload)
+	if turns != ladderSends {
+		t.Fatalf("the controller's notice names a run of %d turns, want %d: %s", turns, ladderSends, told[0].Payload)
 	}
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held by the run of provider errors: %+v", r.ladder, issue)

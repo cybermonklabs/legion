@@ -211,11 +211,17 @@ message from Dispatch's Agents page as that person's own turn.
 
 Every line the server writes into the session is one Envoy envelope as the shared
 `@legion/envoy-client/delivery` renderer renders it; raw envelope bytes are never exposed.
-The rendering names the sender (`from`), the time (`at`) and the event's id (`id`), and, where the
-envelope carries them, `urgency`, `expects_reply` — what the sender wants back, as a string:
-`false` (nothing, so do not reply and do not acknowledge), `optional` or `required`, the old `none`
-reaching the reader as `false` — `re` for a correlated inbound event, and
-`reply_with`, the command that answers it.
+The rendering names the sender (`from`, its session id and title), each role the sender holds
+once (`role`, or `roles` where it holds more than one), the time (`at`) and the event's id (`id`),
+each once, and `to: you` on a message sent to this session directly. Where the envelope carries
+them it names `urgency`,
+`expects_reply` — what the sender wants back, as a string: `false` (nothing, so do not reply and
+do not acknowledge), `optional` or `required`, the old `none` reaching the reader as `false` — and
+`re` for a correlated inbound event. A card from another session carries no reply command: reply
+with `envoy_send` to the `from` session and `in_reply_to` the `id`, or with `envoy_publish` to
+`notifications.role.<role>` for one of its roles. The message's words come in a block after the
+fields. A daemon notice or role message shows its fields as lines under `message:`, each once,
+and another author's words in a block of their own. A Dispatch card keeps its reply command.
 
 Three envelope fields the server acts on and shows nowhere:
 

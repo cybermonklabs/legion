@@ -289,13 +289,12 @@ func TestAReadmittedTreeWhoseMemberRunsGetsTheEarlierGenerationsShapeThoughItsAr
 			root, readmitted.Generation, readmitted.Phase, readmitted.TakenBack)
 	}
 	start := assertArchitectEntry(t, pool, root, 2)
-	if !strings.Contains(start.Task, workflow.ArchitectReadmittedLabel) {
+	if !hasLines(start.Task, workflow.ArchitectReadmittedLabel) {
 		t.Fatalf("the re-admission's architect task of %s = %q, want the shape of a tree that ran at an earlier generation, labelled %q",
 			root, start.Task, workflow.ArchitectReadmittedLabel)
 	}
-	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "while nothing in it runs",
-		"Nothing else starts this tree, and no message is coming."} {
-		if strings.Contains(start.Task, untrue) {
+	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "nothing_else_starts_it: true"} {
+		if hasLines(start.Task, untrue) {
 			t.Fatalf("the re-admission's architect task of %s = %q; it holds %q, which is false of a tree whose child in planning "+
 				"this promotion starts again", root, start.Task, untrue)
 		}

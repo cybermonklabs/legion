@@ -145,7 +145,7 @@ func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t
 		state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
 		return connected && state.Child != nil
 	})
-	want := (movedAddress{ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
+	want := (movedAddress{ghVolumeName, ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
 	held := r2.driftedInPod(g.pod(loc.Sandbox.Name), claim.RoleController)
 	if !slices.ContainsFunc(held, func(m movedAddress) bool { return m.String() == want }) {
 		t.Fatalf("the controller's pod holds %+v, want %q among it", held, want)
@@ -215,7 +215,7 @@ func TestAnOwnerlessControllerPodIsReplacedOnceItsProjectGainsAnOwner(t *testing
 		state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
 		return connected && state.Child != nil
 	})
-	want := (movedAddress{ghVolumeName, ghDirsName(nil), ghDirsName(staticDirs)}).String()
+	want := (movedAddress{ghVolumeName, ghVolumeName, ghDirsName(nil), ghDirsName(staticDirs)}).String()
 	held := r2.driftedInPod(g.pod(loc.Sandbox.Name), claim.RoleController)
 	if !slices.ContainsFunc(held, func(m movedAddress) bool { return m.String() == want }) {
 		t.Errorf("the controller's pod holds %+v, want %q among it", held, want)

@@ -277,11 +277,11 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	// moment the pane reports ready. The implementer's is held until step 1 has written the record
 	// it reads; the tester's until step 3 has; the reviewer's until step 5's approval has moved the
 	// issue to accepting.
-	r.implementerCall = r.panes[r.token(claim.RoleImplementer)].arm("Phase: implementing.",
+	r.implementerCall = r.panes[r.token(claim.RoleImplementer)].arm("phase: "+string(phase.Implementing),
 		map[string]any{"op": "handoff_complete", "summary": "Implemented the change at the head the implement record names, pushed to the branch."}, true)
-	r.testerCall = r.panes[r.token(claim.RoleTester)].arm("Phase: testing.",
+	r.testerCall = r.panes[r.token(claim.RoleTester)].arm("phase: "+string(phase.Testing),
 		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes.", "verdict": "pass"}, true)
-	r.reviewerCall = r.panes[r.token(claim.RoleReviewer)].arm("Phase: reviewing.",
+	r.reviewerCall = r.panes[r.token(claim.RoleReviewer)].arm("phase: "+string(phase.Reviewing),
 		map[string]any{"op": "handoff_complete", "summary": "Reviewed the head the review record names and approved it."}, true)
 
 	r.seed()

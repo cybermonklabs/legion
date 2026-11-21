@@ -1408,27 +1408,28 @@ func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.
 	return now
 }
 
-// controllerNotices is the reason of every provider-errors notice the daemon has published to the
-// project's controller topic for issue, oldest first. The topic carries every claim's notice, so
-// the issue is read off the notice's own summary line (noticeSummary).
+// controllerNotices is the payload of every provider-errors notice the daemon has published to
+// the project's controller topic for issue, oldest first: the notice's record, its run of turns
+// among its fields. The topic carries every claim's notice, so the issue is read off the notice's
+// own summary line (noticeSummary).
 func (r *claimCompactionLive) controllerNotices(issue string) []string {
 	r.t.Helper()
 	want := noticeSummary(record.ProviderErrorsNotice, issue)
-	var reasons []string
+	var payloads []string
 	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
 		if published.Message != want {
 			continue
 		}
 		var payload struct {
-			Kind   string `json:"kind"`
-			Reason string `json:"reason"`
+			Kind  string `json:"kind"`
+			Turns int    `json:"turns"`
 		}
-		if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
-			r.t.Fatalf("decode the controller notice %q: %v", published.Payload, err)
+		if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil || payload.Kind != string(record.ProviderErrorsNotice) || payload.Turns < 1 {
+			r.t.Fatalf("the controller notice %q is no provider-errors record naming its run of turns (%v)", published.Payload, err)
 		}
-		reasons = append(reasons, payload.Reason)
+		payloads = append(payloads, published.Payload)
 	}
-	return reasons
+	return payloads
 }
 
 func (r *claimCompactionLive) awaitControllerNotices(issue string, count int) {

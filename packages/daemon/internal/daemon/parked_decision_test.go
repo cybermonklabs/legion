@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -74,9 +75,21 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 					t.Fatalf("delivered %+v, want nothing to the architect", delivered)
 				}
 				kind, _ := record.SpecDecision(decision.Kind)
-				want := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Decision: kind, Root: "LEGION-1",
-					Ref: decision.Ref, Actor: "user:alice", Version: 3, Reason: decision.Reason}
-				if got := parkedDecisions(t, pool); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+				// A changes request carries the reviewer's words; an approval and a carried gate's
+				// opening carry none, whatever sentence the decision's row held.
+				want := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Issue: "LEGION-1", Decision: kind, Root: "LEGION-1",
+					Ref: decision.Ref, Actor: "user:alice", Version: 3}
+				got := parkedDecisions(t, pool)
+				if len(got) == 1 {
+					// The decision's time is the runner's clock when it parked it; the words of a
+					// changes request carry the same author and time.
+					want.At = got[0].At
+					if kind == record.DecisionDesignChangesRequested {
+						want.Reason = decision.Reason
+						want.Words = map[string]texts.WordsMeta{"reason": {By: "user:alice", At: got[0].At}}
+					}
+				}
+				if len(got) != 1 || got[0].At.IsZero() || !reflect.DeepEqual(got[0], want) {
 					t.Fatalf("parked decisions %#v, want one %#v", got, want)
 				}
 				if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 1 || kept[0].Ref != decision.Ref || kept[0].Decision != kind || kept[0].Actor != "user:alice" {
@@ -219,9 +232,14 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 		}
 	}
 	_, delivered := publisher.snapshot()
-	want := record.Notice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Actor: "user:alice", Version: 3}
+	want := record.Notice{Kind: record.ParkedDecisionNotice, Issue: "LEGION-1", Decision: record.DecisionDesignApproved, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Actor: "user:alice", Version: 3}
+	if len(delivered) == 1 {
+		if published, ok := delivered[0].payload.(record.Notice); ok {
+			want.At = published.At
+		}
+	}
 	if len(delivered) != 1 || delivered[0].topic != notify.ControllerTopic("legion") || delivered[0].message != "parked-decision on LEGION-1" ||
-		!reflect.DeepEqual(delivered[0].payload, want) {
+		want.At.IsZero() || !reflect.DeepEqual(delivered[0].payload, want) {
 		t.Fatalf("delivered %+v, want one %#v on %s as parked-decision on LEGION-1", delivered, want, notify.ControllerTopic("legion"))
 	}
 }
@@ -1059,4 +1077,28 @@ func owedDecisionsLogged(t *testing.T, logged []byte) []string {
 		lines = append(lines, fmt.Sprintf("%s %s root=%s issue=%s where=%s", entry.Level, entry.Ref, entry.Root, entry.Issue, entry.Where))
 	}
 	return lines
+}
+
+// R1: above the bound a text carries "the first part, the count of the rest (or that more follows,
+// where the event did not carry the whole text)" (dispatch://INFRA-3686/spec). A person requests
+// changes with a reason of 5,000 UTF-16 units on a root whose tree nobody hears, so the
+// design-changes-requested notice is parked: the kept decision takes its words from the notice
+// (noticeWords), which is already cut to 4,000, and not from the review's event, which carried all
+// 5,000. The controller's parked-decision notice then says that more follows and gives no count
+// of the rest, though the event carried the whole reason and the count (1000) was known.
+func TestAParkedChangesRequestKeepsTheCountOfTheRest(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	reason := strings.Repeat("r", 5000)
+	notice, err := record.NoticeOf(workflow.ChangesRequestedNotice("LEGION-208", record.DesignStepSpec, 2, reason, "user:alice", at))
+	if err != nil {
+		t.Fatalf("build the changes-requested notice: %v", err)
+	}
+	parked := record.ParkedDecisionNoticeOf("LEGION-208", "LEGION-208",
+		record.ParkedDecision{Ref: notice.Ref, Decision: record.DecisionDesignChangesRequested, Actor: notice.Actor, At: at,
+			Words: noticeWords(notice)}, notice.Version)
+	meta := parked.Words["reason"]
+	if len(parked.Reason) != texts.OneAct || meta.Rest != 1000 || meta.More {
+		t.Errorf("the parked-decision notice carries %d units with rest %d and more %t, want the first 4000, rest 1000 and no mark that more follows",
+			len(parked.Reason), meta.Rest, meta.More)
+	}
 }

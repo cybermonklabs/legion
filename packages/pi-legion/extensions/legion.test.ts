@@ -67,6 +67,7 @@ import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { noticeFields } from "@legion/test-fixtures/notice-fields";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -7086,8 +7087,8 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
         : []
     );
   // A resumed session, its history uncompacted turns, whose role launcher said its workspace was
-  // recreated: at session start the plugin saves one notice naming the issue's branch, and no
-  // branch it assumes the repository's default to be, as a steer that starts no turn, so Oh My
+  // recreated: at session start the plugin saves one notice naming the issue and its branch, and
+  // no branch it assumes the repository's default to be, as a steer that starts no turn, so Oh My
   // Pi stores it ahead of the next turn whatever starts that turn.
   test("a resume told LEGION_WORKSPACE_RECREATED=true saves one notice ahead of its next turn", async () => {
     process.env.LEGION_WORKSPACE_RECREATED = "true";
@@ -7108,18 +7109,21 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
       {
         message: {
           customType: "legion-workspace-recreated",
-          content: expect.stringContaining("legion/REPO-43"),
+          content: expect.any(String),
           display: true,
           details: { id: expect.any(String) },
         },
         options: { deliverAs: "steer", triggerTurn: false },
       },
     ]);
+    const content = String(notices(pane)[0]?.message.content);
+    expect(noticeFields(content)).toEqual({
+      notice: "workspace recreated",
+      issue: "REPO-43",
+      branch: "legion/REPO-43",
+      unpushed_work: "lost",
+    });
     expect(JSON.stringify(notices(pane))).not.toMatch(/\bmain\b/);
-    // The last handoff is a record on the issue, which the recreation did not touch.
-    expect(JSON.stringify(notices(pane))).toContain(
-      "dispatch handoff-read --issue REPO-43 --phase <phase>"
-    );
   });
 
   test("a resume told false, or nothing, saves no notice", async () => {
@@ -7174,7 +7178,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
   const entry = (id: string) => ({
     type: "custom_message",
     customType: "legion-workspace-recreated",
-    content: "Your workspace was recreated since your last turn: …",
+    content: "legion:\n  notice: workspace recreated",
     display: true,
     details: { id },
   });
@@ -7212,7 +7216,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("branch: legion/REPO-43"),
         display: true,
         details: { id },
       },

@@ -335,7 +335,7 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
 		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(retroIdentity(nil, 1), rating), "alice")
 		expectRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
-		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+		for _, session := range []string{model.LegionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 			refused := putRating(t, handler, issue, id, withFields(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
 			expectRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 		}
@@ -368,7 +368,7 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	writer := legionDaemonSessionPrefix + "LEG"
+	writer := model.LegionDaemonSessionPrefix + "LEG"
 	plan, retro := uuid.NewString(), uuid.NewString()
 	rating := withFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
 
@@ -419,7 +419,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	const elsewhere, own = "a-daemon-token-scoped-to-another-project", "a-daemon-token-scoped-to-the-issues-project"
 	for token, projects := range map[string][]string{elsewhere: {brokerTestProject}, own: {"OTH"}} {
 		answer := liveNamedToken(caller.jkt)
-		answer.Session, answer.Projects = legionDaemonSessionPrefix+"OTH", projects
+		answer.Session, answer.Projects = model.LegionDaemonSessionPrefix+"OTH", projects
 		rig.broker.Says(token, answer)
 	}
 	daemon := daemonSessionOf("OTH")
@@ -845,7 +845,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), defaultPlanBody(nil, 1), "alice")
 	expectRefusal(t, "a person's plan", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
-	other := putPlanRecord(t, handler, issue, uuid.NewString(), defaultPlanBody(map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + "OTHER"}, 1))
+	other := putPlanRecord(t, handler, issue, uuid.NewString(), defaultPlanBody(map[string]any{"kind": "session", "id": model.LegionDaemonSessionPrefix + "OTHER"}, 1))
 	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG")
 	missing := putPlanRecord(t, handler, "LEG-999", uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
 	expectRefusal(t, "a plan of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
