@@ -1,0 +1,1 @@
+{"errors":[{"extensions":{"value":"1003","problems":[{"path":[],"explanation":"Could not coerce value \"1003\" to Int"}]},"locations":[{"line":1,"column":7}],"message":"Variable $n of type Int! was provided invalid value"}]}

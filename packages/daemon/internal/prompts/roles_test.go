@@ -61,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
+// goPart is one embedded Go daemon prompt part, by its path, go/ included.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read Go daemon prompt part %s: %v", name, err)
+	}
+	return string(body)
+}
+
 func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	for _, file := range modeNeutral {
 		text := rolePart(t, file)
@@ -117,7 +127,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		readSource       = "read the code that already does the nearest thing"
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
-		testerRunsTheApp = "read CI for everything static"
+		testerRunsTheApp = "Let CI do its job: your job is to boot and run the app's real workflows like a user would."
 		redTest          = "the test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
@@ -139,8 +149,9 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
-	// application and reads CI for the static lanes (dispatch://LEGION-631), so the rule to rerun
-	// them is the implementer's alone.
+	// application and leaves CI to do its job (dispatch://LEGION-631, and Sami's decision that the
+	// tester reads no CI, dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), so the
+	// rule to rerun them is the implementer's alone.
 	contains("core/implementer.md", fastChecks, true)
 	contains("core/tester.md", fastChecks, false)
 	contains("core/tester.md", testerRunsTheApp, true)
@@ -291,11 +302,7 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
 	}
-	goMerger, err := goParts.ReadFile("go/merger.md")
-	if err != nil {
-		t.Fatalf("read go/merger.md: %v", err)
-	}
-	if want := "It submits no merge and changes no merge setting"; !strings.Contains(string(goMerger), want) {
+	if want := "It submits no merge and changes no merge setting"; !strings.Contains(goPart(t, "go/merger.md"), want) {
 		t.Errorf("go/merger.md does not say %q", want)
 	}
 }
@@ -321,6 +328,57 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
+	}
+}
+
+// A `failed_checks` ejection of a head that has not changed is queued once more, and the work goes
+// back only on the second such ejection (dispatch://INFRA-1303, R4, which says the rule is written
+// in the merger's own text). The merger's part said the opposite until it did: "a queue that took
+// the head out because its own `merge_group` checks failed is work to fix, so send the issue
+// back", which sent cybermonklabs/legion#3972 round a lap on a flaky group build (INFRA-3204's
+// retro). The record the requeue owes is pinned as a pointer to the page that holds it, so the
+// merger keeps no second list of its facts. cybermonklabs/legion#4447 moved every step of the
+// merger's out of skills/legion-worker/references/merge-gate.md into this part, so these rows also
+// hold the two sentences the skills guard pinned there: the requeue at an unchanged head, and that
+// no role re-runs a group build.
+func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"At a head that has not changed, the removal gets that same head queued once more",
+		"the issue goes back only on the second such removal of that head",
+		"no role re-runs a group build",
+		"carrying the facts `skill://legion-worker/references/red-at-the-head.md` names for the record",
+		// The two enqueue budgets of one head, each told apart by its comment's first line
+		// (INFRA-1303's review round 2, R2-15).
+		"the first line `failed_checks requeue of <head sha>`",
+		"begins with the line `merge_conflict requeue of <head sha>`",
+		// The occurrence goes out with the record, before the requeue, since a green group build
+		// merges the pull request and no later step of the merger's runs (review round 3, finding 4).
+		"still before you queue it, run the three steps of that page's *What becomes of the record*",
+		"saying that the requeued build's outcome is not yet known",
+		// A group build that failed in no test owes no census step (the architect, 2026-11-20).
+		"A group build that failed at a step and in no test, such as a download that answered 5xx or a runner that ended, owes the record and none of those three steps",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	// The retired send-back is refused with any punctuation after "is work to fix", or none: the
+	// comma of "is work to fix, so send the issue back", the full stop of "That is work to fix. Send
+	// the issue back", and a colon, which two literal pins let through until the class search at
+	// INFRA-1303's merge head. The rows below show the pattern takes each of the three.
+	sendsBackAtOnce := regexp.MustCompile(`(?i)\bis work to fix\s*[^\w\s]*\s+(?:so\s+)?send the issue back\b`)
+	for _, old := range []string{
+		"is work to fix, so send the issue back",
+		"That is work to fix. Send the issue back",
+		"That is work to fix: send the issue back",
+	} {
+		if !sendsBackAtOnce.MatchString(old) {
+			t.Errorf("the send-back pattern lets through %q", old)
+		}
+	}
+	if phrase := sendsBackAtOnce.FindString(foldWhitespace(merger)); phrase != "" {
+		t.Errorf("roles/merger.md still sends the issue back on the first `failed_checks` ejection: %q", phrase)
 	}
 }
 
@@ -385,12 +443,9 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 	// does one that lost the step that lets a role's own background work finish before it answers
 	// (dispatch://INFRA-4203 R2).
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
-		body, err := goParts.ReadFile(part)
-		if err != nil {
-			t.Fatalf("read %s: %v", part, err)
-		}
+		body := goPart(t, part)
 		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles", "Step 2: let each subagent and each background job that you started finish."} {
-			if !strings.Contains(string(body), want) {
+			if !strings.Contains(body, want) {
 				t.Errorf("%s does not say %q", part, want)
 			}
 		}
@@ -527,16 +582,19 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
-// when a later edit deletes the rule; it does not show that an agent follows it, which each
-// issue's session runs measure. Each of the first four sentences sits in the core its role
-// composes, so the rule reaches that role and no other: the simplify pass and the class search are
-// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
-// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
-// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
-// would copy from.
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth,
+// dispatch://INFRA-1303's sixth and dispatch://INFRA-3204's check CI proves, each pinned by the
+// sentence that carries it. A pin fails when a later edit deletes the rule; it does not show that
+// an agent follows it, which each issue's session runs measure. Each of the first four sentences
+// sits in the core its role composes, so the rule reaches that role and no other: the simplify
+// pass and the class search are the implementer's, the procedure and can-fail rules the tester's,
+// the open-decision rule the planner's, and the planner's WAITING line is phase mechanics, so it
+// lives in its residue rather than its core. R5 is the exception: Compose names core/oracle.md for
+// no role, and it is pinned beside core/common.md to keep one wording of that rule in the prompt
+// tree, which a later core would copy from. R6's holders are named in the worker part every phase
+// worker composes, its limit for the reviewer in the reviewer's Go overlay and its wait for the
+// implementer in the implementer's, and the tester's core carries the rule that keeps the tester
+// out of it: the tester reads no CI.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every part below carries for that rule. Outside these parts,
 	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
@@ -564,6 +622,73 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
+		// R6: the reviewer in `reviewing` and the implementer while it holds `implementing` re-run a
+		// red at the head once, after they write the failure down, so a red the change did not cause
+		// costs the tree no extra lap (dispatch://INFRA-1303). The tester reads no CI at all, Sami's
+		// decision on dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its
+		// job, your job is to boot and run the app's real workflows like a user would". Its core
+		// carries his words, and that it reads no check run, re-runs no CI and waits on no CI. The six
+		// rows that pinned the tester's re-run here until then (its holder sentence, the page's reading
+		// of whose red it is, the record before the press, the disposal steps after a green re-run,
+		// its wait for an unreported red, and its read of the head's checks before any verdict) went
+		// with that re-run; the skills guard's `retiredTesterCiReads` refuses their sentences.
+		{"core/tester.md", "Let CI do its job: your job is to boot and run the app's real workflows like a user would."},
+		{"core/tester.md", "You read no check run, re-run no CI and wait on no CI"},
+		{"core/tester.md", "A red check at the head of the pull request ends no round of yours, since your verdict is on the issue's checks and the surface you drove."},
+		// R6's limit for the reviewer: a check the base does not require is neither waited for nor
+		// re-run for the approval, merge-gate.md's rule since cybermonklabs/legion#4211, so the
+		// reviewer's one re-run is of a red on a check the base requires, and a red of the other
+		// kind whose log shows the change breaks something is a finding, as merge-gate.md says. The
+		// sentence is in the reviewer's Go overlay alone, so its row names the part by its go/ path,
+		// which the loop reads through goPart.
+		{"go/reviewer.md", "A check the base does not require you neither wait for nor re-run for the approval: you approve over a red of it that the change did not make and record it as that page says, and a red of it whose log shows that the change breaks something is a finding like any other, as `skill://legion-worker/references/merge-gate.md` says."},
+		// The reviewer's round order carries the record before the press and the disposal steps after
+		// a green re-run (trial-i-head-2 and i-nos1-5 approved after green with no occurrence), and
+		// its wait is the red-at-the-head page's. The skills guard pinned the same order in
+		// merge-gate.md until cybermonklabs/legion#4447 left the round order to this part alone.
+		{"go/reviewer.md", "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call"},
+		{"go/reviewer.md", "and once that re-run is green, run the three steps of that page's *What becomes of the record*"},
+		{"go/reviewer.md", "and a red the counted set does not yet report `completed`, however you learned of it"},
+		// A required red is judged on the counted set, and the line says both halves of the rule
+		// (the architect's ruling of 2026-11-19 on the forward merge of cybermonklabs/legion#4447,
+		// whose sentence "A required check red there is a `REQUEST_CHANGES` naming it" sent every
+		// required red to a request for changes with no re-run): a red the change made is a request
+		// for changes, and one it did not make takes the head's one re-run first. The read is the
+		// counted set, never the commit's check runs, which the red-at-the-head page refuses.
+		{"go/reviewer.md", "A required check red there that the change made is a `REQUEST_CHANGES` naming it, and one the change did not make takes the head's one re-run first"},
+		{"go/reviewer.md", "Second the head's checks as GitHub counts them for the pull request, the counted set"},
+		// The reviewer also reads heads past review, in `accepting`, `retro` or `merging`, where it
+		// holds no phase, so its re-run of a red holds only while it holds `reviewing` (INFRA-1303's
+		// review round 3).
+		{"go/reviewer.md", "and one the change did not make takes the head's one re-run first while you hold `reviewing`"},
+		// A check the counted set does not list yet while a run at the head holds its failed job is
+		// unreported, not absent: it is waited for and gets no re-run, while main's re-run of a
+		// cancelled or absent check stays, absent meaning a run at the head holds its job while the
+		// check is missing from the list; where no run holds the job, the reviewer tells the
+		// architect and does not approve, the sentence pinned below (the architect's rulings of
+		// 2026-11-20 on INFRA-1303's review round 3).
+		{"go/reviewer.md", "One the counted set does not list yet while a run at the head holds its failed job is unreported, not absent, and gets no re-run: wait for it, as that page's *The act and the wait* says."},
+		{"go/reviewer.md", "One `completed` as `cancelled`, or absent from that set: re-run that run's failed and cancelled jobs, once, then wait"},
+		{"go/reviewer.md", "When no run at the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
+		// The worker part names the same record, and the implementer's overlay the same reading of
+		// whose red it is.
+		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
+		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
+		// The implementer's overlay forbids every wait on CI but the ones the red-at-the-head page
+		// gives it for a red it acts on: the wait for the counted set to report that red, the wait on
+		// a null rollup read first, and the wait on its own re-run of a red the change did not make.
+		// Its "Push, then complete: never wait for CI" said no wait at all while the page had it wait
+		// for that re-run (the architect, 2026-11-20), and its exception then named the one re-run
+		// alone while the page had it wait before it pressed as well (the architect's gap review of
+		// 2026-11-20, item 2).
+		{"go/implementer.md", "Push, then complete: never wait for CI, except for the waits `skill://legion-worker/references/red-at-the-head.md` gives for a red you act on."},
+		{"go/implementer.md", "Outside those waits, each of which a wake ends as that page says, never wait for, watch or poll the pull request's remote CI"},
+		// The worker part names the two roles that hold the re-run and the three that press none. It
+		// is composed into the merger's prompt too, and the forward merge of main's guide cut
+		// (5748720cd9) took main's line, which named no role and so gave the merger the re-run
+		// (INFRA-1303's review round 3); the tester left the list when it came to read no CI.
+		{"go/worker-common.md", "only the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs one the change did not make"},
+		{"go/worker-common.md", "The tester presses nothing, and the merger and an implementer that runs retro re-run nothing"},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
@@ -586,7 +711,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
-		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
+		read := rolePart
+		if strings.HasPrefix(pin.file, "go/") {
+			read = goPart
+		}
+		if !strings.Contains(read(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
 		}
 	}

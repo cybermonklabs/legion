@@ -2,7 +2,9 @@
 // The tester-proof pane, as the Legion daemon's tmux runtime launches a phase worker, pointed at
 // rig.sh's daemon stand-in: daemon-pane.ts's `workerPane` over <base env file> (the variables
 // rig.sh gives every agent), read from <checkout>'s own daemon module, whose embedded role prompts it
-// composes. Writes two files into the run directory:
+// composes, on the world <run dir>/world.json names: its repository and the branch its pull request
+// merges into (`repo` and `base`, which rig.sh's world_repository writes there, their one source).
+// Writes two files into the run directory:
 //   worker.env   the pane's environment, one KEY=value line each
 //   system-args  the pane's one `--append-system-prompt` argument, as shell text
 //
@@ -11,6 +13,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
+import { z } from "zod";
 import { workerPane } from "./daemon-pane";
 
 const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
@@ -43,10 +46,15 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
   }
   base[line.slice(0, equals)] = line.slice(equals + 1);
 }
+// The world's repository and base branch, from world.json, the one file that holds them.
+const world = z
+  .object({ repo: z.string().min(1), base: z.string().min(1) })
+  .parse(JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")));
 const pane = workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
   { project, issue, role },
+  { repository: world.repo, defaultBranch: world.base },
   // The pane's real gh is the recording stand-in rig.sh's standins writes to $R/bin/gh, named as
   // an operator names one with LEGION_GH_PATH: it is a script, which the daemon's own resolution
   // on PATH refuses.

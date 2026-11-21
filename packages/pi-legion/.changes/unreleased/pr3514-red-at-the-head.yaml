@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `skill://legion-worker/references/red-at-the-head.md`: the reviewer in `reviewing` or the
+  implementer while it holds `implementing` re-runs a red CI check at the head of its pull request
+  once, after it records the repository, the pull request, the head, the check, the run, the
+  attempt, the failed job and the failing line. The tester presses nothing and reads no CI: the
+  worker skill's pull-request body reference has it let CI do its job, and its `ci_check`
+  reference has it neither read nor record a `ci_check` check's derived result, which the reviewer
+  reads before it approves. The `legion-controller` skill gains the census of those tests: one
+  issue per test, with every later occurrence a comment on it. The reviewer neither waits for nor
+  re-runs a check the base does not require for the approval, while the implementer still re-runs
+  such a red once.
+custom:
+  Issue: pr3514

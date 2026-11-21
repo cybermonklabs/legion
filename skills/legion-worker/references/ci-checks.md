@@ -27,7 +27,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 ## What each role does
 
 - The implementer copies each such check's `Pull request line` into the `Checks` block. The next role that writes the body reads `dispatch results` again and replaces a no-result line.
-- The tester runs and records only the checks with no `ci_check`. A `ci_check` check goes in `failures` only when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`. A run still going fails no round: say so in `implementerProof.how`.
+- The tester runs and records only the checks with no `ci_check`. It neither reads nor records a `ci_check` check's derived result, which is CI's: the reviewer reads it before it approves.
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it. The implementer adds the label, then pushes, because the workflow starts on a push and not on a label. The label stays on while a `ci_check` of the issue names such a job.
 
@@ -37,7 +37,7 @@ When the head's checks have settled and no run of the name answers:
 
 1. Read the merge state first (`gh pr view <n> --json mergeStateStatus`): a `DIRTY` head gets no `pull_request` run, and the forward merge cures it.
 2. A held-back job reads `skipped`, not absent: the label cures it.
-3. Otherwise the check's words are wrong. The tester and the reviewer each send it to the architect as a finding with `envoy_publish`; neither fails the round nor requests changes for it.
+3. Otherwise the check's words are wrong. The reviewer sends it to the architect as a finding with `envoy_publish`, and requests no changes for it; the tester reads no CI run, so the case never reaches it.
 
 ## What the evidence is
 

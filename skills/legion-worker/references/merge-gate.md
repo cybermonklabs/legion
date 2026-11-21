@@ -25,10 +25,11 @@ A `code_scanning` rule requires an analysis that no status-check list names. A r
 
 ### The head's checks
 
-- Read the check runs and, every page, the commit statuses: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`. Read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status.
-- The newest run of a name (latest `started_at`) decides, and the newest status of a context. `--paginate` runs `--jq` once per page, so choose over the merged list.
+- Read the counted set as your role prompt says and, every page, the commit statuses: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`. Read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status.
+- The counted set holds the newest run of each name, and the newest status of a context decides. `--paginate` runs `--jq` once per page, so choose over the merged list.
 - A check run `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a status `pending`, is running: wait, unapproved. A run waiting on an environment's approval, another App's check run, or a status left `pending` has no bound; when it stands longer than its CI usually takes, tell the architect and wait.
 - A check the base does not require holds no approval. A red one whose log shows the change breaks something is a finding; any other is named in the review body.
+- A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.
 - The daemon's `checkRuns` count in the issue's `mergeWait` is only the runs a settlement applied: read GitHub before you act.
 
 ### A required item with no run at the head

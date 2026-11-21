@@ -15,11 +15,14 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // manifest alone, and a `mise` first on PATH that records every call, names a fake install for
 // `mise where`, and answers `omp plugin list`. An `omp` wrapper sits on PATH beside it, as an
 // operator's does: the installer must run the install's own bin/omp by its absolute path instead.
+// Each run also holds an omp binary of its own, as a pod carries the pinned one with no mise, which
+// records its calls and answers `omp plugin list` as the mise stand-in does.
 const dir = temporaryDirectory("install-plugin-profile-test");
 const repoPin = "github:sjawhar/oh-my-pi@18.12.2-sami.20261025-144204";
 
 let runs = 0;
-function install(extra: string[]) {
+/** One run's fake checkout and stand-ins, which `install` runs the installer in. */
+function fixture() {
   const run = join(dir, `run-${++runs}`);
   const checkout = join(run, "checkout");
   const lib = join(checkout, "scripts", "e2e", "lib");
@@ -68,30 +71,61 @@ esac
   writeFileSync(join(bin, "omp"), `#!/bin/sh\ntouch ${JSON.stringify(wrapperRan)}\n`, {
     mode: 0o755,
   });
+  const binary = join(run, "pod", "omp");
+  const binaryLog = join(run, "binary.log");
+  mkdirSync(join(run, "pod"));
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>${JSON.stringify(binaryLog)}
+if [ "$1 $2" = "plugin list" ]; then
+  printf '{"npm":[{"name":"@sjawhar/pi-envoy","version":"0.0.0-test","enabled":true,"path":"%s"}]}\\n' "$PWD"
+fi
+`,
+    { mode: 0o755 }
+  );
   const home = join(run, "omp-home");
   mkdirSync(join(home, ".omp"), { recursive: true });
-  const dest = join(run, "pi-envoy");
+  return {
+    run,
+    lib,
+    bin,
+    home,
+    dest: join(run, "pi-envoy"),
+    installDir,
+    log,
+    wrapperRan,
+    binary,
+    binaryLog,
+  };
+}
+
+/** The installer run with `extra` after its four required flags, in `f`'s checkout. */
+function install(extra: string[], f = fixture()) {
   const result = Bun.spawnSync(
     [
       "bash",
-      join(lib, "install-plugin-profile.sh"),
+      join(f.lib, "install-plugin-profile.sh"),
       "--package",
       "pi-envoy",
       "--profile",
       "legion-e2e-test",
       "--home",
-      home,
+      f.home,
       "--dest",
-      dest,
+      f.dest,
       ...extra,
     ],
-    { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "caller-home") } }
+    { env: { PATH: `${f.bin}:${process.env.PATH ?? ""}`, HOME: join(f.run, "caller-home") } }
   );
   return {
-    dest,
-    omp: realpathSync(join(installDir, "bin", "omp")),
-    calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [],
-    wrapperRan: existsSync(wrapperRan),
+    dest: f.dest,
+    omp: realpathSync(join(f.installDir, "bin", "omp")),
+    calls: existsSync(f.log) ? readFileSync(f.log, "utf8").trim().split("\n") : [],
+    binaryCalls: existsSync(f.binaryLog)
+      ? readFileSync(f.binaryLog, "utf8").trim().split("\n")
+      : [],
+    wrapperRan: existsSync(f.wrapperRan),
     code: result.exitCode,
     stderr: result.stderr.toString(),
   };
@@ -129,5 +163,98 @@ describe("install-plugin-profile.sh's Oh My Pi", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("--omp needs a value");
     expect(r.calls).toEqual([]);
+  });
+
+  // Catches: a pod's binary reached through mise, which a pod does not carry, and the wrapper on
+  // PATH run in its place.
+  test("runs the binary --omp-binary names, as it is and with no mise call, for the install and the verification", () => {
+    const f = fixture();
+    const r = install(["--omp-binary", f.binary], f);
+    expect(r.stderr).toContain("enabled in OMP profile legion-e2e-test");
+    expect(r.code).toBe(0);
+    expect(r.calls).toEqual([]);
+    expect(r.binaryCalls).toEqual([`plugin install ${r.dest}`, "plugin list --json"]);
+    expect(r.wrapperRan).toBe(false);
+  });
+
+  // Catches: a verification failure under --omp-binary that names mise's pin, which that branch
+  // never sets, so `set -u` ends the run on `pin: unbound variable` and the listing is lost.
+  test("an --omp-binary whose plugin list omits the plugin fails naming the binary and the listing", () => {
+    const f = fixture();
+    const binary = join(f.run, "pod", "omp-without-plugin");
+    writeFileSync(
+      binary,
+      `#!/usr/bin/env bash
+if [ "$1 $2" = "plugin list" ]; then
+  printf '{"npm":[]}\\n'
+fi
+`,
+      { mode: 0o755 }
+    );
+    const r = install(["--omp-binary", binary], f);
+    expect(r.stderr).not.toContain("unbound variable");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain(`${realpathSync(binary)} plugin list`);
+    expect(r.stderr).toContain("enabled: []");
+    expect(r.calls).toEqual([]);
+  });
+
+  // Catches: an --omp read as a binary whenever it names an executable file, which is what let a
+  // mistyped binary path fall through to `mise install <path>`: --omp means one thing.
+  test("--omp is a mise tool spec even when it names an executable file", () => {
+    const f = fixture();
+    const r = install(["--omp", f.binary], f);
+    expect(r.code).toBe(0);
+    expect(r.calls).toEqual([
+      `where ${f.binary}`,
+      `where ${f.binary}`,
+      `x ${f.binary} -- ${r.omp} plugin install ${r.dest}`,
+      `x ${f.binary} -- ${r.omp} plugin list --json`,
+    ]);
+    expect(r.binaryCalls).toEqual([]);
+  });
+
+  // Catches: a path that names no executable file handed on to mise, which in a pod with no mise
+  // fails without naming the path.
+  test("refuses an --omp-binary that is not an executable file, naming it, and runs nothing", () => {
+    const plain = join(dir, "omp-not-executable");
+    writeFileSync(plain, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+    const directory = join(dir, "omp-directory");
+    mkdirSync(directory);
+    const paths = [join(dir, "no-such-omp"), plain, directory];
+    const seen = paths.map((path) => {
+      const r = install(["--omp-binary", path]);
+      return {
+        code: r.code,
+        refusal: r.stderr.split("\n")[0],
+        calls: r.calls,
+        binaryCalls: r.binaryCalls,
+        unpacked: existsSync(r.dest),
+      };
+    });
+    expect(seen).toEqual(
+      paths.map((path) => ({
+        code: 2,
+        refusal: `install-plugin-profile: --omp-binary ${path} is not an executable file`,
+        calls: [],
+        binaryCalls: [],
+        unpacked: false,
+      }))
+    );
+  });
+
+  test("refuses an empty --omp-binary, and --omp beside --omp-binary, running nothing", () => {
+    const empty = install(["--omp-binary", ""]);
+    expect(empty.code).toBe(2);
+    expect(empty.stderr).toContain("--omp-binary needs a value");
+    expect(empty.calls).toEqual([]);
+
+    const f = fixture();
+    const both = install(["--omp", repoPin, "--omp-binary", f.binary], f);
+    expect(both.code).toBe(2);
+    expect(both.stderr).toContain(
+      "install-plugin-profile: --omp and --omp-binary each name the Oh My Pi to run; give one of them\n"
+    );
+    expect([both.calls, both.binaryCalls]).toEqual([[], []]);
   });
 });

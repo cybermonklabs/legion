@@ -59,6 +59,7 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - PR body, a check's result, the simplify pass: `skill://legion-worker/references/pr-body.md`.
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 - Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
+- A check red at the head of the pull request, while you hold `reviewing` or `implementing`: `skill://legion-worker/references/red-at-the-head.md`.
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.

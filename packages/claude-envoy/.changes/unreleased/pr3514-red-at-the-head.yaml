@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Legion plugin this package builds ships `skill://legion-worker/references/red-at-the-head.md`:
+  the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a red check
+  at the head of its pull request once, after it records the failure, the tester reads no CI, and
+  the `legion-controller` skill keeps one issue per test that such a re-run cleared.
+custom:
+  Issue: pr3514

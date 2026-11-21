@@ -14,6 +14,8 @@ A fix you are not sure of is not step 1. A problem inside your issue is fixed in
 
 Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one.
 
+A test you re-ran green at the head of your pull request is one occurrence of a known failure, not a new finding: post it and tell the controller as *What becomes of the record* in `skill://legion-worker/references/red-at-the-head.md` says. It is never an ask, and you file nothing.
+
 ## Send a finding to the controller
 
 1. Post the evidence as a `dispatch comment` on the report issue (*Where it goes*), its first line exactly `Clear defect from <your role token>`. It prints `Posted comment <id>`.

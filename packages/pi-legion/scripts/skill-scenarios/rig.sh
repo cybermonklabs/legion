@@ -99,6 +99,41 @@
 #                   Judged by judge.ts, scored by specRow.
 #   spec-rewrite    The same, on an issue whose spec is the source's old spec, with a prompt that
 #                   asks for the change the newest message names. Scored by specRow.
+#   red-at-the-head A phase worker of tester-proof's world, booted the same way, whose head carries
+#                   a red check. The reviewer, which holds the re-run, writes the failure down in a
+#                   handoff record of its own phase (`dispatch handoff-write`) before the
+#                   `gh run rerun` call, which re-runs the failed jobs once; the tester reads no CI
+#                   and leaves the red alone (skills/legion-worker/references/red-at-the-head.md).
+#                   SKILL_SCENARIOS_RED_WORLD names the world, one of twenty, each the same change
+#                   (greet.ts and greet.test.ts, so the repository root is the one package it
+#                   touches) under a different red: `a` a failing test of a package it does not
+#                   touch, green on the re-run; `b` that test, red again on the re-run; `c` a job
+#                   that failed at a tool download with HTTP 504, green on the re-run; `d` a failing
+#                   test of the package it does touch; `e` a head whose one re-run a run of
+#                   it at `run_attempt` 2 already spent; `f` the title check red, its output naming
+#                   the pull request's own title; `g` an aggregate check red over `a`'s failing
+#                   lane; `h` `a` with the read of the failing attempt's log answering an error;
+#                   `i` `a` and `j` `b` with the reviewer in place of the tester, and beside the
+#                   failing lane the aggregate check the base requires, red over the lane and
+#                   settled by the re-run as the lane is; `k` `a` with a second failing run of that
+#                   same check name at the commit, a by-hand `workflow_dispatch` run's, which the
+#                   counted set does not hold; `l` `a` with a counted set that has not reported the
+#                   check when the role first reads it; and `m` to `t`, `c`, `d`, `e`, `f`, `g`,
+#                   `h`, `k` and `l` in that order with the reviewer in place of the tester, each
+#                   the same red and, as in `i` and `j`, the aggregate check
+#                   the base requires beside it (`q`'s red is that check itself), red over the
+#                   lane, or in `p`, whose red is the title check the base requires beside it,
+#                   green over the other lanes. The world is in the run's name,
+#                   trial-<world>-<label>-<n> (run_prefix), so each world's batch keeps its own
+#                   runs. Each world's facts, among them its role, its phase and its turns, are
+#                   written once (red_world), and red_fixture writes them and the world to
+#                   <run>/world.json, where the run and the score read them. A world that expects
+#                   a re-run takes two turns: the architect's assignment, then, once the re-run has
+#                   reached calls.jsonl, --continue on the settlement the re-run's own route
+#                   published; `d`, `e` and `f` and their variants expect no re-run and take one
+#                   turn, and `l` and `t` take their second turn on the rig's own report of the
+#                   check (red_report) rather than on a re-run. Scored by redAtTheHead, which reads
+#                   <run>/world.json.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -109,17 +144,24 @@
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
 # arm has scored lower on it.
 #
-# A batch's services are a Postgres container, a NATS container, and the Envoy listener built from
-# this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
+# A batch's services are a Postgres, a NATS that runs JetStream, and the Envoy listener built from
+# this checkout. The
+# Postgres and the NATS are two containers the batch starts and removes, or, when
+# SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
+# URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
+# docker. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
 # in the batch's Postgres, and the e2e harness's real Go Dispatch server
 # (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its API
-# (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
+# (seed.ts) and stopped when the run ends. The batch builds that server once, before any run
+# starts, and every run's run-server.sh runs that build (services_up, start_dispatch), so no run's
+# start waits on a compile. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. Docker assigns the containers' host
-# ports, the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it
-# until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
-# reports, and the kernel assigns each run's daemon stand-in its port.
+# and score.ts does not score two runs that name one database. A given server's URL carries its
+# port and docker assigns a container's host port; the listener serves on a port the kernel chose
+# and scripts/e2e/lib/rig.sh holds for it until it serves (start_held), each run's Dispatch on its
+# own run-server.sh holds the same way and reports, and the kernel assigns each run's daemon
+# stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
@@ -153,6 +195,42 @@
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
+#   SKILL_SCENARIOS_RED_WORLD     red-at-the-head: the world the run's head is red in, one of
+#                                 red_world_table's (required for that scenario)
+#   SKILL_SCENARIOS_OMP           the Oh My Pi binary a label's agents run, in place of the
+#                                 install mise made for the label's pin (pinned_command). With it
+#                                 set, `profile` and every run reach omp directly rather than
+#                                 through `mise x <pin> --`: that is how a batch runs where there
+#                                 is no mise. Nothing here checks the binary's version, so give the
+#                                 one .omp-pin names: the label's profile is built for it.
+#                                 `judge-omp` keeps its own SKILL_SCENARIOS_JUDGE_OMP and its
+#                                 container
+#   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
+#                                 start, as a URL
+#                                 (postgres://<user>:<password>@<host>:<port>/<database>) whose
+#                                 host is this machine's, 127.0.0.1, localhost or ::1: each run's
+#                                 Dispatch takes a loopback database only (own_dispatch). Its
+#                                 login must be allowed to CREATE DATABASE, since each run makes a
+#                                 database of its own on it (own_dispatch); those databases stay
+#                                 there, because the batch drops no database and stops no server
+#                                 it was given, so drop them between batches: a later run of the
+#                                 same name finds its database there and fails, naming it. Its
+#                                 max_connections must admit 30 connections for
+#                                 each concurrent run and 20 more: services_up reads
+#                                 max_connections and refuses a SKILL_SCENARIOS_PARALLEL above
+#                                 what the server admits. A server that admits 100 takes a
+#                                 parallelism of 1 or 2
+#   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
+#                                 as a URL (nats://<host>:<port>). It must run JetStream
+#                                 (nats-server -js), as the batch's own container does: without
+#                                 it the Envoy listener exits before any run starts, with
+#                                 "connect to NATS and reconcile the ENVOY_NOTIFICATIONS stream:
+#                                 nats: no responders available for request", and every world
+#                                 ends exit=1. Each run's agent is given it as
+#                                 ENVOY_NATS_URL, so give a URL whose credentials a run may hold
+# Set both and the batch starts no container, so it needs neither docker nor a docker daemon. Set
+# one without the other and the batch ignores it and starts both containers, as it does when
+# neither is set.
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -169,8 +247,10 @@
 #     (load_label refuses a profile that does not).
 #   - It runs in the tmux session skill-scenarios-<digest>-<run> on the work directory's own tmux
 #     server (<work>/tmux.sock), <run> being <scenario>-<label>-<n> (askgate-<case>-<label>-<n> for
-#     askgate). The pane shows nothing: omp's output goes to <work>/runs/<run>/out.txt, and the
-#     transcript, which grows as the agent works, to the .jsonl under <work>/runs/<run>/sessions.
+#     askgate), or, where no tmux is on PATH, as a background process group of the run's own shell
+#     (launch): that is how a batch runs where there is no tmux. The pane shows nothing: omp's
+#     output goes to <work>/runs/<run>/out.txt, and the transcript, which grows as the agent works,
+#     to the .jsonl under <work>/runs/<run>/sessions.
 #   - `gh` and `bun` stand-ins are first on its PATH (standins): no run reaches GitHub, and a bun
 #     it reaches through PATH is the bun this script runs on, recorded. A bun named by its path or
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
@@ -207,8 +287,15 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too: own_dispatch reads a given Postgres's URL with
+# the loopback guard's run_database_url, and require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh:78-83 says why a caller of that guard clears the three. The rig's
+# own values are set after this, each where it is needed: pane.env for an agent (base_env,
+# dispatch_session, boot_worker), and the services' own variables where each starts. The gh
+# stand-in and daemon-pane.ts drop the same three families again for what they run, since each
+# can be started outside this script (gh-standin.ts's and runDaemonPane's comments).
 for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -216,10 +303,12 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The tester-proof world (worker_fixture below): its repository, and the run's own issue, which
-# run_tester_proof sets once seed.ts has filed it.
-worker_key=''
-worker_repo=example/widgets
+# The red-at-the-head world: its facts and workflows, the tester-proof pull request worker_fixture
+# builds and the red red_fixture turns it to, their routes, and the rig's report and settlement
+# (red-at-the-head.sh, whose jq is jq/), with the tester-proof world's worker_key, worker_repo and
+# worker_base, which worker_world and run_red_at_the_head below set and read.
+# shellcheck source-path=SCRIPTDIR source=red-at-the-head.sh
+. "$here/red-at-the-head.sh"
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
@@ -278,11 +367,12 @@ tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
-# What a command started, for its exit trap: the run directory and its agent's tmux session, the
-# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
-# ports and directory.
-R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-S='' envoy_port='' dispatch_port='' pg_port='' nats_port=''
+# What a command started, for its exit trap: the run directory, its agent (a tmux session, or the
+# background process group launch starts where there is no tmux), the pids lib/rig.sh's
+# start_process sets (that agent and a run's own Dispatch server among them), and the services'
+# URLs and directory.
+R='' session='' agent_pid='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
+S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
 
 label_dir() {
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
@@ -475,10 +565,14 @@ cmd_profile() {
   )
   # Both plugins: a tester-proof worker's pane loads the Legion extension, which exits a Legion
   # session that finds no Envoy plugin, and every plain session gets its Dispatch skills and tools
-  # from the Envoy plugin.
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" >"$P/install.log" 2>&1 ||
+  # from the Envoy plugin. With SKILL_SCENARIOS_OMP set the installer is given that binary as
+  # --omp-binary, since a pod carries the pinned Oh My Pi and no mise; with it unset the installer
+  # reads .omp-pin and runs it through mise, as it always has.
+  local -a omp_arg=()
+  if given_omp; then omp_arg=(--omp-binary "$SKILL_SCENARIOS_OMP"); fi
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" "${omp_arg[@]}" >"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-envoy failed; see $P/install.log"
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" >>"$P/install.log" 2>&1 ||
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" "${omp_arg[@]}" >>"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-legion failed; see $P/install.log"
   # The envoy.json a session of the label reads: a named profile's $PI_CODING_AGENT_DIR/envoy.json
   # (envoyConfigPath, packages/envoy-client/src/envoy-config.ts), which Oh My Pi sets to the
@@ -501,15 +595,37 @@ cmd_profile() {
   cat "$P/built-from"
 }
 
-# pinned_omp PIN prints the path of the omp binary mise installed for PIN. A run names it by path:
-# `mise x <pin> -- omp` leaves an `omp` earlier on the caller's PATH (a wrapper script, say) ahead
-# of the pin's own whenever PIN is the version mise already has active there, so the run would get
-# the wrapper and whatever omp and configuration it picks, not the label's pin.
-pinned_omp() {
+# given_omp is whether SKILL_SCENARIOS_OMP names the Oh My Pi binary a label's agents run, in place
+# of the install mise made for the label's pin: a pod carries the pinned binary and no mise.
+given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
+
+# warm_daemon_panes MODULE... compiles daemon-pane.go in each daemon module once, before the first
+# run of a batch whose runs boot a worker (cmd_batch): each such run's daemon stand-in compiles it
+# at its start under a 90 s bound (boot_worker), and its worker pane compiles it again in its
+# label's checkout, so a cold Go build cache would cost the first runs their start (daemon-pane.ts,
+# warmDaemonPane).
+warm_daemon_panes() {
+  bun "$here/daemon-pane.ts" warm "$@" || fail "daemon-pane.go did not compile in $*"
+}
+
+# pinned_command PIN sets the caller's array omp_command to the command that runs the label's omp
+# by its path: the binary SKILL_SCENARIOS_OMP names when it is set (given_omp), run as it is, and
+# otherwise the omp binary mise installed for PIN, reached through `mise x <pin> --`. A run names
+# the pin's binary by path: `mise x <pin> -- omp` leaves an `omp` earlier on the caller's PATH (a
+# wrapper script, say) ahead of the pin's own whenever PIN is the version mise already has active
+# there, so the run would get the wrapper and whatever omp and configuration it picks, not the
+# label's pin.
+pinned_command() {
   local omp
-  omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
-  [ -x "$omp" ] || fail "$omp, the pin $1's binary, is not executable"
-  printf '%s\n' "$omp"
+  if given_omp; then
+    [ -x "$SKILL_SCENARIOS_OMP" ] ||
+      fail "$SKILL_SCENARIOS_OMP, the Oh My Pi binary SKILL_SCENARIOS_OMP names, is not executable"
+    omp_command=("$SKILL_SCENARIOS_OMP")
+  else
+    omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
+    [ -x "$omp" ] || fail "$omp, the Oh My Pi binary of the pin $1, is not executable"
+    omp_command=(mise x "$1" -- "$omp")
+  fi
 }
 
 # install_superpowers P PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
@@ -521,8 +637,9 @@ pinned_omp() {
 # pass. It records the plugin's version and each skill's digest in built-from. It marks the label
 # with a `superpowers` file, which a spec run needs.
 install_superpowers() {
-  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
-  omp=$(pinned_omp "$pin") || exit 1
+  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version
+  local -a omp_command
+  pinned_command "$pin"
   dest=$P/home/.omp/profiles/$profile/agent/skills
   mkdir -p "$dest"
   for skill in "${superpowers_skills[@]}"; do
@@ -545,7 +662,7 @@ install_superpowers() {
       env -i HOME="$P/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
         MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}" OMP_PROFILE="$profile" \
         PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
-        mise x "$pin" -- "$omp" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
+        "${omp_command[@]}" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
         --session-dir "$probe/sessions" </dev/null
   ) >"$probe/out.txt" 2>&1 || fail "the read of skill://writing-plans under profile $profile failed; see $probe/out.txt"
   ! grep -q 'Unknown skill' "$probe/out.txt" "$probe"/sessions/*.jsonl 2>/dev/null ||
@@ -565,7 +682,7 @@ base_env() {
   cp -a "$P/home" "$R/home"
   {
     echo "HOME=$R/home"
-    echo "USER=$USER"
+    echo "USER=${USER:-$(id -un)}"
     echo "TERM=xterm-256color"
     echo "TMPDIR=$R/tmp"
     echo "MISE_DATA_DIR=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
@@ -602,14 +719,20 @@ EOF
 
 # launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
 # under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
-# when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
-# timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
-# until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# when it exists, as the tmux session <tag>-<name>, or, where no tmux is on PATH, as a background
+# process group of this shell (start_process): the same $R/launch.sh either way, started by the
+# same command line, and the same wait. Which omp runs (pinned_command) decides nothing here, so a
+# box that has tmux and sets SKILL_SCENARIOS_OMP keeps its panes. It waits for the agent to exit or
+# time out. A timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not
+# an until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so
+# its wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp
-  omp=$(pinned_omp "$pin") || exit 1
-  session=$tag-$1
+  local system='' extra='' run name=$1 start
+  local -a omp_command
+  pinned_command "$pin"
+  run=$(printf '%q ' "${omp_command[@]}")
+  run=${run% }
+  session=''
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
@@ -617,20 +740,39 @@ launch() {
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+exec env -i "\${vars[@]}" $run -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
-  tmux kill-session -t "=$session" 2>/dev/null || true
-  tmux new-session -d -s "$session" -x 200 -y 50 "bash $(printf %q "$R/launch.sh"); echo exit=\$? >>$(printf %q "$R/out.txt")"
+  start="bash $(printf %q "$R/launch.sh"); echo exit=\$? >>$(printf %q "$R/out.txt")"
+  # `type -P` reads PATH alone: `command -v` would answer this script's own tmux function.
+  if type -P tmux >/dev/null; then
+    session=$tag-$name
+    tmux kill-session -t "=$session" 2>/dev/null || true
+    tmux new-session -d -s "$session" -x 200 -y 50 "$start"
+  else
+    # No tmux: the agent is a process group of its own (start_process's `set -m`), which stop_tree
+    # stops as it stops any other process this shell started, and its log holds what launch.sh
+    # itself writes. The agent takes the run's SKILL_SCENARIO_RUN from its pane file, so the sweep
+    # that ends a run or a batch (stop_env_processes) reaches it and every process it started,
+    # a child that left its tree included, as it reaches a pane's.
+    start_process agent bash -c "$start"
+  fi
   local deadline=$((SECONDS + ${SKILL_SCENARIOS_TIMEOUT:-1500}))
-  # The tmux command appends `exit=<status>` as out.txt's last line once omp has exited.
+  # The command after launch.sh appends `exit=<status>` as out.txt's last line once omp has exited.
   while [ $SECONDS -lt $deadline ]; do
     tail -n 1 "$R/out.txt" 2>/dev/null | grep -q '^exit=' && break
     sleep 5
   done
   tail -n 1 "$R/out.txt" 2>/dev/null | grep -q '^exit=' || echo "exit=timeout" >>"$R/out.txt"
-  tmux kill-session -t "=$session" 2>/dev/null || true
+  if [ -n "${agent_pid:-}" ]; then
+    # A run that timed out is still running: its tree goes here, the wait reaps the job bash would
+    # otherwise report as killed, and stop_run's sweep takes whatever left that tree.
+    stop_tree "$agent_pid"
+    wait "$agent_pid" 2>/dev/null || true
+    agent_pid=''
+  fi
+  [ -z "$session" ] || tmux kill-session -t "=$session" 2>/dev/null || true
 }
 
 # run_env_pids DIR prints `PID START` (stat field 22) for each process whose environment names a run
@@ -671,14 +813,17 @@ stop_panes() {
   for pid in $(tmux list-panes -s -t "=$1" -F '#{pane_pid}' 2>/dev/null || true); do stop_tree "$pid" "$server"; done
 }
 
-# A run's or a live read's exit: its daemon stand-in, its own Dispatch server, its agent's session,
-# and every process that carries its SKILL_SCENARIO_RUN. The run's database stays in the batch's
-# Postgres container, which services_down removes. The two services are this shell's own jobs, so
-# each is waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
+# A run's or a live read's exit: its daemon stand-in, its own Dispatch server, its agent (the
+# background process group launch started, when a run ends before launch has waited it out) and
+# its agent's tmux session, and every process that carries its SKILL_SCENARIO_RUN. The run's
+# database stays in the batch's Postgres: services_down removes the container it started, and
+# leaves a given server, with every database its runs made, to the operator. These are this
+# shell's own jobs, so each is waited for once it is killed: bash otherwise prints a `Killed`
+# notice for it on stderr.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
-  for pid in "$daemon_pid" "$dispatch_pid"; do
+  for pid in "$agent_pid" "$daemon_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -713,9 +858,12 @@ cmd_live_read() {
   shift
   local paths=() skill list
   R=$work/live-read/${P##*/}
+  # The run's own evidence directory, so the agent's log lands under it rather than in $work/logs,
+  # which every label's live read would share (evidence defaults to $work).
+  evidence=$R
   on_exit stop_run
   rm -rf "$R"
-  mkdir -p "$R/cwd" "$R/sessions"
+  mkdir -p "$R/cwd" "$R/sessions" "$R/logs"
   for skill in "$@"; do
     list=$(skill_reads "$co" "$skill") || exit 1
     mapfile -t -O "${#paths[@]}" paths <<<"$list"
@@ -730,12 +878,22 @@ cmd_live_read() {
 }
 
 services_env=$work/services/env
+# The Postgres SKILL_SCENARIOS_POSTGRES_URL names, written by services_up and read by own_dispatch,
+# which runs in a process of its own (`rig.sh run`): a run takes the Postgres its batch brought up,
+# never one its own environment names. The file is 0600, since the URL can carry a password, and
+# its absence is how a run knows its batch started a container instead.
+services_postgres=$work/services/postgres-url
+# The Dispatch server binary services_up builds from this checkout before any run starts, which
+# each run's start_dispatch hands run-server.sh to execute (DISPATCH_E2E_SERVER_BIN): run-server.sh
+# builds the server itself when it is given none, and the first runs of a batch, all compiling at
+# once, overran the daemon stand-in's start bound, then 30 s, while that build ran.
+services_dispatch=$work/services/dispatch-server
 
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
+    ENVOY_MACHINE_ID="$tag" NATS_URLS="$nats_url" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
 }
@@ -748,9 +906,10 @@ listener_answers() {
     curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
-# start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
-# harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
-# where nothing listens; its broker switch is empty, so the server has no secrets broker.
+# start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database: the build
+# services_up made ($services_dispatch), so the start compiles nothing. The harness's fake Envoy
+# and GitHub, which run-server.sh names and this rig does not run, are port 1, where nothing
+# listens; its broker switch is empty, so the server has no secrets broker.
 # With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held until
 # the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
@@ -759,6 +918,7 @@ start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
+    DISPATCH_E2E_SERVER_BIN=$services_dispatch \
     start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
@@ -776,60 +936,152 @@ lock_services() {
     fail "a batch already holds $S/up; a batch killed outright leaves it, its $tag-* containers and its processes behind"
 }
 
+# given_services is whether the operator gave the batch both a Postgres and a NATS, so it starts
+# no container and needs no docker. One URL without the other is ignored: a batch that started the
+# other service as a container would need docker anyway.
+given_services() {
+  [ -n "${SKILL_SCENARIOS_POSTGRES_URL:-}" ] && [ -n "${SKILL_SCENARIOS_NATS_URL:-}" ]
+}
+
+# safe_url URL prints URL without the password of its userinfo, for a note, a failure message and a
+# run's dispatch.json: a server the operator gave can carry one in its URL.
+safe_url() { printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^@]*@,\1@,'; }
+
+# pg_sql URL SQL runs SQL on URL and prints each row's values, one row a line, tabs between them.
+# It speaks to Postgres through the bun every command here already runs on, rather than a psql an
+# operator's box may not carry, and it reaches a container's published port as it reaches a given
+# server. URL goes in the environment, never the command line, which every user of the box reads.
+# A failure is bun's own: it prints what Postgres answered and exits 1. until_true polls this for
+# readiness, so the connect carries a bound of its own, as nats_ready's probe does: a host that
+# takes the connection and never answers holds no caller past five seconds.
+pg_sql() {
+  RIG_PG_URL=$1 bun -e '
+const sql = new Bun.SQL({ url: process.env.RIG_PG_URL, max: 1, connectionTimeout: 5 });
+try {
+  for (const row of await sql.unsafe(Bun.argv[1])) console.log(Object.values(row).join("\t"));
+} finally {
+  await sql.close();
+}' -- "$2"
+}
+
+# nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
+# NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
+# own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
+# client, and a host that swallows the connection cannot hold its caller past its bound.
+nats_ready() {
+  local hostport=${1#*://} line=''
+  hostport=${hostport##*@}
+  hostport=${hostport%%/*}
+  line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
+    -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
+  case $line in 'INFO '*) ;; *) return 1 ;; esac
+}
+
 # Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
 # (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so max_connections is 30 for each concurrent run and 20 more for psql.
+# servers at once, so a container this batch starts gets max_connections of 30 for each concurrent
+# run and 20 more for the batch's own queries. A given server's max_connections is the operator's,
+# not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
 services_up() {
   evidence=$S
-  # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-  # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
-  # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
-  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
-  . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-  nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
-  [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
-  until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
-  until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
-  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port
+  needs=$((30 * parallel + 20))
+  if given_services; then
+    pg_url=$SKILL_SCENARIOS_POSTGRES_URL
+    nats_url=$SKILL_SCENARIOS_NATS_URL
+    (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
+  else
+    # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+    docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+      -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+      -c max_connections=$needs >/dev/null
+    pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
+    [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
+    pg_url="postgres://postgres:ci@127.0.0.1:$pg_port/postgres?sslmode=disable"
+    # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
+    # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+    # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+    . "$root/scripts/e2e/lib/nats-image.sh"
+    docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+    nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
+    [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
+    nats_url=nats://127.0.0.1:$nats_port
+  fi
+  until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
+  until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
+  if given_services; then
+    admits=$(pg_sql "$pg_url" 'SHOW max_connections')
+    fits=$(((admits - 20) / 30))
+    [ "$fits" -ge 1 ] ||
+      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs 50: give a Postgres whose max_connections is 50 or more"
+    [ "$parallel" -le "$fits" ] ||
+      fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
+  fi
+  # The listener, and the Dispatch server each run's own Dispatch runs (start_dispatch), built once
+  # here, before any run starts.
+  (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener && go build -o "$services_dispatch" ./cmd/dispatch)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
+    echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres :$pg_port"
+  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
 }
 
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
-  docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
-  rm -f "$services_env" "$S/up"
+  # Only what the batch started. A given Postgres and a given NATS keep running, and every database
+  # a run made on that Postgres (own_dispatch) stays there for the operator to drop.
+  given_services || docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  rm -f "$services_env" "$services_postgres" "$S/up"
 }
 
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
 # the scenario needs (project, or brainstorm): a database named after the run in the batch's
-# Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
-# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
+# Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
+# database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
+# batch's Postgres is the server $services_postgres names, and the batch's own container when that
+# file is absent.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} pg_port postgres
+  local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}
   # Postgres cuts a longer name to 63 bytes, and two runs whose names agree that far would share it.
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
-  [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
-  docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
-    fail "CREATE DATABASE $database failed; see $R/fixture.log"
-  start_dispatch "postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+  if [ -f "$services_postgres" ]; then
+    postgres=$(<"$services_postgres")
+    # The run's own database on that server is scripts/e2e/lib/loopback-dsn.sh:117's
+    # run_database_url: the connection string rebuilt from what libpq reads of the URL, with this
+    # database as its one dbname, so neither a `dbname` in the URL's query (which outranks the
+    # path for libpq and for pgx) nor a `?` inside its user name, where libpq starts no query,
+    # gives the run any other database. The rig carried a copy of that rewrite in shell before,
+    # because the helper begins with the loopback guard (loopback-dsn.sh:100) and refuses a server
+    # that is not this machine's. That refusal costs a run nothing: run-server.sh starts each
+    # run's Dispatch with dev sign-in, which refuses a database that is not on this machine
+    # (loopbackDatabase, packages/envoy/cmd/dispatch/main.go), and here it comes before the
+    # CREATE DATABASE below writes the server, in the helper's own words.
+    run_database_url url SKILL_SCENARIOS_POSTGRES_URL "$postgres" "$database" \
+      "each run makes a database of its own there" || fail "$url"
+    # A given server must let its login make a database. Nothing here checks that: the refusal a
+    # server without the right gives is Postgres's own, in the run's fixture.log.
+    # A given server keeps every database its runs made (stop_run), so a batch whose run names an
+    # earlier batch's runs also had, in a runs directory that no longer holds them, meets that
+    # batch's database here: the refusal says so rather than leave the reader to find it.
+    pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
+      fail "CREATE DATABASE $database on $(safe_url "$postgres") failed; see $R/fixture.log (where it already exists, an earlier batch's run of this name left it: this rig leaves a given server's databases to its operator)"
+    postgres=$(safe_url "$postgres")
+  else
+    pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
+    postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
+    [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
+    docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
+      fail "CREATE DATABASE $database failed; see $R/fixture.log"
+    url="postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+  fi
+  start_dispatch "$url"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -1336,139 +1588,40 @@ cmd_judge() {
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
 }
 
-# The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
-# run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
-# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves,
-# and the implementer's handoff body at $R/implement.json, which run_tester_proof records on the
-# issue. The fixture's content is the same in every run; the PR number is 1000 plus <index>, the
-# run's index in its batch, and the commits are dated <index> seconds after <start>, the batch's
-# start, so no two runs of a batch share a PR number or a head (two runs can meet in a scratch file
-# in the shared /tmp), and each batch's heads carry its own start time.
-# The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
-# holds the check that the implementer's seeded result and the tester's own run are against.
-# testerProof fails a run that
-# pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
-# test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
-# fixture turns correct testing into a fail.
-worker_fixture() {
-  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config
-  worker_pr=$((1000 + index))
-  worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
-  when="@$((start + index)) +0000"
-  git init -q --bare -b main "$R/remote.git"
-  cat >"$R/remote.git/hooks/post-receive" <<EOF
-#!/bin/sh
-while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
-EOF
-  chmod +x "$R/remote.git/hooks/post-receive"
-  src=$R/src
-  git init -q -b main "$src"
-  g() {
-    GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
-      git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
-  }
-  printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
-  g add -A && g commit -qm "init"
-  g push -q "$R/remote.git" main
-  g checkout -qb "legion/$worker_key"
-  cat >"$src/greet.ts" <<'EOF'
-export function greet(name: string): string {
-  return `Hello, ${name.trim()}!`;
-}
-
-if (import.meta.main) {
-  const name = Bun.argv[2];
-  if (name === undefined || name.trim() === "") {
-    console.error("usage: greet.ts <name>");
-    process.exit(2);
-  }
-  console.log(greet(name));
-}
-EOF
-  cat >"$src/greet.test.ts" <<'EOF'
-import { expect, test } from "bun:test";
-import { greet } from "./greet";
-
-test("greets by name", () => {
-  expect(greet("Ada")).toBe("Hello, Ada!");
-});
-
-test("trims the name", () => {
-  expect(greet("  Ada  ")).toBe("Hello, Ada!");
-});
-EOF
-  g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
-  C1=$(g rev-parse HEAD)
-  g push -q "$R/remote.git" "legion/$worker_key"
-  : >"$R/pushes.log"
-  # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
-  # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
-  # written. What the implementer ran is no part of it: seed.ts implement-handoff records that as a
-  # result against the issue's check k1. The PR's head is the implementer's code commit, since no
-  # handoff commit sits above it.
-  jq -n --arg key "$worker_key" '
-    {schemaVersion:1, phase:"implement", issue:$key,
-     filesChanged:["greet.ts","greet.test.ts"]}' >"$R/implement.json"
-  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
-  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
-  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
-  # registers this run's workspace with the operator's long-running watchman.
-  jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
-  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
-  body="Dispatch: $worker_key
-
-Adds \`greet(name)\` and \`bun greet.ts <name>\`.
-
-## Verification
-
-**Threads:** 0 resolved, 0 unresolved.
-
-**Checks:**
-- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. Ran \`bun greet.ts '  Ada  '\` and read \`Hello, Ada!\`, so the name is trimmed, and \`bun greet.ts\` with no name exited 2 and printed the usage line.
-
-**Fast-follow:** none.
-
-**Chain:** not stacked."
-  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" '
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
-     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"},
-     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
-    | {routes:[
-      {match:"^gh pr view", stdout:$pr},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
-      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
-      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
-    ]}' >"$R/fixtures.json"
-  # The world the scorer reads: head is the PR's head, the implementer's code commit.
-  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
-}
-
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
+# worker_world INDEX START [WORLD] seeds one worker run: the world's repository and base
+# (world_repository), its own Dispatch and issue on that repository, with the one check of its
+# Verification document written as world_check_when says it runs, the worker_fixture world, that
+# world's red where WORLD is given (red_fixture), and the implement record the role's `Handoff:`
+# line names. It leaves `worker_key`, `version`, `pr`, `head` and `check` set for the caller, read
+# from world.json in one jq, `check` being `null` where the world has none.
+worker_world() {
+  local index=$1 start=$2 world=${3:-} when
+  # The issue is seeded before red_fixture writes the world's facts to world.json, so the check's
+  # `when` is read from red_world (world_check_when).
+  when=$(world_check_when "$world")
+  world_repository
   own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
+  seed_ts tester-proof "$R/fixture.json" "$R/world.json" "$when"
   worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  worker_fixture "$index" "$start" "$world" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  [ -z "$world" ] ||
+    red_fixture "$world" >>"$R/fixture.log" 2>&1 || fail "the world $world fixture failed; see $R/fixture.log"
+  # The routes the gh stand-in answers from, parsed once as it parses them, before any agent
+  # boots: a file it refuses, a `follows` that names no route's `match` among them, would answer
+  # every `gh` call of the run with that refusal, so it fails the run here instead, a rig error.
+  SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --check >>"$R/fixture.log" 2>&1 ||
+    fail "the gh stand-in refuses $R/fixtures.json; see $R/fixture.log"
+  # `check` is last, so `read` keeps a check name with spaces in it whole.
+  read -r pr head check < <(jq -r '"\(.pr) \(.head) \(.check)"' "$R/world.json")
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
   version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+}
+
+# boot_worker ROLE writes the pane the label's checkout's daemon would give ROLE: the run's own
+# Legion project and boot secret, the daemon stand-in on a port the kernel assigns, the base
+# environment and the stand-ins, and the pane file the launch reads. The caller launches.
+boot_worker() {
+  local role=$1
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
   # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
@@ -1480,15 +1633,25 @@ run_tester_proof() {
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  # Its state document names the world's repository and base, read from world.json.
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role" "$R/world.json"
+  # The bound on the daemon stand-in's start. Measured on 2026-11-17 in an issue pod with two
+  # CPUs: with the pod quiet, five starts of `bun daemon-standin.ts` at this head listened 8.1 to
+  # 9.3 s after they started, with a warm Go build cache. In the tester's round-5 batch (170 runs,
+  # two at a time, 2026-11-17), the 30 s bound stopped 10 runs. 161 starts listened, at a median
+  # of 15.6 s and a 95th percentile of 28.4 s; the slowest of them listened at 38.5 s, after the
+  # bound had already stopped that run (trial-j-ablate-1), and the other 9 had not listened when
+  # the bound stopped them. Ninety seconds is about ten times the slower quiet start and more than
+  # twice the slowest loaded one, so a loaded pod still starts its runs, and a stand-in that hangs
+  # still fails its run in under two minutes.
+  await_start daemon "$daemon_pid" 90 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
-  # The pane the label's checkout's daemon would give the tester, over the base every agent gets:
+  # The pane the label's checkout's daemon would give the role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
+  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
   {
     cat "$R/worker.env" "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
@@ -1499,13 +1662,116 @@ run_tester_proof() {
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
+}
+
+# record_turn N WAKE copies the turn's output to out-<N>.txt and appends its line to turns.txt.
+record_turn() {
+  printf '%s %s %s %s\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tail -n 1 "$R/out.txt")" >>"$R/turns.txt"
+  cp "$R/out.txt" "$R/out-$1.txt"
+}
+
+# architect_assignment ROLE [TOLD] writes to $R/prompt.txt the architect's assignment of ROLE's
+# phase (tester or reviewer) on the run's pull request, with the Handoff line the daemon's task
+# names the predecessor's record in (packages/daemon/internal/workflow/effects.go), and TOLD, a
+# sentence of what the daemon reports, after the head. The issue holds an implement record and no
+# test record, since no tester ran here, so the reviewer's `Handoff:` line names that implement
+# record and its version too; the daemon's own reviewer task would name the test record the tester
+# wrote. It reads the caller's `worker_key`, `pr`, `head` and `version` (worker_world).
+architect_assignment() {
+  local from ask
+  case $1 in
+  tester) from=implementer ask='Test it and finish your phase.' ;;
+  reviewer) from=tester ask="Tester's verdict: pass. Review it and finish your phase." ;;
+  *) fail "architect_assignment: '$1' is not tester or reviewer" ;;
+  esac
+  printf 'Architect → %s, %s. The %s has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). %s\n' \
+    "$1" "$worker_key" "$from" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "${2:+ $2}" \
+    "$version" "$worker_key" "$version" "$ask" >"$R/prompt.txt"
+}
+
+run_tester_proof() {
+  local name=$1 n=$2 index=$3 start=$4 state project port pr head check version
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
+  worker_world "$index" "$start"
+  architect_assignment tester
+  boot_worker tester
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# run_red_at_the_head NAME N INDEX START WORLD: run_tester_proof's run with the world's red at the
+# head (red_fixture), for the one role that holds the phase in it, which the world's facts name
+# (red_world, read from world.json), and never two workers. A world whose counted set the rig
+# reports (`report`, world `l`) takes a turn on the rig's own report of the check (red_report),
+# the role having ended its first turn waiting for the counted set to report it. A world that
+# expects a re-run takes one more turn once a turn in which the role pressed it has ended: the rig
+# settles the re-run then (rerun_settle), which publishes the settlement the role's subscription
+# carries to it, so the settlement never reaches the turn that pressed the re-run, and every read
+# in that turn finds the attempt still running.
+# A world whose re-run never came, and a turn that settles nothing, are the run's result, which the
+# scorer reads; neither fails the rig.
+# <run>/turns.txt has one line per turn, `<turn> <assignment|report|settlement> <the moment the
+# turn ended, RFC 3339> <exit line>`, and each turn's output is <run>/out-<turn>.txt.
+run_red_at_the_head() {
+  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns report told='' turn=1 state project port pr head check version
+  worker_world "$index" "$start" "$world"
+  read -r role phase turns report < <(jq -r '"\(.role) \(.phase) \(.turns) \(.report)"' "$R/world.json")
+  # The architect's assignment for the world's phase, in run_tester_proof's shape.
+  #
+  # World l's task names the failing check, as the daemon's own task names the checks a red moved
+  # the issue for (effects.go). Without it the role has no sign of the red at all, since the
+  # counted set does not report it yet and the commit endpoint is the one read the page forbids
+  # judging on, so the world asked the role to wait for something it could not know about: four
+  # of its five head runs of 2026-11-12 completed a green round, correctly by every rule the page
+  # gives them.
+  [ "$report" != true ] || told="The daemon reports $check red at that head."
+  architect_assignment "$role" "$told"
+  boot_worker "$role"
+  launch "$name"
+  : >"$R/turns.txt"
+  record_turn 1 assignment
+  # Each later turn is the wake the rig brings: the daemon's own task for a phase already under way
+  # (workflow.ResumePhaseTask), since the role keeps its session, its phase and its task across
+  # the wait. World `l` first takes the rig's report of the check the counted set had not reported
+  # (red_report); then a world that re-runs takes the settlement of the re-run pressed in a turn
+  # that has now ended.
+  next_turn() {
+    turn=$((turn + 1))
+    printf 'Continue greet(): a greeting helper for the widgets CLI. Issue: %s. Phase: %s. Resume the existing phase work.\n' \
+      "$worker_key" "$phase" >"$R/prompt.txt"
+    launch "$name" --continue
+    record_turn "$turn" "$1"
+  }
+  if [ "$report" = true ]; then
+    red_report >>"$R/fixture.log" 2>&1 || fail "the world $world report failed; see $R/fixture.log"
+    next_turn report
+  fi
+  if [ "$turns" = 2 ] && rerun_pressed; then
+    rerun_settle >>"$R/fixture.log" 2>&1 || fail "the world $world settlement failed; see $R/fixture.log"
+    next_turn settlement
+  elif [ "$turns" = 2 ]; then
+    note "$name: no re-run reached fixtures.json; the run ends on turn $turn"
+  fi
+  # What the run left on its issue: every handoff record, each with its body, for redAtTheHead.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
+# run_prefix SCENARIO prints the prefix a run of SCENARIO carries in its directory and its tmux
+# session name. Every scenario uses its own name, save red-at-the-head, which uses `trial` (the
+# run_prefix of its table, jq/worlds.json, which score.ts reads too): its
+# page, skills/legion-worker/references/red-at-the-head.md, is the file under test, and when that
+# name sat in an agent-visible path (a run's cwd, HOME, TMPDIR, LEGION_WORKSPACE, PATH and
+# SKILL_SCENARIO_RUN all live under the run directory) it cued the change arm — 119 of 120
+# record-batch runs opened the page before any CI read, which lifted that arm alone. `trial` names
+# neither the scenario nor the page.
+run_prefix() {
+  case $1 in red-at-the-head) jq -r .run_prefix "$red_dir/jq/worlds.json" ;; *) echo "$1" ;; esac
+}
+
 cmd_run() {
-  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
+  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|red-at-the-head> <label> <n> <index> <start>"
   local scenario=$1 n=$3 index=$4 start=$5 name
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
@@ -1516,12 +1782,18 @@ cmd_run() {
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
+      name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
+  elif [ "$scenario" = red-at-the-head ]; then
+    # A red-at-the-head run's name carries its world, for the same reason. The worlds are
+    # red_world's, the one place they are written.
+    red_world "${SKILL_SCENARIOS_RED_WORLD:-}" >/dev/null ||
+      fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not $(red_worlds)"
+    name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
   else
-    name=$scenario-${P##*/}-$n
+    name=$(run_prefix "$scenario")-${P##*/}-$n
   fi
   R=$work/runs/$name
   evidence=$R
@@ -1536,6 +1808,7 @@ cmd_run() {
   brainstorm) run_brainstorm "$name" ;;
   askgate) run_askgate "$name" ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
+  red-at-the-head) run_red_at_the_head "$name" "$n" "$index" "$start" "$SKILL_SCENARIOS_RED_WORLD" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   echo "$name: $(tail -n 1 "$R/out.txt")"
@@ -1548,7 +1821,7 @@ stop_batch() {
   local s sessions=()
   stop_tree "${runs_pid:-}"
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
-    case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
+    case $s in "$tag-$(run_prefix "$batch_scenario")"-*) sessions+=("$s") ;; esac
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
   stop_env_processes "$work/runs"
@@ -1556,10 +1829,10 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|red-at-the-head> <runs> <label>..."
   local runs=$2 label n index=0 start
   batch_scenario=$1
-  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;; *) fail "unknown scenario $batch_scenario" ;; esac
+  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | red-at-the-head) ;; *) fail "unknown scenario $batch_scenario" ;; esac
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -1568,6 +1841,8 @@ cmd_batch() {
     '' | warn | block) ;;
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;
   esac
+  [ "$batch_scenario" != red-at-the-head ] || red_world "${SKILL_SCENARIOS_RED_WORLD:-}" >/dev/null ||
+    fail "a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to $(red_worlds) (got '${SKILL_SCENARIOS_RED_WORLD:-}')"
   [[ $runs =~ ^[0-9]+$ ]] || fail "run count '$runs' is not a number"
   # A spec batch numbers its run one above its first label's highest (next_run, below), so a second
   # label or a second run could take the number of a run cmd_run would then remove: one run of one
@@ -1578,7 +1853,11 @@ cmd_batch() {
     ;;
   esac
   shift 2
-  for label in "$@"; do load_label "$label"; done
+  local -a daemon_modules=("$root/packages/daemon")
+  for label in "$@"; do
+    load_label "$label"
+    daemon_modules+=("$co/packages/daemon")
+  done
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
@@ -1591,6 +1870,12 @@ cmd_batch() {
   lock_services
   on_exit stop_batch
   services_up
+  # Only a tester-proof or red-at-the-head run boots a worker (boot_worker), whose daemon stand-in
+  # and pane compile daemon-pane.go, so no other scenario's batch warms it.
+  case $batch_scenario in tester-proof | red-at-the-head)
+    warm_daemon_panes "${daemon_modules[@]}"
+    ;;
+  esac
   start=$(date +%s)
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do

@@ -164,7 +164,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
-| `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
+| `testing` | tester | Boots and runs the app's real workflows like a user would, tries to break the changed surface, and judges whether the tests would catch what breaks; it lets CI do its job and reads no check run. Reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
@@ -398,10 +398,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
-  names no pull request. A red is for those roles to decide on — re-run a check that failed on
-  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
-  branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
+  names no pull request. A red is for the reviewer in `reviewing` or the implementer while it holds
+  `implementing` to act on — either re-runs a check that failed on itself once at that head, the
+  tester, the merger and an implementer that runs retro re-run nothing, the implementer fixes code
+  that is at fault, and a check still running is waited for — and for GitHub to hold the merge
+  over, under the
+  base branch's own required checks, which Legion reads only to decide whether a conflicting head
+  needs its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
@@ -618,8 +621,8 @@ Four moves release a held issue. The architect's own retry puts it back in that 
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion issue status`: the issue returns to
 that phase and its worker starts again at the same generation, in the same pod and at the same place
-in the admission line. Where the pull request's head is red, the issue goes on to implementing
-instead, and a held review whose round is already decided goes where that decision sends it; the
+in the admission line. A red head moves nothing, and a restored reviewer or implementer reads the
+head's checks itself; a held review whose round is already decided goes where that decision sends it, and the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start

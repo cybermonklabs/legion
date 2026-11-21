@@ -1,0 +1,1 @@
+{"errors":[{"path":["query"],"extensions":{"code":"variableNotUsed","variableName":"u"},"locations":[{"line":1,"column":1}],"message":"Variable $u is declared by anonymous query but not used"}]}

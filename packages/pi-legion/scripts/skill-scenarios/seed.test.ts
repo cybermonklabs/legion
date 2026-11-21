@@ -1034,28 +1034,74 @@ describe("capture-spec", () => {
 });
 
 describe("tester-proof", () => {
+  /** The world file rig.sh's world_repository writes, beside a fixture file in its own directory. */
+  function testerFiles(): { file: string; world: string } {
+    const dir = freshDir("seed");
+    const world = path.join(dir, "world.json");
+    writeFileSync(world, JSON.stringify({ repo: "example/widgets", base: "main" }));
+    return { file: path.join(dir, "fixture.json"), world };
+  }
+  /** The check k1 as tester-proof writes it before the merge, with the implementer's result. */
+  const beforeMerge = {
+    id: "k1",
+    when: "before_merge",
+    result: { role: "implementer", verdict: "pass", observed: "prints Hello, Ada! and exits 0" },
+  };
+
   // Catches: a seeding that shares one issue between a batch's runs, or that the duplicate check
-  // refuses on the second run.
-  test("files the run's own greet() issue, forced past the duplicate check", async () => {
-    const file = path.join(freshDir("seed"), "fixture.json");
-    await seed.testerProofIssue(file);
+  // refuses on the second run, and an issue that names no repository or another than the world's,
+  // which the worker reads as Dispatch's `Repository: none` (INFRA-1303: d-head-1 of the batch of
+  // record at 6a643564 concluded from it that the issue had no pull request and no CI).
+  test("files the run's own greet() issue on the world's repository, forced past the duplicate check", async () => {
+    const { file, world } = testerFiles();
+    await seed.testerProofIssue(file, world, "before_merge");
     const posts = dispatch.calls.filter((call) => call.method === "POST");
     expect(`${posts[0]?.who} ${posts[0]?.path}`).toBe("agent /api/v1/issues");
-    expect(posts[0]?.body).toMatchObject({ project: "LWEVAL", force: true });
+    expect(posts[0]?.body).toMatchObject({
+      project: "LWEVAL",
+      force: true,
+      repo: "example/widgets",
+    });
     expect(String(posts[0]?.body?.spec)).toContain(":::requirement{#r1}");
     expect(String(posts[0]?.body?.spec)).not.toContain("## Acceptance");
     expect(`${posts[1]?.who} ${posts[1]?.path}`).toBe("agent /api/v1/issues/LWEVAL-2/artifacts");
-    expect(String(posts[1]?.body?.content)).toContain(':::check{#k1 surface="cli"');
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: "LWEVAL-2" });
+    expect(String(posts[1]?.body?.content)).toContain(
+      ':::check{#k1 surface="cli" run="bun greet.ts Ada" when="before_merge"'
+    );
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      issue: "LWEVAL-2",
+      checks: [beforeMerge],
+    });
+  });
+
+  // Catches: an after_merge check carrying the implementer's result before the merge, which
+  // `dispatch results` would print beside a pull request body that says `not yet run` (INFRA-1303:
+  // world i's body contradicted its Verification document, and i-head-5 requested changes for it).
+  test("writes an after_merge check with no result, and records none for it", async () => {
+    const { file, world } = testerFiles();
+    await seed.testerProofIssue(file, world, "after_merge");
+    const posts = dispatch.calls.filter((call) => call.method === "POST");
+    expect(String(posts[1]?.body?.content)).toContain('when="after_merge"');
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      issue: "LWEVAL-2",
+      checks: [{ id: "k1", when: "after_merge" }],
+    });
+    writeFileSync(path.join(path.dirname(file), "implement.json"), JSON.stringify({ phase: "x" }));
+    await seed.implementHandoff(
+      file,
+      path.join(path.dirname(file), "implement.json"),
+      "3".repeat(40)
+    );
+    expect(dispatch.results).toEqual([]);
   });
 
   // Catches: an implement record under the run's session (which the daemon would take as the
   // tester's own), a body re-encoded on the way, a fixture that forgets the record's version, or a
   // seed that leaves the tester no implementer result to judge.
   test("records the implement handoff and the implementer's result, under its own session", async () => {
-    const dir = freshDir("seed");
-    const file = path.join(dir, "fixture.json");
-    await seed.testerProofIssue(file);
+    const { file, world } = testerFiles();
+    const dir = path.dirname(file);
+    await seed.testerProofIssue(file, world, "before_merge");
     const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
@@ -1082,15 +1128,16 @@ describe("tester-proof", () => {
     expect(seed.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: "LWEVAL-2",
+      checks: [beforeMerge],
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
   });
 
   // Catches: a fixture whose body is no JSON object reaching Dispatch.
   test("refuses a body that is no JSON object, and writes nothing", async () => {
-    const dir = freshDir("seed");
-    const file = path.join(dir, "fixture.json");
-    await seed.testerProofIssue(file);
+    const { file, world } = testerFiles();
+    const dir = path.dirname(file);
+    await seed.testerProofIssue(file, world, "before_merge");
     writeFileSync(path.join(dir, "implement.json"), "[1]");
     await expect(
       seed.implementHandoff(file, path.join(dir, "implement.json"), "1".repeat(40))
@@ -1104,7 +1151,8 @@ describe("tester-proof", () => {
   test("captures every record of the issue, newest first, each with its body", async () => {
     const dir = runDir();
     const file = path.join(dir, "fixture.json");
-    await seed.testerProofIssue(file);
+    writeFileSync(path.join(dir, "world.json"), JSON.stringify({ repo: "example/widgets" }));
+    await seed.testerProofIssue(file, path.join(dir, "world.json"), "before_merge");
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
     await seed.implementHandoff(file, path.join(dir, "implement.json"), "2".repeat(40));
     dispatch.handoffs.push({
