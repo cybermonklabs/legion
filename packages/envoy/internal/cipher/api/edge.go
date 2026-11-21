@@ -89,6 +89,10 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	edgeDeps.MachineLogin = login
 	edgeDeps.DeviceLogin = login.LoginDevice
 	edgeDeps.TokenHooks = edgeTokenHooks(deps.TokenHooks, edge.WorkspaceDomains)
+	// The edge's GET /healthz is public, so it answers from the database ping through a
+	// one-second cache (cachedPing): a caller on the internet costs the database at most one
+	// ping a second per pod however often it asks.
+	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: time.Now}).result
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
 		limits = *deps.LauncherLimits
@@ -114,7 +118,6 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyPrefix:    edgeLoginKeyPrefix,
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
-		health:            &cachedPing{ping: deps.pingDatabase, now: time.Now},
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

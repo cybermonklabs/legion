@@ -167,7 +167,7 @@ type Deps struct {
 	// is never draining.
 	Draining func() bool
 	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
-	// The edge answers from it through a one-second cache (cachedPing), the API port on each check.
+	// RegisterEdge sets the edge's to a one-second cache over it (cachedPing).
 	DatabasePing func(context.Context) error
 }
 
@@ -209,10 +209,6 @@ type server struct {
 	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
 	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
 	verificationURI string
-	// health is the Postgres ping GET /healthz answers from at the edge, cached (cachedPing), so a
-	// caller on the internet cannot make the broker ping its database at the rate it asks; nil on
-	// the broker's own address, which pings on each request.
-	health *cachedPing
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -770,11 +766,7 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
 	}
-	ping := s.deps.pingDatabase
-	if s.health != nil {
-		ping = s.health.result
-	}
-	if err := ping(r.Context()); err != nil {
+	if err := s.deps.pingDatabase(r.Context()); err != nil {
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
@@ -786,8 +778,9 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 // on the internet who asks at any rate costs the database at most one ping a second per pod.
 const healthCacheFor = time.Second
 
-// cachedPing is a Postgres ping whose result is kept for healthCacheFor. Callers that ask while
-// a ping runs wait for it rather than ping again, so at most one ping runs at a time.
+// cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
+// Deps.DatabasePing (RegisterEdge). Callers that ask while a ping runs wait for it rather than
+// ping again, so at most one ping runs at a time.
 type cachedPing struct {
 	ping func(context.Context) error
 	now  func() time.Time

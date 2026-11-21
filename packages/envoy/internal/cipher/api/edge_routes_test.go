@@ -68,12 +68,13 @@ func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http
 	return mux
 }
 
-// TestTheEdgesHealthIsServedFromItsCachedPing: RegisterEdge serves the edge's GET /healthz from
-// the cached ping (cachedPing) over the Deps' database ping, so fifty checks of the edge within a
-// second cost one ping of the database, and each answers 200 ok.
+// TestTheEdgesHealthIsServedFromItsCachedPing: RegisterEdge sets the edge's Deps.DatabasePing to
+// the cached ping (cachedPing) over the Deps' own, and the edge's GET /healthz answers from it, so
+// fifty checks of the edge within a second cost one ping of the database, and each answers 200
+// ok.
 //
-// The named revert: build the edge's server with no cachedPing, so its GET /healthz pings on each
-// check as the API port's does, and the fifty checks cost fifty pings.
+// The named revert: leave the edge's Deps.DatabasePing the broker's own, so its GET /healthz pings
+// on each check as the API port's does, and the fifty checks cost fifty pings.
 func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 	var pings atomic.Int64
 	mux := newTestEdgeMuxPinging(t, func(context.Context) error { pings.Add(1); return nil })
