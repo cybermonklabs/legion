@@ -1271,34 +1271,116 @@ func leftForRecovery(t *testing.T, w *workflowRuntime, child dispatch.Issue, tre
 // event of its own): the event's silence is noted with the repository it was silent for, and that
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
+//
+// The move and GitHub's answer are made together while the refresher is parked with no job to run
+// (heldRefresher), so the pass that admits the issue is the recovery the refresher's clock runs in
+// the turn after the release, after that turn's second job has read zeta/tools again and GitHub's
+// answer has moved it among the repositories to recover (readAnswered). A pass that ran between the
+// move and the answer would see the move with zeta/tools still unread and admit the issue without
+// GitHub's answer, and one that listed before the move and read GitHub after the answer would admit
+// it on zeta/tools.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	refresher := &heldRefresher{gate: make(chan struct{})}
+	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
 	const key = "LEGION-1500"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	if recordedIssue(t, w, key) != nil {
 		t.Fatalf("%s recorded while zeta/tools' read fails", key)
 	}
+	refresher.park(t, w)
 	// The project's default moves to acme/widgets: Dispatch resolves the issue there now, and sends
-	// no event of it.
-	moved := issue(key, "acme/widgets", "todo", true, "", 1)
-	client.show(moved)
-	// GitHub answers only once every recovery pass that listed Dispatch before the move has ended.
-	// The refresher recovers zeta/tools again on installReadRetry's backoff while it is unread, so
-	// a pass can be between its listing and its preparation here. Such a pass prepares the issue on
-	// zeta/tools, the resolution its listing read, and records it there if GitHub already answers
-	// its read. That is the moment GitHub answered, not the resolution the recovery takes, so the
-	// test must not race it. The refresher runs its passes one at a time (refreshRepositories), so
-	// a listing asked after the move means each pass that listed before it has ended.
-	listed := client.listingCount()
-	testwait.Eventually(t, "a recovery's listing asked after the move", func() bool { return client.listingCount() > listed })
+	// no event of it. Then GitHub answers for zeta/tools.
+	client.show(issue(key, "acme/widgets", "todo", true, "", 1))
+	installs.setFailing(nil, "implement zeta/tools")
+	refresher.release(t, w)
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
 	}
 }
+
+// heldRefresher holds a rig's refresher clock (recheckAfter): its timer never fires until release,
+// so the refresher runs a job only when one of its wakes asks for one. Once park asks, the first
+// turn the refresher begins with no wake waiting stops it inside the hook, where it runs nothing
+// and takes no wake, until release. The hook sees only the turns that arm a timer:
+// refreshRepositories calls recheckAfter only while a job of its own is due, which in this rig is
+// every turn while a repository is unread or its answer bad. After release the timer fires at
+// once and then waits as the daemon's does, and on that first turn every job whose wait has passed
+// is due, the second job (reading GitHub again for the bad answers) running before the recovery.
+type heldRefresher struct {
+	mu       sync.Mutex
+	gate     chan struct{} // closed by open
+	opened   sync.Once
+	armed    bool
+	parked   bool
+	released bool
+}
+
+// hold is the rig option that installs the held clock on w.
+func (h *heldRefresher) hold(w *workflowRuntime) {
+	w.recheckAfter = func(d time.Duration) <-chan time.Time {
+		h.mu.Lock()
+		if h.released {
+			h.mu.Unlock()
+			return time.After(d)
+		}
+		if !h.armed || wakesWaiting(w) != 0 {
+			h.mu.Unlock()
+			return nil
+		}
+		h.parked = true
+		h.mu.Unlock()
+		<-h.gate
+		return time.After(0)
+	}
+}
+
+// wakesWaiting is how many of w's refresher wakes are waiting to be taken.
+func wakesWaiting(w *workflowRuntime) int {
+	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake)
+}
+
+// park waits until the refresher is stopped in the hook with no wake waiting: every job it was
+// asked for has ended. The wake it sends runs no job (it only arms the second job's clock), so
+// the refresher begins a turn even when nothing else wakes it. It sends that wake under the lock
+// that arms the hold, so the hook, which reads the wakes under the same lock, never parks before
+// the wake is waiting, and the refresher takes it before it parks. A test that ends before
+// release still lets the refresher go, ahead of the rig's own cleanup, which waits for it to stop.
+func (h *heldRefresher) park(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	t.Cleanup(h.open)
+	h.mu.Lock()
+	h.armed = true
+	wake(w.rereadWake)
+	h.mu.Unlock()
+	testwait.Eventually(t, "the refresher stopped with no job to run", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.parked
+	})
+}
+
+// release lets the refresher go and its clock run from now on. It fails the test if a wake came
+// while the refresher was parked: its job would run before or beside the timer's turn, so the turn
+// the test means to read would not be the first the refresher runs. A parked refresher takes no
+// wake, so the count is exact.
+func (h *heldRefresher) release(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	h.mu.Lock()
+	waiting := wakesWaiting(w)
+	h.released = true
+	h.mu.Unlock()
+	h.open()
+	if waiting != 0 {
+		t.Fatalf("%d wakes of the refresher came while it was parked, want none: the turn after the release would not be the first job it runs", waiting)
+	}
+}
+
+// open lets a parked refresher go, once.
+func (h *heldRefresher) open() { h.opened.Do(func() { close(h.gate) }) }
 
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
 // architect, once, which children a release_children left for the repository the recovery still

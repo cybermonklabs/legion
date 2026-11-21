@@ -20,6 +20,9 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
+	// routes are the relays of the members' route ports, member i's at i, which a test in this
+	// package freezes to hold every message between the members.
+	routes []*relay
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -52,6 +55,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
+	relays := make([]*relay, n)
 	for i := range n {
 		listener, err := testport.ListenLoopback()
 		if err != nil {
@@ -68,8 +72,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 			return server.clusterAddress()
 		}, false)
 		t.Cleanup(routeRelay.Close)
+		relays[i] = routeRelay
 	}
-	cluster := &Cluster{Servers: make([]*Server, n)}
+	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
 		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)

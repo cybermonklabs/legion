@@ -336,6 +336,89 @@ export type DispatchEvent =
 
 export type EventType = DispatchEvent["type"];
 
+/** Each member of `EventType` once: a record over the union, so the compiler refuses a type left
+ *  out of it and a key that is no type. */
+const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
+  "architecture.sync_failed": true,
+  "architecture.synced": true,
+  "artifact.approved": true,
+  "artifact.changes_requested": true,
+  "artifact.created": true,
+  "artifact.human_edited": true,
+  "artifact.removed": true,
+  "artifact.renamed": true,
+  "artifact.version": true,
+  "ask.anchor_refreshed": true,
+  "ask.answered": true,
+  "ask.asked_of": true,
+  "ask.edited": true,
+  "ask.follower_added": true,
+  "ask.follower_removed": true,
+  "ask.handed_back": true,
+  "ask.opened": true,
+  "ask.resolved": true,
+  "block.invalid": true,
+  "block.repaired": true,
+  "child.added": true,
+  "child.removed": true,
+  "child.status": true,
+  "comment.anchor_refreshed": true,
+  "comment.answered": true,
+  "comment.created": true,
+  "comment.delivery": true,
+  "comment.edited": true,
+  "comment.reopened": true,
+  "comment.resolved": true,
+  "decision.kept": true,
+  "handoff.recorded": true,
+  "issue.claimed": true,
+  "issue.closed": true,
+  "issue.created": true,
+  "issue.deployed": true,
+  "issue.pull_request_attribution_changed": true,
+  "issue.released": true,
+  "issue.updated": true,
+  "message.accepted": true,
+  "message.answered": true,
+  "message.created": true,
+  "message.delivery": true,
+  "priority.updated": true,
+  "project.created": true,
+  "project.updated": true,
+  "result.recorded": true,
+  "result.retracted": true,
+  "settings.architecture_source.updated": true,
+  "settings.project_default_assignee.updated": true,
+  "settings.repo_project.updated": true,
+  "subscription.remove_requested": true,
+  "subscription.removed": true,
+  "suggestion.accepted": true,
+  "suggestion.rejected": true,
+  "user_agent_state.updated": true,
+  "user_state.updated": true,
+  "user_thread_state.updated": true,
+};
+
+/**
+ * Every event type Dispatch writes to its log, sorted: the members of the `DispatchEvent` union,
+ * held to it by `EVENT_TYPE_MEMBERS`. `scripts/gen-go.ts` writes it into envoy's
+ * `internal/contracts` as `DispatchEventTypes`, so a Go reader that sorts every type, as the
+ * keyword fill's inventory test does, learns of a new one from the same list.
+ */
+export const DISPATCH_EVENT_TYPES: readonly EventType[] = (
+  Object.keys(EVENT_TYPE_MEMBERS) as EventType[]
+).sort();
+
+/**
+ * Whether `value` names an event type of the `DispatchEvent` union, so a reader of a frame can
+ * narrow its `type` before it reads the frame as that event. `Object.hasOwn`, not `in`:
+ * `EVENT_TYPE_MEMBERS` inherits `Object.prototype`, so `in` would read `constructor` or
+ * `toString` as an event type.
+ */
+export function isEventType(value: string): value is EventType {
+  return Object.hasOwn(EVENT_TYPE_MEMBERS, value);
+}
+
 /**
  * One event as Dispatch's outbox publishes it to NATS: the event this API serves, plus `quiet`.
  *

@@ -2184,10 +2184,19 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // waits behind no architect notice of its issue.
 //
 // It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
-// wakeForDelivery first. A role whose pod an idle release took is not brought back to be asked:
-// its topic has no holder, so its ask is lost as every ask that reached no session is (below), the
-// sweep asks the claim again once its agent is ready again, and the round ends at its bound
-// whether or not the role answers.
+// wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
+// root's exit, an idle release, or an unknown source), and does not wait for it
+// (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped is the one
+// exception while the pause still keeps it (the sweep's podHolds.owes, roundClock.passesOver): the
+// pause suspends it as released, and the round waits for it and the sweep asks it once its agent
+// is ready.
+// A row the sweep queued before any such suspension still runs, so the machine refuses the ask of
+// every claim the daemon suspended, a claim the pause stopped included, before any publish
+// (supervise.Machine.PublishUpdateAsk answers UpdateAskSuspended), and the row finishes with one
+// line of its own. A publish would go to a role with no holder, and the Envoy listener raises a
+// role wake for every publish to a role with no holder (packages/envoy/cmd/listener/confirmed.go,
+// roleSend.noHolder). That wake would bring back a pod that an idle release took, or a role that
+// the pause stopped, and the round brings back neither.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -2255,6 +2264,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
 	case supervise.UpdateAskOutOfRound:
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	case supervise.UpdateAskSuspended:
+		r.log.Info("outbox update ask finished without a publish: the daemon suspended the claim", fields...)
 	}
 	return nil
 }

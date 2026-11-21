@@ -27,29 +27,37 @@ import (
 const bearerPrefix = "Bearer "
 
 // The credential label of envoy_listener_requests_total: which credential admitted a request.
-// none is the open /v1, which admits a request that presents no credential it knows.
+// none is the open /v1, which admits a request that presents no credential it knows, and
+// none_broker_token is the open /v1 admitting a request that presents a broker token on a
+// listener that takes none (brokers is nil), so serves it unverified: the gate on the open /v1
+// counts it apart from a bare request, since a caller that already holds a broker token is served
+// as one only once its listener takes that credential.
 const (
-	credentialSharedToken = "shared_token"
-	credentialNone        = "none"
-	credentialOIDC        = "oidc"
-	credentialGoogle      = "google"
-	credentialBroker      = "broker"
+	credentialSharedToken     = "shared_token"
+	credentialNone            = "none"
+	credentialNoneBrokerToken = "none_broker_token"
+	credentialOIDC            = "oidc"
+	credentialGoogle          = "google"
+	credentialBroker          = "broker"
 )
 
-// The warnings an admission on one of the two credentials the shared token's removal waits on
-// logs, and how often each logs at most (admissionWarnings).
+// The warnings an admission on one of the credentials the shared token's removal waits on logs,
+// and how often each logs at most (admissionWarnings).
 const (
-	sharedTokenAdmittedMessage = "listener: request admitted on the shared token"
-	openAdmittedMessage        = "listener: request admitted with no credential"
-	admissionWarnEvery         = time.Minute
+	sharedTokenAdmittedMessage      = "listener: request admitted on the shared token"
+	openAdmittedMessage             = "listener: request admitted with no credential"
+	unverifiedBrokerAdmittedMessage = "listener: request admitted with a broker token this listener does not verify"
+	admissionWarnEvery              = time.Minute
 )
 
 // newListenerRequests registers envoy_listener_requests_total, the census the removal of the
-// shared token and of the open /v1 is gated on: both credential="shared_token" and
-// credential="none" must read zero on every deployed listener for 72 hours before they go.
+// shared token and of the open /v1 is gated on: credential="shared_token" and credential="none"
+// must read zero on every deployed listener for 72 hours before they go, and
+// credential="none_broker_token" on every listener but the clustered session listeners, which the
+// removal begins to verify broker tokens on.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
-		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, oidc, google, broker) and the route it reached")
+		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, none_broker_token, oidc, google, broker) and the route it reached")
 }
 
 // listenerAPIAuth is everything apiAuth admits a /v1 caller with, and where it records each caller
@@ -202,11 +210,12 @@ func verifiedPrincipal(r *http.Request) string {
 	return principal
 }
 
-// admissionWarnings logs an admission on the shared token or on no credential at all once a
-// minute for each, naming the route and the caller's address, so an operator can find the callers
-// envoy_listener_requests_total counts there before those two credentials go. Each line says how
-// many admissions of its credential it held back since the last line. The other credentials stay
-// out of the log: they are the ones a caller is meant to hold.
+// admissionWarnings logs an admission on the shared token, on no credential at all, or on a broker
+// token this listener serves unverified once a minute for each, naming the route and the caller's
+// address, so an operator can find the callers envoy_listener_requests_total counts there before
+// those credentials go. Each line says how many admissions of its credential it held back since
+// the last line. The other credentials stay out of the log: they are the ones a caller is meant to
+// hold.
 type admissionWarnings struct {
 	now func() time.Time
 	mu  sync.Mutex
@@ -230,6 +239,8 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 		message = sharedTokenAdmittedMessage
 	case credentialNone:
 		message = openAdmittedMessage
+	case credentialNoneBrokerToken:
+		message = unverifiedBrokerAdmittedMessage
 	default:
 		return
 	}
@@ -272,11 +283,12 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // no token is judged twice.
 //
 // Every request it admits is counted in envoy_listener_requests_total under the credential that
-// admitted it and the route it reached (route), and an admission on the shared token or on none
-// at all also logs a warning once a minute (admissionWarnings): those two are what the removal of
-// the shared token and of the open /v1 is gated on. A request admitted on an identity token
-// carries the principal that token proved to the handler (withVerifiedPrincipal, verifiedPrincipal),
-// which is how the send route tells Dispatch's own sends from every other caller's.
+// admitted it and the route it reached (route), and an admission on the shared token, on none at
+// all or on a broker token this listener does not verify also logs a warning once a minute
+// (admissionWarnings): those three are what the removal of the shared token and of the open /v1
+// is gated on. A request admitted on an identity token carries the principal that token proved to
+// the handler (withVerifiedPrincipal, verifiedPrincipal), which is how the send route tells
+// Dispatch's own sends from every other caller's.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before every bearer one:
@@ -295,7 +307,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // behind its NetworkPolicy; neither takes a bearer. A clustered hub listener that pods of the
 // cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair, so a caller that presents
 // only DPoP gets its 401. A client sends Authorization: DPoP whenever it has a broker and an
-// identity to trade and no Envoy bearer is set, whatever the listener it is calling takes.
+// identity to trade and no Envoy bearer is set, whatever the listener it is calling takes. The
+// open listener counts such a request as none_broker_token rather than none, so the gate on the
+// open /v1 sees which of its callers already present a broker token it does not verify.
 //
 // Configuring it opens nothing and closes nothing. A request presenting no token is judged
 // exactly as it was before this credential existed — the open listener still serves it, the Host
@@ -346,7 +360,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 		}
-		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
+		_, presented := ciphertoken.Presented(r)
+		if auth.brokers != nil && presented {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -356,6 +371,10 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			return
 		}
 		if open {
+			if presented {
+				admit(w, r, credentialNoneBrokerToken)
+				return
+			}
 			admit(w, r, credentialNone)
 			return
 		}

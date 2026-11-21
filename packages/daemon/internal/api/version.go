@@ -3014,6 +3014,8 @@ package api
 // 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
 // every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
 // #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
-// so this entry kept 205. Read the base's own number and every open pull request again at every
-// forward merge rather than from this line.)
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 205
