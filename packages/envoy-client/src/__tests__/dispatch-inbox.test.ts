@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -243,6 +243,13 @@ beforeEach(() => {
   stateDir = makeDirectory();
   resetAdviceMemory();
   forgetKeyedLayerMemory();
+});
+
+// A row that holds the clock releases it when its command settles. One that timed out before
+// then would leave it held for every later row and file of the process, so each row ends on the
+// real clock.
+afterEach(() => {
+  setSystemTime();
 });
 
 async function runInbox(): Promise<{ code: number; stdout: string; stderr: string }> {
