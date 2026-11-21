@@ -543,8 +543,10 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 }
 
 // agentWakesFor counts the agent wake reports for sessionID that reach subscription, a core
-// subscription to bus.LegionWakeTopic: it waits up to first for a report, and after each one for
-// quiet more, so a second report of one message is counted too.
+// subscription to every wake subject (subscribeWakes): it waits up to first for a report, and after
+// each one for quiet more, so a second report of one message is counted too. A report naming
+// sessionID on any subject but testWakeSubject, the subject of the project its record lists, fails
+// the test.
 func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID string, first, quiet time.Duration) int {
 	t.Helper()
 	count := 0
@@ -555,9 +557,12 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 			return count
 		}
 		if err != nil {
-			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
+			t.Fatalf("read the wake subjects: %v", err)
 		}
 		if wakeNamed(wakeReportIn(t, message), wakeKindAgent, sessionID) {
+			if message.Subject != testWakeSubject {
+				t.Fatalf("an agent wake report for %s arrived on %s, want %s", sessionID, message.Subject, testWakeSubject)
+			}
 			count++
 			wait = quiet
 		}
@@ -568,18 +573,22 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 // row, which names the listener it registered through, stays until the reaper's pass minutes
 // later. A copy on its agent subject - a person's answer Dispatch routes to it, say - must then
 // take the path a session with no interest takes: held for the retry window, then given up with
-// the agent wake that brings the pod back. Before, the interest path failed the copy as
-// delivery_failed, NAKed it for a redelivery that failed the same way, and reported no wake, so
-// the pod stayed released and the message never reached it.
+// the agent wake that brings the pod back, on the wake subject of the project the session's
+// known-session record lists. Before, the interest path failed the copy as delivery_failed, NAKed
+// it for a redelivery that failed the same way, and reported no wake, so the pod stayed released
+// and the message never reached it.
 //
 // The negative control is the second subtest: the same interest row over a record that names no
 // way of receiving is still NAKed as delivery_failed with no wake, so the rig takes the interest
-// path and the first subtest's give-up is the missing record's doing.
+// path and the first subtest's give-up is the missing record's doing. The copy is stored on a
+// subject that names no project, so the rule a wake does not take, the project of the subject the
+// message was sent on, would report the first subtest's wake nowhere and fail its count.
 func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestNamesThisListener(t *testing.T) {
 	// start registers target's interest row naming the harness's own listener and, when entry is
 	// not nil, its record, then drives one envelope on target's agent subject through a handler
-	// that reports wakes, at a window of one deferral. It returns the run and a subscription to
-	// the wake reports, made before anything is delivered.
+	// that reports wakes, reading target's known-session record as listing the test's project, at
+	// a window of one deferral. It returns the run and a subscription to the wake reports, made
+	// before anything is delivered.
 	start := func(t *testing.T, target string, entry *session.SessionEntry) (unplaceableDeliveryRun, *natsgo.Subscription) {
 		t.Helper()
 		harness := newListenerDeliveryHarness(t)
@@ -592,19 +601,12 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 				t.Fatalf("register %s's record: %v", target, err)
 			}
 		}
-		wakes, err := harness.client.Conn.SubscribeSync(bus.LegionWakeTopic)
-		if err != nil {
-			t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
-		}
-		t.Cleanup(func() { _ = wakes.Unsubscribe() })
-		if err := harness.client.Conn.Flush(); err != nil {
-			t.Fatalf("flush the wake subscription: %v", err)
-		}
+		wakes := subscribeWakes(t, harness.client.Conn)
 		lifetime, stop := context.WithCancel(context.Background())
 		t.Cleanup(stop)
 		cfg := harness.config
 		cfg.unplaceableRetryWindow = oneDeferralWindow
-		cfg.wakes = newWakeReporter(lifetime, harness.client)
+		cfg.wakes = newWakeReporter(lifetime, harness.client, listedProjects(map[string][]string{target: {testWakeProject}}))
 		return startUnplaceableDelivery(t, harness, cfg, target, 0), wakes
 	}
 

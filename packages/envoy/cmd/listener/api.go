@@ -788,7 +788,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// this answer is the only sight of the message meant for it: the wake is reported so
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
-			reportAgentWake(d.wakes, logger, item.Topic, targetSession)
+			reportAgentWake(d.wakes, logger, targetSession)
 			// The wake is what this message costs its sender, whatever is answered below.
 			charge.woke()
 			var recorded bool
@@ -3071,12 +3071,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// that consumer call landed, since every one that could not get its consumer was refused
 		// above with nothing recorded. A failed write is this WARN and nothing else: the
 		// registration is answered whatever it did (session.KnownSessions).
-		if err := d.known.RecordWithin(ctx, session.KnownSession{
-			SessionID:    body.SessionID,
-			Title:        body.Title,
-			Capabilities: body.Capabilities,
-			Topics:       item.Topics,
-		}); err != nil {
+		if err := d.known.RecordWithin(ctx, knownSessionRecord(body.SessionID, body.Title, body.Capabilities, item.Topics, nil)); err != nil {
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 		}

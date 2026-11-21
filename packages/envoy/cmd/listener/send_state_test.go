@@ -127,6 +127,20 @@ func (rig *knownSessionRig) record(t *testing.T, sessionID string) session.Known
 	return stored
 }
 
+// listProjects writes sessionID's known-session record again listing projects, as a registration
+// by a token that lists them writes it, and returns the record now stored.
+func (rig *knownSessionRig) listProjects(t *testing.T, sessionID string, projects ...string) session.KnownSession {
+	t.Helper()
+	record := rig.record(t, sessionID)
+	record.Projects = projects
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rig.known.RecordWithin(ctx, record); err != nil {
+		t.Fatalf("record %s listing %v: %v", sessionID, projects, err)
+	}
+	return rig.record(t, sessionID)
+}
+
 // sendAnswer is one send's answer as these tests read it: the status, the raw body (what an older
 // client's keys are asserted on), the fields the send answers - state and last_seen beside
 // recipient and recipient_state - and how long the route took, which is what the probe's bound
@@ -556,8 +570,10 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	}
 }
 
-// awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), skipping every
-// other report, and fails the test when none arrives within the bound.
+// awaitWake waits on wakes, a subscription to every wake subject (subscribeWakes), for the wake
+// report of kind naming name (wakeNamed), skipping every other report, and fails the test when
+// none arrives within the bound or when it arrives on any subject but testWakeSubject, the subject
+// of the project every wake these tests raise is for.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -567,9 +583,27 @@ func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
 		}
 		if wakeNamed(wakeReportIn(t, msg), kind, name) {
+			if msg.Subject != testWakeSubject {
+				t.Fatalf("the %s wake report naming %s arrived on %s, want %s", kind, name, msg.Subject, testWakeSubject)
+			}
 			return
 		}
 	}
+}
+
+// subscribeWakes subscribes conn to every wake subject, the shared one and each project's own,
+// for awaitWake and for the reads that look for a report that must not come.
+func subscribeWakes(t *testing.T, conn *natsgo.Conn) *natsgo.Subscription {
+	t.Helper()
+	wakes, err := conn.SubscribeSync("notifications.legion.>")
+	if err != nil {
+		t.Fatalf("subscribe to the wake subjects: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	return wakes
 }
 
 // wakeReportIn is the wake report msg carries.
@@ -603,28 +637,28 @@ func wakeNamed(report wakeReport, kind, name string) bool {
 
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
 // stopped answer as on a 404, since a released Legion pod's sessions leave the session bucket with
-// the pod and this send is the only sight of the message meant for them. Both ways of having no
-// such entry are covered - a clean stop, and an entry past the gone horizon - and both answer
-// state stopped, recipient_state gone and the record's last_seen. A session whose entry stands
-// and whose probe met no responders raises none, as no lingering entry does, and answers stopped
-// with its entry's age and last_seen.
+// the pod and this send is the only sight of the message meant for them. The report goes on the
+// wake subject of each project the target's own record lists. Both ways of having no such entry
+// are covered - a clean stop, and an entry past the gone horizon - and both answer state stopped,
+// recipient_state gone and the record's last_seen. A session whose entry stands and whose probe
+// met no responders raises none, as no lingering entry does, and answers stopped with its entry's
+// age and last_seen. A gone session whose record lists no project raises none on any subject.
+//
+// The control is the rule a wake does not take, the project of the agent subject the send was
+// stored on: every send here is stored on a subject that names no project, so under it neither
+// listed session would be woken, and the two awaits below fail.
 func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	wakesCtx, stopWakes := context.WithCancel(context.Background())
 	t.Cleanup(stopWakes)
-	rig.deps.wakes = newWakeReporter(wakesCtx, rig.harness.client)
+	rig.deps.wakes = newWakeReporter(wakesCtx, rig.harness.client, knownSessionProjects(rig.known))
 	conn := testnats.Connect(t, rig.url)
 	t.Cleanup(conn.Close)
-	wakes, err := conn.SubscribeSync(bus.LegionWakeTopic)
-	if err != nil {
-		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
-	}
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the wake subscription: %v", err)
-	}
+	wakes := subscribeWakes(t, conn)
 
 	const unheld = "ses_wake_probe_stopped"
 	rig.register(t, unheld, nil)
+	rig.listProjects(t, unheld, testWakeProject)
 	entry := rig.entry(t, unheld)
 	probeStopped := rig.send(t, unheld, nil)
 	probeStopped.requireAnswer(t, "a send to an entry nothing holds the relay subject of", sessionStateStopped, session.Live)
@@ -634,6 +668,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 
 	const cleanlyStopped = "ses_wake_clean_stop"
 	rig.register(t, cleanlyStopped, nil)
+	rig.listProjects(t, cleanlyStopped, testWakeProject)
 	rig.clock = rig.clock.Add(time.Minute)
 	rig.stop(t, cleanlyStopped)
 	record := rig.record(t, cleanlyStopped)
@@ -646,7 +681,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 
 	const pastHorizon = "ses_wake_past_horizon"
 	storeSessionHeartbeat(t, rig.harness.client, pastHorizon, time.Now().Add(-(session.GoneHorizon + time.Minute)))
-	if err := rig.known.RecordWithin(context.Background(), session.KnownSession{SessionID: pastHorizon, Title: "a session past its horizon"}); err != nil {
+	if err := rig.known.RecordWithin(context.Background(), session.KnownSession{SessionID: pastHorizon, Title: "a session past its horizon", Projects: []string{testWakeProject}}); err != nil {
 		t.Fatalf("record %s: %v", pastHorizon, err)
 	}
 	horizonRecord := rig.record(t, pastHorizon)
@@ -657,9 +692,16 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	}
 	awaitWake(t, wakes, wakeKindAgent, pastHorizon)
 
-	// Every wake report the three sends raised has arrived by now: each is published off the
-	// route's path in the order the sends raised them, and the last two have been read. A report
-	// naming the probe-stopped session would be among them.
+	const unlisted = "ses_wake_no_project"
+	storeSessionHeartbeat(t, rig.harness.client, unlisted, time.Now().Add(-(session.GoneHorizon + time.Minute)))
+	if err := rig.known.RecordWithin(context.Background(), session.KnownSession{SessionID: unlisted, Title: "a session of no project"}); err != nil {
+		t.Fatalf("record %s: %v", unlisted, err)
+	}
+	rig.send(t, unlisted, nil).requireAnswer(t, "a send to a gone session whose record lists no project", sessionStateStopped, session.Gone)
+
+	// Every wake report the sends raised has arrived by now: each is published off the route's
+	// path in the order the sends raised them, and the reports before the last send's have been
+	// read. A report naming the probe-stopped session or the one of no project would be among them.
 	for {
 		msg, err := wakes.NextMsg(500 * time.Millisecond)
 		if errors.Is(err, natsgo.ErrTimeout) {
@@ -668,8 +710,11 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, unheld) {
-			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
+		report := wakeReportIn(t, msg)
+		for _, none := range []string{unheld, unlisted} {
+			if wakeNamed(report, wakeKindAgent, none) {
+				t.Fatalf("the send to %s raised a wake report on %s", none, msg.Subject)
+			}
 		}
 	}
 }

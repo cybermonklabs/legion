@@ -923,14 +923,25 @@ func recordFollowedTopics(ctx context.Context, d *listenerDeps, sessionID string
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 		return
 	}
-	if err := d.known.RecordWithin(ctx, session.KnownSession{
-		SessionID:    sessionID,
-		Title:        entry.Title,
-		Capabilities: entry.Capabilities,
-		Topics:       topics,
-	}); err != nil {
+	if err := d.known.RecordWithin(ctx, knownSessionRecord(sessionID, entry.Title, entry.Capabilities, topics, nil)); err != nil {
 		logger.Warn("known-session record not written after an interest change",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
+}
+
+// knownSessionRecord is the known-session record of sessionID that every write of one stores (a
+// registration, subscribeHandler, and an interest change, recordFollowedTopics): the session's
+// title and capabilities, the topics its interest row stores, and the projects its registration
+// lists (session.KnownSession.Projects), which name the wake subjects a message the session can
+// no longer take is reported on (reportAgentWake). No registration lists a project yet, so each
+// write passes none, and the listener reports such a session's wake on no subject.
+func knownSessionRecord(sessionID, title string, capabilities, topics, projects []string) session.KnownSession {
+	return session.KnownSession{
+		SessionID:    sessionID,
+		Title:        title,
+		Capabilities: capabilities,
+		Topics:       topics,
+		Projects:     projects,
 	}
 }
 

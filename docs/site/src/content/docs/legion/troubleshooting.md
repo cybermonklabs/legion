@@ -1687,11 +1687,12 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   pull request the daemon does not record, and a run of a workflow that is no configured deploy.
   Those take no database transaction, so a backlog of them drains quickly. `0 waiting` is a
   consumer that is caught up.
-- **`oldest`** (`oldestAt`, `oldestAgeSeconds`) is how long ago the oldest waiting message was
-  stored: how long the event at the back of the line has waited. Seconds are normal. Minutes that
-  keep growing are a consumer behind its stream, and once it handles a message stored more than
-  five minutes before, the daemon logs `intake: a durable consumer is behind its stream; …`
-  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)).
+- **`oldest`** (`oldestAt`, `oldestAgeSeconds`) is how long ago the consumer's acknowledgements
+  last moved past a message, read from the consumer's own info: the oldest waiting message has
+  waited at most that long. It is unknown before the consumer has acknowledged anything. Seconds
+  are normal. Minutes that keep growing are a consumer behind its stream, and once it handles a
+  message stored more than five minutes before, the daemon logs `intake: a durable consumer is
+  behind its stream; …` ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)).
 - **`STALLED`** (`stalled`) is messages waiting and none of that consumer's handled for 60
   seconds, since the last one (`lastHandledAt`) or, before the first, since the daemon started.
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
@@ -1709,16 +1710,9 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
   info: …` leaves `waiting` 0 and `stalled` false, since neither is known: check that the daemon
   reaches NATS and that the consumer exists (`nats consumer info ENVOY_NOTIFICATIONS <name>`).
-  `read the oldest waiting message: …` leaves `waiting` and `stalled` standing and the oldest
-  unknown (`oldest unknown` on the text line); that read has one second of its own. NATS refuses a
-  request the daemon's user has no grant for without answering it, so a missing grant shows as
-  `context deadline exceeded`, with the daemon's error line `NATS refused the daemon a permission:
-  its NATS user lacks that grant` naming the subject. With subject
-  `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
-  ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
-  grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it, and nothing else
-  changes.
+  NATS refuses a request the daemon's user has no grant for without answering it, so a missing
+  grant shows as `context deadline exceeded`, with the daemon's error line `NATS refused the daemon
+  a permission: its NATS user lacks that grant` naming the subject.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request

@@ -27,7 +27,7 @@ func TestARoleLaneExceptionInTheNewFormQueuesTheNoticeAgain(t *testing.T) {
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
 	conn := testnats.Connect(t, testnats.URL(t))
 	failed := make(chan error, 1)
-	sub, err := subscribeNoticeExceptions(conn, func(data []byte) {
+	sub, err := subscribeNoticeExceptions(conn, "LEGION", func(data []byte) {
 		if err := runner.rehold(context.Background(), data); err != nil {
 			failed <- err
 		}

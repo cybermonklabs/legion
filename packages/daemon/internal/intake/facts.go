@@ -1399,12 +1399,13 @@ type CheckBound struct {
 
 func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 
-// ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
-// subject whose consumer every daemon runs: the listener alone sees a message published to a
-// role topic with no live holder and a message sent to the agent subject of a session that is
-// gone, and both must bring a released pod back. The listener does not know which daemon owns a
-// session and must not learn: it reports the role token or the session id it saw, every daemon
-// reads the report, and each acts only on a released claim of its own project.
+// ListenerWake is one report the Envoy listener publishes: a role or agent wake on the wake subject
+// of the one project it is for, notifications.legion.<token>.wake, which only that project's daemon
+// reads, and its own liveness report on notifications.legion.wake, the one subject every daemon
+// reads. The listener alone sees a message published to a role topic with no live holder and a
+// message sent to the agent subject of a session that is gone, and both must bring a released pod
+// back. It names the project of a role by the role's own name and of a session by the session's
+// record; the daemon acts only on a released claim of its own.
 //
 // Kind is ListenerWakeRole, ListenerWakeAgent or ListenerWakeReady. Role is the claim token of
 // the role topic a message was published to, Session the session a message was sent to, and At

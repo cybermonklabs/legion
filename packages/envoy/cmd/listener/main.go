@@ -1479,7 +1479,7 @@ func main() {
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
 	// this configuration by value, so every seam of it must be set before they are built.
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
-	wakes := newWakeReporter(wakesCtx, client)
+	wakes := newWakeReporter(wakesCtx, client, knownSessionProjects(known))
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{

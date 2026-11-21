@@ -291,7 +291,7 @@ func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testi
 		t.Fatal(err)
 	}
 	committed()
-	testwait.Eventually(t, "the refresher's sixth job taking zeta/tools out of the cache set at its tree's close", func() bool {
+	testwait.Eventually(t, "the refresher's fifth job taking zeta/tools out of the cache set at its tree's close", func() bool {
 		return slices.Equal(repositoryNames(w.cacheRepositories()), []string{"acme/widgets"})
 	})
 }

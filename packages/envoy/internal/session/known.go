@@ -84,6 +84,14 @@ const (
 // one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go),
 // so a record counts exactly the sessions a stored publish reaches.
 //
+// Projects is the projects the session's registration lists (the projects of the token that made
+// it), sorted, each once, as the live session entry holds them; nil when the registration listed
+// none, and in a record an earlier build wrote, which every reader takes as none. It outlives the
+// session's entry, which is gone exactly when the listener reports a wake for a message the
+// session cannot take: the listener reports a released Legion session's wake on each of these
+// projects' wake subjects, and a session whose record lists none on no subject at all
+// (cmd/listener's reportAgentWake).
+//
 // The record holds nothing else, and not the client instance id in particular, which only a role
 // claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
 type KnownSession struct {
@@ -91,6 +99,7 @@ type KnownSession struct {
 	Title        string   `json:"title"`
 	Capabilities []string `json:"capabilities"`
 	Topics       []string `json:"topics"`
+	Projects     []string `json:"projects,omitempty"`
 	// LastSeen is when the record was last written, in unix milliseconds, as
 	// SessionEntry.UpdatedAt is.
 	LastSeen int64 `json:"last_seen"`

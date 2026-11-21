@@ -448,14 +448,15 @@ func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
 }
 
 // sweptRoleWakes is every wake report the stream holds for role that a sweep raised: the reports
-// on bus.LegionWakeTopic named by an interval of role's (sweptRoleWakeID), in the order the
+// on a project's wake subject named by an interval of role's (sweptRoleWakeID), in the order the
 // stream stored them. A test's stream is its own (testnats.URL), so it holds that test's reports
-// alone.
+// alone. A report of role stored on any subject but the one its name gives (legionRoleToken)
+// fails the test.
 func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reports, err := readStored(ctx, client, bus.LegionWakeTopic)
+	reports, err := readStored(ctx, client, "notifications.legion.*.wake")
 	if err != nil {
 		t.Fatalf("read the wake reports: %v", err)
 	}
@@ -466,6 +467,9 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 			t.Fatalf("decode the wake report stored at %d: %v", stored.Sequence, err)
 		}
 		if strings.HasPrefix(item.DedupeKey, "legion.wake.role."+role+".") {
+			if want := contracts.LegionWakeSubject(legionRoleToken(role)); stored.Subject != want {
+				t.Fatalf("the sweep's wake report of role %s is on %s, want %s", role, stored.Subject, want)
+			}
 			found = append(found, item)
 		}
 	}
@@ -486,8 +490,8 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
-		role   = "kept-sweep-stranded"
-		unheld = "kept-sweep-unheld"
+		role   = "legion-acme-kept-sweep-stranded"
+		unheld = "legion-acme-kept-sweep-unheld"
 		holder = "ses_kept_sweep_stranded"
 		copies = 3
 	)

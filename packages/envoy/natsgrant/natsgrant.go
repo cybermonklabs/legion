@@ -317,15 +317,17 @@ func SessionToken(id string) bool {
 	})
 }
 
-// Daemon is the NATS grant of one Legion daemon. Its three durable consumers inspect and create
+// Daemon is the NATS grant of one Legion daemon. Its durable consumers inspect and create
 // consumers in Envoy's notification stream, fetch their messages, and acknowledge them; the
-// consumer subjects end in `>`, so the grant reaches every consumer of the stream, not only those
-// three. Its state read gets stored messages of the stream one at a time (`STREAM.MSG.GET`): the
-// oldest message each consumer has not acknowledged, whose time is the consumer's lag. The get
-// only reads: it can create, change or delete nothing. It also receives role-lane delivery
-// exceptions and JetStream API replies. Those replies arrive on `_INBOX.>`, so the daemon's user
-// receives every reply any client on the server gets, key-value reads and watch updates included,
-// such as the listener's envoy_roles and envoy_sessions watchers.
+// consumer subjects end in `>`, so the grant reaches every consumer of the stream, not only the
+// daemon's. It also carries the stream's info (`STREAM.INFO`) and its stored-message get
+// (`STREAM.MSG.GET`), which a daemon of a release before each consumer had one filter reads, to
+// open its consumers and to time each consumer's lag by its oldest unacknowledged message; a later
+// daemon reads neither, and the grant keeps both until no earlier daemon runs. The get only reads:
+// it can create, change or delete nothing. It also receives role-lane delivery exceptions and
+// JetStream API replies. Those replies arrive on `_INBOX.>`, so the daemon's user receives every
+// reply any client on the server gets, key-value reads and watch updates included, such as the
+// listener's envoy_roles and envoy_sessions watchers.
 func Daemon() Permissions {
 	return Permissions{
 		Publish: []string{

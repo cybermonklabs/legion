@@ -1392,6 +1392,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-dispatch: 0 waiting
   consumer legion-go-WIDGETS-github: 3 waiting, oldest 2s
   consumer legion-go-WIDGETS-wake: 0 waiting
+  consumer legion-go-WIDGETS-ready: 0 waiting
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
@@ -1534,18 +1535,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   after a boot onto a new plugin contract.
 
   The `consumer` lines are the lag of the daemon's durable consumers on the
-  `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events),
-  `legion-go-<project>-github` (the GitHub events of the project's
-  repositories) and `legion-go-<project>-wake` (the Envoy listener's wake reports). Each says how
-  many messages wait for the consumer, delivered and not yet handled or not yet delivered, the
-  events the daemon will acknowledge without acting on included, and how long ago the oldest of
-  them was stored (`oldest unknown` when that message could not be read). A message is handled
-  once the daemon acknowledged it, or terminated it as poison; a message put back to retry is not.
-  `STALLED: none handled for <d>` ends the line when messages wait and the daemon has handled
-  none of that consumer's for 60 seconds, since the last it handled (named) or, before the first,
-  since the daemon started. `unavailable: <error>` names what NATS did not answer in time (two
-  seconds for the consumer, one of them for its oldest message), or refused: alone on the line
-  when the consumer's info could not be read, since nothing else is known then. A daemon with no
+  `ENVOY_NOTIFICATIONS` stream, each on one filter: `legion-go-<project>-dispatch` (the project's
+  issue events, `notifications.dispatch.issue.<project>.>`), `legion-go-<project>-github` (every
+  repository's GitHub events, `notifications.github.>`; the daemon acknowledges those of a
+  repository it does not work in with no action), `legion-go-<project>-wake` (the Envoy listener's
+  wake reports for the project, `notifications.legion.<token>.wake`) and
+  `legion-go-<project>-ready` (the listener's liveness reports, `notifications.legion.wake`). Each
+  says how many messages wait for the consumer, delivered and not yet handled or not yet
+  delivered, the events the daemon will acknowledge without acting on included, and how long ago
+  the consumer's acknowledgements last moved past a message (`oldest`), which the oldest waiting
+  message has waited at most; none is shown before the consumer's first acknowledgement. A message
+  is handled once the daemon acknowledged it, or terminated it as poison; a message put back to
+  retry is not. `STALLED: none handled for <d>` ends the line when messages wait and the daemon
+  has handled none of that consumer's for 60 seconds, since the last it handled (named) or, before
+  the first, since the daemon started. `unavailable: <error>` names what NATS did not answer within
+  two seconds, or refused: alone on the line, since nothing else is known then. A daemon with no
   workflow prints `durable consumers: none`.
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.

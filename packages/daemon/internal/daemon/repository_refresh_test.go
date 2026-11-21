@@ -97,7 +97,7 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
 	// The records ask the refresher for a read of the live records at the commit of each write that
 	// can change them, as the daemon's do (projectRecords, refreshLive), so a repository a new
 	// record names is among the ones whose bad answers the refresher reads again. The anchors are
@@ -177,7 +177,12 @@ func prepareAsDelivered(t *testing.T, w *workflowRuntime, fact intake.DispatchIs
 	return prepared, err
 }
 
-func githubFilterSubjects(t *testing.T, stream jetstream.Stream) []string {
+// heardGitHubSubjects is the family of each repository GitHub intake hears, as the runtime last
+// told it (heard, which it stores only once intake has taken it), written as intake writes a
+// repository's subjects, notifications.github.<owner>.<name>.>, a `.` in either written `_`. It
+// first holds the GitHub consumer to its one filter, every repository's events
+// (notifications.github.>): what intake hears is the set its decoder keeps, never a filter.
+func heardGitHubSubjects(t *testing.T, stream jetstream.Stream, w *workflowRuntime) []string {
 	t.Helper()
 	consumer, err := stream.Consumer(context.Background(), "legion-go-LEGION-github")
 	if err != nil {
@@ -187,7 +192,18 @@ func githubFilterSubjects(t *testing.T, stream jetstream.Stream) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return info.Config.FilterSubjects
+	if info.Config.FilterSubject != "notifications.github.>" || len(info.Config.FilterSubjects) != 0 {
+		t.Fatalf("the GitHub consumer filters %q %v, want exactly notifications.github.>", info.Config.FilterSubject, info.Config.FilterSubjects)
+	}
+	held := w.heard.Load()
+	if held == nil {
+		return nil
+	}
+	subjects := make([]string, 0, len(*held))
+	for _, repo := range *held {
+		subjects = append(subjects, "notifications.github."+strings.ReplaceAll(repo.Owner(), ".", "_")+"."+strings.ReplaceAll(repo.Name(), ".", "_")+".>")
+	}
+	return subjects
 }
 
 func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
@@ -204,10 +220,9 @@ func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 }
 
 // GitHub intake hears every repository a record of the project names, whatever its tree's state:
-// a root that closed on a repository no live record names is heard across the publication of the
-// whole heard set again (republishHeard) and across a restart, so a person moving it back to todo
-// re-admits it on a repository whose pull request facts still arrive.
-func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *testing.T) {
+// a root that closed on a repository no live record names is heard across a restart, so a person
+// moving it back to todo re-admits it on a repository whose pull request facts still arrive.
+func TestAClosedTreesRepositoryStaysHeardAcrossARestart(t *testing.T) {
 	ctx := context.Background()
 	w, _, _, stream := repositoryRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -215,12 +230,6 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 			Generation: 1, Status: "done", Rank: "A", Repo: "orbit/gadgets", DefaultBranch: "main", GitHubRepo: "orbit/gadgets"})
 	}); err != nil {
 		t.Fatal(err)
-	}
-	if err := w.republishHeard(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.orbit.gadgets.>") {
-		t.Fatalf("GitHub filters = %v after the heard set was published again, want orbit/gadgets heard: a closed root is recorded on it", filters)
 	}
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
@@ -241,7 +250,7 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 	if got := recordedIssue(t, w, "LEGION-300"); got == nil || got.Phase != phase.Admitted || got.Repo != "orbit/gadgets" {
 		t.Fatalf("LEGION-300 = %+v, want it re-admitted on orbit/gadgets", got)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.orbit.gadgets.>") {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, "notifications.github.orbit.gadgets.>") {
 		t.Fatalf("GitHub filters = %v, want orbit/gadgets heard for the re-admitted root", filters)
 	}
 }
@@ -294,7 +303,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 			t.Fatalf("%s recorded on %v, entry %+v; want nothing recorded on it and its review App named missing", repo, recordsOn(w, repo), entry)
 		}
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.acme.widgets.>") || !slices.Contains(filters, "notifications.github.zeta.tools.>") {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, "notifications.github.acme.widgets.>") || !slices.Contains(filters, "notifications.github.zeta.tools.>") {
 		t.Fatalf("GitHub filters = %v, want both repositories the records name heard", filters)
 	}
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -323,7 +332,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 	if got := recordedIssue(t, w, "LEGION-301"); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("LEGION-301 = %+v once the App is installed, want it recorded on acme/widgets", got)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.acme.widgets.>") {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, "notifications.github.acme.widgets.>") {
 		t.Fatalf("GitHub filters = %v, want acme/widgets heard", filters)
 	}
 }
@@ -369,7 +378,7 @@ func TestAnIssueOnARepositoryNoRecordNamesIsAdmittedAsDispatchNowShowsIt(t *test
 			if got == nil || got.Repo != tc.wantOn {
 				t.Fatalf("LEGION-302 = %+v, want it recorded on %s", got, tc.wantOn)
 			}
-			if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github."+strings.ReplaceAll(tc.wantOn, "/", ".")+".>") {
+			if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, "notifications.github."+strings.ReplaceAll(tc.wantOn, "/", ".")+".>") {
 				t.Fatalf("GitHub filters = %v, want %s heard", filters, tc.wantOn)
 			}
 		})
@@ -606,7 +615,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	if bad := w.badAnswers(); len(bad) != 1 || !strings.HasPrefix(bad[0], "acme/widgets: ") {
 		t.Fatalf("bad answers = %q, want acme/widgets alone", bad)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.zeta.tools.>") || !slices.Contains(filters, "notifications.github.acme.widgets.>") {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, "notifications.github.zeta.tools.>") || !slices.Contains(filters, "notifications.github.acme.widgets.>") {
 		t.Fatalf("GitHub filters = %v, want acme/widgets and zeta/tools heard", filters)
 	}
 	testwait.Eventually(t, "LEGION-301 admitted on zeta/tools with no one moving it", func() bool {
@@ -1719,10 +1728,9 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 	}
 }
 
-// Each of the refresher's six jobs (refreshRepositories) runs on its own cause, with nothing in
+// Each of the refresher's five jobs (refreshRepositories) runs on its own cause, with nothing in
 // the sub-test standing in for it: each sub-test fails with its job deleted from the refresher and
-// nothing in its place (dispatch://INFRA-4401 check a-go, item 7). republishHeard, job 4, keeps a
-// test of its own besides (heard_republish_test.go).
+// nothing in its place (dispatch://INFRA-4401 check a-go, item 7).
 func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 	t.Run("job 1 prepares the repositories the records name as the refresher starts", func(t *testing.T) {
 		// prepareAtStart: with no admission, launch or other read, each anchor's repository has
@@ -1777,27 +1785,7 @@ func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 			return got != nil && got.Repo == "orbit/gadgets"
 		})
 	})
-	t.Run("job 4 publishes the heard set again after JetStream refused an update", func(t *testing.T) {
-		// republishHeard: the consumer update a recording on orbit/gadgets asks for is refused
-		// once, and nothing but the fourth job asks for orbit/gadgets again.
-		var refused atomic.Bool
-		w, client, _, stream := repositoryRigWith(t, &installations{}, func(w *workflowRuntime) {
-			w.setRepositories = func(ctx context.Context, repositories []ghrepo.Repository) error {
-				if !refused.Swap(true) {
-					return errors.New("JetStream refused the consumer update")
-				}
-				return w.consumers.SetRepositories(ctx, repositories)
-			}
-		})
-		deliver(t, w, client, issue("LEGION-1470", "orbit/gadgets", "todo", true, "", 1))
-		if got := recordedIssue(t, w, "LEGION-1470"); got == nil || got.Repo != "orbit/gadgets" {
-			t.Fatalf("LEGION-1470 = %+v, want it recorded on orbit/gadgets", got)
-		}
-		testwait.Eventually(t, "orbit/gadgets heard once the heard set is published again", func() bool {
-			return refused.Load() && !w.heardPending.Load() && slices.Contains(githubFilterSubjects(t, stream), "notifications.github.orbit.gadgets.>")
-		})
-	})
-	t.Run("job 5 reads a default branch held through a rate limit again after the limit", func(t *testing.T) {
+	t.Run("job 4 reads a default branch held through a rate limit again after the limit", func(t *testing.T) {
 		// rereadHeldBranches: the first job's read of zeta/tools is refused for a spent limit and
 		// served on the branch its anchor holds, so nothing else reads zeta/tools again.
 		var reset atomic.Int64
@@ -1815,7 +1803,7 @@ func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 			t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more after the reset at %s", reads, resetAt)
 		}
 	})
-	t.Run("job 6 reads the live records again at the commit of a tree's close", func(t *testing.T) {
+	t.Run("job 5 reads the live records again at the commit of a tree's close", func(t *testing.T) {
 		// refreshLive: the close of zeta/tools' tree takes the repository out of the cache set at
 		// its commit, so the sweep stamps its cache and retires it after retain_hours.
 		ctx := context.Background()

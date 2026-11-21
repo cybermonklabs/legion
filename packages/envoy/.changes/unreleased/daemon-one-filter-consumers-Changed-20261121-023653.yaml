@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The listener reports a role wake on the wake subject of the project the role's own name gives,
+  `notifications.legion.<token>.wake` for a Legion role `legion-<token>-…`, and reports none for a
+  role of any other shape. It reports an agent wake on the wake subject of each project the target
+  session's known-session record lists (`session.KnownSession.Projects`), and never on a project the
+  message names; a session whose record lists none gets no wake report, and the listener logs that
+  once per session. Only `listener_ready` stays on the shared `notifications.legion.wake`. The
+  publish route refuses every wake subject. No registration lists a project yet, so the known-session
+  record carries none and no agent wake is reported until that list exists.
+time: 2026-11-21T02:36:53.321884547Z
+custom:
+    Issue: daemon-one-filter-consumers
