@@ -1430,7 +1430,8 @@ What the edge does that the API's port does not:
   ranges alone, the ranges a global external Application Load Balancer connects from
   ([Google's load balancer firewall rules](https://docs.cloud.google.com/load-balancing/docs/firewall-rules)):
   `35.191.0.0/16` and `130.211.0.0/22` for IPv4, and `2600:2d00:1:1::/64` for IPv6. The
-  balancer's IPv4 health checks come from `35.191.0.0/16`, inside the first range.
+  balancer's health checks come from `35.191.0.0/16` for IPv4, inside the first range, and from
+  `2600:2d00:1:b029::/64` for IPv6, which the rule must allow too when the backends are IPv6.
 - **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
   [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
