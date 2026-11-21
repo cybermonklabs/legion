@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -191,13 +194,25 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
+	// answer of the golden file the broker's own test holds its narrowed answers to is no
+	// session's credential to the auth service either: each is a session of its own, presenting
+	// its token with a sound proof.
+	kinds := slices.Sorted(maps.Keys(ciphertokentest.NarrowedAnswers(t, "", "", 0)))
+	narrowed := make([]*session, 0, len(kinds))
+	for _, kind := range kinds {
+		s := newSession(t, "ses_narrowed_"+strings.ReplaceAll(kind, "-", "_"), 15*time.Minute)
+		s.answer = ciphertokentest.NarrowedAnswers(t, s.answer.Thumbprint, s.id, s.answer.ExpiresAt)[kind]
+		narrowed = append(narrowed, s)
+	}
 	tokens := map[string]platformToken{
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
-	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
@@ -214,14 +229,15 @@ func TestRefusals(t *testing.T) {
 	cancel()
 	badSig := a.request(t, "nonce")
 	badSig.Sig = "%%%"
-	for _, row := range []struct {
+	type refusalRow struct {
 		name   string
 		deps   Deps
 		ctx    context.Context
 		req    Request
 		label  string
 		reason string
-	}{
+	}
+	rows := []refusalRow{
 		{"no credential", deps, nil, Request{UserNkey: "UUSER", ServerID: "NSERVER"}, labelNoCredential, "no credential this hub admits"},
 		{"a user and no password", deps, nil, Request{UserNkey: "UUSER", User: natscred.ServiceUser}, labelNoCredential, "no credential this hub admits"},
 		{"a token and no proof", deps, nil, Request{UserNkey: "UUSER", Token: a.token}, labelNoCredential, "no credential this hub admits"},
@@ -242,7 +258,11 @@ func TestRefusals(t *testing.T) {
 		// An edge listener's entry parses, so that the broker's API reads its projects, and this
 		// build has no grant to answer its connection with.
 		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
-	} {
+	}
+	for i, s := range narrowed {
+		rows = append(rows, refusalRow{"a token narrowed from a " + kinds[i], deps, nil, s.request(t, "nonce"), labelNotASession, "token is no session's credential"})
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx
 			if ctx == nil {

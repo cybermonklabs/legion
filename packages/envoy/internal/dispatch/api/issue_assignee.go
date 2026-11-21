@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -138,6 +139,10 @@ type whoamiUser struct {
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
 // browser session.
 type whoamiAgent struct {
+	// Cut is the past time a read-only credential reads at (model.Credential.Cut), as an RFC 3339
+	// time in UTC, and null for a credential that names no cut, which is every credential that
+	// writes.
+	Cut *string `json:"cut"`
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.
 	Kind    string   `json:"kind" enum:"agent"`
@@ -162,7 +167,9 @@ type whoamiAgent struct {
 // personal token, and none for the shared token, a pod's service-account token and a
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
-// person that token acts for is its `owner`, which the dispatch command reads.
+// person that token acts for is its `owner`, which the dispatch command reads. A read-only
+// credential is told read among its scopes (whoamiScopes) and the cut it reads at, null for
+// none, so a caller can see that it may only read, and at what time.
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -182,7 +189,12 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	var cut *string
+	if credential := actor.Credential; credential != nil && !credential.Cut.IsZero() {
+		cut = new(cutText(credential.Cut))
+	}
 	WriteJSON(w, http.StatusOK, whoamiAgent{
+		Cut:     cut,
 		Kind:    "agent",
 		Owner:   owner,
 		Project: actor.Project,
@@ -194,9 +206,16 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 
 // whoamiScopes is the scopes a credential holds as whoami answers them: an empty array for a
 // credential that holds none, never null, so a reader need not tell a credential with no scope
-// from one whose scopes it could not read.
+// from one whose scopes it could not read. A read-only credential is answered model.ScopeRead
+// after the scopes it holds: the word marks the credential (model.Credential.ReadOnly) and is
+// never stored among its scopes, so it is added here, on a copy, and never to the shared slice.
 func whoamiScopes(credential *model.Credential) []string {
-	if credential == nil || len(credential.Scopes) == 0 {
+	switch {
+	case credential == nil:
+		return []string{}
+	case credential.ReadOnly:
+		return append(slices.Clip(credential.Scopes), model.ScopeRead)
+	case len(credential.Scopes) == 0:
 		return []string{}
 	}
 	return credential.Scopes

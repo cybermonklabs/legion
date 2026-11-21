@@ -182,11 +182,17 @@ export interface SessionDispatch {
  * the configuration a caller uses, or null, or a throw. `commands: "kept"` never runs a `!` token
  * command: it takes the outcome one of the session's other Dispatch calls already kept in this
  * process, and with none Dispatch reads as off with an error saying so (`dispatchSettings`), for a
- * caller on a deadline such as the per-request feed of people's answers. */
+ * caller on a deadline such as the per-request feed of people's answers. `tokenFiles` is the
+ * `dispatch` command's alone: it takes `DISPATCH_BROKER_TOKEN_FILE` and
+ * `DISPATCH_BROKER_DPOP_KEY_FILE`, which turn Dispatch off for every other caller. */
 export function sessionDispatchSettings(
   file: SessionConfigFile,
   env: DispatchEnvironment,
-  options: { readonly cwd: string; readonly commands?: CommandMode | undefined } & SessionNameOption
+  options: {
+    readonly cwd: string;
+    readonly commands?: CommandMode | undefined;
+    readonly tokenFiles?: boolean | undefined;
+  } & SessionNameOption
 ): SessionDispatch {
   if (file.path === null)
     return { dispatch: offWithError(file.error), warnings: [], missing: null };
@@ -195,6 +201,7 @@ export function sessionDispatchSettings(
     dispatch: dispatchSettings(env, config, {
       commands: options.commands,
       session: options.session,
+      tokenFiles: options.tokenFiles,
     }),
     warnings: config.kind === "read" ? config.warnings : [],
     missing: config.kind === "read" ? config.missing : null,

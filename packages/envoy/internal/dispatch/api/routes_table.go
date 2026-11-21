@@ -466,16 +466,16 @@ type routeScopeSet []string
 // broker-issued token that names a service and no person hold neither.
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
-// caller must hold, and no person holds that one. The routes such a token may call are a list of
-// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+// caller must hold, and no person holds that one. The routes such a token may call are the read
+// class, readClasses (read_classes.go), which its own gate reads (refuseReadOnlyToken).
 //
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
 // (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
 // credential that holds none of the row's scopes is refused before any id is read, and the one
 // check a request meets ahead of the row's scopes is whether a read-only token may call the row
-// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
-// exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
-// with a prefix.
+// at all, and at its cut (refuseReadOnlyToken) - and it only rewrites the path value, so a short
+// id reaches exactly the scopes the whole id reaches, and a row that needs none with a whole id
+// needs none with a prefix.
 var routeScopes = map[string]routeScopeSet{
 	// The rows that read or write what belongs to the calling person: their inbox, their own
 	// answers and replies, their read marks, their conversations with sessions, and the people
@@ -548,29 +548,6 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
-// readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
-// secrets broker minted from a read entry, which holds the scope read alone and names a service
-// and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
-// table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
-// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
-// is listed here.
-//
-// A route is listed only when, for such a caller, it writes nothing but the row that records its
-// DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
-// the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
-// stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
-// holds each route listed today to that.
-//
-// It is a list beside the table and not a value of routeScopes: a scope there is one the caller
-// must hold, and no person holds read, so the list says what a credential that holds read alone
-// may still call rather than what a route requires. For the same reason the route index (GET
-// /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
-// stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
-// names anything but a GET row it mounts (readRoutesNotMountedAsGET).
-var readScopeRoutes = []string{
-	"GET /api/v1/projects/{key}/architecture", "GET /api/v1/issues/{key}/steps", "GET /api/v1/projects/{key}/plans",
-}
-
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -598,23 +575,6 @@ func scopedRoutesNotMounted() []string {
 	return routesNotMounted(maps.Keys(routeScopes))
 }
 
-// readRoutesNotMountedAsGET names every route of names that is not a GET row of the table,
-// sorted: one no row holds (routesNotMounted) and one whose method is not GET. register refuses
-// to mount a read list that names either (readScopeRoutes). A name no row holds opens nothing
-// while the list reads as though it opened a route - a row renamed or deleted and its entry left
-// behind - and a POST, PUT, PATCH or DELETE row is a write, which a read-only token is minted
-// never to make. The walk is over the table with its test hooks in, as routesNotMounted's is.
-func readRoutesNotMountedAsGET(names []string) []string {
-	refused := routesNotMounted(slices.Values(names))
-	for _, name := range names {
-		if method, _, _ := strings.Cut(name, " "); method != http.MethodGet && !slices.Contains(refused, name) {
-			refused = append(refused, name)
-		}
-	}
-	sort.Strings(refused)
-	return refused
-}
-
 // routeRow is a row as the table writes it: the five columns every route has, written as a
 // positional literal, which is why the write class is not among them (writeClasses).
 type routeRow struct {
@@ -626,19 +586,20 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token may
-// call it, which it stamps from readScopeRoutes. Register mounts the table and GET /api/v1 lists
-// it, so the two can never disagree about what the server serves. Every mutating row carries a
-// Scope, and a GET row carries none (project_scope.go); OAuthScopes is empty on every row any
-// authenticated caller may reach; ReadScope is true on the rows the read list names and on no
-// other, and only the read-only gate reads it (refuseReadOnlyToken), never the route index or the
-// OpenAPI document; the row's own five columns are read through it by promotion. What the route
-// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and the read class it stamps from
+// readClasses. Register mounts the table and GET /api/v1 lists it, so the two can never disagree
+// about what the server serves. Every mutating row carries a Scope, and a GET row carries none
+// (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach; Read
+// is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every other
+// row, so no row but a GET row is ever a read. Only the read-only gate reads Read
+// (refuseReadOnlyToken), never the route index or the OpenAPI document. The row's own five
+// columns are read through it by promotion. What the route takes and answers is routeShapes',
+// which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
-	ReadScope   bool
+	Read        readEntry
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -720,12 +681,12 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPatch, "/api/v1/delivery/session-groups/{id}", authAny, "Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals; 400 SESSION_GROUP_INPUT for an edit that would leave it empty.", s.updateDeliverySessionGroup},
 		{http.MethodDelete, "/api/v1/delivery/session-groups/{id}", authAny, "Delete a Delivery session group; its sessions show as themselves again.", s.deleteDeliverySessionGroup},
 		{http.MethodGet, "/api/v1/ci-reconcile/passes", authAny, "The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends.", s.listCIReconcilePasses},
-		{http.MethodGet, "/api/v1/me/agent-tokens", authAny, "List the caller's personal agent tokens, each with the scopes it holds.", s.listAgentTokens},
-		{http.MethodPost, "/api/v1/me/agent-tokens", authAny, "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown.", s.createAgentToken},
-		{http.MethodPatch, "/api/v1/me/agent-tokens/{id}", authAny, "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND.", s.updateAgentTokenScopes},
-		{http.MethodDelete, "/api/v1/me/agent-tokens/{id}", authAny, "Revoke a personal agent token.", s.revokeAgentToken},
+		{http.MethodGet, "/api/v1/me/agent-tokens", authAny, "List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read.", s.listAgentTokens},
+		{http.MethodPost, "/api/v1/me/agent-tokens", authAny, "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown.", s.createAgentToken},
+		{http.MethodPatch, "/api/v1/me/agent-tokens/{id}", authAny, "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND.", s.updateAgentTokenScopes},
+		{http.MethodDelete, "/api/v1/me/agent-tokens/{id}", authAny, "Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED.", s.revokeAgentToken},
 		{http.MethodGet, "/api/v1/users", authAny, "Everyone who has signed in, by lowercase email: the assignee picker's options.", s.listUsers},
-		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.", s.whoami},
+		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.", s.whoami},
 		{http.MethodGet, "/api/v1/dashboard/builds", authAny, "Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own.", s.getDashboardBuilds},
 		{http.MethodGet, "/api/v1/priorities", authAny, fmt.Sprintf("Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest %d rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.", priorityFaultRows), s.listPriorities},
 		{http.MethodPost, "/api/v1/priorities", authAny, fmt.Sprintf("Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over %d characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over %d characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.", contracts.IssueTitleMax, priorityIDMax), s.createPriority},
@@ -912,7 +873,11 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name)}
+		var read readEntry
+		if row.Method == http.MethodGet {
+			read = readClasses[name]
+		}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read}
 	}
 	return routes
 }

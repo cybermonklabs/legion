@@ -34,9 +34,12 @@ export interface AuthenticatedUser {
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays
- *  `agent` for a personal token holding `person`, because the kind names the credential and not
- *  the act; the person it acts for is `owner`. */
+ *  `[]` for the shared token and a verified service token, which act as nobody. A read-only
+ *  credential, a broker's or a person's, is answered `read` after the scopes it holds
+ *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
+ *  every credential that writes. A Dispatch older than read-only tokens names neither. The kind
+ *  stays `agent` for a personal token holding `person`, because the kind names the credential and
+ *  not the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

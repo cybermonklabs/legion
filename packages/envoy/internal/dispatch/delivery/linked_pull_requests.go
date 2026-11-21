@@ -46,8 +46,13 @@ import (
 // trimmed, is held where a read puts the name into a GitHub path (refs.SplitGitHubRepo).
 //
 // The number is bounded to nine digits so that the cast cannot fail on a link a person typed.
+//
+// linked_pulls is materialized: it is the handful of pull requests one issue links, read once,
+// so a join of it to the heads compares each head with a stored name and number, rather than
+// evaluating the link's pattern and the canonical name's subquery again for every head it meets,
+// as it would for the laid heads of a read-only caller's read (answeredHeadsRelation).
 var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
-	linked_pulls as (
+	linked_pulls as materialized (
 		select ` + refs.CanonicalRepoSQL("link.repo") + ` as repo, link.number, link.url
 		from (
 			select parsed.url, lower(parsed.part[1] || '/' || parsed.part[2]) as repo, parsed.part[3]::int as number
@@ -65,7 +70,9 @@ var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.Iss
 // linkedHeadJoin joins each linked_pulls row, l, to the stored head row of the pull request it
 // names, h: the same number in the same repository, compared without case, since a row written
 // from a `pull_request` envelope carries GitHub's own spelling of the repository and a link is
-// read lowercased. Every read of the linked heads joins them so.
+// read lowercased. Every read of the linked heads joins them so. In a read of the results path,
+// pull_request_heads is the relation its WITH list names (headsStatement), so the linked rows a
+// read-only caller reads carry its request's answers as the attributed rows do.
 const linkedHeadJoin = `join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number`
 
 // LinkedPullRequest is one pull request an issue's external links name in a repository the
@@ -131,15 +138,18 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 	return found, nil
 }
 
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the linked rows of
-// headsAttributedQuery's second arm, held to one repository and to the merged state, in
+// baseBranchMergedInQuery is BaseBranchMergedIn's statement after its WITH list: the linked rows
+// of headsAttributedQuery's second arm, held to one repository and to the merged state, in
 // BaseBranchMergedFor's order.
-var baseBranchMergedInQuery = `with recursive ` + linkedPullRequestTerms + `
+var baseBranchMergedInQuery = `
 	select h.base_ref from linked_pulls l
 	` + linkedHeadJoin + `
 	where lower(l.repo) = lower($2) and h.state = 'merged'
 	order by h.event_at desc nulls last, h.number desc
 	limit 1`
+
+// baseBranchMergedInRead is baseBranchMergedInQuery whole, for both callers.
+var baseBranchMergedInRead = newHeadsStatement(baseBranchMergedInQuery, true, 2, "")
 
 // BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
 // branch the merged pull request that the issue's external links name in repoFull merged into
@@ -158,10 +168,12 @@ var baseBranchMergedInQuery = `with recursive ` + linkedPullRequestTerms + `
 // a repository here is.
 //
 // The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are.
-func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
+// repository's rows for each linked pull request, as HeadsAttributedTo's are. answers is the
+// caller's request's, as HeadsAttributedTo takes them.
+func BaseBranchMergedIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) (string, error) {
+	query, args := baseBranchMergedInRead.query(answers, issueKey, repoFull)
 	var branch string
-	err := pool.QueryRow(ctx, baseBranchMergedInQuery, issueKey, repoFull).Scan(&branch)
+	err := q.QueryRow(ctx, query, args...).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

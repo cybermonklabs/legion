@@ -530,13 +530,16 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 // what name its merge there, where baseBranchMergedFor reads the pull requests attributed to it
 // in the repository it resolves to. The key is the issue and the repository: an issue whose work
 // spans two repositories merged once in each. The memo keeps a failed read as
-// baseBranchMergedFor's does, for the same reason.
+// baseBranchMergedFor's does, for the same reason. It reads the caller's request's answers as
+// baseBranchMergedFor does: a merged pull request a read-only caller's read-through of a linked
+// repository's commit learned is a row a writer's read-through would have stored, which its read
+// here finds.
 func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
 	memo := [2]string{issueKey, repo}
 	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	branch, err := delivery.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}

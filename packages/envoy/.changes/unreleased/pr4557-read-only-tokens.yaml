@@ -1,0 +1,44 @@
+kind: Added
+body: |-
+  Dispatch puts every GET route of its route table in a read class (`readClasses`). A route is a
+  read, or a GET that writes. A read-only token is any token that holds `read`. Dispatch serves a
+  read-only token on every read. It answers the token `403 READ_ONLY_TOKEN` on every other route
+  and on `GET /ws/live`. The read class replaces the read list, which named three routes.
+
+  The secrets broker narrows a trade that asks for the scope `read`. The token keeps the identity
+  that the same trade would have had, and it writes nothing. The trade can also ask for a cut
+  (`as_of`), a past time that the token reads at. Until Dispatch serves reads at a past time, it
+  answers a token with a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read except
+  `GET /api/v1/whoami`. A trade that asks for no scope gets the same token as before.
+
+  A read trade makes, moves and extends no launcher credential. The broker binds no read token to
+  a key that a live launcher credential is bound to. It binds no launcher credential to a key that
+  a live read token is bound to. A read trade whose proof key holds a launcher credential, such as
+  a person's sign-in, sends a second proof in the `DPoP-Holder` header. A key made for the token's
+  holder signs that proof, and the broker binds the token to that key. The broker keeps a narrowed
+  token in a table of its own (migration 0041), so an older broker answers it inactive.
+
+  A person can make a personal token that only reads: Settings → Agent tokens offers "Read only".
+  Such a token holds `read` alone or beside `person`, and never beside `approve`. No existing token
+  changes to or from `read`. `GET /api/v1/whoami` names `read` among the scopes of every read-only
+  token, and its cut.
+
+  A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub exactly what a
+  writer's read made at the same moment asks, and gives the same answer. It stores no pull request
+  head, branch commit or event and keeps no answer after its request: it reads the writers'
+  claims, holds and default-branch cache without writing them, and, as a writer's read does, it
+  fills the GitHub client's token cache, deletes lapsed holds and records a rate limit GitHub
+  answers. So each read-only read makes a writer's GitHub reads on the same installation's rate
+  limit: a pulls read for each result commit that no stored head and no writer's claim or settle
+  covers, the commit-message pages of each pull request it names that nothing else attributes, the
+  compare reads of a branch check, the check-runs read of a check CI proves and the default-branch
+  read. A poll every N seconds of a read that makes R of them costs R × 3600 / N an hour against
+  the installation's limit (at least 5,000 an hour), and while a limit is recorded the client
+  sends nothing on that installation's token for any caller. Nothing caps a read-only caller's
+  reads. The undo is ending the poll, or ending the token: revoking a personal token or the
+  sign-in a narrowed token came from, or, for a read entry's token or one narrowed from a Google
+  machine's identity, taking the entry out of the broker's settings and waiting for the token to
+  expire, at most `BROKER_ACCESS_TOKEN_SECONDS` after its trade.
+time: 2026-11-20T02:56:20Z
+custom:
+  Issue: pr4557

@@ -358,7 +358,8 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId, tokenFiles: true })
+            .dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -376,10 +377,12 @@ export async function runDispatchCli(
     return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
   }
   // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
+  // call presents names it rather than naming none or another of this machine's. The command is
+  // the one caller that takes the token files (`tokenFilesTarget`, dispatch-config.ts).
   const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
+    tokenFiles: true,
   });
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const warning of warnings) print(`dispatch: ${warning}`);

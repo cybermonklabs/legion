@@ -250,6 +250,15 @@ type Config struct {
 	// set it at all: a sign-in holds its credential, and the broker refuses one that declines
 	// (invalid_request, oauth.personDeclinesNothing).
 	NoLauncherCredential bool
+	// Scope is the OAuth scope this trade asks for, sent as the form's scope: oauthwire.ScopeRead
+	// narrows the minted token to reading, on the identity the same trade would have had. Empty
+	// sends no parameter, which is every Go trade of this release: no Go caller makes a read
+	// trade, and this client sends no holder proof (oauthwire.HeaderDPoPHolder).
+	Scope string
+	// AsOf is the cut a read trade asks for (oauthwire.FormAsOf), an RFC 3339 time sent as
+	// written. Empty sends no parameter. The broker refuses a cut beside any scope but
+	// oauthwire.ScopeRead.
+	AsOf string
 	// HTTP is the client every call goes through; nil is http.DefaultClient. The DPoP proof is
 	// signed by a transport this client wraps around it, so a caller passing its own client
 	// keeps its timeout and its dialler.
@@ -275,11 +284,14 @@ type Client struct {
 	projects string
 	// noLauncherCredential is Config.NoLauncherCredential: this trade declines the credential.
 	noLauncherCredential bool
-	http                 *http.Client
-	log                  *slog.Logger
-	renewBefore          time.Duration
-	now                  func() time.Time
-	after                func(time.Duration) <-chan time.Time
+	// scope and asOf are Config.Scope and Config.AsOf, each sent only when set.
+	scope       string
+	asOf        string
+	http        *http.Client
+	log         *slog.Logger
+	renewBefore time.Duration
+	now         func() time.Time
+	after       func(time.Duration) <-chan time.Time
 	// wake carries a Wake to the renewal loop's sleep, one slot deep: the instruction is "trade
 	// now", which two of are one.
 	wake chan struct{}
@@ -322,6 +334,8 @@ func New(cfg Config) (*Client, error) {
 		session:              cfg.Session,
 		projects:             oauthwire.JoinProjects(cfg.Projects),
 		noLauncherCredential: cfg.NoLauncherCredential,
+		scope:                cfg.Scope,
+		asOf:                 cfg.AsOf,
 		http:                 cfg.HTTP,
 		log:                  cfg.Log,
 		renewBefore:          cfg.RenewBefore,
@@ -527,7 +541,8 @@ func (c *Client) logf(ctx context.Context, message string, args ...any) {
 
 // trade is one RFC 8693 exchange: the subject token this moment's Source answers, the actor
 // token where a person is signing in, the session name, whether this trade declines the launcher
-// credential its identity holds, and a DPoP proof of this client's key.
+// credential its identity holds, the scope and the cut a read trade asks for, and a DPoP proof of
+// this client's key.
 func (c *Client) trade(ctx context.Context) (*Token, error) {
 	subject, subjectType, err := c.subject.Token(ctx)
 	if err != nil {
@@ -546,6 +561,14 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 		// Sent only when there is a list: a trade naming none reads exactly as one written before
 		// the parameter existed.
 		form.Set(oauthwire.FormProjects, c.projects)
+	}
+	// Each sent only when set: a trade that asks for neither reads exactly as one written before
+	// the parameters existed.
+	if c.scope != "" {
+		form.Set("scope", c.scope)
+	}
+	if c.asOf != "" {
+		form.Set(oauthwire.FormAsOf, c.asOf)
 	}
 	if c.noLauncherCredential {
 		// Sent only to decline: an absent parameter asks, so a broker that has never heard of

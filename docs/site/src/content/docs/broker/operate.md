@@ -752,19 +752,53 @@ no project (`<service account>==<person>`), wherever Dispatch's own rules let th
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
-The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
-that service and that session, and names no person and no project. Dispatch serves it on the routes
-its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
-`403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
+The token of such an entry, traded with no scope, holds the OAuth scope `read` alone and the project
+scope `none`, names that service and that session, and names no person and no project. Dispatch
+serves it on the GET routes it classes as reads, and answers it `403 READ_ONLY_TOKEN` on every other
+route. That token reads every read of Dispatch that needs no OAuth scope, for every project: each
+issue, closed and iceboxed ones included, with its documents, comments and asks. No setting holds a
+read entry to some projects. The Envoy listener answers it `401`. Both settings need
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
 read entry without the audience. It also refuses an entry with a missing field, a namespace's
 `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
 `shared`, and an account that one setting lists twice or that both settings list. A broker of a
 build older than this setting does not read it, so it mints those accounts no token. The boot line
 `token exchange state=on` counts the read entries as `read_accounts`.
+
+No setting turns on a read trade. Every trade the exchange takes may ask for the scope `read`
+(`scope=read`), and its token keeps the identity the same trade would have had and writes nothing
+([Concepts](/legion/broker/concepts/#sessions-and-enrollment)). Such a trade may name a cut
+(`as_of`), an RFC 3339 time with at most six fractional digits, no later than the trade. The broker
+refuses each of these with `400 invalid_request`, naming what is wrong:
+
+- A cut on a trade that does not ask for `read`, a cut later than the trade, a cut at the zero
+  time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and a cut in any
+  other form.
+- `launcher_credential=true` on a read trade, which makes, moves and extends no credential.
+- A `DPoP-Holder` header on a trade that does not ask for `read`, a holder proof that does not
+  verify, and a holder proof signed with the DPoP proof's own key.
+- A person's read trade with no `DPoP-Holder` proof.
+- A read token that would be bound to a key that a live launcher credential is bound to, a read
+  entry's token traded with no scope included. The answer names the cure.
+
+A person's read trade whose sign-in holds no launcher credential yet is refused
+`400 invalid_grant`, naming `agent-secrets login`. One whose credential has lapsed is refused
+`400 invalid_grant` too, naming the cure: one ordinary trade of the sign-in, which `agent-secrets`
+makes and which renews the credential. A driver that renews a read token for a copy elsewhere
+keeps the sign-in trading ordinarily as well. The other side of the key rule is refused where a
+key another live credential holds is refused, with a code or a hint of its own that names the read
+token and the cure, a new key: a device login's approval and a token login whose key a live read
+token is bound to are `409 KEY_BINDS_READ_TOKEN`, beside the `409 KEY_HOLDS_LIVE_CREDENTIAL` of a
+key another live credential holds, and a Google machine's or a person's trade is
+`400 invalid_grant`.
+
+The broker keeps a token narrowed to reading in a table of its own, which migration 0041 adds
+(`oauth_narrowed_access_tokens`), and decides at each introspection whether it is still live: its
+own row, the launcher credential it names and, for a machine login's trade, that login's access
+token must all be live. A broker of an older build reads nothing of that table, so while the
+broker rolls, an older replica answers a narrowed token's introspection inactive and refuses it as
+a subject token, and a revoke or a retire that replica makes still ends the token. A Dispatch or a
+listener of an older build refuses a narrowed token's project scope, so it answers the token `401`.
 
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
@@ -867,8 +901,10 @@ enrolled under the old one stop renewing when it lapses, and a box enrolled with
 `agent-secrets enroll --helper` is enrolled again by running that command again.
 
 Only a trade that asks for a credential holds one, and a trade asks unless it says otherwise, so
-`agent-secrets` and the helper hold theirs by doing nothing. A person's sign-in cannot do
-otherwise: a sign-in holds its credential, so a trade of a person's that declined one is refused
+`agent-secrets` and the helper hold theirs by doing nothing. A trade that asks for the scope `read`
+is the exception: it never asks, makes, moves or extends a credential, and it is refused
+`400 invalid_request` when it sends `launcher_credential=true`. A person's ordinary trade cannot
+decline: a sign-in holds its credential, so a trade of a person's that declined one is refused
 `400 invalid_request`. The clients that
 want a Dispatch token and read no secret — the `dispatch` command, the Oh My Pi and Claude Code
 plugins, `envoy-send` — decline it, since each of them makes a key per process and per session
