@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    The launcher of the project controller's pod (`controller: daemon`), PID 1 of its container,
+    runs the memory guard that issue pods run. Near the pod's memory limit it ends with SIGKILL a
+    process that is not the launcher, the shim, Oh My Pi or one of its helpers (the JavaScript
+    `eval` kernel excepted) or the secrets renewer, the one that grows fastest first
+    (docs/kubernetes.md, "What it ends"), so a runaway command or `eval` cell ends alone and the
+    controller's pod and turn go on. The daemon tells the controller of each kill as a
+    `memory-guard-kill on <PROJECT>` notice, which names the program, its pid, its size, the pod's
+    reading and the limit, and none of the program's arguments. The new block
+    `runtime.kubernetes.memory_guard.controller_pod` sets it, with the members and ranges of
+    `issue_pods` and the same defaults but the wait after a kill, `wait_seconds: 1` where an issue
+    pod's is 5; it is on by default. Daemon API contract 207.
+time: 2026-11-17T05:04:07Z
+custom:
+    Issue: pr4273

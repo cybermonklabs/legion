@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
@@ -451,6 +452,36 @@ func (a *issueSandboxAPI) podUID(name string) string {
 	}
 	uid, _ := object["metadata"].(map[string]any)["uid"].(string)
 	return uid
+}
+
+// controllerSandboxPodOf is the pod of name as the API holds it, decoded, with the shape its
+// Sandbox's template records; false while the API holds no such pod. A stored object is never
+// written again (putLocked), so it is encoded under the lock and decoded outside it.
+func (a *issueSandboxAPI) controllerSandboxPodOf(name string) (controllerSandboxPodSeen, bool) {
+	a.mu.Lock()
+	object, ok := a.objects["pods"][name]
+	var shape string
+	if s := a.objects["sandboxes"][name]; s != nil {
+		spec, _ := s["spec"].(map[string]any)
+		template, _ := spec["podTemplate"].(map[string]any)
+		meta, _ := template["metadata"].(map[string]any)
+		annotations, _ := meta["annotations"].(map[string]any)
+		shape, _ = annotations[controllerSandboxShapeKey].(string)
+	}
+	var encoded []byte
+	var err error
+	if ok {
+		encoded, err = json.Marshal(object)
+	}
+	a.mu.Unlock()
+	if !ok || err != nil {
+		return controllerSandboxPodSeen{}, false
+	}
+	var pod corev1.Pod
+	if err := json.Unmarshal(encoded, &pod); err != nil {
+		return controllerSandboxPodSeen{}, false
+	}
+	return controllerSandboxPodSeen{uid: string(pod.UID), pod: pod, shape: shape}, true
 }
 
 // mode is the Sandbox's operatingMode, "deleted" once the API no longer holds it.

@@ -553,6 +553,17 @@ go. The notice is the claim's own — the issue and the role that names it — s
 two claims of one issue each get a notice of their own, and in a provider outage every claim that
 reaches six is told.
 
+**When the memory guard of the controller's own pod ends one of the controller's programs**, the
+controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
+`tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
+notice names the program by its executable, with none of its arguments, and its pid, the memory
+it held, the pod's reading and the pod's limit. The controller's session and the pod's other
+processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
+sends twice is still one notice. The controller's skill tells it not to run the same program
+again unchanged, but to bound its output or send heavy work where the deployment's instructions
+say. An `eval` cell of the controller that answered
+`Kernel died during execution; completion is uncertain` at that moment is that kill.
+
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
 lines, and the one to look for is the error whose `msg` is `supervise: claim failed`, whose `why`

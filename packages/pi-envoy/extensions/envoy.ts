@@ -159,7 +159,11 @@ import {
   type AgentStreamSettingsState,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
-import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
+import {
+  liveContext,
+  transcriptPictures,
+  withDeliveredPictures,
+} from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import {
   type AcceptedUserTurn,
@@ -1045,7 +1049,8 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // Adds `addresses` to `shown`, a session's set of pictures it was shown (`shownPictures`),
   // which later reads and deliveries name instead of sending again: the pictures a delivery
-  // showed once the host took it, and those the transcript the session moved onto already shows.
+  // showed once the host took it, and those the live context of the transcript the session moved
+  // onto, or compacted, already shows.
   const markPicturesShown = (shown: Set<string>, addresses: readonly string[]): void => {
     for (const address of addresses) shown.add(address);
   };
@@ -1091,13 +1096,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     // restart or a session change cut short, are held again for the first settled heartbeat.
     ledger?.restore(replaySnapshot(entries));
     unwritten.requeueNotices(heldReplayNotices(entries));
-    // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
-    // resume's, a restart's) are in the history every request sends, so they count as shown. The
-    // id the session left is no longer served: what it was shown is forgotten, and so are the
-    // turns this instance sent into it (every match asks under the live id; another instance in
-    // the process may still serve the id) and its typed turns already handed their pictures
-    // (`TypedPictures.dropOtherSessions` says which survive).
-    markPicturesShown(shownPictures(sessionID), transcriptPictures(branch));
+    // The pictures the live context of the transcript the session is now on already shows (a
+    // fork's, a handoff's, a resume's, a restart's) are in the history every request sends, so
+    // they count as shown; one a compaction or a `/clear` cut off is no longer sent, so it does
+    // not, and no entry before that cut is read (`liveContext`). The id the session left is no
+    // longer served: what it was shown is forgotten, and so are the turns this instance sent into
+    // it (every match asks under the live id; another instance in the process may still serve the
+    // id) and its typed turns already handed their pictures (`TypedPictures.dropOtherSessions`
+    // says which survive).
+    markPicturesShown(shownPictures(sessionID), transcriptPictures(liveContext(branch)));
     if (previousSessionID !== sessionID) {
       forgetShownPictures(previousSessionID);
       if (notedSessionIDs.delete(previousSessionID)) forgetInjectedUserTurns(previousSessionID);
@@ -3202,9 +3209,20 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The host asks whether any extension handles `session_before_compact`, which turns its
   // background compaction off, but never these two: handling them changes nothing it does. A
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
+  // The host fires `session_compact` once the compaction entry is on the branch, and the pictures
+  // the compaction cut off are no longer in any request: the session's shown set becomes what its
+  // new live context shows (`liveContext`), replaced rather than added to, so a later read or
+  // delivery sends such a picture again. It is the set of the session that compacted, the id its
+  // own tool calls carry, which a task subagent's instance knows too.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
+    const shown = shownPictures(context.sessionManager.getSessionId());
+    shown.clear();
+    markPicturesShown(
+      shown,
+      transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
+    );
   });
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);

@@ -4,7 +4,7 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 ## What runs in your pod, and what runs on the pull request
 
-- The issue's roles share one pod memory limit. In a gVisor pod, where the deployment runs the launcher's memory guard (it is on by default), the guard SIGKILLs near that limit the largest process that is not Legion's or an agent's, usually your command, and tells your role why; a faster fill ends every role's turn. In a microVM pod the pod's own kernel stops such a command instead (an agent too, where the pod requests less than its limit), and your role is told the same way.
+- The issue's roles share one pod memory limit. In a gVisor pod, where the deployment runs the launcher's memory guard (it is on by default), the guard SIGKILLs near that limit a process that is not Legion's or an agent's, the one growing fastest first (`docs/kubernetes.md`, "What it ends"), usually your command, and tells your role why; a faster fill ends every role's turn. In a microVM pod the pod's own kernel stops such a command instead (an agent too, where the pod requests less than its limit), and your role is told the same way.
 - In the pod: compile what you touched, run the tests you added or changed by name (`go test -run '<TestName>' ./internal/<package>/`, `bun test <files>`), build the program a check drives, and `go vet -tags e2e ./...`. For the race detector prefix `CGO_ENABLED=1`; the image sets it to 0.
 - A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` go to CI on the pull request. Every other heavy run goes where your deployment's instructions say.
 

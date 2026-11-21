@@ -203,13 +203,16 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 	}
 }
 
-// The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
-// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
-// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
-// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
-// until the context ends. The controller's form with --microvm is refused for its roles directory
-// alone, so --microvm reached it too.
-func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+// The metadata endpoint is a microVM pod's alone, in either of the launcher's forms, and named
+// whole: both of its flags, with --microvm. Each other mixture is refused before anything is
+// dialled or listened on, naming what it lacks, which proves each flag reaches the launcher: one
+// it did not know would exit 2 on its usage, and one it dropped would change the refusal or dial
+// the unreachable daemon until the context ends. The controller's form without --microvm is
+// refused as an issue pod's is, so the metadata flags reach that form too. Its acceptance with
+// --microvm is TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart's (internal/launcher), through
+// the configuration's own check: an accepted run here would start the launcher, which listens on
+// the endpoint's fixed address and names it in this process's environment.
+func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -229,8 +232,8 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			"the metadata endpoint is named in part: no --metadata-workload-pool"},
 		{"a gVisor pod", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
-		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
-			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+		{"the controller's form in a gVisor pod", []string{"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(), "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -50,7 +50,7 @@ import type {
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { natsFailureReason } from "@legion/envoy-client/errors";
-import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
+import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
@@ -18483,6 +18483,241 @@ console.log(JSON.stringify(args));
       expect([...shownPictures("ses_pictures_restarted")].sort()).toEqual(
         [addresses.card, addresses.read, addresses.turn].sort()
       );
+    });
+
+    /**
+     * `entry` with its body, a message entry's `message` or a custom message entry's `content`,
+     * behind a getter: while `cut` answers true (always, by default) the entry stands before the
+     * live context's cut, and a read of its body is recorded in `reads` and throws.
+     */
+    const withBody = (
+      entry: Record<string, unknown>,
+      field: "message" | "content",
+      body: unknown,
+      reads: string[],
+      cut: () => boolean = () => true
+    ): Record<string, unknown> =>
+      Object.defineProperty(entry, field, {
+        enumerable: true,
+        get: () => {
+          if (!cut()) return body;
+          reads.push(`${String(entry.id)}.${field}`);
+          throw new Error(`the ${field} of ${String(entry.id)}, before the cut, was read`);
+        },
+      });
+
+    /** A person's turn whose image block shows `address`, as Oh My Pi keeps it. */
+    const pictureTurn = (address: string) => ({
+      role: "user",
+      content: [{ type: "text", text: `Look:\n\n![shot.png](${address})` }, image],
+    });
+    const assistantReply = { role: "assistant", content: [{ type: "text", text: "Seen." }] };
+
+    // A long session's start read every message of its branch for the pictures it was shown:
+    // about 28,600 bodies for a controller, which raised its resume's peak from 924.7 MiB to
+    // 1,564.4 MiB, and it counted as shown the pictures a compaction had taken from the model.
+    // Only the live context counts (`liveContext`), so a picture before the cut is sent again.
+    // The rest of the restore reads custom entries, and the `details` of the Envoy cards the
+    // plugin wrote, on both sides of the cut, so no body before it is read.
+    test("a session started on a compacted transcript counts only its live context's pictures as shown, and restores its ledger and handled attempts from both sides of the cut without reading a body before it", async () => {
+      const earlySlug = "live-context-early";
+      const early = `dispatch://LEGION-1/artifact/${earlySlug}@v1`;
+      const kept = "dispatch://LEGION-1/artifact/live-context-kept@v1";
+      const late = "dispatch://LEGION-1/artifact/live-context-late@v1";
+      const handledBefore = "66666666-6666-4666-8666-666666666666";
+      const handledAfter = "88888888-8888-4888-8888-888888888888";
+      const handled = (id: string, messageID: string) => ({
+        type: "custom",
+        id,
+        customType: "envoy-dispatch-handled-attempt",
+        data: { attempt: 1, message_id: messageID },
+      });
+      const recorded = (id: string, key: string) => ({
+        type: "custom",
+        id,
+        customType: REPLAY_DELIVERED_ENTRY,
+        data: { event_id: `dispatch-${key}`, dedupe_key: key, at: Date.now() },
+      });
+      const reads: string[] = [];
+      const file = [
+        withBody({ type: "message", id: "e0" }, "message", pictureTurn(early), reads),
+        handled("e1", handledBefore),
+        // A card the host wrote, whose `details` name its frame as `handCard` writes them.
+        withBody(
+          {
+            type: "custom_message",
+            id: "e2",
+            customType: "envoy-message",
+            display: true,
+            details: { event_id: "dispatch-live-context-card", dedupe_key: "live-context-card" },
+            timestamp: new Date().toISOString(),
+          },
+          "content",
+          [{ type: "text", text: "envoy:\n  id: dispatch-live-context-card" }],
+          reads
+        ),
+        withBody(
+          { type: "custom_message", id: "e3", customType: "legion-notice", display: true },
+          "content",
+          "Another extension's message.",
+          reads
+        ),
+        recorded("e4", "live-context-recorded-before"),
+        withBody({ type: "message", id: "e5" }, "message", assistantReply, reads),
+        // The compaction's first kept entry: the model still sees the picture it shows.
+        {
+          type: "message",
+          id: "e6",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "dispatch_read",
+            content: [
+              {
+                type: "text",
+                text: `Pictures:\n- image 1: ${kept} (kept.png, image/png, 10 bytes)`,
+              },
+              image,
+            ],
+          },
+        },
+        {
+          type: "compaction",
+          id: "e7",
+          summary: "The session so far.",
+          firstKeptEntryId: "e6",
+          tokensBefore: 150_000,
+        },
+        handled("e8", handledAfter),
+        recorded("e9", "live-context-recorded-after"),
+        { type: "message", id: "e10", message: pictureTurn(late) },
+      ];
+      // A new process: it knows no picture any session was shown.
+      forgetShownPictures("ses_delivery");
+      const { accepts, agent, fixture } = await bootDirectSession("live-context-start", {
+        accept: () => ({ accepted: true }),
+        dispatch: pictureRoutes(earlySlug),
+        entries: file,
+      });
+
+      expect([...shownPictures("ses_delivery")].sort()).toEqual([kept, late].sort());
+
+      const carded = (key: string) =>
+        fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery.content).includes(`dispatch-${key}`)
+        );
+      // Frames the ledger holds, from the card and the records on either side of the cut.
+      for (const key of [
+        "live-context-card",
+        "live-context-recorded-before",
+        "live-context-recorded-after",
+      ]) {
+        agent.push(commentNotification(key, `Comment ${key}`));
+      }
+      // Attempts recorded handled on either side of the cut.
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-before", {
+          messageID: handledBefore,
+        })
+      );
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-after", { messageID: handledAfter })
+      );
+      agent.push(
+        commentNotification(
+          "live-context-pictures",
+          `Look:\n\n![shot.png](${early})\n![kept.png](${kept})\n![late.png](${late})`
+        )
+      );
+      await until(() => fixture.deliveries.length >= 3, "the three cards");
+      await settle();
+
+      // The ledger passed over every frame it holds; each handled attempt is a card with no accept.
+      expect(fixture.deliveries).toHaveLength(3);
+      expect(carded("live-context-handled-before")).toHaveLength(1);
+      expect(carded("live-context-handled-after")).toHaveLength(1);
+      expect(accepts).toEqual([]);
+      expect(fixture.userMessages).toEqual([]);
+      // The picture before the cut is sent again; the two the live context shows are named.
+      const [pictured] = carded("live-context-pictures");
+      expect(pictured?.content).toEqual([
+        {
+          type: "text",
+          text: expect.stringContaining(`- image 1: ${early} (shot.png, image/png, 10 bytes)`),
+        },
+        image,
+      ]);
+      const text = JSON.stringify(pictured?.content);
+      for (const address of [kept, late]) {
+        expect(text).toContain(`- not shown: ${address} (shown earlier this session;`);
+      }
+      expect(reads).toEqual([]);
+    });
+
+    // The pictures a compaction cut off are in no later request, so the session's shown set is
+    // what its new live context shows, replaced rather than added to, and the entries before the
+    // new cut are not read.
+    test("a compaction makes the session's shown pictures its new live context's, reading no body before the cut", async () => {
+      const address = (slug: string) =>
+        `dispatch://LEGION-1/artifact/live-context-compact-${slug}@v1`;
+      const reads: string[] = [];
+      let compacted = false;
+      const cut = () => compacted;
+      const file: unknown[] = [
+        withBody(
+          { type: "message", id: "c0" },
+          "message",
+          pictureTurn(address("first")),
+          reads,
+          cut
+        ),
+        withBody({ type: "message", id: "c1" }, "message", assistantReply, reads, cut),
+      ];
+      const { context, fixture } = await bootDirectSession("live-context-compaction", {
+        entries: file,
+      });
+      expect(shownPictures("ses_delivery").has(address("first"))).toBe(true);
+
+      // The session goes on: a card the host took and wrote, then a turn the compaction keeps,
+      // and the host compacts, which writes the compaction entry before it tells extensions.
+      shownPictures("ses_delivery").add(address("carded"));
+      file.push(
+        withBody(
+          {
+            type: "custom_message",
+            id: "c2",
+            customType: "envoy-message",
+            display: true,
+            details: {
+              event_id: "dispatch-live-context-compact",
+              dedupe_key: "live-context-compact",
+            },
+          },
+          "content",
+          [
+            {
+              type: "text",
+              text: `envoy: card\n\nPictures:\n- image 1: ${address("carded")} (carded.png, image/png, 10 bytes)`,
+            },
+            image,
+          ],
+          reads,
+          cut
+        ),
+        { type: "message", id: "c3", message: pictureTurn(address("kept")) },
+        {
+          type: "compaction",
+          id: "c4",
+          summary: "The session so far.",
+          firstKeptEntryId: "c3",
+          tokensBefore: 150_000,
+        }
+      );
+      compacted = true;
+      await fixture.handlers.get("session_compact")?.({}, context);
+
+      expect([...shownPictures("ses_delivery")]).toEqual([address("kept")]);
+      expect(reads).toEqual([]);
     });
 
     test("a session that shuts down forgets the pictures it was shown", async () => {

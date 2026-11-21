@@ -28,4 +28,6 @@ Read it before every push. Your `Legion addressing` line names your issue's repo
 - A line short: cure it as `skill://legion-worker`, "Commits and pushes", says.
 - Another session or another role, or `(no author)` or `(no committer)`, which `jj git push` refuses: send the architect this log.
 - The git author and committer name no role; do not compare them.
-- Never set `user.name`, `user.email`, `templates.commit_trailers`, `templates.revert_description`, `templates.duplicate_description` or any `trailer.*` key in any jj or git scope: the repository's jj config is shared by every workspace of the clone, and a `templates.commit_trailers` there replaces the pane's trailers.
+- Never set `user.name`, `user.email`, `templates.commit_trailers`, `templates.revert_description`, `templates.duplicate_description` or any `trailer.*` key in any jj or git scope, a `--config` on one command among them: the repository's jj config is shared by every workspace of the clone, and a `templates.commit_trailers` there replaces the pane's trailers.
+- `jj metaedit -m` writes a description with no trailer: set a description with `jj describe` or `jj commit`.
+- A commit on a fork's member branch keeps both lines: `knives audit` reads only the lines a diff adds, never a commit message, and upstream gets the one squashed commit knives writes.

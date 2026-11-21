@@ -142,6 +142,66 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	}
 }
 
+// The holder applies a kill of the controller's pod as one fact under the kill's own identity, so
+// the same report sent twice is one fact and one controller notice; the outbox's run publishes
+// that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
+// no other topic. The notice names the process, its pid, its size, the pod's reading and the limit.
+func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	kills := &memoryGuardKills{}
+	kills.bind(pool, []intake.Handler{engine})
+	token := claim.ControllerToken("legion")
+	report := memoryGuardKill()
+	report.Guard = "guard-c0de"
+
+	for range 2 {
+		if err := kills.controllerKilled(ctx, token, "pod-controller", report); err != nil {
+			t.Fatalf("apply the controller's kill: %v", err)
+		}
+	}
+
+	if applied := appliedMemoryGuardKills(t, pool, "memory-guard-kill:guard-c0de:3"); applied != 1 {
+		t.Fatalf("the kill is applied as %d facts under memory-guard-kill:guard-c0de:3, want one", applied)
+	}
+
+	publisher := &outboxPublisher{}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, project: "legion", now: time.Now}
+	for run := range 2 {
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+	}
+	const topic = "notifications.legion.legion.controller"
+	if topic != notify.ControllerTopic("legion") {
+		t.Fatalf("the controller's topic is %q, want %q", notify.ControllerTopic("legion"), topic)
+	}
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].topic != topic || published[0].message != "memory-guard-kill on LEGION" {
+		t.Fatalf("published %+v, want one notice on %s as memory-guard-kill on LEGION", published, topic)
+	}
+	notice, ok := published[0].payload.(record.Notice)
+	if !ok || notice.Kind != record.MemoryGuardKillNotice || notice.Role != claim.RoleController {
+		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice of the controller", published[0].payload)
+	}
+	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-controller/references/wakes.md"} {
+		if !strings.Contains(notice.Reason, part) {
+			t.Fatalf("the notice's reason %q does not name %q", notice.Reason, part)
+		}
+	}
+}
+
+// A holder the boot never bound refuses a kill of the controller's pod as it refuses an issue
+// pod's, so the launcher session logs the report it drops.
+func TestMemoryGuardAnUnboundHolderRefusesEveryControllerKill(t *testing.T) {
+	err := (&memoryGuardKills{}).controllerKilled(context.Background(), claim.ControllerToken("legion"), "pod-controller", memoryGuardKill())
+	if !errors.Is(err, errMemoryGuardKillsUnbound) {
+		t.Fatalf("controllerKilled = %v, want errMemoryGuardKillsUnbound", err)
+	}
+}
+
 // A kill the pod's kernel made reaches the workflow through the same holder, with its cause: it is
 // applied once under the same identity a guard's kill is, memory-guard-kill:<guard>:<sequence>,
 // and the role is told the kernel's note rather than the guard's.
@@ -182,32 +242,52 @@ func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
 	}
 }
 
-// runtime.kubernetes.memory_guard.issue_pods reaches sandbox.Options as the settings an issue pod's
-// launcher is handed, and none at all when the deployment turned the guard off.
-func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
+// runtime.kubernetes.memory_guard reaches sandbox.Options each pod kind's block apart: with
+// different numbers in the two, Options.MemoryGuard carries issue_pods' settings, which an issue
+// pod's launchers are handed, and Options.ControllerMemoryGuard controller_pod's, which the
+// controller pod's launcher is handed, neither ever the other's; a kind turned off is none, and
+// leaves the other kind's settings as they were.
+func TestMemoryGuardEachPodKindsSettingsReachTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
-	k := config.Kubernetes{
-		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
-		MemoryGuard: config.MemoryGuardConfig{IssuePods: config.MemoryGuardPodConfig{
-			Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250,
-		}},
+	issue := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
+	controller := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400}
+	issueWire := &shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
+	controllerWire := &shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400}
+	off := func(g config.MemoryGuardPodConfig) config.MemoryGuardPodConfig {
+		g.Enabled = false
+		return g
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions: %v", err)
-	}
-	want := shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
-	if opts.MemoryGuard == nil || *opts.MemoryGuard != want {
-		t.Fatalf("Options.MemoryGuard = %+v, want %+v", opts.MemoryGuard, want)
-	}
-
-	k.MemoryGuard.IssuePods.Enabled = false
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions with the guard off: %v", err)
-	}
-	if opts.MemoryGuard != nil {
-		t.Fatalf("Options.MemoryGuard = %+v with the guard off, want none", *opts.MemoryGuard)
+	for _, tc := range []struct {
+		name                      string
+		guard                     config.MemoryGuardConfig
+		wantIssue, wantController *shimwire.LauncherMemoryGuard
+	}{
+		{"both on", config.MemoryGuardConfig{IssuePods: issue, ControllerPod: controller}, issueWire, controllerWire},
+		{"the issue pods' guard off", config.MemoryGuardConfig{IssuePods: off(issue), ControllerPod: controller}, nil, controllerWire},
+		{"the controller pod's guard off", config.MemoryGuardConfig{IssuePods: issue, ControllerPod: off(controller)}, issueWire, nil},
+		{"both off", config.MemoryGuardConfig{IssuePods: off(issue), ControllerPod: off(controller)}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := config.Kubernetes{
+				Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+				StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+				MemoryGuard: tc.guard,
+			}
+			opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+			if err != nil {
+				t.Fatalf("sandboxOptions: %v", err)
+			}
+			for _, member := range []struct {
+				name      string
+				got, want *shimwire.LauncherMemoryGuard
+			}{
+				{"MemoryGuard", opts.MemoryGuard, tc.wantIssue},
+				{"ControllerMemoryGuard", opts.ControllerMemoryGuard, tc.wantController},
+			} {
+				if (member.got == nil) != (member.want == nil) || (member.got != nil && *member.got != *member.want) {
+					t.Errorf("Options.%s = %+v, want %+v", member.name, member.got, member.want)
+				}
+			}
+		})
 	}
 }

@@ -40,6 +40,32 @@ The daemon ended a stalled turn of the tree's architect; the notice says what be
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
+## `memory-guard-kill on <PROJECT>` (`{kind: "memory-guard-kill", role: "controller", reason}`)
+
+The memory guard of your own pod stopped one of your programs with SIGKILL, because the pod was
+near its memory limit. `reason` names the program by its executable and its pid, how much memory
+it held, how much the pod held, and the pod's limit. It names none of the program's arguments.
+Your session and the pod's other processes go on, and the guard touched no pod of any tree.
+
+A pod in a microVM has no memory guard. There the pod's own kernel stops a program when the pod
+runs out of memory, and `reason` begins "The pod's kernel stopped one of your processes because
+the pod ran out of memory". It names the same facts, and the advice below holds for it too.
+
+Do not run the same program again unchanged, because it would end the same way. Bound its output:
+read a page at a time, set a limit on what it returns, or stream it to a file and read only the
+part you need. Send heavy work where your deployment's instructions say, never to your own pod.
+
+The kernel can also stop one of the processes that run your session. `reason` then says "It was
+one of the processes that run your session". If it was your agent, your turn ended with it, and
+so did every command it was running. The daemon then starts your session again. Bound what you
+run from then on, as the paragraph above says.
+
+An `eval` cell that answers "Kernel died during execution; completion is uncertain", with such a
+notice beside it, is this kill: the program stopped was the cell's kernel. Some of the cell's work
+may have run and some may not, so check what it was to change before you run a bounded form of it.
+
+Each kill is a notice of its own, even while an earlier one is still unsent.
+
 ## GitHub mentions
 
 Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
