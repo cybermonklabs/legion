@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
 )
@@ -40,6 +41,11 @@ type Service struct {
 	// AllowedHosts are the ENVOY_ALLOWED_HOSTS names, each as HostName writes it, that an
 	// unauthenticated listener serves /v1 to beside loopback.
 	AllowedHosts []string
+	// EdgeProjects is ENVOY_EDGE_PROJECTS (parseEdgeProjects): the project keys an edge listener
+	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
+	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go). Empty,
+	// the variable unset or blank, is every other listener, which reads nothing of it.
+	EdgeProjects []string
 }
 
 func (s Service) ListenAddress() string {
@@ -110,6 +116,10 @@ func Load(defaultPort int) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	edgeProjects, err := parseEdgeProjects(os.Getenv(EdgeProjectsEnvVar))
+	if err != nil {
+		return Service{}, err
+	}
 	return Service{
 		AllowedHosts:   allowedHosts,
 		MachineID:      machine,
@@ -120,6 +130,7 @@ func Load(defaultPort int) (Service, error) {
 		ListenHost:     listenHost,
 		Port:           port,
 		ListenSocket:   listenSocket,
+		EdgeProjects:   edgeProjects,
 	}, nil
 }
 
@@ -171,4 +182,19 @@ func HostName(host string) string {
 		host = host[1 : len(host)-1]
 	}
 	return strings.TrimSuffix(fold.ASCII(host), ".")
+}
+
+// EdgeProjectsEnvVar names the projects an edge listener serves (Service.EdgeProjects).
+const EdgeProjectsEnvVar = "ENVOY_EDGE_PROJECTS"
+
+// parseEdgeProjects reads ENVOY_EDGE_PROJECTS: project keys separated by commas or white space,
+// read by the rule a broker token's own list is read by (oauthwire.ParseProjects): sorted, each
+// once, at most oauthwire.MaxProjects, and nil when blank. A key that is not a project key, a key
+// named twice and a longer list are refused, naming the variable.
+func parseEdgeProjects(raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EdgeProjectsEnvVar, err)
+	}
+	return projects, nil
 }

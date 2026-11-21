@@ -83,10 +83,13 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 	t.Run("every grant natsgrant builds closes both directions", func(t *testing.T) {
 		session, err := natsgrant.Session("ses_a")
 		require.NoError(t, err)
+		edge, err := natsgrant.Edge("edge-a", []string{"PRIV"})
+		require.NoError(t, err)
 		for name, grant := range map[string]natsgrant.Permissions{
 			"Session": session, "Daemon": natsgrant.Daemon(), "Measure": natsgrant.Measure(),
 			"Listener": natsgrant.Listener("example-hub"), "Dispatch": natsgrant.Dispatch("example-dispatch"),
 			"Host": natsgrant.Host("example-host-a"), "ListenerHost": natsgrant.ListenerHost("example-hub"),
+			"Edge": edge,
 		} {
 			direction, open := natsgrant.OpenDirection(grant)
 			require.False(t, open, "%s opens its %s direction", name, direction)

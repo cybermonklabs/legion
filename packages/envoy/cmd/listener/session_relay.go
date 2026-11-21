@@ -508,7 +508,7 @@ type relayFrame struct {
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
-	inbox := nats.NewInbox()
+	inbox := delivery.consumers.NewInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
 		cfg:         cfg,

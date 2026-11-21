@@ -109,6 +109,18 @@ authorization {
 `, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
 }
 
+// GrantedUsersConfig is the configuration of a server with JetStream whose whole authorization is
+// users, each nkey user held to its grant's allow lists as a hub renders a static user: a client
+// that names none of them is refused, since the configuration names no no_auth_user. A subscribe
+// entry may carry a queue group after a space, as a grant writes one.
+func GrantedUsersConfig(users ...StaticUser) string {
+	entries := make([]string, len(users))
+	for i, user := range users {
+		entries[i] = userEntry(user.NKey, user.Publish, user.Subscribe)
+	}
+	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [\n    %s\n  ]\n}\n", strings.Join(entries, "\n    "))
+}
+
 // userEntry is one nkey user of a configuration, with its grant.
 func userEntry(nkey string, publish, subscribe []string) string {
 	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }",

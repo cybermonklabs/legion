@@ -119,6 +119,17 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 	}
 }
 
+// An edge listener's relay receipt travels over core NATS as the relay frame does: no stream
+// subject captures the receipt family, so no receipt is stored.
+func TestARelayReceiptIsNotStored(t *testing.T) {
+	if RelayReplyPrefix != "notifications.envoy.relayreply." {
+		t.Fatalf("RelayReplyPrefix = %q", RelayReplyPrefix)
+	}
+	if subject := RelayReplyPrefix + "n1.t1"; StreamCaptures(subject) {
+		t.Fatalf("the stream captures %s", subject)
+	}
+}
+
 // sessionConsumersOnStream connects a client that owns the stream, on a JetStream account of the
 // test's own, and SessionConsumers beside it.
 func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {

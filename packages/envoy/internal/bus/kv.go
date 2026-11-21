@@ -139,6 +139,12 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	request := "KV_" + kv.Bucket() + " handle open"
 	owner := clientOwning(conn)
+	if owner != nil && owner.streamMessageReads {
+		kv, err = newStreamMessageReads(conn, kv)
+		if err != nil {
+			return KeyValue{}, err
+		}
+	}
 	// The open is one STREAM.INFO of the bucket's stream, read for the server's refusal as every
 	// request of a start is (refusedBy): the jetstream API has no context to wrap, so the send is.
 	open := func() (jetstream.KeyValue, error) {
