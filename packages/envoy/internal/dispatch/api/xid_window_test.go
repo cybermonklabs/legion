@@ -666,6 +666,56 @@ func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 	})
 }
 
+// TestXidWindowsUnderTheParentStatusRule measures, with DISPATCH_PARENT_STATUS_RULE on, the two
+// writes to which the rule adds a statement inside the xid window: a create under a parent,
+// whose write phase reads the parent's row `for share` just before its insert, and a close, whose
+// write phase reads the issue's open children again after its own update. With the rule off
+// neither statement runs, and xidWindowIssueCreateWithSpec and xidWindowIssueCloseWithOpenAsks
+// hold those two writes to the windows they hold without it. The create goes first and files
+// its issue under a parent of its own, so the fixture's issue has no child when it closes. The
+// fixture settles each document twenty milliseconds after a write, and each step waits for every
+// document to settle first, so the close settles nothing before its transaction.
+func TestXidWindowsUnderTheParentStatusRule(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{settle: 20 * time.Millisecond, parentStatusRule: true}, "")
+	runXidSteps(t, f, true, []xidStep{
+		{"issue create under a parent", xidWindowIssueCreateUnderAParent},
+		{"issue close with open asks", xidWindowIssueCloseUnderTheRule},
+	})
+}
+
+// A create with a spec under a parent, with the rule on: the create's window of
+// xidWindowIssueCreateWithSpec, the read of the parent's row `for share` before the insert, and
+// the walk of the new issue's ancestors that its issue.created event names, which a create under
+// a parent runs whatever the setting.
+func xidWindowIssueCreateUnderAParent(t *testing.T, f *xidFixture) {
+	parent := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": xidProject, "title": "Parent of the measured create", "force": true, "actor": sessionActor(),
+	})
+	if parent.Code != http.StatusCreated {
+		t.Fatalf("create the parent: status=%d body=%s", parent.Code, parent.Body.String())
+	}
+	parentKey := decodeBody[model.Issue](t, parent).Key
+	awaitQuietDatabase(t, f.database, true)
+	spec, _ := xidSpec(3)
+	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(12,
+		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the parent's row read for share, the issue row, its blocked_by links and its artifact row - "+
+			"the two reads that load the issue it answers with, the walk of its ancestors for its event, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
+		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": xidProject, "title": "Large spec filed under a parent", "spec": spec, "parent": parentKey, "force": true,
+			"actor": sessionActor(),
+		})
+	})
+}
+
+// A close with open asks, with the rule on: the close's window of xidWindowIssueCloseWithOpenAsks,
+// and the second read of the issue's open children after its update.
+func xidWindowIssueCloseUnderTheRule(t *testing.T, f *xidFixture) {
+	f.measure(t, http.StatusOK, storetest.XidWindowOf(6,
+		"the issue row's own update, the read of its open children, the two reads that load the issue it answers with, the batch withdrawing its asks and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{"status": "done"}, "alice")
+	})
+}
+
 // A result is recorded against a `check` block of the issue's Verification document, a document of
 // the harness's size. The route joins no ledger and writes its two rows inline, so its window
 // holds three statements: the batch that appends `result.recorded` (the event owner's lock, its

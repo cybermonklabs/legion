@@ -166,6 +166,8 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -336,6 +338,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:           options.buildCommit,
 		OutboxPublishes:       options.outboxPublishes,
 		Metrics:               options.metrics,
+		ParentStatusRule:      ParentStatusRule{on: options.parentStatusRule},
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

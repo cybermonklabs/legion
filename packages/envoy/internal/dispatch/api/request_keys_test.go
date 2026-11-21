@@ -75,7 +75,7 @@ func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.R
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
 		http.MethodPost, pattern,
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
+		keyedRoute{},
 	)))
 	rig.handler = mux
 	return rig

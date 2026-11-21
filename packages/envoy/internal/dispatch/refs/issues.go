@@ -48,28 +48,67 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 	return ancestors, nil
 }
 
-// IssueDescendants is every issue below the issue key on `child_of`, at any status, read through
-// q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor walk
-// above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
-// not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
-// This is the server's one recursive descendant walk over whole subtrees: api's coverage read is
-// this query. api's issueChildrenStatement is a different read — one row per direct child, with
-// a rollup over that child's own subtree — and stays its own.
+// IssueDescendant is an issue below another one on `child_of`, as IssueDescendantRows reads it:
+// its key, its parent, its status, and its depth, 1 for a child of the issue the walk starts at.
+type IssueDescendant struct {
+	Key    string
+	Parent string
+	Status string
+	Depth  int
+}
+
+// IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status:
+// IssueDescendantRows' keys, in its order. An issue with no child, an issue no row has, and the
+// empty key answer []. api's coverage read is this query.
 func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
-	descendants := []string{}
-	if key == "" {
-		return descendants, nil
+	rows, err := IssueDescendantRows(ctx, q, key)
+	if err != nil {
+		return nil, err
 	}
-	if err := q.QueryRow(ctx, `
+	descendants := make([]string, 0, len(rows))
+	for _, row := range rows {
+		descendants = append(descendants, row.Key)
+	}
+	return descendants, nil
+}
+
+// IssueDescendantRows is every issue below the issue key on `child_of`, at any status, read
+// through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
+// walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
+// holds the issue's parent, its status and its depth. The rows are in the order of their depth,
+// and at one depth in the order of their numbers. The key itself is not in the answer. An issue
+// with no child, an issue no row has, and the empty key answer []. This is the server's one
+// recursive descendant walk over whole subtrees: api's coverage read (IssueDescendants) and the
+// plan of a status change (api's planStatusChange) are this query. api's issueChildrenStatement is
+// a different read - one row per direct child, with a rollup over that child's own subtree - and
+// stays its own.
+//
+// The walk carries each issue's project and number, which its order needs, from the row it reads
+// already, rather than join its keys back to issues: the planner has no estimate of a recursive
+// CTE's size, so such a join hashes the whole table (api's issueChildrenStatement says what it
+// cost there). The two columns follow from the key, so `union` removes the rows it removes
+// without them.
+func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
+	if key == "" {
+		return []IssueDescendant{}, nil
+	}
+	rows, err := q.Query(ctx, `
 		with recursive descendants as (
-			select c.key, 1 as depth from issues c where c.parent_key = $1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
+			from issues c where c.parent_key = $1
 			union
-			select c.key, d.depth + 1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
 			where d.depth < $2
 		)
-		select coalesce(array_agg(key order by key), '{}') from descendants
-	`, key, IssueDepthCap).Scan(&descendants); err != nil {
+		select key, parent_key, status, depth from descendants
+		order by depth, project_key, number
+	`, key, IssueDepthCap)
+	if err != nil {
+		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
+	}
+	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
+	if err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
 	return descendants, nil

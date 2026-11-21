@@ -14,13 +14,19 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Issue, IssueSummary, UserState } from "../../api/types";
+import { boardMoveMutationKey } from "../../api/queries";
+import type { Issue, IssueSummary, StatusChangeAnswer, UserState } from "../../api/types";
+import {
+  answerStatusChanges,
+  fixtureAnswer,
+  fixtureRefusal,
+} from "../issue/parent-status/status-change-fixtures";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
@@ -1057,3 +1063,373 @@ test("a move the reader stopped says it may have been made, not that it failed",
     listIssues.mockRestore();
   }
 });
+
+// The board's rows of the parent-status question's state table (INFRA-4731's plan, "Lists named
+// before code"). A card with a parent or an open child (`progress.children`) moves to another
+// status only after the rule's dry run; the route's answers are the real server's
+// (`status-change-fixtures.ts`).
+
+/** CORE-1 with a child in work, then two cards with neither a parent nor a child. */
+const parentIssues: IssueSummary[] = [
+  issue({
+    key: "CORE-1",
+    progress: { children: { done: 0, total: 1 }, tasks: null },
+    rank: "a",
+    status: "todo",
+    title: "Parent",
+  }),
+  issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+  issue({ key: "CORE-3", rank: "c", status: "in_progress", title: "Charlie" }),
+];
+
+/** Which request of the route `input` is: a dry run or a write, with `include_children` or not. */
+function statusChangeOf(input: { dry_run?: boolean; include_children?: boolean }): string {
+  const option = input.include_children === true ? "include_children" : "another option";
+  return `${input.dry_run === true ? "dry run" : "write"} with ${option}`;
+}
+
+/** A move that asks: its own dry run is refused by the rule (ACME-4's child in work),
+ *  `include_children`'s dry run answers, `unlink_children`'s is held, and `write` answers the
+ *  status change with the option. */
+function answerTheQuestion(write: () => Promise<StatusChangeAnswer>) {
+  return answerStatusChanges().mockImplementation(async (_key, input) => {
+    if (input.dry_run !== true) return write();
+    if (input.include_children === true) return fixtureAnswer("dry-run");
+    if (input.unlink_children === true) return new Promise<StatusChangeAnswer>(() => {});
+    throw fixtureRefusal("conflict");
+  });
+}
+
+test("board: checking - a second drop while the first is checking waits behind it in the board's one move scope", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let first: Promise<void> = Promise.resolve();
+    let second: Promise<void> = Promise.resolve();
+    await act(async () => {
+      first = hook.result.current.moveCard("CORE-1", "in_progress", 0);
+      second = hook.result.current.moveCard("CORE-2", "in_progress", 0);
+      await settle();
+    });
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    // The card being checked has not moved; the second has, and its PATCH waits its turn.
+    const statusOf = (key: string) =>
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === key)
+        ?.status;
+    expect(statusOf("CORE-1")).toBe("todo");
+    expect(statusOf("CORE-2")).toBe("in_progress");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      dryRun.resolve(fixtureAnswer("dry-run"));
+      await first;
+      await second;
+    });
+    expect(patchIssue.mock.calls.map(([key, input]) => [key, input.status])).toEqual([
+      ["CORE-1", "in_progress"],
+      ["CORE-2", "in_progress"],
+    ]);
+    expect(hook.result.current.error).toBeUndefined();
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+test("board: checking - the dry run answers 200, and the move goes as today", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerStatusChanges().mockResolvedValue(fixtureAnswer("dry-run"));
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    await act(() => hook.result.current.moveCard("CORE-1", "in_progress", 1));
+    expect(statusChanges).toHaveBeenCalledWith(
+      "CORE-1",
+      { dry_run: true, status: "in_progress" },
+      keyedAttempt
+    );
+    expect(patchIssue).toHaveBeenCalledWith(
+      "CORE-1",
+      { rank: { after: "CORE-3" }, status: "in_progress" },
+      keyedAttempt
+    );
+    expect(statusChanges.mock.invocationCallOrder[0]).toBeLessThan(
+      patchIssue.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(hook.result.current.question).toBeUndefined();
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+test("board: writing - a choice that lands sends the status change, then the card's rank PATCH, and the card moves", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerTheQuestion(async () => fixtureAnswer("changed"));
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...patched, status: "in_progress" });
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    // Asking: the card has not moved, and nothing is written.
+    expect(hook.result.current.question?.issues.map((entry) => entry.key)).toEqual(["ACME-5"]);
+    expect(
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === "CORE-1")
+        ?.status
+    ).toBe("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      hook.result.current.question?.choose("include_children");
+      await moved;
+    });
+    expect(statusChanges.mock.calls.map(([, input]) => statusChangeOf(input))).toContain(
+      "write with include_children"
+    );
+    // The status is the status change's; the PATCH carries the card's place alone.
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { rank: { after: "CORE-3" } }, keyedAttempt);
+    expect(statusChanges.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      patchIssue.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === "CORE-1")
+        ?.status
+    ).toBe("in_progress");
+    expect(hook.result.current.question).toBeUndefined();
+    expect(hook.result.current.error).toBeUndefined();
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+test("board: writing - the rank PATCH answered RANK_INPUT leaves the status standing, says the board changed and refetches", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerTheQuestion(async () => fixtureAnswer("changed"));
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "RANK_INPUT", error: "rank neighbors are not ordered" })
+  );
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    await act(async () => {
+      hook.result.current.question?.choose("include_children");
+      await moved;
+    });
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { rank: { after: "CORE-3" } }, keyedAttempt);
+    expect(hook.result.current.error).toBe(staleBoardMessage);
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+    // The status change that landed is the only one: nothing puts the status back.
+    expect(
+      statusChanges.mock.calls.filter(([, input]) => input.dry_run !== true).map(([key]) => key)
+    ).toEqual(["CORE-1"]);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+test("board: a PATCH of a card with no parent and no open child, refused by the rule, asks", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerTheQuestion(() => new Promise<StatusChangeAnswer>(() => {}));
+  const patchIssue = answerIssuePatches().mockRejectedValue(fixtureRefusal("conflict"));
+  const hook = renderMoves(queryClient);
+  try {
+    await act(async () => {
+      void hook.result.current.moveCard("CORE-2", "done", 0);
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.question).toBeDefined());
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    // The card went back, and the question says why rather than the board's line.
+    expect(
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === "CORE-2")
+        ?.status
+    ).toBe("todo");
+    expect(hook.result.current.error).toBeUndefined();
+    expect(statusChanges.mock.calls.map(([key, input]) => [key, statusChangeOf(input)])).toEqual([
+      ["CORE-2", "dry run with include_children"],
+      ["CORE-2", "dry run with another option"],
+    ]);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+/** How many board moves of CORE are pending: each holds every read of the project's issues
+ *  (`boardMovesSettled`). */
+const boardMovesPending = (queryClient: QueryClient) =>
+  queryClient.isMutating({ mutationKey: boardMoveMutationKey("CORE") });
+
+// The browser's Back while the board's question is open takes the board away. The move ends as
+// Keep as it is would end it, so its turn of the board's scope ends: the project's lists are read
+// again rather than wait on a question nobody can see, and nothing is written.
+test("board: asking - the board going away ends the move, leaves no board move pending and writes nothing", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerTheQuestion(() => new Promise<StatusChangeAnswer>(() => {}));
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    expect(hook.result.current.question).toBeDefined();
+    expect(boardMovesPending(queryClient)).toBe(1);
+
+    hook.unmount();
+    await settle();
+    expect(boardMovesPending(queryClient)).toBe(0);
+    await moved;
+    expect(patchIssue).not.toHaveBeenCalled();
+    expect(statusChanges.mock.calls.filter(([, input]) => input.dry_run !== true)).toEqual([]);
+    expect(
+      queryClient.getQueryData<IssueSummary[]>(queryKey)?.find((entry) => entry.key === "CORE-1")
+        ?.status
+    ).toBe("todo");
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// The board goes while the move's dry run is out. Where the rule asks nothing, the drop needs no
+// answer of the person's, so its PATCH still goes, as a card with no parent is saved at once, and
+// the board's move settles once it lands.
+test("board: checking - a dry run answered 200 once the board has gone still sends the PATCH, once, and the board's move settles", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    expect(boardMovesPending(queryClient)).toBe(1);
+
+    hook.unmount();
+    dryRun.resolve(fixtureAnswer("dry-run"));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await moved;
+    expect(patchIssue).toHaveBeenCalledWith(
+      "CORE-1",
+      { rank: { after: "CORE-3" }, status: "in_progress" },
+      keyedAttempt
+    );
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(boardMovesPending(queryClient)).toBe(0);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// Where the rule would refuse the drop, only the person could say what to do, and they have gone
+// with the board: the question never opens, nothing is written, and the board's turn ends.
+test("board: checking - a dry run answered 409 once the board has gone ends the move, leaves no board move pending and writes nothing", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    expect(boardMovesPending(queryClient)).toBe(1);
+
+    hook.unmount();
+    dryRun.reject(fixtureRefusal("conflict"));
+    await settle();
+    expect(boardMovesPending(queryClient)).toBe(0);
+    await moved;
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// A keyboard move of a card with a parent or an open child places nothing before its dry run
+// answers, so the board says the move once the card lands, with its place in its cell then, in
+// the words of every other keyboard move. On a board in swimlanes the cell is the card's lane.
+for (const [board, lanes] of [
+  ["the board", false],
+  ["a board in swimlanes", true],
+] as const) {
+  test(`Shift+L on ${board} moves a card with an open child after its dry run, and announces the move once the card lands`, async () => {
+    const user = userEvent.setup();
+    const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues, undefined, lanes);
+    try {
+      const shown = await screen.findByRole("region", { name: "Project board" });
+      const status = within(shown).getByRole("status", { name: "Board announcements" });
+      act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      // Checking: the card has not moved, so nothing is said of it yet.
+      expect(statusChanges).toHaveBeenCalledTimes(1);
+      expect(patchIssue).not.toHaveBeenCalled();
+      expect(status.textContent).toBe("");
+
+      await act(async () => {
+        dryRun.resolve(fixtureAnswer("dry-run"));
+        await settle();
+      });
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { rank: { before: "CORE-3" }, status: "in_progress" },
+        keyedAttempt
+      );
+      expect(status.textContent).toBe("CORE-1 → In progress, position 1 of 2");
+    } finally {
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}

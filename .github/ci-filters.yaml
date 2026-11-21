@@ -1451,6 +1451,7 @@ dispatch_ui:
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
   - 'packages/contracts/schemas/dispatch-openapi.json'
+  - 'packages/envoy/internal/dispatch/api/testdata/status-change/*.json'
   - 'packages/envoy/going/testdata/**'
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/process-tree.sh'

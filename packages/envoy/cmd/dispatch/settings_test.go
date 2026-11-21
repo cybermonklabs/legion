@@ -2138,6 +2138,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
+			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
+			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
+			// binary with it). Unset or off, the fix answers the rule off and reads nothing, so it is
+			// given no database.
+			for _, overrides := range []map[string]string{{}, {"DISPATCH_PARENT_STATUS_RULE": "off"}} {
+				boot := resolveWith(t, overrides)
+				if boot.ParentStatusRule {
+					t.Errorf("%v: ParentStatusRule true, want the rule off", overrides)
+				}
+				if rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{}, nil, boot.ParentStatusRule); err != nil || rule.On() {
+					t.Errorf("%v: the boot's fix answered the rule on=%t and %v, want the rule off and no error", overrides, rule.On(), err)
+				}
+			}
+			// On, the fix runs over the database, which holds no issue, and answers the rule on once
+			// its record is there.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "on"})
+			if !boot.ParentStatusRule {
+				t.Error("DISPATCH_PARENT_STATUS_RULE=on: ParentStatusRule false, want the rule on")
+			}
+			database := storetest.Open(t)
+			rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{Store: database}, storetest.Leases(t, database.Pool), boot.ParentStatusRule)
+			if err != nil || !rule.On() {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the boot's fix answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+			}
+			var recorded bool
+			if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from parent_status_fix)`).Scan(&recorded); err != nil || !recorded {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the record of the fix is there=%t (%v), want it written", recorded, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "yes"}, `DISPATCH_PARENT_STATUS_RULE="yes"`)
+		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
 			// no model service reachable, so the switch is what decides and not the credentials.

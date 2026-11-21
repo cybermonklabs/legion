@@ -313,6 +313,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/nested-directive.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other |
 | `e2e/offline-edits.e2e.ts` | document transport, IndexedDB recovery and read-only admissions |
 | `e2e/overlapping-marks.e2e.ts` | two readers' marks and the server's anchor refresh |
+| `e2e/parent-status-choice.e2e.ts` | each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote |
 | `e2e/parse-count.e2e.ts` | every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does |
 | `e2e/paste-recovery.e2e.ts` | pastes into the live document |
 | `e2e/phone-conversation.e2e.ts` | sends held, refused and retried, and read marks written from a thread |

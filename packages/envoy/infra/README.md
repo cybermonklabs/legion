@@ -1376,6 +1376,27 @@ component refuses, by name, a value outside 1-65535 and the two ports the app po
 its loopback, `envoy-dispatch`'s `8766` and the `cloud-sql-proxy` sidecar's `5432`. Setting or
 unsetting it replaces the app's pods as any change to its pod template does.
 
+`parentStatusRule`, `false` by default, turns on Dispatch's parent-status rule: `true` renders
+`DISPATCH_PARENT_STATUS_RULE=on` on the `envoy-dispatch` container alone, in every mode that runs
+Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it with the outside
+inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
+`signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
+its children's, and at boot it runs the one-time fix of the parents and children that break the
+rule. The fix runs once per database, so turning the input off and on again runs nothing: a
+parent and a child that came to break the rule while it was off still break it once it is on
+again, and each status move of that child is refused until a person takes the child off that
+parent or closes it (`packages/envoy/cmd/dispatch/README.md`, the fix's bullet). Set
+it only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+the releases with the daemon's side of the rule, which send the parent-status options. Second,
+each project's instructions retry a failed root architect with a status write of `todo` alone,
+not `backlog` and then `todo`, and that project's daemon and controller have read them. The
+rule refuses that `backlog` while an issue under the root is in work. Set it with no process
+of the earlier setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is
+rendered, so a deployment that leaves it unset renders the pod it always had. An `envoyImage`
+whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its
+settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting
+it replaces the app's pods as any change to its pod template does.
+
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
 renders no priority class and no budget.
@@ -1822,10 +1843,15 @@ a process reads the event log for its live readers only up to the safe horizon b
 event is final. A build from before that change (#2392) reads past an event still open below the
 newest one, so during a roll that first brings the change, at more than one replica, an old pod's
 live stream and delivery hub can skip an event a new pod commits out of id order; deploy that
-release at one replica, which recreates the pod, and raise the count afterwards. Each process
-closes a client connection after its next response once the connection is 60 seconds old, so
-after a roll the front door's and the in-cluster callers' keep-alive connections spread onto the
-pods that have just come up.
+release at one replica, which recreates the pod, and raise the count afterwards.
+`parentStatusRule` makes a crossing too: a process with the rule off still takes writes that
+break it after the one fix at boot has run, and the fix does not run again. So no process of the
+earlier setting may serve once a process of the new one does, whether the apply changes the input
+or first brings an image that reads it. At one replica the app's `Recreate` strategy stops the
+old pod before the new one starts; at more replicas, scale the app to zero before that apply.
+Each process closes a client connection after its next response once the connection is 60
+seconds old, so after a roll the front door's and the in-cluster callers' keep-alive connections
+spread onto the pods that have just come up.
 
 Every container reads its environment once, at start, and Dispatch reads the Azure key file and
 the NATS seed once, at boot, as the listener reads the seed, so a pod boots on a secret's new value

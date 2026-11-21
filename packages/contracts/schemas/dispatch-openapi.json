@@ -5274,7 +5274,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5344,7 +5344,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueDuplicateError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueDuplicateError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ParentStatusConflictBody"
+                    }
+                  ]
                 }
               }
             }
@@ -5447,7 +5454,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence.",
+        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule.",
         "operationId": "patchApiV1IssuesByKey",
         "parameters": [
           {
@@ -5506,6 +5513,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParentStatusConflictBody"
                 }
               }
             }
@@ -7482,6 +7499,91 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IssueRoleHolders"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/status-change": {
+      "post": {
+        "description": "Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal carries changed: the entries of the writes that committed before it, [] when none did. A repeat under the same Idempotency-Key while the first call runs is 409 KEY_IN_FLIGHT, whose changed is the entries of the writes the first call has committed so far.",
+        "operationId": "postApiV1IssuesByKeyStatusChange",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChangeAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChangeRefusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/StatusChangeConflict"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StatusChangeRefusal"
+                    }
+                  ]
                 }
               }
             }
@@ -24873,6 +24975,54 @@
         ],
         "type": "object"
       },
+      "ParentStatusConflictBody": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ParentStatusConflictIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues"
+        ],
+        "type": "object"
+      },
+      "ParentStatusConflictIssue": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "status",
+          "relation"
+        ],
+        "type": "object"
+      },
       "PassCounts": {
         "properties": {
           "graphql_points": {
@@ -27239,6 +27389,155 @@
         },
         "required": [
           "state"
+        ],
+        "type": "object"
+      },
+      "StatusChangeAnswer": {
+        "properties": {
+          "changed": {
+            "items": {
+              "$ref": "#/components/schemas/StatusChangeEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "$ref": "#/components/schemas/Issue"
+          }
+        },
+        "required": [
+          "issue",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "StatusChangeConflict": {
+        "properties": {
+          "changed": {
+            "items": {
+              "$ref": "#/components/schemas/StatusChangeEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ParentStatusConflictIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "StatusChangeEntry": {
+        "properties": {
+          "issue": {
+            "$ref": "#/components/schemas/Issue"
+          },
+          "key": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "previous_last_seq": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "status",
+          "parent",
+          "previous_last_seq"
+        ],
+        "type": "object"
+      },
+      "StatusChangeInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "expected_sequence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "include_children": {
+            "type": "boolean"
+          },
+          "include_parent": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "unlink_children": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "StatusChangeRefusal": {
+        "properties": {
+          "changed": {
+            "items": {
+              "$ref": "#/components/schemas/StatusChangeEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "changed"
         ],
         "type": "object"
       },

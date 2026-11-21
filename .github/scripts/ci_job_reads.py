@@ -954,7 +954,10 @@ RULES = {
         (f"{DAEMON}/docker/legion-testpg",
          "internal/dispatch/testlimits/testlimits_test.go:31 os.ReadFile (legionTestPG :12, "
          "../../../../daemon/docker/legion-testpg): its max_connections literal must equal "
-         "testlimits.ServerConnections plus Postgres's default superuser reserve")),
+         "testlimits.ServerConnections plus Postgres's default superuser reserve, and "
+         "testlimits_test.go's TestTheDocumentsStateTheTestServersListenQueue holds the listen queue "
+         "its comment states (twice that max_connections) to the same sum through docnumbers.Check "
+         "under ../../../../..")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -2920,6 +2923,7 @@ GATES = [
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/status-change/*.json", "packages/envoy-client/src/__tests__/dispatch-status-rule.test.ts:46 readFileSync (FIXTURES :32): the answers of POST /api/v1/issues/{key}/status-change that packages/envoy/internal/dispatch/api's TestStatusChangeAnswersMatchTheirFixtures writes, which the test's fake Dispatch answers with"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2244 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:298-302 reads every package's AGENTS.md, so a line there that tells an agent to hand an ask on fails that test"),
         ("packages/envoy/internal/dispatch/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,651-669,729-737 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
@@ -3034,6 +3038,7 @@ GATES = [
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/status-change/*.json", "packages/dispatch/web/src/features/issue/parent-status/status-change-fixtures.ts:50 readFileSync (FIXTURES :19): the answers of POST /api/v1/issues/{key}/status-change that packages/envoy/internal/dispatch/api's TestStatusChangeAnswersMatchTheirFixtures writes, which the parent-status question's unit tests and the board's answer with"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "

@@ -290,6 +290,49 @@ test("selection actions move, remove and create an epic, whose name can then cha
   }
 });
 
+// R24 (INFRA-4731, D12): New epic over an issue in work asks, before it makes the epic, to move
+// the new epic into work too, since an epic stays in work while an issue under it is. The yes
+// makes the epic, moves it into work, and then moves the issue under it.
+test("New epic over an issue in progress, confirmed, leaves the epic in progress with the issue under it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const working = await createIssue({ project: "CORE", title: "Ship the parser" });
+  await patchIssue(working.key, { status: "in_progress" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.goto("/projects/CORE/issues");
+    await page.getByRole("checkbox", { name: `Select ${working.key}`, exact: true }).check();
+    await page.getByRole("button", { name: "New epic from these" }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill("Parser rollout");
+    await page.getByRole("button", { name: "Create epic", exact: true }).click();
+    const question = page.getByRole("dialog", { name: "Move “Parser rollout” into work too?" });
+    await expect(question.getByRole("list", { name: "Changes" })).toHaveText(
+      "“Parser rollout” moves to In progress"
+    );
+    // The question comes before the create: the project holds no epic yet.
+    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([working.key]);
+    await question.getByRole("button", { name: "Move into work too" }).click();
+    await expect.poll(() => getIssue(working.key).then((issue) => issue.parent)).not.toBeNull();
+    const after = await getIssue(working.key);
+    if (!after.parent) throw new Error("The new epic did not take the issue");
+    expect(after.status).toBe("in_progress");
+    expect(await getIssue(after.parent)).toMatchObject({
+      labels: ["epic"],
+      parent: null,
+      status: "in_progress",
+      title: "Parser rollout",
+    });
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
