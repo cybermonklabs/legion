@@ -635,7 +635,11 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 // AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, or their defaults where those are unset
 // (identity.go). While a box's launcher is still enrolling it (a fresh enrollment.pending in the
 // key dir), this first waits for key.pem and enrollment, for AGENT_SECRETS_ENROLL_WAIT at most,
-// saying so on stderr (awaitEnrollment).
+// saying so on stderr (awaitEnrollment). A refusal after a wait that ran out says how long the
+// call waited and its bound, "(waited 20.004s, its bound 20s, while ...)": the time to the
+// millisecond, or as measured where that rounding would put it under a bound finer than one.
+// It is the refusal's own text, not a line before it, so a caller that takes the first line that
+// is not a wait notice (the box launcher's token helper) still takes the refusal.
 // The enrollment id it returns is the key dir's, the sign-in's or the machine's own; helper mode
 // returns "" because nothing needs it as a literal except RenewEnrollment's URL path, and a
 // machine session's lease is renewed by the helper itself — cmdRenew refuses outright once it
@@ -646,10 +650,13 @@ func buildSigner(stderr io.Writer) (enrollmentID string, signer Signer, err erro
 		return "", nil, &settingError{err}
 	}
 	dir := keyDir()
-	gaveUp := awaitEnrollment(stderr, dir, wait)
+	waited, gaveUp := awaitEnrollment(stderr, dir, wait)
 	enrollmentID, signer, err = selectSigner(dir)
 	if err != nil && gaveUp {
-		err = fmt.Errorf("%w (waited %s while %s held %s)", err, wait, keyDirName(), pendingMarker)
+		if shown := waited.Round(time.Millisecond); shown >= wait {
+			waited = shown
+		}
+		err = fmt.Errorf("%w (waited %s, its bound %s, while %s held %s)", err, waited, wait, keyDirName(), pendingMarker)
 	}
 	return enrollmentID, signer, err
 }

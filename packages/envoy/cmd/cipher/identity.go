@@ -213,14 +213,17 @@ func enrollWait() (time.Duration, error) {
 // a call held at a box's start says why it is held and how far the launcher got; it names the key
 // dir by its setting (keyDirName), never its path. It says so before it reads its deadline, so a
 // call that gives up has always first said what it waited for, however late a loaded machine
-// runs it; a wait of 0 says nothing. It reports whether it gave up with the marker still there.
-func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (gaveUp bool) {
-	deadline := time.Now().Add(wait)
+// runs it; a wait of 0 says nothing. It reports whether it gave up with the marker still there,
+// and then how long it waited, from the moment it set its deadline: a loaded machine's late start
+// of the call is not in it, so a caller that prints it says how long this wait lasted.
+func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (waited time.Duration, gaveUp bool) {
+	begin := time.Now()
+	deadline := begin.Add(wait)
 	said := ""
 	for freshMarker(dir) {
 		missing := missingSessionFiles(dir)
 		if missing == "" {
-			return false
+			return 0, false
 		}
 		if wait > 0 {
 			switch {
@@ -234,11 +237,11 @@ func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (gaveUp b
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return true
+			return time.Since(begin), true
 		}
 		time.Sleep(min(enrollPollInterval, remaining))
 	}
-	return false
+	return 0, false
 }
 
 // missingSessionFiles names the files of key.pem and enrollment that dir does not hold yet, as

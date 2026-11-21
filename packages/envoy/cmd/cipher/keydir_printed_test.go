@@ -295,7 +295,7 @@ func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 		}, args: signArgs, code: 1,
 			want: []string{"read the enrollment file in AGENT_SECRETS_KEY_DIR: open: no such file or directory", "enrollment.error: broker 503 DATABASE: postgres unreachable"}},
 		{name: "a pending marker nothing follows", fill: func(t *testing.T, dir string) { writePendingMarker(t, dir, 0) }, wait: "100ms", args: signArgs, code: 1,
-			want: []string{launcherWaitLine("AGENT_SECRETS_KEY_DIR", "100ms"), "waited 100ms while AGENT_SECRETS_KEY_DIR held enrollment.pending"}},
+			want: []string{launcherWaitLine("AGENT_SECRETS_KEY_DIR", "100ms"), ", its bound 100ms, while AGENT_SECRETS_KEY_DIR held enrollment.pending)"}},
 		{name: "identity --source", fill: func(t *testing.T, dir string) { writeSessionFiles(t, dir, "enr-launcher") }, args: []string{"identity", "--source"},
 			want: []string{"key-dir: AGENT_SECRETS_KEY_DIR\n"}},
 		{name: "identity --source, the default key dir", fill: func(t *testing.T, dir string) { writeSessionFiles(t, dir, "enr-launcher") }, byDefault: true, args: []string{"identity", "--source"},

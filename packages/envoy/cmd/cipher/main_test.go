@@ -1218,16 +1218,16 @@ func (c *call) ended() bool {
 	}
 }
 
-// says waits until the call's stderr holds line, and fails the test when the call ends without
-// it; when names the point the call ended at. The wait is the package's shared one
+// says waits until the call's stderr holds line times times, and fails the test when the call
+// ends before that; when names the point the call ended at. The wait is the package's shared one
 // (testwait.Eventually): it guards against a call that hangs, and bounds nothing the row decides.
-func (c *call) says(t *testing.T, line, when string) {
+func (c *call) says(t *testing.T, line string, times int, when string) {
 	t.Helper()
 	testwait.Eventually(t, "the call to say "+line, func() bool {
-		return strings.Contains(c.stderr.String(), line) || c.ended()
+		return strings.Count(c.stderr.String(), line) >= times || c.ended()
 	})
-	if !strings.Contains(c.stderr.String(), line) {
-		t.Fatalf("the call ended (exit %d) %s, and never said %q: stderr=%q", c.cmd.ProcessState.ExitCode(), when, line, c.stderr.String())
+	if strings.Count(c.stderr.String(), line) < times {
+		t.Fatalf("the call ended (exit %d) %s, and never said %q (%d times): stderr=%q", c.cmd.ProcessState.ExitCode(), when, line, times, c.stderr.String())
 	}
 }
 
@@ -1294,17 +1294,33 @@ func launcherWaitLine(named, wait string) string {
 // not yet (awaitEnrollment).
 const enrollmentWaitLine = "agent-secrets: still waiting for the launcher's enrollment\n"
 
+// keyGoneWaitLine is the line a waiting call prints when the key.pem it saw is gone again, so it
+// waits for both files once more (awaitEnrollment says each change of what it waits for).
+const keyGoneWaitLine = "agent-secrets: still waiting for the launcher's key.pem and enrollment\n"
+
+// launcherPlayLines is all a call prints on stderr while playTheLauncher plays its launcher, in
+// order, before anything the call prints once it has its identity.
+func launcherPlayLines(named, wait string) string {
+	return launcherWaitLine(named, wait) + enrollmentWaitLine + keyGoneWaitLine + enrollmentWaitLine
+}
+
 // playTheLauncher plays the launcher of keyDir, which is still enrolling the process of c: keyDir
 // holds its fresh marker and neither key.pem nor enrollment, the call names it as named
-// (keyDirName), and the call's bound is wait. It writes each file only once the call says it
-// waits for that file, so the call is waiting before each file is there however slow the machine
-// is: fixture's key.pem once the call says it waits for key.pem and enrollment, then fixture's
-// enrollment once the call says it still waits for that, and then it removes the marker, as the
-// launcher does. Before each file it renews the marker (writePendingMarker), as the launcher does
-// before each step of its setup, so a row that a slow machine stretches past the marker's life
+// (keyDirName), and the call's bound is wait. It changes the key dir only once the call says it
+// waits for that change, so the call is waiting before each change however slow the machine is:
+// it writes fixture's key.pem once the call says it waits for key.pem and enrollment; once the
+// call says it still waits for the enrollment, it takes key.pem away; once the call says it waits
+// for both again, it puts key.pem back; once the call says a second time that it still waits for
+// the enrollment, it writes fixture's enrollment, and then it removes the marker, as the launcher
+// does. No real launcher takes key.pem back. The stand-in does so because the call's line about
+// it is the one thing that shows, from outside the call, that the call still waits after it said
+// it waits for the enrollment: a call that stops waiting once key.pem is there never says it, and
+// when it reads, however late, it finds key.pem gone or the enrollment not yet written, and fails.
+// Before each change it renews the marker (writePendingMarker), as the launcher does before each
+// step of its setup, so a row that a slow machine stretches past the marker's life
 // (pendingMarkerLife) still finds it fresh. Each file is written whole (writeFileAtomic), as the
 // launcher writes it, so the call never reads one half-written. It fails the test when the call
-// ends before either line, or has ended by the time the launcher is about to write the
+// ends before any of those lines, or has ended by the time the launcher is about to write the
 // enrollment. Once the enrollment is written the call may end at any moment, which is what it
 // waited for: a call still running just before that write and exiting 0 afterwards ended after
 // the write, since it cannot sign without the enrollment.
@@ -1322,9 +1338,16 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 			t.Fatal(err)
 		}
 	}
-	c.says(t, launcherWaitLine(named, wait), "before it waited for the launcher")
+	c.says(t, launcherWaitLine(named, wait), 1, "before it waited for the launcher")
 	copyFile(keyFile)
-	c.says(t, enrollmentWaitLine, "once key.pem was there and before the launcher wrote the enrollment")
+	c.says(t, enrollmentWaitLine, 1, "once key.pem was there and before the launcher wrote the enrollment")
+	writePendingMarker(t, keyDir, 0)
+	if err := os.Remove(filepath.Join(keyDir, keyFile)); err != nil {
+		t.Fatal(err)
+	}
+	c.says(t, keyGoneWaitLine, 1, "once key.pem was gone again and before the launcher wrote the enrollment")
+	copyFile(keyFile)
+	c.says(t, enrollmentWaitLine, 2, "once key.pem was back and before the launcher wrote the enrollment")
 	if c.ended() {
 		t.Fatalf("the call ended (exit %d) while it waited for the enrollment, before the launcher wrote it: stderr=%q", c.cmd.ProcessState.ExitCode(), c.stderr.String())
 	}
@@ -1338,11 +1361,13 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 // servers, and they call agent-secrets, while the launcher is still generating the box's key and
 // enrolling it. While the launcher's enrollment.pending marker is there, a call waits for key.pem
 // and enrollment to appear instead of failing at once. The row decides by the order of events,
-// never by a span: the launcher writes each file only once the call says it waits for it
-// (playTheLauncher), and the call must exit 0 after the enrollment is there. Its bound is a day,
-// so the bound cannot end the wait within the shared test wait; the marker, fresh for 160 s from
-// each renewal before a file is written and removed only after the enrollment is written, cannot
-// either. A call that does not wait for the marker ends before it says so, which fails the row.
+// never by a span: the launcher changes the key dir only once the call says it waits for that
+// change (playTheLauncher), and the call must exit 0 after the enrollment is there, having said
+// each line of its wait in order. Its bound is a day, so the bound cannot end the wait within the
+// shared test wait; the marker, fresh for 160 s from each renewal before a change and removed only
+// after the enrollment is written, cannot either. A call that does not wait for the marker ends
+// before it says so, and one that stops waiting once key.pem is there never says that it waits
+// for both files again, which fails the row whatever the load.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1356,6 +1381,9 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	if exit := c.end(t); exit != 0 {
 		t.Fatalf("exit = %d, want 0 once the launcher wrote the enrollment: stderr=%q", exit, c.stderr.String())
 	}
+	if want := launcherPlayLines("AGENT_SECRETS_KEY_DIR", "24h0m0s"); !strings.HasPrefix(c.stderr.String(), want) {
+		t.Fatalf("stderr = %q, want it to start with the wait's lines in order, %q", c.stderr.String(), want)
+	}
 }
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
@@ -1363,13 +1391,14 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 // call then fails naming the marker and the wait. A fresh marker is a launcher still enrolling,
 // which is present: the call stops there rather than go on to a later source of the chain. The
 // call says that it waits before it reads its deadline (awaitEnrollment), so the row requires that
-// line however late a loaded machine runs the call. The call's "(waited 1s while ...)" says it
-// gave up with the marker there, but it names the configured bound, not the time waited, so the
-// row also requires the call to end no sooner than its bound after a start read before the call
-// starts. Load can only lengthen that span, so the row reads no upper limit, which load could
-// pass; only the shared wait (runExecForm) stands against a call whose bound never ends its wait.
-// The two things that end a wait earlier are checked absent: the marker is still fresh, and
-// key.pem never came.
+// line however late a loaded machine runs the call. The refusal says how long the call waited,
+// from the moment it set its deadline, and its bound: "(waited 1.004s, its bound 1s, while ...)".
+// The row requires that time to be at least the bound. A span the row read itself would hold
+// the call's late start on a loaded machine too, so a call whose deadline came early would pass it
+// whenever it started late; the call's own time holds only its wait. Load can only lengthen that
+// wait, so the row reads no upper limit, which load could pass; only the shared wait
+// (runExecForm) stands against a call whose bound never ends its wait. The two things that end a
+// wait earlier are checked absent: the marker is still fresh, and key.pem never came.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1377,21 +1406,45 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	keyDir := t.TempDir()
 	marker := writePendingMarker(t, keyDir, 0)
 
-	start := time.Now()
 	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	waited := time.Since(start)
 	if exit != 1 || !strings.Contains(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
-		!strings.Contains(stderr, "(waited 1s while ") || strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
+		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 saying it waits, naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
+	_, said, found := strings.Cut(stderr, "(waited ")
+	said, _, bounded := strings.Cut(said, ", its bound 1s, while AGENT_SECRETS_KEY_DIR held enrollment.pending)")
+	waited, err := time.ParseDuration(said)
+	if !found || !bounded || err != nil {
+		t.Fatalf("stderr = %q, want the refusal to say how long the call waited, \"(waited <time>, its bound 1s, while AGENT_SECRETS_KEY_DIR held enrollment.pending)\"", stderr)
+	}
 	if waited < 1*time.Second {
-		t.Fatalf("the call gave up %s after the row started it, before its 1s bound", waited)
+		t.Fatalf("the call says it waited %s, under its 1s bound: stderr = %q", waited, stderr)
 	}
 	if !freshMarker(keyDir) {
 		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
 	}
 	if _, err := os.Stat(filepath.Join(keyDir, keyFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stat key.pem: %v; nothing writes it in this row", err)
+	}
+}
+
+// TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline pins the order of the call's own lines when
+// its bound has already passed at its first look (1ns): the call still says that it waits, then
+// refuses. A loaded machine can stall a call for longer than its bound before that look, so a call
+// that read its deadline before it said so would give up with no first line; this row decides by
+// the order the call prints, which no load changes.
+func TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, _ := fakeBroker(t)
+	defer broker.Close()
+	keyDir := t.TempDir()
+	writePendingMarker(t, keyDir, 0)
+
+	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1ns")
+	line := strings.Index(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1ns"))
+	refusal := strings.Index(stderr, ", its bound 1ns, while AGENT_SECRETS_KEY_DIR held enrollment.pending)")
+	if exit != 1 || line < 0 || refusal < line {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1, the first wait line, then the refusal", exit, stderr)
 	}
 }
 

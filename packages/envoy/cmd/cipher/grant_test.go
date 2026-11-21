@@ -235,7 +235,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		fixture := t.TempDir()
 		writeSessionFiles(t, fixture, "launcher-enrollment")
 		// A day, so that the bound cannot end the wait within the shared test wait; the launcher
-		// writes each file once the call says it waits for it (playTheLauncher).
+		// changes the key dir once the call says it waits for that change (playTheLauncher).
 		r.env["AGENT_SECRETS_ENROLL_WAIT"] = "24h"
 
 		grantID := uuid.NewString()
@@ -245,9 +245,9 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		playTheLauncher(t, c, r.keyDir(), named, fixture, "24h0m0s")
 		code := c.end(t)
 		want := "revoked " + grantID + " at " + brokerSource(cipheraddr.New(broker.URL())).String() + "\n"
-		waited := launcherWaitLine(named, "24h0m0s") + enrollmentWaitLine
+		waited := launcherPlayLines(named, "24h0m0s")
 		if stdout, stderr := c.stdout.String(), c.stderr.String(); code != 0 || stdout != want || stderr != waited {
-			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0, %q once it has, and the wait's two lines %q",
+			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0, %q once it has, and the wait's lines %q",
 				code, stdout, stderr, want, waited)
 		}
 		requests, signedBy := broker.seen()
