@@ -95,19 +95,31 @@ type Source interface {
 }
 
 // Cluster is the kubeconfig context a source reads through, the API server of its cluster, and the
-// SHA-256, in hex, of that cluster's CA certificate as the client holds it, empty when it holds
-// none. Two clusters can share a context's name and server, and in a pod the in-cluster address is
-// the `kubernetes` Service's, which clusters of a kind can share; their CAs differ.
+// SHA-256, in hex, of each CA certificate the client holds for that cluster, sorted, none when it
+// holds none. The record is taken through the deploying person's context, and the check runs as the
+// operator's Job in a pod, whose context is in-cluster and whose server is the `kubernetes`
+// Service's address, which clusters of a kind can share; so a cluster is told by its CA
+// certificates (sameCluster).
 type Cluster struct {
-	Context string `json:"context"`
-	Server  string `json:"server"`
-	CA      string `json:"caSHA256"`
+	Context string   `json:"context"`
+	Server  string   `json:"server"`
+	CA      []string `json:"caCertificates"`
+}
+
+// sameCluster reports whether a and b are one cluster: when both hold a CA certificate, whether
+// they share one, since a bundle in rotation holds the old and the new and two clusters share none;
+// and when either holds none, whether they name one context and one server.
+func sameCluster(a, b Cluster) bool {
+	if len(a.CA) > 0 && len(b.CA) > 0 {
+		return slices.ContainsFunc(a.CA, func(c string) bool { return slices.Contains(b.CA, c) })
+	}
+	return a.Context == b.Context && a.Server == b.Server
 }
 
 // Record is what `routes record` saves: the hub it read, through which context of which cluster,
 // when, and each pod's identity and its nats container's start at that time. A hub of the same
 // namespace and StatefulSet on another cluster has other pods, which `routes check` would read as a
-// new container on every pod, so it refuses a record of another context or cluster.
+// new container on every pod, so it refuses a record of another cluster (sameCluster).
 type Record struct {
 	Namespace   string      `json:"namespace"`
 	StatefulSet string      `json:"statefulSet"`

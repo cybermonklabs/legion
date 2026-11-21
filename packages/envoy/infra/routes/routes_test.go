@@ -210,8 +210,8 @@ func logLineAt(at time.Time, level, text string) string {
 }
 
 // logLine is logLineAt at env's time. A row that appends such a line after the authorization
-// reload puts it in the log rule's window by its place, after the reload's own lines, since the
-// window opens at the first line read within the reload span before the reload.
+// reload puts it in the log rule's window by its place, after the reload's hangup, since the window
+// opens at that hangup by position, whatever a line's time (authorizationWindow).
 func logLine(level, text string) string { return logLineAt(envAt, level, text) }
 
 // logLineOf is logLine's line as a process of another id writes it.

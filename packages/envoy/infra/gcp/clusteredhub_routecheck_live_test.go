@@ -77,7 +77,7 @@ import (
 //     log's start line, which is the new container's, Unknown, not PasswordRead.
 //
 // Every row's reload onto authorization waits as a rollout's applies do (beforeAuthorization), more
-// than 10 s after each server's start and 6 s after what the row did before it.
+// than 10 s after each server's start; the check's window opens at that reload's hangup.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}

@@ -9,19 +9,22 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
 const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>] [--route-port <port>]
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
-  record, once routeAuthorization's env stage has rolled every pod, before routes: saves each pod's
-    uid and its nats container's restart count and start, and the context, server and CA
-    certificate digest of the cluster it read, "in-cluster" in a pod with no kubeconfig and no
-    --context, which reads the cluster as the pod's ServiceAccount; exit 0 when recorded, 2
-    otherwise, and while any pod's route port already requires authorization. A record is valid
-    only for a secretKey that has never been under authorization: after a rollback below
-    authorization, or any exit 1 of check, rotate to a new secretKey first.
-  check, once authorization is on every pod, through the record's context, server and CA: exit 0
+  record, once routeAuthorization's env stage has rolled every pod, before routes, run as the person
+    who deploys, through their kubeconfig context: saves each pod's uid and its nats container's
+    restart count and start, and the context and server of the cluster it read and the digest of
+    each of its CA certificates ("in-cluster" in a pod with no kubeconfig and no --context, which
+    reads the cluster as the pod's ServiceAccount); exit 0 when recorded, 2 otherwise, and while
+    any pod's route port already requires authorization. A record is valid only for a secretKey
+    that has never been under authorization: after a rollback below authorization, or any exit 1 of
+    check, rotate to a new secretKey first.
+  check, once authorization is on every pod, run as the operator's Job, of the record's cluster:
+    one CA certificate shared, or, when either side holds none, its context and server; exit 0
     when authorization is in force with a password and every route since it loaded joined two of
     the hub's servers, which says nothing of any time before the record; 1 when another process
     held one or may have been handed the password, or a log line may hold it (treat the route
@@ -177,14 +180,16 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		fmt.Fprintf(stderr, "envoy-infra routes check: which cluster it reads is not known: %v\n", err)
 		return 2
 	}
-	if cluster.Context != rec.Cluster.Context || cluster.Server != rec.Cluster.Server {
+	if !sameCluster(rec.Cluster, cluster) {
+		if len(rec.Cluster.CA) > 0 && len(cluster.CA) > 0 {
+			fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record of a cluster whose CA certificates have the SHA-256 %s; the cluster read "+
+				"now through context %q at %q has %s, and they share none, so it is another cluster\n", recordPath,
+				strings.Join(rec.Cluster.CA, ", "), cluster.Context, cluster.Server, strings.Join(cluster.CA, ", "))
+			return 2
+		}
 		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record taken through context %q of the cluster at %q, not through context %q of "+
-			"the cluster at %q\n", recordPath, rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
-		return 2
-	}
-	if cluster.CA != rec.Cluster.CA {
-		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record of a cluster whose CA certificate has the SHA-256 %s; the cluster read now "+
-			"through the same context and server has %s, so it is another cluster\n", recordPath, displayDigest(rec.Cluster.CA), displayDigest(cluster.CA))
+			"the cluster at %q, and with no CA certificate on both sides the cluster is told by its context and server\n", recordPath,
+			rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
 		return 2
 	}
 	report := Check(ctx, src, rec)
@@ -205,14 +210,6 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 			"a process named above, so it concludes nothing; fix or find what is named above and run it again")
 	}
 	return int(verdict)
-}
-
-// displayDigest is a CA digest as the check prints it: "none" for a client that held no CA.
-func displayDigest(digest string) string {
-	if digest == "" {
-		return "none"
-	}
-	return digest
 }
 
 // readRecord decodes the record at path, refusing a field it does not know and a record that

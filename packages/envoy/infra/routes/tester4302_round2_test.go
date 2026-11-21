@@ -21,9 +21,9 @@ import (
 // same kubectl's `get` then goes to https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT).
 const inClusterConfigView = `*" config view --minify --output json") echo "error: current-context must exist in order to minify" >&2; exit 1 ;;`
 
-// `routes record` and `routes check` run where the operator runs them under its Role: in a pod of
-// its own, as its ServiceAccount, with no kubeconfig, which kubectl serves from the pod's service
-// account. There `kubectl config view --minify` names no context, and the record and the check must
+// `routes check` runs where the operator runs it under its Role: in a pod of its own, as its
+// ServiceAccount, with no kubeconfig, which kubectl serves from the pod's service account (and
+// `routes record` can run there too). There `kubectl config view --minify` names no context, and the record and the check must
 // still name the cluster they read and run. Control: the same hub through a kubeconfig context is
 // recorded and checked, exit 0 each.
 func TestRecordAndCheckRunWithoutAKubeconfig(t *testing.T) {

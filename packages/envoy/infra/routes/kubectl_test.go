@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -34,15 +35,20 @@ func canaryURL(scheme, user, password, rest string) string {
 }
 
 // exampleCA and otherCA are two clusters' CA certificates, as a client holds them, PEM. Neither is a
-// valid certificate: the Source hashes the bytes and parses nothing.
+// valid certificate: the Source hashes each certificate block's bytes and parses no certificate.
 const (
-	exampleCA = "-----BEGIN CERTIFICATE-----\nMIIBexampleCA\n-----END CERTIFICATE-----\n"
-	otherCA   = "-----BEGIN CERTIFICATE-----\nMIIBotherCA\n-----END CERTIFICATE-----\n"
+	exampleCA = "-----BEGIN CERTIFICATE-----\nZXhhbXBsZSBjbHVzdGVyIENBLCBERVIgc3RhbmQtaW4=\n-----END CERTIFICATE-----\n"
+	otherCA   = "-----BEGIN CERTIFICATE-----\nb3RoZXIgY2x1c3RlciBDQSwgREVSIHN0YW5kLWlu\n-----END CERTIFICATE-----\n"
 )
 
-// caDigest is the SHA-256 of a CA certificate's bytes, in hex, as a record holds it.
-func caDigest(pem string) string {
-	sum := sha256.Sum256([]byte(pem))
+// caDigest is the SHA-256, in hex, of the one certificate's DER in a PEM CA certificate, as a
+// record holds it.
+func caDigest(certificate string) string {
+	block, rest := pem.Decode([]byte(certificate))
+	if block == nil || len(bytes.TrimSpace(rest)) > 0 {
+		panic("caDigest takes one PEM certificate")
+	}
+	sum := sha256.Sum256(block.Bytes)
 	return hex.EncodeToString(sum[:])
 }
 
@@ -230,7 +236,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
 	cluster, err := src.Cluster(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigest(exampleCA)}, cluster)
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: []string{caDigest(exampleCA)}}, cluster)
 
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 	require.NoError(t, err)
@@ -370,7 +376,7 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	}
 	cluster, err := open("").Cluster(ctx)
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigest(exampleCA)}, cluster,
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: []string{caDigest(exampleCA)}}, cluster,
 		"control: a kubeconfig is read as before, though the in-cluster variables are set")
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
@@ -448,11 +454,85 @@ func TestCheckRefusesARecordOfAnotherClusterAtTheSameAddress(t *testing.T) {
 			setCA(otherCA)
 			code, output = run("check", "--record", out)
 			require.Equal(t, 2, code, "another cluster at the same address: %s", output)
-			require.Contains(t, output, "is the record of a cluster whose CA certificate has the SHA-256 "+caDigest(exampleCA)+
-				"; the cluster read now through the same context and server has "+caDigest(otherCA))
+			require.Contains(t, output, "is the record of a cluster whose CA certificates have the SHA-256 "+caDigest(exampleCA)+"; the cluster read now")
+			require.Contains(t, output, "has "+caDigest(otherCA)+", and they share none, so it is another cluster")
 			body, err := os.ReadFile(out)
 			require.NoError(t, err)
-			require.Contains(t, string(body), `"caSHA256": "`+caDigest(exampleCA)+`"`, "the record holds the CA's digest")
+			require.Contains(t, string(body), `"caCertificates": [`+"\n"+`      "`+caDigest(exampleCA)+`"`, "the record holds the CA's digest")
+		})
+	}
+}
+
+// routes record is taken during env by the deploying person, through their kubeconfig context, and
+// routes check after authorization by the operator's Job, in a pod with no kubeconfig: the context
+// and the server differ, and the cluster is the same. A cluster is its CA certificates, when both
+// sides hold one: the record and the check match when they share a certificate, which a bundle in
+// rotation holds both of, and two clusters never do; the context and the server count only when a
+// side holds no CA.
+func TestCheckKnowsTheClusterByItsCA(t *testing.T) {
+	type side struct {
+		inPod bool
+		ca    string // the PEM the client holds; "" for none
+	}
+	for _, row := range []struct {
+		name          string
+		record, check side
+		want          int
+		message       string
+	}{
+		{"a person's context, then the Job in the cluster, one CA", side{false, exampleCA}, side{true, exampleCA}, 0, ""},
+		{"a bundle holding the old and the new CA, against a record of the old", side{false, exampleCA}, side{false, exampleCA + otherCA}, 0, ""},
+		{"a record of the new CA, against a bundle holding both", side{true, otherCA}, side{true, exampleCA + otherCA}, 0, ""},
+		{"control: the Job in another cluster at one Service address", side{true, exampleCA}, side{true, otherCA}, 2,
+			"so it is another cluster"},
+		{"control: no CA on the record's side, another context", side{true, ""}, side{false, exampleCA}, 2,
+			`is the record taken through context "in-cluster" of the cluster at "https://34.118.224.1:443", not through context "example-context"`},
+		{"control: no CA on either side, one context", side{true, ""}, side{true, ""}, 0, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := cleanHub()
+			src, dir := fakeKubeHub(t, h)
+			require.NoError(t, src.Close())
+			config, err := os.ReadFile(filepath.Join(dir, "config.json"))
+			require.NoError(t, err)
+			caFile := filepath.Join(t.TempDir(), "ca.crt")
+			routes.SetServiceAccountCA(t, caFile)
+			use := func(s side) {
+				t.Helper()
+				for _, name := range []string{"config.json", "ca.b64"} {
+					require.NoError(t, os.RemoveAll(filepath.Join(dir, name)))
+				}
+				require.NoError(t, os.RemoveAll(caFile))
+				if s.inPod {
+					t.Setenv("KUBERNETES_SERVICE_HOST", "34.118.224.1")
+					t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+					if s.ca != "" {
+						require.NoError(t, os.WriteFile(caFile, []byte(s.ca), 0o600))
+					}
+					return
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+				if s.ca != "" {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.b64"), []byte(base64.StdEncoding.EncodeToString([]byte(s.ca))), 0o600))
+				}
+			}
+			run := func(args ...string) (int, string) {
+				t.Helper()
+				var stdout, stderr bytes.Buffer
+				code := routes.Command(context.Background(), append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl",
+					filepath.Join(dir, "kubectl")), &stdout, &stderr, routes.OpenKubectl)
+				return code, stdout.String() + stderr.String()
+			}
+			out := filepath.Join(t.TempDir(), "routes.json")
+			use(row.record)
+			back := h.atEnv()
+			code, output := run("record", "--out", out)
+			back()
+			require.Equal(t, 0, code, output)
+			use(row.check)
+			code, output = run("check", "--record", out)
+			require.Equal(t, row.want, code, output)
+			require.Contains(t, output, row.message)
 		})
 	}
 }
@@ -533,7 +613,7 @@ func TestKubectlKeepsTheKubeconfigsCredentialsOutOfItsOutput(t *testing.T) {
 		require.Equal(t, 0, code, output)
 		body, err := os.ReadFile(out)
 		require.NoError(t, err)
-		require.Contains(t, string(body), `"caSHA256": ""`, "a context with no CA records none")
+		require.Contains(t, string(body), `"caCertificates": null`, "a context with no CA records none")
 		code, output = run("check", "--record", out)
 		noCanary(t, output)
 		require.Equal(t, 0, code, output)

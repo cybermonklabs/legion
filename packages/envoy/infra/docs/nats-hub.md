@@ -1171,10 +1171,13 @@ server dialed the address such a process named with the user and the password; w
 it sent no credential. So `authorization` fences a process that tries to join after it, and not one
 that joined before.
 
-So the rollout runs two commands of `envoy-infra`, as an identity that may `get` the
+So the rollout runs two commands of `envoy-infra`, each as an identity that may `get` the
 StatefulSet and each of its pods, and `create` `pods/portforward` and `get` `pods/log` on each pod,
-all of which a Role grants by name: through a kubeconfig, or in a pod with none, such as a Job, as
-the pod's ServiceAccount, which kubectl then reads the cluster through:
+all of which a Role grants by name. `routes record`, during `env`, runs as the person who deploys,
+through their own kubeconfig context: the operator is granted the port-forward to the hub's pods
+only once the hub runs `authorization`. `routes check`, after `authorization`, runs as the
+operator's Job, in a pod with no kubeconfig, as the pod's ServiceAccount, which kubectl then reads
+the cluster through:
 
 ```sh
 # once env has rolled every pod:
@@ -1189,23 +1192,29 @@ read as kubectl reads it (a value with no scheme or no host as `https://` and th
 then holds no path), and refused, exit 2 and before any other kubectl call, naming the context and
 not the value, when it carries user information, which kubectl sends as Basic auth and its errors
 can print whole, or is no URL or `host:port`;
-and the SHA-256 of that cluster's CA certificate, from the context's `certificate-authority-data`
+and the SHA-256 of each of that cluster's CA certificates, from the context's `certificate-authority-data`
 (`kubectl config view --minify --flatten --allow-missing-template-keys=true` with a jsonpath of
 that field alone, so no credential of the kubeconfig's user is in its output, and whose error
 output the commands never show, since kubectl's jsonpath printer can write the whole flattened
 kubeconfig there); or, in a pod with no kubeconfig and no `--context`
 given, the context `in-cluster`, the server
-`https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` and the SHA-256 of the pod's
-ServiceAccount CA, `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. A client that holds no
+`https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` and the SHA-256 of each certificate of
+the pod's ServiceAccount CA, `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. Each digest is
+of a certificate's DER, so the bundle's order and blank lines do not matter. A client that holds no
 CA records none. The record and the commands' messages keep the server's path and query as the
 kubeconfig holds them, so do not use a kubeconfig whose server URL carries a secret in its path or
-query, as a proxy that takes a token there would. `routes check` requires all three of its own, exit 2 otherwise, in either path,
-since a hub of the same names on another cluster has other pods, which the check would read as a
-new container on every pod; the CA is what tells apart two clusters at one address, as two GKE
-Autopilot clusters' `kubernetes` Services can be. A rotation of the cluster's CA between the record
-and the check exits 2 the same way: record again at `env`. A context renamed since the record fails
-the same way, the safe way: check through a context of the name the record holds, for the same
-cluster, or record again at `env`. Every kubectl the two commands start runs with `KUBERC=off`, so
+query, as a proxy that takes a token there would. `routes check` requires the record to be of its
+own cluster, exit 2 otherwise, since a hub of the same names on another cluster has other pods,
+which the check would read as a new container on every pod. When the record and the check each hold
+a CA certificate, the cluster is told by them: they match when they share one, so the person's
+context at `env` and the Job's `in-cluster` at `authorization`, whose contexts and servers differ,
+match; a bundle in a CA rotation, which holds the old certificate and the new, matches a record of
+either; and two clusters at one address, as two GKE Autopilot clusters' `kubernetes` Services can
+be, share none, exit 2. A rotation that has dropped the record's certificate from the bundle exits
+2 the same way: record again at `env`. When either holds no CA, the context and the server must
+both match: a context renamed since the record then fails the safe way, and the remedy is to check
+through a context of the name the record holds, for the same cluster, or record again at `env`.
+Every kubectl the two commands start runs with `KUBERC=off`, so
 no default of a `~/.kube/kuberc` changes a flag they rely on, such as the log's length. `routes
 record` refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
@@ -1239,14 +1248,15 @@ reload and left: such a peer is exit 0 by design, since before `authorization` t
 send the password only on the routes they open to the hub's own pod names (the `routes` stage's
 URLs), and an implicit route to any other address carries none (`route.go:1092-1094`). And it says
 nothing of any time before the record. So a record is valid only for a `secretKey` that has never
-been under `authorization`: a
-record of a hub whose current `secretKey` was under `authorization` before, after a rollback below
-`authorization` and a restart of every pod, vouches for logs that lost the connections made under
-that first `authorization`, and the check against it can exit 0 of a hub whose password a peer
-read. After a rollback below `authorization`, or any exit 1, rotate to a new `secretKey` first
-(below), and record at its `env`. `routes record` prints this condition with each record; it
-cannot check it, since a pod that restarted keeps no log of the reload before, and nothing else in
-the cluster records which keys were under `authorization`.
+been under `authorization`: a record of a hub whose current `secretKey` was under `authorization`
+before, taken at `env` after a rollback below `authorization` and a restart of every pod, vouches
+for logs that lost the connections made under that first `authorization`, and the check against it
+can exit 0 of a hub whose password a peer read. (A record taken at `routes` after such a restart is
+exit 2 at the check instead: the restarted logs hold no `routes` stage's reload, so the window has
+no hangup to open at.) After a rollback below `authorization`, or any exit 1, rotate to a new
+`secretKey` first (below), and record at its `env`. `routes record` prints this condition with each
+record; it cannot check it, since a pod that restarted keeps no log of the reload before, and
+nothing else in the cluster records which keys were under `authorization`.
 
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
 process id, the date and time to the microsecond, the level), at one level, and matches their
@@ -1314,9 +1324,18 @@ reads with `--timestamps`.
   tells it nothing). That hangup is the first one after the routes stage's reload,
   `Reloaded: cluster routes` (`server/reload.go:553`), which began with a hangup of its own; a
   peer can write any of these lines, and taking the first of each moves the window only earlier.
-  A log with no hangup between the routes stage's reload and `Reloaded: cluster`, as when
-  authorization was loaded by a system request (`server/events.go:3219-3227`, which logs no
-  hangup) or the routes stage's reload is not in the log, has no window, exit 2. In the window,
+  So the check needs the `routes` stage applied on its own, between `env` and `authorization`:
+  a hub taken from `env` straight to `authorization` has no `Reloaded: cluster routes` in its logs
+  and is exit 2, as is a log whose pod restarted after the `routes` apply. A log with no hangup
+  between the routes stage's reload and `Reloaded: cluster` has no window, exit 2. A reload by
+  system request (`$SYS.REQ.SERVER.<id>.RELOAD`, `server/events.go:3219-3227`) logs no hangup, so
+  authorization loaded that way is exit 2, unless a hangup of another reload falls between the
+  routes stage's reload and the marker, which can open the window after the publication; the
+  window therefore assumes no process holds `$SYS` reload rights on the hub, and the component
+  renders no system account and no `$SYS` user. Any reload between the `routes` and
+  `authorization` applies, such as a change of the users, opens the window at its own hangup,
+  earlier: a foreign route that joined during `routes` and left before `authorization`, and so was
+  sent no password, is then exit 1, an error toward a needless rotation. In the window,
   the peer of each such line is a pod IP, by IP alone, or the pod's own loopback. Lines before
   the window are not judged: an implicit route carries the password only once authorization
   applies (`route.go:1092-1094`), and the `env` roll gives each new pod a new IP, so the logs of
@@ -1348,10 +1367,11 @@ reads with `--timestamps`.
   it again. The exceptions. During `env` and `routes`, a process that reaches 6222 can still force
   exit 1 by a forged line in the server's form, in three ways: a `Removed route` line with a
   password in it; a `Failed to reload server configuration` line at ERR, which the failed-reload
-  rule (below) counts whatever it says; or a `Reloaded: cluster`, `Reloaded: cluster routes` or
-  `Trapped "hangup" signal` line, which opens the window before that
-  process's own route connections. It times the line now and writes it once for each likely
-  process id of the server's, within one route name, so that one of them carries the id the check
+  rule (below) counts whatever it says; or a `Trapped "hangup" signal` line, or a `Reloaded:
+  cluster routes` line before the real one, which opens the window before that process's own route
+  connections. A forged `Reloaded: cluster` line written alone, after the routes stage's reload,
+  gives exit 2 instead: no hangup falls between that reload and it. A process times the line now
+  and writes it once for each likely process id of the server's, within one route name, so that one of them carries the id the check
   reads as the server's (above); a client can do the same at any stage through an auth service
   that puts a newline it chose into its error text (above). And at any stage, a process that can
   make the server log enough, such as with failed logins on its client or route port, can rotate
