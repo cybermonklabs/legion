@@ -1167,6 +1167,51 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	}
 }
 
+// TestAFederationTokenIsMintedAgainFiveMinutesBeforeItsEnd: an anthropic-federation token's
+// expiry is the token's own end (secrets.AnthropicFederation: now plus expires_in), and the proxy
+// takes the five minutes off, as for every minted value: six minutes before that end the held
+// token is used, four minutes before it the grant is read, and so minted, again.
+func TestAFederationTokenIsMintedAgainFiveMinutesBeforeItsEnd(t *testing.T) {
+	const (
+		firstToken  = "sk-ant-oat01-" + "the-first-federated-token"
+		secondToken = "sk-ant-oat01-" + "the-second-federated-token"
+	)
+	clock := &testClock{now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	end := clock.read().Add(3600 * time.Second)
+	r := newRig(t, Options{Now: clock.read})
+	held := func(token string, expires time.Time) map[string]requests.AirlockSecret {
+		return map[string]requests.AirlockSecret{
+			workerName: {Slots: map[string]string{requests.SlotValue: token}, Expires: expires, Type: "anthropic-federation"},
+		}
+	}
+	r.grants.setValues(testGrantID, held(firstToken, end))
+	client := r.client(workerPlaceholder)
+	call := func(path string) string {
+		t.Helper()
+		answer, body := r.get(client, "https://"+boundHost+path, "Authorization", "Bearer "+workerPlaceholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the call to %s answered %d %q; want 200", path, answer.StatusCode, body)
+		}
+		seen := r.requests()
+		return seen[len(seen)-1].Header.Get("Authorization")
+	}
+	if got := call("/v1/organizations/users"); got != "Bearer "+firstToken {
+		t.Fatalf("the first call carried %q; want the first token", got)
+	}
+	r.grants.setValues(testGrantID, held(secondToken, end.Add(time.Hour)))
+	clock.set(end.Add(-6 * time.Minute))
+	if got := call("/v1/organizations/workspaces"); got != "Bearer "+firstToken {
+		t.Fatalf("six minutes before the token's end the call carried %q; want the held first token", got)
+	}
+	clock.set(end.Add(-4 * time.Minute))
+	if got := call("/v1/organizations/api_keys"); got != "Bearer "+secondToken {
+		t.Fatalf("four minutes before the token's end the call carried %q; want the token minted again", got)
+	}
+	if calls := r.grants.valueReads(testGrantID); calls != 2 {
+		t.Fatalf("AirlockValues ran %d times; want twice: the first call and the one inside the five minutes", calls)
+	}
+}
+
 // TestDropNameDropsOneNameAndKeepsTheGrantsOthers: a reread says one secret has a new version,
 // and says nothing about the rest of a grant, so the drop is of that name alone - and the next
 // request reads the grant's values again, which is what puts the new version in front of it.

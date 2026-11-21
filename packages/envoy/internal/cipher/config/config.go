@@ -404,8 +404,10 @@ type Config struct {
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
-	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
-	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
+	// agent secret mints an access token for, and each anthropic-federation agent secret mints
+	// the identity token of for Anthropic's token exchange, whitespace-separated
+	// <SECRET NAME>=<account email> entries, such as
+	// GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
 	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
 	// secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
@@ -416,7 +418,8 @@ type Config struct {
 	// secrets, since only the secret's name is the key.
 	//
 	// This setting, and not a secret's stored value, is what chooses the account a
-	// google-service-account secret mints for (secrets.GoogleServiceAccount.Accounts, which the
+	// google-service-account or anthropic-federation secret mints for
+	// (secrets.GoogleServiceAccount.Accounts and secrets.AnthropicFederation.Accounts, which the
 	// broker fills from it): the broker holds roles/iam.serviceAccountTokenCreator on every
 	// account bound here, so a stored value alone choosing the account would let whoever may
 	// create an agent secret store another person's service account in a secret of their own,
@@ -424,8 +427,8 @@ type Config struct {
 	// where this binding and the stored value name the same account; either missing or the two
 	// disagreeing is refused before any call reaches Google.
 	//
-	// Unset, no secret is bound and every google-service-account mint is refused with
-	// secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
+	// Unset, no secret is bound and every google-service-account and anthropic-federation mint is
+	// refused with secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:

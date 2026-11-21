@@ -1216,7 +1216,10 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// Workload Identity credentials, which it finds on its first mint and keeps, and
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
-			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry},
+			// The anthropic-federation minter takes the same binding: the broker may mint the
+			// identity token of every bound account, so the binding chooses the account.
+			&secrets.AnthropicFederation{Accounts: cfg.ServiceAccountSecrets}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
 		// endpoint and retry.
@@ -1501,18 +1504,19 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 
 // typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
-// its own binding of each google-service-account secret to the account that minter may mint for,
-// which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that type. The google-service-account minter is a pointer: its method value would
-// otherwise copy the credentials it caches away from the minter every later mint reads. The other
-// two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
-// from its one budget.
-func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+// its own binding of each google-service-account and anthropic-federation secret to the account
+// that minter may mint for, which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given
+// no binding at all mints no secret of that type. The google-service-account and
+// anthropic-federation minters are pointers: a method value would otherwise copy the credentials
+// each caches away from the minter every later mint reads. The other two are copied, and each
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeAnthropicFederation:  anthropicFederation.Mint,
 	}
 }
 

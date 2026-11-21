@@ -68,6 +68,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 			// type reaches.
 			Accounts: map[string]string{"DEV_PERSON": "dev-aditya@example-identities.iam.gserviceaccount.com"},
 		},
+		&secrets.AnthropicFederation{},
 	)
 
 	app, err := json.Marshal(map[string]string{"app_id": "123456", "private_key": pemText})
@@ -94,7 +95,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 // and nothing else, so a type added to policy.Types with no minter behind it, or a minter left
 // under a key no type names, fails here rather than when a session asks for that secret.
 func TestTypeMinters(t *testing.T) {
-	minters := typeMinters(secrets.GitHubApp{}, secrets.GoogleLogin{}, secrets.AzureLogin{}, &secrets.GoogleServiceAccount{})
+	minters := typeMinters(secrets.GitHubApp{}, secrets.GoogleLogin{}, secrets.AzureLogin{}, &secrets.GoogleServiceAccount{}, &secrets.AnthropicFederation{})
 	for _, secretType := range policy.Types {
 		if minters[secretType] == nil {
 			t.Errorf("typeMinters has no minter for type %q, which the policy serves", secretType)

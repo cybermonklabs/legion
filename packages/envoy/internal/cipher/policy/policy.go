@@ -62,6 +62,16 @@ const (
 	// secret to one account email, and a mint for any other account is refused, so a value
 	// rewritten to name another account releases no token.
 	TypeGoogleServiceAccount = "google-service-account"
+	// TypeAnthropicFederation mints an Anthropic organization's token by Workload Identity
+	// Federation: the Google identity token of the one service account the stored value names,
+	// {"organization_id", "federation_rule_id", "service_account_id", "service_account" and,
+	// for a rule enabled for more than one workspace, "workspace_id"}, traded at Anthropic's token
+	// exchange for the token the federation rule grants. The deployment's
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds each such secret to one account, as it binds a
+	// google-service-account secret. The token can be an organization administrator's, so the
+	// type is human tier only, its grants an hour at most, and its requesters held as
+	// google-service-account's are (TagRules).
+	TypeAnthropicFederation = "anthropic-federation"
 	// TagMaxGrant bounds a request's signed grant lifetime for this secret (ParseMaxGrant).
 	TagMaxGrant = "max-grant"
 	// TagDefaultGrant, set to DefaultGrantSession, keeps a request that names no lifetime for this
@@ -139,7 +149,7 @@ const (
 )
 
 // Types is every value a secret's type tag may name. The broker holds a minter for each.
-var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount}
+var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
 
 // ValidType reports whether type is one of Types.
 func ValidType(secretType string) bool {
@@ -509,7 +519,7 @@ func RequesterRule(t TagSet) RequesterFault {
 	// only what tells a person, a service and a group apart (SplitRequesters), and read it once
 	// for all of them.
 	people, services, groups := SplitRequesters(t.Requesters)
-	if t.Type == TypeGoogleServiceAccount {
+	if t.Type == TypeGoogleServiceAccount || t.Type == TypeAnthropicFederation {
 		switch {
 		case !ValidPersonOwner(t.Owner) && !ValidGroupOwner(t.Owner):
 			return RequesterFaultOwnerNotPerson
@@ -541,16 +551,19 @@ func RequesterRule(t TagSet) RequesterFault {
 //     released only by a person's approval, which agent tier does not ask for.
 //   - ReasonAdminRequesters: an admin secret carries no requesters tag. Who may ask for an
 //     administrator's credential is named, never left to owner and tier alone.
-//   - ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no
-//     max-grant or one longer than an hour. Such a grant is reviewed while it is live, so it
-//     lasts an hour at most. A secret that merely lists its requesters keeps its own cap, or
-//     none.
+//   - ReasonTypeHumanTier: an anthropic-federation secret is not human tier. Its token can be an
+//     organization administrator's, which a person approves each release of.
+//   - ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+//     anthropic-federation one sets no max-grant or one longer than an hour. Such a grant is
+//     reviewed while it is live, so it lasts an hour at most. A secret that merely lists its
+//     requesters keeps its own cap, or none.
 //   - ReasonRequestersNotOwner: a condition of RequesterRule refuses the secret's requesters —
-//     a google-service-account secret whose owner is no person, one whose list names a service
-//     below human tier, or one whose list does not name its person owner exactly once, and a
-//     secret of any type the deployment binds to a dev-<name> account whose list names a
-//     service. The one reason is all a load answers; which of those conditions refused it is
-//     RequesterRule's fault, which `agent-secrets` reads to name the flag that fixes the write.
+//     a google-service-account or anthropic-federation secret whose owner is neither a person
+//     nor a group, one whose list names a service below human tier, or one whose list does not
+//     name its owner exactly once, and a secret of any type the deployment binds to a dev-<name>
+//     account whose list names a service. The one reason is all a load answers; which of those
+//     conditions refused it is RequesterRule's fault, which `agent-secrets` reads to name the
+//     flag that fixes the write.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
@@ -564,7 +577,10 @@ func TagRules(t TagSet) string {
 	if t.Admin && t.Requesters == "" {
 		return ReasonAdminRequesters
 	}
-	if (t.Admin || t.Type == TypeGoogleServiceAccount) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
+	if t.Type == TypeAnthropicFederation && t.Tier != TierHuman {
+		return ReasonTypeHumanTier
+	}
+	if (t.Admin || t.Type == TypeGoogleServiceAccount || t.Type == TypeAnthropicFederation) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
 		return ReasonMaxGrantRequired
 	}
 	if RequesterRule(t) != RequesterFaultNone {

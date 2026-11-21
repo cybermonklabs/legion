@@ -134,15 +134,17 @@ const (
 	// by anything but their lowercase sign-in email, or names a service the deployment does not
 	// register (ParseRequesters).
 	ReasonRequestersMalformed = "requesters-malformed"
-	// ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no max-grant,
-	// or one longer than an hour (TagRules). Both release a credential whose grant is reviewed
-	// while it is live, so it lasts an hour at most.
+	// ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+	// anthropic-federation one sets no max-grant, or one longer than an hour (TagRules). Each
+	// releases a credential whose grant is reviewed while it is live, so it lasts an hour at most.
 	ReasonMaxGrantRequired = "max-grant-required"
-	// ReasonRequestersNotOwner: a google-service-account secret whose requesters are not its one
-	// person owner, once — no list, no entry naming the owner, more than one person, or a person
-	// who is not the owner — or which lists a service at agent tier, where no person approves the
-	// pod that asks (TagRules). A human-tier secret may list registered services beside its owner,
-	// unless the deployment binds it to a dev-<name> account, whose token is that one person's.
+	// ReasonRequestersNotOwner: a google-service-account or anthropic-federation secret whose
+	// requesters are not its owner, once — for a person owner, no list, no entry naming the owner,
+	// more than one person, a person who is not the owner, or a group; for a group owner, no list,
+	// another group, more than one group, or a person — or which lists a service at agent tier,
+	// where no person approves the pod that asks (TagRules). A human-tier secret may list
+	// registered services beside its owner, unless the deployment binds it to a dev-<name>
+	// account, whose token is that one person's.
 	ReasonRequestersNotOwner = "requesters-not-owner"
 	// ReasonAdminMalformed: the admin tag is set to anything but "true" (TagAdmin), the empty
 	// string included. A tag whose value says nothing is a mistake, not a secret that is no
@@ -154,6 +156,10 @@ const (
 	// ReasonAdminRequesters: an admin secret carries no requesters tag (TagRules). Who may ask for
 	// an administrator's credential is named, never left to owner and tier alone.
 	ReasonAdminRequesters = "admin-requesters"
+	// ReasonTypeHumanTier: a secret of a type the broker serves at human tier alone,
+	// anthropic-federation, is agent tier (TagRules). Its token can be an organization
+	// administrator's, which a person approves each release of.
+	ReasonTypeHumanTier = "type-human-tier"
 	// ReasonScopesMalformed: the scopes tag holds a comma, names no scope, names one twice, or
 	// holds an entry that is no scope name — a whole https://www.googleapis.com/auth/… URL
 	// included (ParseScopes).
@@ -209,12 +215,12 @@ type Loader struct {
 	// BROKER_SERVICES. An owner tag naming any other service is refused as malformed.
 	Services []string
 	// ServiceAccounts is the deployment's BROKER_SERVICE_ACCOUNT_SECRETS: each google-service-account
-	// secret's Name to the one account email the deployment binds to it. The loader reads it for
-	// one rule alone — a secret bound to a dev-<name> account, which is one person's own, may list
-	// no service among its requesters (TagRules) — and the minter is what refuses a mint for any
-	// account but the bound one, so a stored value rewritten to name another account releases no
-	// token. An empty or nil map binds nothing, and every such secret then stands on its tags
-	// alone.
+	// and anthropic-federation secret's Name to the one account email the deployment binds to it.
+	// The loader reads it for one rule alone — a secret bound to a dev-<name> account, which is
+	// one person's own, may list no service among its requesters (TagRules) — and the minter is
+	// what refuses a mint for any account but the bound one, so a stored value rewritten to name
+	// another account releases no token. An empty or nil map binds nothing, and every such secret
+	// then stands on its tags alone.
 	ServiceAccounts map[string]string
 	// AirlockDigest is the fingerprint of the secret's airlock entry, "" for a secret the rules
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
