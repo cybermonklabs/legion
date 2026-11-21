@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
 import { projectAccessQuery } from "../../api/queries";
@@ -70,9 +70,11 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
  * under no write key. The row lets go of it when a new link lands, when it lapses, and when a read
- * of the access list made after it landed no longer lists it open (`open_invitations`): a Reset
- * here or in another tab, a newer link from another tab, a delisting, or the person's enrollment
- * ended it. A press Dispatch refuses makes no new link, so it leaves the one shown. While the
+ * of the access list that began after it landed lists no open link of the person made at its
+ * `made_at` (`open_invitations`): a Reset here or in another tab, a newer link from another tab, a
+ * delisting, or the person's enrollment ended it. A write's own answer, read in the write's
+ * transaction, may predate the link and ends nothing; the read asked once the write settles does.
+ * A press Dispatch refuses makes no new link, so it leaves the one shown. While the
  * person is not invitable (another owner's project names them, or they became a full member),
  * the enrollment refuses the link, so the row does not offer it, and offers it again if they
  * become invitable while it is still open. The row reads the access list again every few seconds
@@ -114,12 +116,8 @@ export function AccessPersonRow({
 }): ReactNode {
   const linkId = useId();
   const queryClient = useQueryClient();
-  const accessKey = projectAccessQuery(project).queryKey;
   const [invitation, setInvitation] = useState<InvitationAnswer | undefined>(undefined);
   const [copied, setCopied] = useState(false);
-  // How many answers the access read had when the shown link landed. A read before it cannot list
-  // the link, so only a later answer says whether it is still open.
-  const answersAtLanding = useRef(0);
   const invite = useKeyedWrite<InvitationAnswer, void>({
     inline: true,
     label: () => `Make a link for ${email} on ${project}`,
@@ -127,11 +125,10 @@ export function AccessPersonRow({
     // The link shown stays until a new one lands: a press Dispatch refuses ends nothing.
     onSuccess: (answer) => {
       if (answer === null) return;
-      answersAtLanding.current = queryClient.getQueryState(accessKey)?.dataUpdateCount ?? 0;
       setInvitation(answer);
       setCopied(false);
       // A read already out began before the link existed: it is cancelled, and a new one starts.
-      void queryClient.refetchQueries({ queryKey: accessKey });
+      void queryClient.refetchQueries({ queryKey: projectAccessQuery(project).queryKey });
     },
     method: "POST",
     write: (_none, bounds) => api.createProjectInvitation(project, email, bounds),
@@ -160,28 +157,40 @@ export function AccessPersonRow({
   // While the row holds a link, shown or hidden, the access list is read again now and then: no
   // Dispatch event tells this page that the person enrolled, that another tab ended the link, or
   // that another owner's listing ended.
-  const read = useQuery({
+  useQuery({
     ...projectAccessQuery(project),
     enabled: invitation !== undefined,
     refetchInterval: invitation !== undefined ? SHOWN_LINK_POLL_MS : false,
   });
-  const open = read.data?.open_invitations;
-  const ended =
-    invitation !== undefined &&
-    open !== undefined &&
-    (queryClient.getQueryState(accessKey)?.dataUpdateCount ?? 0) > answersAtLanding.current &&
-    !open.some(
-      (listed) =>
-        listed.email === email && Date.parse(listed.made_at) === Date.parse(invitation.made_at)
-    );
+  // Each answer of a read that began after the shown link landed says whether that link, the
+  // person's link made at its made_at, is still open; one that lists it not ends it, and no other
+  // link. A write's answer (`setQueryData`, `manual`) was read in the write's own transaction: a
+  // Reset pressed before this link was made and answered after it never saw the link, so it ends
+  // nothing here, and the read the panel asks once the Reset settles says whether it is open.
+  const shownMadeAt = invitation?.made_at;
   useEffect(() => {
-    if (!ended) return;
-    setInvitation(undefined);
-    setCopied(false);
-  }, [ended]);
+    if (shownMadeAt === undefined) return;
+    const accessHash = hashKey(projectAccessQuery(project).queryKey);
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.query.queryHash !== accessHash) return;
+      if (event.action.type !== "success" || event.action.manual === true) return;
+      const open = (event.action.data as ProjectAccess).open_invitations;
+      if (
+        open === undefined ||
+        open.some(
+          (listed) =>
+            listed.email === email && Date.parse(listed.made_at) === Date.parse(shownMadeAt)
+        )
+      ) {
+        return;
+      }
+      setInvitation((shown) => (shown?.made_at === shownMadeAt ? undefined : shown));
+      setCopied(false);
+    });
+  }, [queryClient, project, email, shownMadeAt]);
   const shown = passkeys !== undefined;
   const enrolled = passkeys ?? [];
-  const link = invitation !== undefined && !ended && invitable ? invitation : undefined;
+  const link = invitation !== undefined && invitable ? invitation : undefined;
   const lostAnswer = invite.unanswered !== undefined && !invite.isPending;
 
   return (

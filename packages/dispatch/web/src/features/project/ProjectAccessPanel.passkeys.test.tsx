@@ -725,3 +725,45 @@ test("a link the access list no longer holds open, or a person who became a full
     }
   }
 });
+
+// The owner presses Reset, then Invite on the same row before the Reset's answer is back. Dispatch
+// commits the Reset first and the Invite after it, so the new link is open; the Reset's answer,
+// read in the Reset's own transaction, never saw that link, and it lands after the Invite's. It
+// does not end the link: only a read that began after the link landed can say it is gone, and the
+// read the panel asks once the Reset settles lists it open.
+test("a Reset answered after an Invite pressed behind it leaves the new link the Reset never saw", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const answered = Promise.withResolvers<void>();
+  // The Reset commits at once, deleting no link (there is none yet), and its answer comes back
+  // only once the test lets it, after the Invite's.
+  const reset = spyOn(api, "resetProjectAccessPerson").mockImplementation(async () => {
+    const afterReset = await panel.lands(withPasskeys({ passkeys: [] }))();
+    await answered.promise;
+    return afterReset;
+  });
+  const invite = panel.invites(madeLink);
+  const link = { name: `Enrollment link for ${ana}` };
+  try {
+    await user.click(await screen.findByRole("button", { name: `Reset ${ana}` }));
+    await waitFor(() => expect(reset).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: `Invite ${ana}` }));
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toHaveValue(madeLink.url);
+
+    await act(async () => answered.resolve());
+    await waitFor(() =>
+      expect(within(personRow(ana)).queryByTestId("access-passkey")).not.toBeInTheDocument()
+    );
+    await waitFor(() =>
+      expect(panel.queryClient.getQueryState(["project-access", "CORE"])?.fetchStatus).toBe("idle")
+    );
+    await settle();
+    expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(madeLink.url);
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+    reset.mockRestore();
+    invite.mockRestore();
+  }
+});
