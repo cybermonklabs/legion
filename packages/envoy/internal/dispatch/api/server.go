@@ -767,7 +767,7 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeOwedBrokerCredentials, EventHead: s.personEventHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeBrokerDebts, EventHead: s.personEventHead, EventHorizon: s.horizon}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -779,11 +779,13 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// RevokeBrokerCredentials is one pass of the broker revocation loop
-	// (revokeOwedBrokerCredentials): the secrets broker is told of each Google account another
-	// account took an address from, and ends every credential that account holds there, and the
-	// revocation is settled once the broker confirms. It answers when the loop next needs a pass with
-	// no wake, the zero time for never. RunBrokerRevocations runs it.
+	// RevokeBrokerCredentials is one pass of the broker revocation loop (revokeBrokerDebts): the
+	// secrets broker is told of each Google account another account took an address from, and ends
+	// every credential that account holds there (revokeOwedBrokerCredentials), and of each
+	// restricted member a removal took off an access list, whose machine logins it revokes
+	// (revokeOwedMachineLogins); each revocation is settled once the broker confirms it. It answers
+	// when the loop next needs a pass with no wake, the zero time for never. RunBrokerRevocations
+	// runs it.
 	RevokeBrokerCredentials func(context.Context) time.Time
 	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
 	// carries (personEventHead): an id at or below which every event is already final, which a page

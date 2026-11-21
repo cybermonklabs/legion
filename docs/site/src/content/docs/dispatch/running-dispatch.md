@@ -570,12 +570,28 @@ sees, whatever it lists.
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
 Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
 them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
-no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
-machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
-timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
-revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
-broker decides whose each one is.
+no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
+**Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. Every removal of
+them from a project's list also has Dispatch revoke all their machine logins at the broker, whatever
+other list still names them, after the removal commits and again until the broker confirms; the
+log line `the secrets broker revoked the machine logins of a restricted member taken off an access
+list` records each. Until it is done, about a minute after the removal (the broker may still commit
+an approve it took before it), their approve of a new machine login is
+`409 MACHINE_LOGIN_REVOCATION_OWED`; a person another list still names then approves a new login
+for the projects that list them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that does not list it read the private project as missing. A person who sees the project

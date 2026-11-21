@@ -34,7 +34,15 @@ func newAccessServer(t *testing.T) (http.Handler, *store.Store) {
 // (agent_tokens_test.go, broker_token_test.go) build it with outside sign-in on.
 func newAccessServerWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newTestServer(t, options)
+	handler, database, _ := newRegisteredAccessServer(t, options)
+	return handler, database
+}
+
+// newRegisteredAccessServer is newAccessServerWith, answering also the server Register mounted,
+// whose background passes a test runs itself (the broker revocation loop's, revokeBrokerDebts).
+func newRegisteredAccessServer(t *testing.T, options testServerOptions) (http.Handler, *store.Store, *server) {
+	t.Helper()
+	handler, database, _, served := newRegisteredTestServer(t, options)
 	seedPeople(t, database, accessCarol, accessDave, accessErin)
 	markRestricted(t, database, accessErin)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -42,7 +50,7 @@ func newAccessServerWith(t *testing.T, options testServerOptions) (http.Handler,
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create ACC: status=%d body=%s", response.Code, response.Body.String())
 	}
-	return handler, database
+	return handler, database, served
 }
 
 func markRestricted(t *testing.T, database *store.Store, login string) {

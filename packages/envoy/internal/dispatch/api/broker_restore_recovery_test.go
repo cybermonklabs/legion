@@ -648,9 +648,11 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 		t.Fatalf("after the pass, %s owes %+v, %v; want the revocation settled", email, owing, err)
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
-	if len(block.statements) != 4 || block.statements[0] != "begin" || block.statements[3] != "commit" ||
-		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") {
-		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again and commit", block.statements)
+	if len(block.statements) != 5 || block.statements[0] != "begin" || block.statements[4] != "commit" ||
+		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") ||
+		!strings.HasPrefix(block.statements[3], "with locked as (select r.email, pg_advisory_xact_lock(") ||
+		!strings.Contains(block.statements[3], "\nupdate machine_login_revocations m ") {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, one statement that takes the members' machine-login approval locks and owes again the revocations it locked, and commit", block.statements)
 	}
 	tx, err := r.dispatch.Pool.Begin(ctx)
 	if err != nil {
@@ -687,5 +689,56 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	}
 	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 1 {
 		t.Errorf("after the block, %s owes %+v, %v; want the revocation recorded again", email, owing, err)
+	}
+}
+
+// TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince: the block for a broker
+// restored alone owes again each revocation of a restricted member's machine logins that Dispatch
+// settled at or after the backup's moment less an hour, at its next generation and with its
+// recorded_at set to the block's own moment, so the pass again revokes every machine login the
+// member holds and settles it only once a claim comes machineLoginSettleAfter after the block. One
+// settled before then, which the restored broker's backup already holds revoked, stays settled.
+//
+// Control: drop the block's machine_login_revocations statement, and the revocation settled since
+// the backup stays settled, named.
+func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	revocations := store.NewMachineLoginRevocations(database.Pool)
+	const since, before = "since@other.example", "before@other.example"
+	for _, email := range []string{since, before} {
+		storetest.RecordMachineLoginRevocation(t, database, email)
+	}
+	claimed, err := revocations.Claim(ctx, time.Minute, 5)
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("Claim = %+v, %v; want both revocations", claimed, err)
+	}
+	generations := map[string]int64{}
+	for _, owed := range claimed {
+		if settled, err := revocations.Settle(ctx, owed, 0); err != nil || !settled {
+			t.Fatalf("Settle(%s) = %t, %v; want it settled", owed.Email, settled, err)
+		}
+		generations[owed.Email] = owed.Generation
+	}
+	// The one settled three hours ago is older than the backup's moment less its hour.
+	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set done_at = now() - interval '3 hours' where email = $1`, before); err != nil {
+		t.Fatal(err)
+	}
+	var blockStart time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&blockStart); err != nil {
+		t.Fatal(err)
+	}
+
+	runStatements(t, database.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": time.Now().Add(-30 * time.Minute)})
+
+	if owed, generation, err := revocations.Owing(ctx, since); err != nil || !owed || generation != generations[since]+1 {
+		t.Errorf("the revocation settled since the backup is owed %t at generation %d (%v) after the block, want owed at %d", owed, generation, err, generations[since]+1)
+	}
+	var after time.Time
+	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&after); err != nil || after.Before(blockStart) {
+		t.Errorf("the revocation owed again records %s (%v), want the block's own moment, at or after %s", after, err, blockStart)
+	}
+	if owed, _, err := revocations.Owing(ctx, before); err != nil || owed {
+		t.Errorf("the revocation settled before the backup's hour is owed %t (%v) after the block, want it settled still", owed, err)
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -157,6 +158,7 @@ type rigConfig struct {
 	lease      time.Duration
 	maxConns   int
 	minters    map[string]requests.Minter
+	projects   projectaccess.Access
 	personPods []personPod
 }
 
@@ -177,6 +179,13 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithProjectAccess gives the broker's token exchange access as its check of what Dispatch says
+// each person sees and what kind of member they are, as BROKER_PROJECT_ACCESS_URL does; none by
+// default, which is a broker that checks no project.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projects = access }
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -278,7 +287,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	provider := newOAuthProvider(t, st, issuer, config.projects)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -345,6 +354,13 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
+	return newOAuthProvider(t, st, issuer, nil)
+}
+
+// newOAuthProvider is NewOAuthProvider whose token exchange checks its projects with projects,
+// nil for none.
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, projects projectaccess.Access) *oauth.Provider {
+	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
@@ -377,6 +393,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 			Policy:     policy,
 			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+			Projects:   projects,
 		},
 	}, oauthStore)
 	if err != nil {

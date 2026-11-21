@@ -81,9 +81,10 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  * the pods it launches next, while a pod it launched before stays without secrets until it is
  * replaced. Dispatch names the viewer as the person revoking, and the broker refuses anyone but
  * the approver of a person's machine login and anyone but the person of a person's pod login.
- * Rendered on the machine-login page.
+ * Rendered on the machine-login page. A restricted member (`ownOnly`) is answered their own
+ * machines' logins alone, and no pod's or service's, so the list says that.
  */
-export function MachineLoginsSection(): ReactNode {
+export function MachineLoginsSection({ ownOnly = false }: { ownOnly?: boolean }): ReactNode {
   const queryClient = useQueryClient();
   const logins = useQuery({ ...machineLoginsQuery(), select: (data) => data.credentials ?? [] });
 
@@ -94,7 +95,11 @@ export function MachineLoginsSection(): ReactNode {
       confirm={(login) =>
         `Revoke the machine login for ${machineName(login)}? ${revokeOutcome(login)}`
       }
-      description="Every machine and every pod logged in as you, and every service's login. A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines and your pods. Anyone signed in may revoke a service's login. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets."
+      description={
+        ownOnly
+          ? "Every machine logged in as you. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets."
+          : "Every machine and every pod logged in as you, and every service's login. A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines and your pods. Anyone signed in may revoke a service's login. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets."
+      }
       empty="No live machine logins."
       heading="Machine logins"
       headingId="machine-logins-heading"

@@ -80,13 +80,21 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 	return model.MemberKind(kind), nil
 }
 
-// The lock order every access write takes, so no two of them wait on each other in a cycle: a
-// group's name first (LockGroupName), then the project's owner lock (store.LockOwner), then the
-// rows a write appends events on. A write of a group (PutGroup, DeleteGroup) takes the name and
-// then the projects its delete sweeps; a write of a project's list that names a group takes the
-// same name before the project (LockForAccessWrite), so a delete of that group and the write are
-// ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group.
+// The lock order every access write takes, so no two of them wait on each other in a cycle: the
+// machine-login approval lock of the person a removal takes off the list
+// (store.LockMachineLoginApprovals), then a group's name (LockGroupName), then the project's owner
+// lock (store.LockOwner), then the rows a write appends events on. A removal of a person takes that
+// person's approval lock before any of the others, since it may wait there for an approve the
+// secrets broker has not answered, and so holds no project's lock while it does; an approval of the
+// person's takes that lock alone, so no cycle forms through it. It takes it only where a read that
+// takes no lock finds that the removal owes the revocation of the person's machine logins
+// (removalOwes), since the person's approve does not wait for the lock and is refused while
+// another holds it; a removal that finds it owes only under the project's lock takes it then
+// without waiting (store.RecordMachineLoginRevocation). A write of a group (PutGroup, DeleteGroup)
+// takes the name and then the projects its delete sweeps; a write of a project's list that names a
+// group takes the same name before the project (LockForAccessWrite), so a delete of that group and
+// the write are ordered by the name: the delete waits for the write and then sweeps its row, or the
+// write, seeing the delete committed, finds no group.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -97,12 +105,28 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 }
 
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
-// the group's name when the write names a group (empty when it names none), then the project's
-// owner lock, the advisory lock every writer of a project takes (store.LockOwner), and never a
-// row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx reads
-// it in the statement after that lock, nil for a project with none, and ErrProjectNotFound for an
-// unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it.
-func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
+// the approval lock of removed, the person the write takes off the list (empty for any other
+// write), where a read that takes no lock finds the removal owes the revocation of their machine
+// logins (removalOwes), then the group's name when the write names a group (empty when it names
+// none), then the project's owner lock, the advisory lock every writer of a project takes
+// (store.LockOwner), and never a row lock on projects (TestNoForUpdateOnOwnerTables). It answers
+// the project's owner as tx reads it in the statement after that lock, nil for a project with
+// none, and ErrProjectNotFound for an unknown key. AddPrincipal and RemovePrincipal of a group are
+// sound only after it. The record of a removal's machine-login revocation
+// (store.RecordMachineLoginRevocation) takes removed's approval lock itself, at once where this
+// took it, so the removal decides by its own reads under the project's lock whether it owes.
+func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed string) (*string, error) {
+	if removed != "" {
+		owes, err := removalOwes(ctx, tx, key, removed)
+		if err != nil {
+			return nil, err
+		}
+		if owes {
+			if err := store.LockMachineLoginApprovals(ctx, tx, removed); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if group != "" {
 		if err := LockGroupName(ctx, tx, group); err != nil {
 			return nil, err
@@ -111,8 +135,32 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*str
 	if err := lockProject(ctx, tx, key); err != nil {
 		return nil, err
 	}
+	return ReadOwner(ctx, tx, key)
+}
+
+// removalOwes reports whether a removal of the person login from project key's list owes the
+// revocation of their machine logins, as q reads it with no lock: the list names them and they are
+// a restricted member (api.removePerson, which decides by the same reads under the project's
+// lock). Its error names the project and never the person (TestNoAccessErrorNamesAPerson).
+func removalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
+	var owes bool
+	if err := q.QueryRow(ctx, `
+		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+			and exists (select 1 from people where email = $3 and member_kind = $4)
+	`, key, PrincipalPerson, model.CanonicalLogin(login), string(model.MemberRestricted)).Scan(&owes); err != nil {
+		return false, fmt.Errorf("read whether a removal from project %s owes a machine-login revocation: %w", key, err)
+	}
+	return owes, nil
+}
+
+// ReadOwner answers project key's owner as q reads it, nil for a project with none, and
+// ErrProjectNotFound for an unknown key, taking no lock. LockForAccessWrite reads it again under
+// the project's owner lock, and only that read decides a write; a write reads it first to refuse a
+// caller who does not own the project before it takes any lock (api.ownerWrite), so a refused write
+// holds up no other.
+func ReadOwner(ctx context.Context, q Querier, key string) (*string, error) {
 	var owner *string
-	err := tx.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
+	err := q.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -503,6 +551,24 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		change = model.AccessGroupRemoved
 	}
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
+}
+
+// NamesPerson reports whether project key's access list names the person email, read in tx: a
+// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
+// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
+// answers it.
+func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
+	name, err := principalOf(PrincipalPerson, email)
+	if err != nil {
+		return false, err
+	}
+	var named bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+	`, key, PrincipalPerson, name).Scan(&named); err != nil {
+		return false, fmt.Errorf("read whether project %s names %s: %w", key, name, err)
+	}
+	return named, nil
 }
 
 // appendProjectChange appends the event naming change on project key, records beside it what the

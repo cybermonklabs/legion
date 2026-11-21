@@ -111,7 +111,7 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		}},
 		{"ReadGroup", func(tx pgx.Tx) error { _, err := ReadGroup(ctx, tx, "crew"); return err }},
 		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx, "", model.MaxGroupsPerOwner); return err }},
-		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew"); return err }},
+		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew", ""); return err }},
 		{"SetOwner", func(tx pgx.Tx) error { _, _, err := SetOwner(ctx, tx, broker, "PRIV", hiddenEmail, by); return err }},
 		{"SetVisibility", func(tx pgx.Tx) error {
 			_, _, err := SetVisibility(ctx, tx, broker, "PRIV", model.ProjectPublic, by)
@@ -156,6 +156,23 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"DeleteGroup", func(tx pgx.Tx) error { _, err := DeleteGroup(ctx, tx, broker, "crew", by); return err }},
+		// A removal's read before its locks, and the approval lock of the person it takes off, which
+		// it takes where that read finds the list names them and they are a restricted member: the
+		// step makes the person one that PRIV lists, and comes last, since SetOwner and PutGroup above
+		// need them a full member.
+		{"LockForAccessWrite of a removal of the person, a restricted member PRIV lists", func(tx pgx.Tx) error {
+			for _, statement := range []string{
+				`update people set member_kind = 'restricted' where email = $1`,
+				`insert into project_access (project_key, principal_kind, principal, added_by)
+					values ('PRIV', 'person', $1, '{"kind":"user","id":"olga@example.com"}') on conflict do nothing`,
+			} {
+				if _, err := database.Pool.Exec(ctx, statement, hiddenEmail); err != nil {
+					t.Fatalf("make the person a restricted member PRIV lists: %v", err)
+				}
+			}
+			_, err := LockForAccessWrite(ctx, tx, "PRIV", "", hiddenEmail)
+			return err
+		}},
 	}
 	for _, step := range steps {
 		failed := 0

@@ -160,10 +160,13 @@ test("a restricted member's pages draw no refusal from Dispatch", async ({ brows
     await expect.soft(page.getByRole("heading", { name: "Groups" })).toHaveCount(0);
     await expect.soft(page.getByRole("heading", { name: "Delivery timeline" })).toHaveCount(0);
 
-    for (const path of ["/agents/broadcasts", "/credentials/machine"]) {
-      await page.goto(path);
-      await expect.soft(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
-    }
+    await page.goto("/agents/broadcasts");
+    await expect.soft(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
+    // The machine-login page is his: he approves there the device login of his own agents, and
+    // it lists his own machine logins alone, as Dispatch answers him.
+    await page.goto("/credentials/machine");
+    await expect.soft(page.getByLabel("Code shown on the machine")).toBeVisible();
+    await expect.soft(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
     // The instrument's control, made last: a read of the deployment's rows from bob's page is
     // refused and shows by name, and a read the pages above made, which answered before it, would
     // show beside it.

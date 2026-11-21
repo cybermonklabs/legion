@@ -130,13 +130,15 @@ const (
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two. No person's credential makes one: a
-	// person's sign-in on a machine and a dev box's machine login decide the person scope
-	// (exchange.Set's Person and Machine). A resource server holds such a token to no Google
-	// account and no creation time, since the operator's configuration, not an account, names its
-	// person (internal/dispatch/api, brokerPersonAdmitted).
+	// ProjectScopeNamed is a token held to one project. An operator's entry maps most of them: such
+	// a token acts for the entry's person and its Projects holds the entry's one project, or none
+	// for an account entry naming none (the shared public-session account's). A restricted
+	// member's machine login is the one person's credential that makes one (exchange.Set.Machine):
+	// it acts for that member, and its Projects holds the one project its trade asked for. It never
+	// holds two. A resource server holds an entry's token to no Google account and no creation
+	// time, since the operator's configuration, not an account, names its person, and a restricted
+	// member's to the account and the creation its trade recorded, as a person token's
+	// (internal/dispatch/api, brokerPersonAdmitted).
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
@@ -262,9 +264,10 @@ type Introspection struct {
 	// neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
-	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
-	// MaxProjects projects its trade asked for, each one its person could see then; for a
-	// ProjectScopeNone token, none. Sorted, each once; absent for none.
+	// project, or none for an account entry naming none, or the one project a restricted member's
+	// machine login asked for; for a ProjectScopePerson token, the 0 to MaxProjects projects its
+	// trade asked for, each one its person could see then; for a ProjectScopeNone token, none.
+	// Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a

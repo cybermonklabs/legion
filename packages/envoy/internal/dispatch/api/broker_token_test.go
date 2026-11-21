@@ -1514,7 +1514,8 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // costs one statement of Dispatch's store, the read of that person's member kind by the people
 // table's key, and reads no access list; one that names no person reads nothing. The instrument is
 // shown seeing a list read in the same run: a restricted owner's token, which must read one,
-// resolves in two.
+// resolves in two, and holds no scope (brokerTokenActor gives a restricted member's broker token
+// none, whatever scope the broker answered).
 func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
@@ -1540,7 +1541,7 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, false},
 		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
-			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(accessErin), true, 2, true},
 	} {
 		rig.broker.Says(test.token, test.answer)

@@ -182,10 +182,14 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // not write them. The rows personsOwnAtTheBroker names end what is the caller's own at the secrets
 // broker, so a restricted member makes them as a full member does, and only a credential whose
 // writes a list holds is refused them; the broker decides whose each grant or sign-in is, for
-// every caller alike. Every other row reaches its handler, whose loaders answer an object the
-// viewer does not see as missing (the file comment), but for a full member's broker token scoped
-// to one project, whose write to an object outside its project is refused here as it was before
-// (writeOutsideTheBrokerProject).
+// every caller alike. The rows that decide, list or end a machine login (restrictedOwnLoginRoutes)
+// are a restricted member's at a browser alone (restrictedOwnLoginAtBrowser, the rule the read
+// gate reads too), whose handlers hold that member to a login of their own: never their personal
+// token and never a broker token, so no agent of theirs decides or ends a credential; any other
+// call of theirs there is refused restrictedOwnLoginRefusal. Every other row reaches its handler,
+// whose loaders answer an object the viewer does not see as missing (the file comment), but for a
+// full member's broker token scoped to one project, whose write to an object outside its project is
+// refused here as it was before (writeOutsideTheBrokerProject).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if route.Scope == scopeNoWrite {
 		return handler
@@ -202,8 +206,13 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		credential := resolvedCredential(r.Context())
 		covers, named := namedProjectOf(reader.Viewer, credential)
 		if deployment {
+			governed, allowed := restrictedOwnLoginAtBrowser(route, reader, r)
+			if governed && !allowed {
+				restrictedOwnLoginRefusal(w, route)
+				return
+			}
 			held := writesHeldTo(reader, credential)
-			if (reader.Viewer.Restricted || len(held) > 0) && !(theirOwn && len(held) == 0) {
+			if (reader.Viewer.Restricted || len(held) > 0) && !(theirOwn && len(held) == 0) && !allowed {
 				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
 				return
 			}
@@ -224,6 +233,13 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
+}
+
+// atBrowser reports whether the caller withCallerResolved resolved is a person at a browser, whose
+// sign-in proved them, rather than any credential an agent holds.
+func atBrowser(r *http.Request) bool {
+	caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+	return ok && caller.err == nil && caller.human
 }
 
 // resolvedCredential is the credential of the caller withCallerResolved kept in ctx, and nil for a

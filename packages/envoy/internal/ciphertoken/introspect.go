@@ -31,8 +31,9 @@ const maxIntrospectionBytes = 64 << 10
 // Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
-	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
-	// none for an account entry naming none.
+	// ProjectScopeNamed means Projects is the one project the token is held to: the one an
+	// operator's entry gave it, or none for an account entry naming none, or the one a restricted
+	// member's machine login asked for.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.

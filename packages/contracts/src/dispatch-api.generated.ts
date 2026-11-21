@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record is 403 RESTRICTED_MEMBER, naming none of its facts, and a lookup through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. While another approve of the member's is at the broker, or a removal of theirs from an access list is being recorded, their approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, for them to approve again in a few seconds. While a revocation of the member's machine logins is owed after a removal from an access list, their approve is 409 MACHINE_LOGIN_REVOCATION_OWED, for them to approve again once it is paid, about a minute after the removal. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1111,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -2054,7 +2054,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token and any broker token of theirs do, and 403 RESTRICTED_MEMBER otherwise, as their personal token is. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2073,7 +2073,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id is 403 RESTRICTED_MEMBER, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -2594,7 +2594,7 @@ export interface paths {
     /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
     post?: never;
-    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of every machine login the member approved, whatever other list still names them, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker, and waits for an approval of the member's that Dispatch is relaying, holding no lock of the project's while it does. A removal that owes nothing, from a list that does not name the person or of a full member, holds up no approval of theirs. A removal that finds the member on the list only once it holds the project's lock, their addition having committed meanwhile, is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval of theirs is being relayed, and changes nothing, for the owner to remove them again in a few seconds. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
     options?: never;
     head?: never;

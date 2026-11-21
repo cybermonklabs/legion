@@ -294,6 +294,7 @@ A session that has acted in no project is judged, while a project is private, by
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
+The one exception is a restricted member's own machine logins: at a browser, `GET /api/v1/machine-logins` answers them their own and no service's (`api.restrictedOwnLoginRoutes`); through a token of theirs it is `403 OAUTH_SCOPE_REQUIRED` where the token lacks the route's scopes, as their agent's `named` token and any broker token of theirs do (a restricted member's broker token holds no scope, `api.brokerTokenActor`), since the route's scope gate refuses those first, and `403 RESTRICTED_MEMBER` through their personal token, which holds them.
 While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
 A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
@@ -323,6 +324,21 @@ A credential's writes are held to a list when it lists a project, whatever its p
 A full member's broker token acting as its person is held so only while a project is private, since its trade list held none of its writes before projects could be private.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose writes are held to a list (`this request's credential may write <list> and nothing else; <METHOD> <PATTERN> belongs to the deployment rather than to a project`, the words a broker token scoped to one project has always been refused in) and `403 RESTRICTED_MEMBER` to a restricted member:
 what it writes belongs to no project such a viewer could be held to.
+The one exception is a restricted member at a browser deciding, listing or ending a machine login of their own, which is how an outside person approves and revokes the device login of their own agents: `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve`, `.../{id}/deny`, `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` reach their handlers for that member's cookie alone (`api.restrictedOwnLoginRoutes`, `api.atBrowser`), never for their personal token or a broker token, so no agent of theirs decides, lists or ends any credential: a token of theirs that lacks the route's scopes, their agent's `named` token among them (it holds none), is `403 OAUTH_SCOPE_REQUIRED` from the route's scope gate, and one that holds them is `403 RESTRICTED_MEMBER`.
+The list answers them their own machine logins and no service's, and the revoke ends only one of those (`api.ownMachineLogins`); any other id is `403 RESTRICTED_MEMBER` and no revoke reaches the broker.
+Each looks the code the member typed up at the broker first and relays the lookup, approve or deny only for a machine login whose approver is that member, which names no service and, for a decision, is the record its path names (`api.ownMachineLogin`); any other record, another person's machine login, a service's, a shared secret's request or a secret request of the member's own, is `403 RESTRICTED_MEMBER`, naming none of its facts, and the broker is asked to decide nothing.
+The broker holds that member's machine to one project (`project_scope` `named`), so the token it mints acts for them in that project alone and holds no scope of a person's own.
+When the owner takes a restricted member off an access list that names them, the removal records in its own transaction that Dispatch owes the broker the revocation of every machine login the member approved (`api.removePerson`, `api.recordMachineLoginRevocation`, table `machine_login_revocations`), whatever other project's list still names them, as R16 reads, and the broker revocation loop pays it after the commit (`api.revokeOwedMachineLogins`), again until the broker confirms; the revoke ends the logins' refresh and every token traded from them.
+Dispatch's database orders the member's approvals against it, so no clock of the broker's is compared: an approval Dispatch relays for a restricted member holds their approval lock until the broker answers (`store.HoldMachineLoginApprovals`), the removal waits for it before it records, and while the revocation is owed their approve is `409 MACHINE_LOGIN_REVOCATION_OWED`, so every login the pass finds was approved before the removal.
+The approval does not wait for that lock: while another approve of the member's is at the broker, or a removal of theirs is being recorded, their approve is `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT` at once, so a burst of approves holds at most one database connection across a broker call.
+The removal takes the member's approval lock before the project's owner lock (`access.LockForAccessWrite`, `store.LockMachineLoginApprovals`), so its wait for an approve the broker has not answered holds up no other write of the project's access.
+It takes it only where a read that takes no lock finds that the list names the person and that they are a restricted member, so a removal that owes nothing, which any full member can send through a project of their own, holds up no approve of theirs.
+A removal that finds the member on the list only once it holds the project's lock, their addition having committed meanwhile, takes their approval lock then without waiting, and while an approve of theirs is at the broker it is `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT` and changes nothing.
+The record takes the member's approval lock itself in that way (`store.RecordMachineLoginRevocation`), so a write that did not take it first is refused rather than recorded unordered against an approve in flight.
+An approve Dispatch gave up on before the broker answered (its client's five seconds, or the browser gone) can still commit its login after the removal, while the broker's handler of it runs, which is at most its 45-second request deadline and 15-second write margin (`wire.RequestDeadline`, `wire.RequestWriteMargin`); so a pass revokes what it lists whenever it runs, and settles the revocation only when its claim came that minute after the removal (`api.machineLoginSettleAfter`, both times Dispatch's database's), and the member approves a new login once it has, about a minute after the removal commits.
+An approve that a proxy between Dispatch and the broker held past Dispatch's call and sent on later is outside that minute, and so is one whose `COMMIT` the broker's database took longer than the 15-second margin to complete: the broker's `WriteTimeout` bounds the writing of its answer, not its database's commit, so the margin is an assumption about that database (`wire.RequestWriteMargin`).
+The removal never waits on the broker: the member's browser and personal tokens lose the project from the commit on by Dispatch's own check of the lists, and the broker checks every trade against Dispatch, so a removal ends the member's tokens for the project within 325 seconds even while the broker is down.
+A removal from a list that does not name the person owes nothing.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential whose writes are held to a list is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so before anything is read a credential that lists projects is refused a project its list does not cover (a private project it does not list, and, for a restricted member's credential, any project it does not list), and a broker token scoped to one project any other, `403 PROJECT_SCOPE`, naming its list and the project the body named.
 A private project the caller does not see is refused in the words a project nobody holds is.
@@ -777,6 +793,10 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   a read that fails writes no sample.
   Beside them, `envoy_dispatch_broker_revocations_superseded_total` counts each `superseded` answer this process's loop heard, for a revocation it leaves owed (`api.NewBrokerRevocationsSuperseded`): any count means a replaced account's broker credentials were not ended.
   A revocation the broker confirms is owed for the pass its commit wakes, a second or so, and 30 seconds more for each earlier revocation of its address it waits behind, so an age past a few minutes is one the broker does not confirm, whose replaced account's credentials the broker still holds for the secret reads it serves without asking Dispatch, until it settles or an operator revokes them at the broker and clears it (Clearing a broker revocation, below); Dispatch itself refuses them from the replacing commit either way.
+  The machine-login revocations a removal from an access list owes are on `/metrics` the same way (`api.RegisterMachineLoginRevocationMetrics`): `envoy_dispatch_machine_login_revocations_owed`, how many the broker has not confirmed, and `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, how long the oldest has been owed since its removal, written only while one is owed.
+  A pass settles one about a minute after its removal commits (`api.machineLoginSettleAfter`), so an age past a few minutes is one the broker does not confirm.
+  Until it settles, the member's machine logins still refresh and every approve of a machine login by the member is `409 MACHINE_LOGIN_REVOCATION_OWED`; an operator revokes the logins at the broker and settles it by hand (Clearing a machine-login revocation, below).
+  Their trades are refused once the broker's 30-second cache of Dispatch's answer runs out either way.
 
 - A broker token names the Google account its credential records at the broker, the introspection's `account_issuer` and `account_subject`: the person token that made the sign-in on a machine it was minted under, or the account whose approve Dispatch relayed for the machine login it was exchanged from.
   When that issuer is Dispatch's sign-in issuer, Dispatch holds the token to that account in the read that also reads the person's member kind (`api.brokerPersonAdmitted`, `api.brokerTokenSubject`), on every route and at a live socket's next heartbeat.
@@ -793,7 +813,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Recording an account, a fresh row's first included, ends the address's sessions in the same statement, so no statement can change the account a cookie's session stands for without ending it.
   A personal token recording no account is held the same way to its own `created_at`, one clock with no margin (`api.tokenAccountReplaced`).
   A token that records an account of another issuer, whose `sub` is no account `people` records (a sign-in pool's `sub` is the pool's, the broker's is Google's), is refused `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` once `people` records an account for its person, whenever it was made: no broker credential records such an account where Dispatch's sign-in records Google's, and a time would admit one the replaced account made under that issuer after the margin.
-  A token an operator's exchange entry mapped (the introspection's `project_scope` `named`: a pod's account, a workflow, or a Google machine's account the broker lists for the person) is held to no account and no time: no person's credential made it, a pod cannot sign in again, and the broker gives that scope to no person's own trade.
+  A token an operator's exchange entry mapped (the introspection's `project_scope` `named`, recording no account and no credential creation: a pod's account, a workflow, or a Google machine's account the broker lists for the person) is held to no account and no time: no person's credential made it, and a pod cannot sign in again.
+  A restricted member's machine login trades for a `named` token too, held to one project, and a person's credential made that one: it records the account that approved the login and when the login was made, and is held to its account as a `person` token is (`api.personCredential`).
 
 - A machine login's approve or deny (`POST /api/v1/credential-requests/{id}/approve`, `.../deny`, keyed or not) is relayed only while its caller still holds the address: an approve mints a credential in the approver's name, and the broker decides a denial whatever account asks, so a deny relayed for a caller who lost the address would let the replaced account deny the new holder's pending machine login.
   So once its body has arrived, right before the broker is called, Dispatch reads the caller's standing again (`api.approverStanding`): a cookie's session generation, and a personal token's `revoked_at` and account, the checks its mint makes; a broker-issued token never approves, since none holds the `approve` scope.
@@ -897,6 +918,50 @@ a credential of the replaced account that the broker still holds goes on reading
 It also leaves the broker refusing the account the address came back to, when the broker had recorded that account replaced, since only a revocation naming that account as the holder lifts the refusal.
 Recording the revocation again, as the runbook and the store README give it, has the loop pay it and recovers both.
 It exits 0 once it listed what is owed or settled every revocation named, 1 when nothing of the address is owed, when a revocation named is not owed at that generation, or when the database cannot be opened, read or written, and 2 for anything but one address followed by well-formed `<subject>:<generation>` names.
+
+### Clearing a machine-login revocation
+
+A machine-login revocation the broker never confirms, which `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` past a few minutes shows and the loop logs at ERROR (`the machine logins of a restricted member taken off an access list were not revoked`), leaves the member's machine logins refreshing, and refuses every approve of a machine login by the member `409 MACHINE_LOGIN_REVOCATION_OWED`, until it settles.
+No command settles it; settling it by hand revokes nothing at the broker, so first revoke the member's machine logins there, with the calls the loop makes as Dispatch's own ServiceAccount.
+Mint a token of that account for the broker's audience as the After a restore page's machine-login block does (`kubectl create token`, an hour at most), then list the member's logins and revoke each one the list names with `service` null:
+
+```sh
+(
+umask 077
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+email='<the address, as people.email holds it>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+curl -sS --fail-with-body -H @"$header" --get --data-urlencode "approver=$email" "$broker_url/v1/launcher-credentials"
+# For each credential_id the list names with "service":null:
+curl -sS --fail-with-body -X POST -H @"$header" -d "{\"approver\":\"$email\"}" "$broker_url/v1/launcher-credentials/<credential_id>/revoke-by-approver"
+)
+```
+
+Once the list names no login of the member's with `service` null, settle the revocation the database owes now, at the generation it reads, which tells the broker nothing.
+psql gets `DATABASE_URL` with its password taken out as its argument, and the password as `PGPASSWORD`, read from the terminal into the subshell's environment, as the deploy scripts give it: no process's arguments carry the password, since `/proc/<pid>/cmdline` is readable by every user of the machine, and no file holds it.
+
+```sh
+(
+url='<DATABASE_URL with its password taken out>'
+email='<the address, as people.email holds it>'
+IFS= read -rsp 'Dispatch database password: ' PGPASSWORD && echo && export PGPASSWORD || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" <<'SQL' || exit 1
+select generation, recorded_at from machine_login_revocations where email = lower(btrim(:'email')) and done_at is null;
+SQL
+IFS= read -rp 'the generation it printed: ' generation || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" -v generation="$generation" <<'SQL'
+update machine_login_revocations set done_at = now() where email = lower(btrim(:'email')) and generation = :'generation' and done_at is null returning email, generation, recorded_at, done_at;
+SQL
+)
+```
+
+The select prints the generation still owed, none when nothing of the address is owed.
+The update settles that generation alone, and prints the row it settled and `UPDATE 1`, the settlement's one trace, which goes with the incident's record; the member approves a new machine login from then on.
+It prints `UPDATE 0` and no row when that generation is settled already, or when a removal recorded the revocation again since, under the next generation: then list the member's logins at the broker again, revoke what it names, and settle the generation the select prints next.
+A removal recorded after the update owes it again, and the loop pays that one as any other.
 
 ## Local Postgres
 
@@ -4673,6 +4738,7 @@ Each item below names a path with its method and identity, then its purpose.
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
   `envoy_dispatch_broker_revocations_owed` and `envoy_dispatch_broker_revocation_oldest_owed_seconds` are the revocations Dispatch owes the secrets broker and the age of the oldest, each read from the database when a scrape asks for it, two reads a scrape (Identity, above);
   `envoy_dispatch_broker_revocations_superseded_total` counts each `superseded` answer this process heard, for a revocation it leaves owed, each one a replaced account whose broker credentials were not ended (Identity, above).
+  `envoy_dispatch_machine_login_revocations_owed` and `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` are the revocations of restricted members' machine logins that removals from access lists owe the secrets broker and the age of the oldest, read the same way (Identity, above).
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and every caller that reads the deployment reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
   It is a row of the API's route table, so it is never the dashboard's shell and it needs a credential:

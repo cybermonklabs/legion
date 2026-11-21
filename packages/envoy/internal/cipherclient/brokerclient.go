@@ -286,6 +286,10 @@ type Client struct {
 
 	mu   sync.Mutex
 	held *Token
+	// renewAt is when Token trades again for the held token: its renewal time as it landed
+	// (renewalAt), RenewBefore ahead of its expiry, or halfway through what was left of the life of
+	// one shorter than that. The TypeScript client keeps the same one time (#renewAt).
+	renewAt time.Time
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -347,7 +351,8 @@ func New(cfg Config) (*Client, error) {
 // under the minted credential signs with it.
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
-// Token is a live access token: the held one while it is good for longer than RenewBefore, and
+// Token is a live access token: the held one until its renewal time (RenewBefore ahead of its
+// expiry, or halfway through what was left of the life of one shorter than that, RenewalAt), and
 // otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
 // trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
 // Dispatch holds), while the held token is still live answers that token, since a client that
@@ -358,12 +363,12 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.Expiry.Add(-c.renewBefore)) {
+	if c.held != nil && c.now().Before(c.renewAt) {
 		return c.held, nil
 	}
 	token, err := c.trade(ctx)
 	if err == nil {
-		c.held = token
+		c.hold(token)
 		return token, nil
 	}
 	var refused *RefusedError
@@ -374,6 +379,11 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	c.held = nil
 	return nil, err
+}
+
+// hold keeps token as the held one, and when Token trades again for it (renewalAt). c.mu is held.
+func (c *Client) hold(token *Token) {
+	c.held, c.renewAt = token, c.renewalAt(token, c.now())
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
@@ -402,7 +412,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Lock()
 		token, err := c.trade(ctx)
 		if err == nil {
-			c.held = token
+			c.hold(token)
 		}
 		c.mu.Unlock()
 		switch {
