@@ -23,12 +23,26 @@ function readReferences(text: string): ReferenceCandidate[] {
   );
 }
 
+/** An issue as the host answers one: drawn as its status mark and its key, with its key, its
+ *  status's words and its title as its accessible name. */
 const CORE_1: ReferenceTarget = {
   href: "dispatch://CORE-1",
-  title: "CORE-1 Fix the thing",
-  titleKey: "CORE-1",
+  label: "CORE-1, In progress, Fix the thing",
+  status: "in_progress",
+  title: "CORE-1",
 };
 const Q2: ReferenceTarget = { href: "dispatch://CORE-1/ask/q2-uuid", title: "Which way?" };
+
+/** What the editor draws for `CORE_1`: the mark, which holds no words, then a space and the key. */
+const CORE_1_DRAWN = { href: "dispatch://CORE-1", text: " CORE-1" };
+
+/** A stand-in for the host's status mark: an element of the view's document naming the status it
+ *  marks, with no words of its own, as the host's mark has none. One identity, as the host's. */
+function statusMark(document: Document, status: string): Element {
+  const mark = document.createElement("i");
+  mark.dataset.statusMark = status;
+  return mark;
+}
 
 /** The host's side of the titles: what it last handed the editor, every text the editor read
  *  through it, and every set of references the editor offered, each split into the keys its
@@ -59,6 +73,7 @@ function hostReferences(): TestHost {
         reads.push(text);
         return readReferences(text);
       },
+      statusMark,
       targets: new Map(),
     },
     reads,
@@ -122,13 +137,55 @@ test("a resolved candidate is drawn as its title and an unresolved one as its st
     resolve(handle, host, { "#q2": Q2, "CORE-1": CORE_1, "CORE-2": null });
 
     expect(titles(view)).toEqual([
-      { href: "dispatch://CORE-1", text: "CORE-1 Fix the thing" },
+      CORE_1_DRAWN,
       { href: "dispatch://CORE-1/ask/q2-uuid", text: "Which way?" },
     ]);
     // CORE-2 resolved to nothing, so the words the author wrote still stand.
     expect(hidden(view)).toEqual(["CORE-1", "#q2"]);
     expect(view.dom.textContent).toContain("CORE-2");
-    expect(view.dom.querySelector("a.dispatch-reference strong")?.textContent).toBe("CORE-1");
+    // An issue is drawn as the host's mark of its status, then its key, and named by the host's
+    // label; a target that names no status draws no mark and keeps its words as its name.
+    const [issue, question] = Array.from(view.dom.querySelectorAll("a.dispatch-reference"));
+    expect(issue?.firstElementChild?.getAttribute("data-status-mark")).toBe("in_progress");
+    expect(issue?.firstChild).toBe(issue?.firstElementChild ?? null);
+    expect(issue?.getAttribute("aria-label")).toBe("CORE-1, In progress, Fix the thing");
+    expect(issue?.querySelector("strong")).toBeNull();
+    expect(question?.querySelector("[data-status-mark]")).toBeNull();
+    expect(question?.hasAttribute("aria-label")).toBe(false);
+  });
+});
+
+// The host reads an issue's status again when it changes and hands the editor the new answer,
+// so the drawn title takes the new mark and the new name in place.
+test("a target's new status redraws its mark and its name", async () => {
+  const host = hostReferences();
+  await withMarksEditor("See CORE-1 here.", ({ handle, view }) => {
+    handle.setReferences(host.references);
+    resolve(handle, host, { "CORE-1": CORE_1 });
+    const drawn = () => {
+      const title = view.dom.querySelector("a.dispatch-reference");
+      return {
+        label: title?.getAttribute("aria-label"),
+        marks: Array.from(title?.querySelectorAll("[data-status-mark]") ?? [], (mark) =>
+          mark.getAttribute("data-status-mark")
+        ),
+        text: title?.textContent,
+      };
+    };
+    expect(drawn()).toEqual({
+      label: "CORE-1, In progress, Fix the thing",
+      marks: ["in_progress"],
+      text: " CORE-1",
+    });
+
+    resolve(handle, host, {
+      "CORE-1": { ...CORE_1, label: "CORE-1, Done, Fix the thing", status: "done" },
+    });
+    expect(drawn()).toEqual({
+      label: "CORE-1, Done, Fix the thing",
+      marks: ["done"],
+      text: " CORE-1",
+    });
   });
 });
 
@@ -182,7 +239,7 @@ test("the stored text shows while the focused editor's selection touches the ref
     handle.setReferences(host.references);
     resolve(handle, host, { "CORE-1": CORE_1 });
     // "See CORE-1 here." opens its paragraph at 0: its text starts at 1, so CORE-1 is 5 to 11.
-    const drawn = [{ href: "dispatch://CORE-1", text: "CORE-1 Fix the thing" }];
+    const drawn = [CORE_1_DRAWN];
 
     select(view, 7);
     expect(titles(view)).toEqual(drawn);
@@ -239,7 +296,7 @@ test("a link whose words are its own address but for the scheme is drawn with it
       expect(host.reported).toEqual([[page]]);
       resolve(handle, host, { [page]: CORE_1 });
 
-      expect(titles(view)).toEqual([{ href: "dispatch://CORE-1", text: "CORE-1 Fix the thing" }]);
+      expect(titles(view)).toEqual([CORE_1_DRAWN]);
       expect(hidden(view)).toEqual(["www.dispatch.test/issues/CORE-1"]);
     }
   );
@@ -472,7 +529,7 @@ test("an edit re-reads the text it touched and nothing else", async () => {
 
     // Typing before the reference moves its title along.
     view.dispatch(view.state.tr.insertText("Now ", 1));
-    expect(titles(view)).toEqual([{ href: "dispatch://CORE-1", text: "CORE-1 Fix the thing" }]);
+    expect(titles(view)).toEqual([CORE_1_DRAWN]);
     expect(hidden(view)).toEqual(["CORE-1"]);
 
     // Breaking the key apart makes it no candidate.
