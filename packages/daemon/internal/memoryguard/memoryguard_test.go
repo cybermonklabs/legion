@@ -9899,3 +9899,108 @@ func TestMemoryGuardKeepsUntilTheNextReadingTheFirstSizeOfAProcessThatEndedBefor
 		t.Fatalf("at the next reading the growth since the stay's first kill of the processes that still run is %v, want %v: pid 303 flat since that kill, and pid 400 from 0", since, want)
 	}
 }
+
+// At an urgent reading of the wait after a kill, a process of the reading before that is not new to
+// the stay gives the decision its history only while it still runs, by its stat read at that reading
+// (stillRuns): one that has exited and that its parent has not reaped, whose stat reads state Z, gives
+// none, and nor does a process started since under its pid, whose stat shows another start time
+// (INFRA-3531 R1 of spec version 46; docs/kubernetes.md: "where one of the processes they are to read
+// again is not new to the stay and still runs"). As
+// TestMemoryGuardEndsNoProcessForTheStayAtAnUrgentReadingOfTheWaitWhereTheOneNotNewToItHasEnded, whose
+// stay this is, but pid 300, python3 parent.py and the one process not new to the stay, is a zombie
+// at the urgent reading, or its pid names a sleep started since: the guard ends pid 400, grown since
+// the kill, and not pid 401, new to the stay and flat.
+func TestMemoryGuardTakesNoHistoryAtAnUrgentReadingOfTheWaitFromAZombieOrAPidAnotherProcessNowHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// gone makes pid 300 no longer the process the stay read.
+		gone func(pod *fakePod, old fakeProcess)
+	}{
+		{"its stat reads a zombie", func(pod *fakePod, old fakeProcess) {
+			old.zombie = true
+			pod.add(old)
+		}},
+		{"its pid names a process started since", func(pod *fakePod, old fakeProcess) {
+			pod.add(fakeProcess{pid: 300, ppid: 100, start: 9999, args: []string{"sleep", "60"}, anon: mib})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			old := fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "parent.py"}, anon: 600 * mib}
+			first := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+			pod.add(agent(2*gib), old, first)
+			pod.setAnon(3100 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			h.signal.onKill = exitFreeing(pod, 0)
+			h.run()
+			for _, r := range []uint64{3200, 3300, 3400} {
+				pod.resize(&first, first.anon+10*mib)
+				pod.setAnon(r * mib)
+				h.tick()
+			}
+			h.requireKilled()
+			pod.resize(&first, first.anon+10*mib)
+			pod.setAnon(3523 * mib)
+			h.tick()
+			h.requireKilled(301)
+			grower := fakeProcess{pid: 400, ppid: 100, start: 7000, args: []string{"python3", "grow.py", "b"}, anon: 300 * mib}
+			pod.add(grower, fakeProcess{pid: 401, ppid: 100, start: 7100, args: []string{"python3", "worker.py"}, anon: 150 * mib})
+			pod.setAnon(3600 * mib)
+			h.tick()
+			h.requireKilled(301)
+			tc.gone(pod, old)
+			pod.resize(&grower, grower.anon+50*mib)
+			pod.setAnon(3800 * mib)
+			h.tick()
+			if got := h.signal.kills(); !slices.Equal(got, []int{301, 400}) {
+				t.Fatalf("the guard killed %v, want [301 400]: at the urgent reading pid 300 no longer runs, so no process not new to the stay gives the decision its history; it ended %+v; the log:\n%s",
+					got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+			}
+		})
+	}
+}
+
+// At an urgent reading of the wait after a kill, the reads again send each kill once: the sweep at
+// their first kill passes over a process tried at that reading, the first itself among them, though
+// it has not exited yet (endKnown, triedHere). As
+// TestMemoryGuardEndsNoProcessForTheStayAtAnUrgentReadingOfTheWaitWhereTheOneNotNewToItHasEnded, whose
+// stay this is, with pid 300 left running and pid 400, grown since the kill and the reads again's first
+// kill, lingering after its kill: the guard signals pid 400 once at that reading.
+func TestMemoryGuardSendsTheFirstKillOfAnUrgentReadingOfTheWaitOnceThoughItsProcessLingers(t *testing.T) {
+	pod := newFakePod(t)
+	first := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "parent.py"}, anon: 600 * mib}, first)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		// Pid 400 lingers after its kill.
+		if pid == 400 {
+			return false
+		}
+		return exit(pid)
+	}
+	h.run()
+	for _, r := range []uint64{3200, 3300, 3400} {
+		pod.resize(&first, first.anon+10*mib)
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	pod.resize(&first, first.anon+10*mib)
+	pod.setAnon(3523 * mib)
+	h.tick()
+	h.requireKilled(301)
+	grower := fakeProcess{pid: 400, ppid: 100, start: 7000, args: []string{"python3", "grow.py", "b"}, anon: 300 * mib}
+	pod.add(grower, fakeProcess{pid: 401, ppid: 100, start: 7100, args: []string{"python3", "worker.py"}, anon: 150 * mib})
+	pod.setAnon(3600 * mib)
+	h.tick()
+	h.requireKilled(301)
+	pod.resize(&grower, grower.anon+50*mib)
+	pod.setAnon(3800 * mib)
+	h.tick()
+	if got := h.signal.kills(); len(slices.DeleteFunc(slices.Clone(got), func(pid int) bool { return pid != 400 })) != 1 {
+		t.Fatalf("the guard killed %v: it signalled pid 400, the reads again's first kill, more than once at the urgent reading; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+}
