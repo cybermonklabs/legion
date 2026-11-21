@@ -9,12 +9,14 @@ import (
 // Metrics counts the service's decisions: broker_nats_callout_decisions_total by credential kind,
 // outcome and reason, which is the production census of the services the hub admits (its
 // kind="service" series), and broker_nats_callout_seconds, how long each decision took from the
-// request's arrival; and broker_nats_callout_dropped_total, the requests it answered not at all, by
-// reason (drops).
+// request's arrival; broker_nats_callout_dropped_total, the requests it answered not at all, by
+// reason (drops); and envoy_broker_hold_unknown, whether the last reading of the NATS writer hold's
+// row was unknown (holdView), which alerts while every client but the operator is refused.
 type Metrics struct {
-	decisions *metrics.Counter
-	seconds   *metrics.Histogram
-	drops     *metrics.Counter
+	decisions   *metrics.Counter
+	seconds     *metrics.Histogram
+	drops       *metrics.Counter
+	holdUnknown *metrics.Gauge
 }
 
 // NewMetrics registers the service's metrics on registry.
@@ -31,6 +33,10 @@ func NewMetrics(registry *metrics.Registry) *Metrics {
 				"past_bounds (the replica already held all it bounds), hub_gave_up (the hub had stopped waiting, by its own clock), "+
 				"unopened (not sealed to the service's curve key), not_a_request (no authorization request JWT) and pending_limit "+
 				"(dropped by the NATS client on arrival, past the subscription's pending limits)."),
+		holdUnknown: registry.NewGauge("envoy_broker_hold_unknown",
+			"1 while the auth service's last reading of the NATS writer hold's row was unknown (no row, a row that does not verify, "+
+				"a gen below the one already read, a phase outside the three, or a failed read), when every client but the operator "+
+				"is refused hold_unknown; 0 otherwise, and 0 on a broker that does not read the hold (BROKER_NATS_HOLD_READ false)."),
 	}
 }
 
@@ -40,6 +46,18 @@ func (m *Metrics) dropped(reason string, n int64) {
 		return
 	}
 	m.drops.Add(n, [2]string{"reason", reason})
+}
+
+// holdReading records whether the last reading of the writer hold's row was unknown.
+func (m *Metrics) holdReading(unknown bool) {
+	if m == nil {
+		return
+	}
+	value := int64(0)
+	if unknown {
+		value = 1
+	}
+	m.holdUnknown.Set(value)
 }
 
 // record counts one answer to a request whose credential is kind, refused by refused when it is

@@ -52,12 +52,27 @@ type Deps struct {
 	Metrics *Metrics
 	// HoldRead reads the writer hold's row from the broker's Postgres (natshold.Read on a pool of
 	// its own), which decides the operator's grant and, while it cannot be read, refuses every
-	// other client. Nil is a broker whose BROKER_NATS_HOLD_READ is false: nothing reads the row,
-	// and every decision is answered as if the row held released.
+	// other client (holdView). Nil is a broker whose BROKER_NATS_HOLD_READ is false: nothing reads
+	// the row, and every decision is answered as if the row held released.
 	HoldRead func(ctx context.Context) (natshold.Reading, bool, error)
 	// HoldKeys are BROKER_NATS_HOLD_SIGNING_KEYS, the operator's public keys a row must be signed
 	// with to be read at all (signedrecord.Verify).
 	HoldKeys []ed25519.PublicKey
+
+	// hold is the view of the hold row a replica's every decision reads, with its floor, which
+	// Start makes from HoldRead and HoldKeys (newHoldView). Nil with HoldRead set is a caller of
+	// Decide that started no replica (view).
+	hold *holdView
+}
+
+// view is the hold view a decision reads: the replica's, or, for a caller of Decide that started
+// none, a view of this decision's own, whose floor ends with it. Nil, with HoldRead nil, answers
+// released and reads nothing.
+func (d Deps) view() *holdView {
+	if d.hold != nil {
+		return d.hold
+	}
+	return newHoldView(d)
 }
 
 func (d Deps) now() time.Time {
@@ -145,6 +160,7 @@ const (
 	labelServiceFailed     = "service_failed"
 	labelUnsealed          = "unsealed"
 	labelWaitingBound      = "waiting_bound"
+	labelHoldUnknown       = "hold_unknown"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,
@@ -159,7 +175,8 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects. The operator's
+// is the hold row's phase's, which decideOperator reads, and is none of this function's.
 func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 	switch entry.Kind {
 	case KindDispatch:
@@ -170,24 +187,70 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 		return natsgrant.Daemon()
 	case KindMeasure:
 		return natsgrant.Measure()
-	case KindOperator:
-		return natsgrant.Operator(natsgrant.OperatorPhaseReleased)
 	case KindProbe:
 		return natsgrant.HoldProbe()
 	}
 	return natsgrant.Permissions{}
 }
 
+// operatorLife is the longest the operator's user lives from its decision, whatever its token's
+// life: the server closes the connection at the user's expiry (nats-server client.go, the
+// expiration timer), so a long command reconnects and is decided again under the phase the hold
+// row holds then, rather than keeping a grant of a phase the row has left.
+const operatorLife = 10 * time.Minute
+
+// holdUnknownReason is the refusal of every client but the operator while the hold row cannot be
+// read; its label in the decision counter is labelHoldUnknown.
+const holdUnknownReason = "hold_unknown: the NATS writer hold cannot be read"
+
+// outsideTheHold is decision, the answer to a client other than the operator, once the hold row
+// is known (holdView), or the refusal hold_unknown while it is not: the row is read once, now,
+// inside the decision's budget. Under every known phase the decision stands as it was made, held
+// included, since refusing other clients under held is a later step's. With HoldRead nil nothing
+// is read and the decision stands.
+func outsideTheHold(ctx context.Context, deps Deps, decision Decision) (Decision, error) {
+	if _, err := deps.view().phase(ctx); err != nil {
+		return Decision{}, refuse(labelHoldUnknown, holdUnknownReason).because(err)
+	}
+	return decision, nil
+}
+
+// decideOperator is the answer to the operator entry's verified token, which expires at expiry:
+// natsgrant.Operator of the hold row's phase while the row is known, and of released while it is
+// not, so the operator is never refused for the hold's sake and can restore a missing or forged
+// row; its user expires at expiry or operatorLife after the decision, whichever is first.
+func decideOperator(ctx context.Context, deps Deps, entry ServiceEntry, expiry time.Time) (Decision, error) {
+	phase, err := deps.view().phase(ctx)
+	if err != nil {
+		phase = natsgrant.OperatorPhaseReleased
+	}
+	grant, err := scopeGrant(entry, natsgrant.Operator(phase))
+	if err != nil {
+		return Decision{}, err
+	}
+	if longest := deps.now().Add(operatorLife); expiry.After(longest) {
+		expiry = longest
+	}
+	return Decision{Name: entry.name(), Grant: grant, Expires: expiry}, nil
+}
+
 // Decide is the user the service answers req with, or the *Refusal it refuses it with. A session
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The grant it answers is not yet checked:
-// every answer passes the guard in admit (callout.go), whatever decided it.
+// clock skew) and its account is listed in services. The operator entry's grant is the writer
+// hold's phase's (decideOperator), and every other client it would admit is refused while the hold
+// row cannot be read (outsideTheHold); either reads the row once, after the credential verified,
+// so a client refused for its credential costs the broker's Postgres nothing. The grant it answers
+// is not yet checked: every answer passes the guard in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
-		return decideSession(ctx, deps, req)
+		decision, err := decideSession(ctx, deps, req)
+		if err != nil {
+			return Decision{}, err
+		}
+		return outsideTheHold(ctx, deps, decision)
 	case credentialService:
 		return decideService(ctx, deps, services, req)
 	}
@@ -291,9 +354,12 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
+	if entry.Kind == KindOperator {
+		return decideOperator(ctx, deps, *entry, expiry)
+	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return Decision{Name: entry.name(), Grant: grant, Expires: expiry}, nil
+	return outsideTheHold(ctx, deps, Decision{Name: entry.name(), Grant: grant, Expires: expiry})
 }

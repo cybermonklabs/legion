@@ -315,7 +315,7 @@ const (
 var targets = []string{"A", "B"}
 
 func (o modelOp) label() string {
-	if o.cmd != commandProve {
+	if o.cmd != CommandProve {
 		return o.cmd
 	}
 	if o.set == 0 {
@@ -333,7 +333,7 @@ func (o modelOp) label() string {
 // operatorCmd is the command the operator types: hold abort from prepare is hold abort.
 func operatorCmd(c string) string {
 	if c == cmdAbortPrepare {
-		return commandAbort
+		return CommandAbort
 	}
 	return c
 }
@@ -365,10 +365,10 @@ func scenarios(r rules) []modelScenario {
 		{Name: "streams-census", W: WorkflowStreamsCensus, Slots: slots, Init: []modelState{prep}, Ops: ops("streams census")},
 	}
 	hub := modelScenario{Name: "hub-restore", W: WorkflowHubRestore, Hub: true, Slots: hubSlots,
-		Ops: []modelOp{{commandProve, 1}, {commandProve, 2}, {commandProve, 3}, {cmd: "streams census"}, {cmd: commandAbort},
+		Ops: []modelOp{{CommandProve, 1}, {CommandProve, 2}, {CommandProve, 3}, {cmd: "streams census"}, {cmd: CommandAbort},
 			{cmd: CommandRelease}}}
 	if r.PlainReprove { // the plain prove of the plans before v55, which named no target
-		hub.Ops = append([]modelOp{{commandProve, 0}}, hub.Ops...)
+		hub.Ops = append([]modelOp{{CommandProve, 0}}, hub.Ops...)
 	}
 	hub.Init = []modelState{{Row: 'P', Cur: [2]modelDisk{{ID: 1}, {ID: 2}}, NextID: 3}}
 	return append(out, hub)
@@ -382,7 +382,7 @@ func toDone(sc modelScenario, s modelState) Done {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
 	}
 	for _, c := range list(s.Ever) {
-		if c == commandProve || c == s.Last || (s.Proved && inSet(s.Since, c)) {
+		if c == CommandProve || c == s.Last || (s.Proved && inSet(s.Since, c)) {
 			continue // the boundary, the last entry and the epoch's entries come below, in order
 		}
 		done(c, nil)
@@ -394,14 +394,14 @@ func toDone(sc modelScenario, s modelState) Done {
 				out["disk_id."+n] = strconv.Itoa(s.Proven[tg])
 			}
 		}
-		done(commandProve, out)
+		done(CommandProve, out)
 		for _, c := range list(s.Since) {
 			if c != s.Last {
 				done(c, nil)
 			}
 		}
 	}
-	if s.Last != "" && !(s.Proved && s.Last == commandProve) {
+	if s.Last != "" && !(s.Proved && s.Last == CommandProve) {
 		done(s.Last, nil)
 	}
 	for _, c := range list(s.Intent) {
@@ -445,8 +445,8 @@ func disksMoved(r rules, s modelState) bool {
 }
 
 func request(r rules, s modelState, o modelOp) modelRequest {
-	return modelRequest{Request: Request{Command: o.cmd, DisksMoved: o.cmd == commandProve && disksMoved(r, s)},
-		Plain: o.cmd == commandProve && o.set == 0}
+	return modelRequest{Request: Request{Command: o.cmd, DisksMoved: o.cmd == CommandProve && disksMoved(r, s)},
+		Plain: o.cmd == CommandProve && o.set == 0}
 }
 
 // a2 is the operator's rule A2: a command is not started again while a process still runs it.
@@ -588,7 +588,7 @@ func next(r rules, t modelTable, sc modelScenario, s modelState, bound int) []mo
 		// forbids and no hold can stop.
 		window := false
 		for _, sl := range s.Slots {
-			if (sl.Cmd == commandAbort && sl.Step >= 2) || (sl.Cmd == CommandRelease && sl.Step == 2) {
+			if (sl.Cmd == CommandAbort && sl.Step >= 2) || (sl.Cmd == CommandRelease && sl.Step == 2) {
 				window = true
 			}
 		}
@@ -656,7 +656,7 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 	sl := s.Slots[k]
 	c := sl.Cmd
 	s.Ever, s.Last = addSet(s.Ever, c), c
-	if c == commandProve {
+	if c == CommandProve {
 		if sl.Set != 0 { // a plain prove keeps the named set and records the same disks again
 			s.ProvenSet = sl.Set
 		}
@@ -892,7 +892,7 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 			label += ", complete"
 		}
 		return []modelEdge{{to: finish(t, sc, ns, k), label: label, op: true}}
-	case c == commandProve:
+	case c == CommandProve:
 		if sl.Step == 1 { // restart and check
 			if lacks() {
 				return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
@@ -935,7 +935,7 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 			return []modelEdge{{to: idle(ns, k), label: c + ": refuses to complete, another command's intent has no done", op: true}}
 		}
 		return []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done, complete", op: true}}
-	case c == commandAbort:
+	case c == CommandAbort:
 		moveRow := func(ns modelState) ([]modelEdge, bool) {
 			if s.RowGen != sl.Gen {
 				return []modelEdge{refuse(r, t, sc, s, k, "409 gen_mismatch, the row was restored since its read", true)}, true
@@ -993,7 +993,7 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 func pendingAtCompletion(s modelState) []string {
 	var out []string
 	for _, c := range list(s.Intent) {
-		if c == CommandRelease || (c == commandAbort && s.Proved && s.Row == 'H') {
+		if c == CommandRelease || (c == CommandAbort && s.Proved && s.Row == 'H') {
 			continue
 		}
 		out = append(out, c)

@@ -62,7 +62,7 @@ func tableFor(r rules) table {
 	sr := []entry{{name: "create-bucket --after-loss", final: true},
 		{name: "replay", requires: []string{"create-bucket --after-loss"}, repeatable: true},
 		{name: "replay --final", requires: []string{"create-bucket --after-loss"}, final: true, repeatable: r.SelRecFinalRepeatable}}
-	prove := entry{name: commandProve, repeatable: r.PlainReprove || r.ProveEpochs, stoppable: stop}
+	prove := entry{name: CommandProve, repeatable: r.PlainReprove || r.ProveEpochs, stoppable: stop}
 	var hub []entry
 	if r.SetCommand {
 		hub = []entry{prove} // hold set, which every command but hold abort requires, carries the restore's inputs
@@ -71,9 +71,9 @@ func tableFor(r rules) table {
 		hub = []entry{{name: "snapshot restore"}, prove}
 	}
 	hub = append(hub,
-		entry{name: "streams census", requires: []string{commandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
+		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
-		entry{name: commandAbort, excludes: []string{commandProve}, final: true, stoppable: stop})
+		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
 	return table{Rules: r, rows: map[Workflow][]entry{
 		WorkflowCutover:           cut,
 		WorkflowRollback:          rb,
@@ -177,7 +177,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			}
 			return nil
 		}
-		if !(w == WorkflowHubRestore && c == commandAbort) && !hasDone(d.Ops, CommandSet) {
+		if !(w == WorkflowHubRestore && c == CommandAbort) && !hasDone(d.Ops, CommandSet) {
 			return wrap(ErrOutOfOrder, CommandSet)
 		}
 	}
@@ -194,14 +194,14 @@ func (t table) Decide(d Done, req modelRequest) error {
 		}
 	}
 	for _, q := range e.requires {
-		if e.epochal && q == commandProve {
+		if e.epochal && q == CommandProve {
 			continue // the epoch's boundary, below
 		}
 		ops := d.Ops
 		if e.epochal {
 			_, ents, ok := Epoch(d)
 			if !ok {
-				return wrap(ErrOutOfOrder, commandProve)
+				return wrap(ErrOutOfOrder, CommandProve)
 			}
 			ops = ents
 		}
@@ -209,13 +209,13 @@ func (t table) Decide(d Done, req modelRequest) error {
 			return wrap(ErrOutOfOrder, q)
 		}
 	}
-	if w == WorkflowHubRestore && c == commandProve {
+	if w == WorkflowHubRestore && c == CommandProve {
 		return t.decideProve(d, req)
 	}
 	if e.epochal {
 		_, ents, ok := Epoch(d)
 		if !ok {
-			return wrap(ErrOutOfOrder, commandProve)
+			return wrap(ErrOutOfOrder, CommandProve)
 		}
 		if hasDone(ents, c) {
 			return wrap(ErrAlreadyDone, "in this epoch")
@@ -266,7 +266,7 @@ func (t table) afterComplete(d Done, req modelRequest) bool {
 	switch {
 	case d.Workflow == WorkflowSelectionRecovery && (req.Command == "replay" || req.Command == "replay --final"):
 		return true
-	case d.Workflow == WorkflowHubRestore && req.Command == commandProve && !req.Plain && req.DisksMoved && t.Rules.ProveEpochs:
+	case d.Workflow == WorkflowHubRestore && req.Command == CommandProve && !req.Plain && req.DisksMoved && t.Rules.ProveEpochs:
 		return true
 	}
 	return false

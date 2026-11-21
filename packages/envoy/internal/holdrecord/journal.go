@@ -95,10 +95,17 @@ const CommandRelease = "hold release"
 // its `done` entry.
 const CommandSet = "hold set"
 
-const (
-	commandProve = "hold prove"
-	commandAbort = "hold abort"
-)
+// CommandProve is `hold prove`, `hub-restore`'s proof of the disks a restore landed on, which names
+// each restored target with `--restored`. Its `done` entry records each named target's disk by name
+// and by numeric id (Proven) and opens an epoch (Epoch); it is Repeatable and Stoppable, and after
+// completion it is admitted only when a disk moved from the expected one (Request.DisksMoved).
+const CommandProve = "hold prove"
+
+// CommandAbort is `hold abort`. In `hub-restore` it is final and Stoppable, it needs no `hold set`
+// `done` entry, and a `done` CommandProve entry excludes it; it moves the row to `released` before
+// its `done` entry. From `prepare` it deletes the cohort (DeleteCohort) and moves the row, and writes
+// no entry.
+const CommandAbort = "hold abort"
 
 // The three states of a journal entry, as the `done` record stores them.
 const (
@@ -215,7 +222,7 @@ func Moved(d Done, read map[string]string) (bool, error) {
 // `hub-restore`, and the entries after it carry the epoch's census.
 func Epoch(d Done) (Operation, []Operation, bool) {
 	for i := len(d.Ops) - 1; i >= 0; i-- {
-		if d.Ops[i].Command == commandProve && d.Ops[i].State == stateDone {
+		if d.Ops[i].Command == CommandProve && d.Ops[i].State == stateDone {
 			return d.Ops[i], d.Ops[i+1:], true
 		}
 	}

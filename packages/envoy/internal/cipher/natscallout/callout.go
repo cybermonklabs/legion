@@ -284,6 +284,9 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
+	// The replica's one view of the writer hold, so its floor, the highest verified gen it has
+	// read, holds across every decision it makes (holdView).
+	deps.hold = newHoldView(deps)
 	s := &Service{
 		conn: conn,
 		answer: &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide,
