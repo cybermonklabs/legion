@@ -68,6 +68,11 @@ type unansweredRelay struct {
 	pass     int
 	drops    int
 	sends    int
+	// release, when not nil, holds the next send of the subject until it is closed (holdNext).
+	release <-chan struct{}
+	// writes orders what the relay writes to the server: a held send is written from a goroutine
+	// of its own once released, beside the lines relayed after it.
+	writes sync.Mutex
 }
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
@@ -122,6 +127,18 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	r.sends = 0
 }
 
+// holdNext has the relay hold the next send of its subject, relaying every line after it, and
+// write the held send to the server once release is closed, counting the sends from now: a request
+// that is answered, but only once the row has done what it does while the request waits.
+func (r *unansweredRelay) holdNext(release <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = 0
+	r.sends = 0
+	r.release = release
+}
+
 // sent is how many sends of its subject the client has made since the relay was armed.
 func (r *unansweredRelay) sent() int {
 	r.mu.Lock()
@@ -129,24 +146,37 @@ func (r *unansweredRelay) sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
-func (r *unansweredRelay) send(subject string) bool {
+// send records one send of subject and reports whether it is dropped, while drops are left, each
+// such send spending one, and the release a held send waits for (holdNext), nil for a send relayed
+// now.
+func (r *unansweredRelay) send(subject string) (dropped bool, release <-chan struct{}) {
 	if subject != r.subject {
-		return false
+		return false, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false
+		return false, nil
 	}
 	if r.drops > 0 {
 		r.drops--
-		return true
+		return true, nil
 	}
-	return false
+	release, r.release = r.release, nil
+	return false, release
+}
+
+// write relays line and payload, which may be empty, to server, under writes.
+func (r *unansweredRelay) write(server net.Conn, line string, payload []byte) error {
+	r.writes.Lock()
+	defer r.writes.Unlock()
+	if _, err := io.WriteString(server, line); err != nil {
+		return err
+	}
+	_, err := server.Write(payload)
+	return err
 }
 
 // serve joins each connection the relay accepts to the server until the listener closes.
@@ -190,7 +220,7 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		// each followed by that many bytes and a CRLF. A line with fewer than three fields is
 		// neither, whatever its first word says.
 		if len(fields) < 3 || (!strings.EqualFold(fields[0], "PUB") && !strings.EqualFold(fields[0], "HPUB")) {
-			if _, err := io.WriteString(server, line); err != nil {
+			if err := r.write(server, line, nil); err != nil {
 				return
 			}
 			continue
@@ -203,13 +233,18 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		if r.send(fields[1]) {
+		dropped, release := r.send(fields[1])
+		if dropped {
 			continue
 		}
-		if _, err := io.WriteString(server, line); err != nil {
-			return
+		if release != nil {
+			go func() {
+				<-release
+				_ = r.write(server, line, payload)
+			}()
+			continue
 		}
-		if _, err := server.Write(payload); err != nil {
+		if err := r.write(server, line, payload); err != nil {
 			return
 		}
 	}

@@ -141,38 +141,37 @@ func (c *Client) deniedPublishLocked(subject string, sentAt time.Time) error {
 }
 
 // deniedPublishOf is the server's refusal of the caller's own publish to the first of subjects that
-// has one recorded at or after sentAt (deniedPublish), and nil when none has. A subject that ends
-// in ".>" stands for every subject under it (subjectMatches), for a send whose subject names a
-// part nats.go picks as it sends, such as the name of a watch's consumer.
+// has one recorded at or after sentAt (deniedPublish), and nil when none has. Each subject is
+// matched as the request sends it, a full wildcard at its end included: the create of a consumer
+// filtered on `notifications.github.>` goes to a subject ending in `.>`, and only that subject's
+// refusal answers it, not the refusal of a narrower create of the same consumer. A send whose
+// subject holds a part nats.go picks as it sends reads deniedPublishUnder instead.
 func (c *Client) deniedPublishOf(subjects []string, sentAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, pattern := range subjects {
-		if !strings.HasSuffix(pattern, ".>") {
-			if denial := c.deniedPublishLocked(pattern, sentAt); denial != nil {
-				return denial
-			}
-			continue
-		}
-		for subject := range c.deniedPublishes {
-			if !subjectMatches(pattern, subject) {
-				continue
-			}
-			if denial := c.deniedPublishLocked(subject, sentAt); denial != nil {
-				return denial
-			}
+	for _, subject := range subjects {
+		if denial := c.deniedPublishLocked(subject, sentAt); denial != nil {
+			return denial
 		}
 	}
 	return nil
 }
 
-// subjectMatches reports whether subject is pattern, or lies under it when pattern ends in ".>"
-// (as NATS reads a trailing full wildcard).
-func subjectMatches(pattern, subject string) bool {
-	if prefix, ok := strings.CutSuffix(pattern, ">"); ok && strings.HasSuffix(prefix, ".") {
-		return len(subject) > len(prefix) && strings.HasPrefix(subject, prefix)
+// deniedPublishUnder is deniedPublish of the first subject recorded under prefix, a subject that
+// begins with it and goes on: the record of a send whose subject ends in a part nats.go picks as it
+// sends, the name of a watch's consumer (KeyValue.watchCreatePrefix).
+func (c *Client) deniedPublishUnder(prefix string, sentAt time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for subject := range c.deniedPublishes {
+		if len(subject) <= len(prefix) || !strings.HasPrefix(subject, prefix) {
+			continue
+		}
+		if denial := c.deniedPublishLocked(subject, sentAt); denial != nil {
+			return denial
+		}
 	}
-	return pattern == subject
+	return nil
 }
 
 // refusalSignal is a channel that is closed when the next refusal of a publish on c's connection is
@@ -291,8 +290,12 @@ func clientOwning(conn *nats.Conn) *Client {
 // A request the connection's grant does not cover is refused however often it is sent, so naming
 // the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
 // that is not unanswered, so a step wrapped in this makes one send and ends with an error naming
-// the subject the server refused. subjects are listed in the order a send publishes them, so the
-// refusal a step ends on is the one of the request it stopped at.
+// the subject the server refused. send is one request, and subjects are the subjects that request
+// can be sent to, each matched as it is sent (deniedPublishOf). A call that makes several requests
+// one after another is made one request at a time, each under its own subject (refusalReads's
+// AddConsumer, createBucketStream): listed for the whole call, a later request's subject would
+// take another send's refusal of it while the call still waits on an earlier one, and take it out
+// of the record that send reads.
 //
 // send runs on a goroutine of its own, so a refusal can answer before it returns; that goroutine
 // ends at send's own wait, and its answer is then dropped, as Bounded drops one. That costs a
@@ -310,6 +313,19 @@ func clientOwning(conn *nats.Conn) *Client {
 // stream before the client is registered (install). owner nil, a connection no client owns,
 // records nothing, so its send is answered as it was before.
 func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) (T, error) {
+	return refusedMatching(owner, subjects, "", send)
+}
+
+// refusedUnder is refusedBy for a send whose subject is prefix followed by a part nats.go picks as
+// it sends, the name of a watch's consumer, so the refusal of any subject under prefix answers it
+// (deniedPublishUnder).
+func refusedUnder[T any](owner *Client, prefix string, send func() (T, error)) (T, error) {
+	return refusedMatching(owner, nil, prefix, send)
+}
+
+// refusedMatching is refusedBy and refusedUnder: send's answer, or the refusal of one of subjects,
+// or of a subject under under when it is not empty, recorded at or after send began.
+func refusedMatching[T any](owner *Client, subjects []string, under string, send func() (T, error)) (T, error) {
 	if owner == nil {
 		return send()
 	}
@@ -330,19 +346,28 @@ func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) 
 			if unanswered(got.err) {
 				// The refusal can be recorded after the send's wait ran out, nats.go handing the
 				// server's report over on another goroutine, so the record is read once more.
-				if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+				if denial := owner.deniedPublishMatching(subjects, under, sentAt); denial != nil {
 					return got.value, denial
 				}
 			}
 			return got.value, got.err
 		case <-signal:
 			signal = owner.refusalSignal()
-			if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+			if denial := owner.deniedPublishMatching(subjects, under, sentAt); denial != nil {
 				var none T
 				return none, denial
 			}
 		}
 	}
+}
+
+// deniedPublishMatching is deniedPublishOf of subjects, else deniedPublishUnder of under when it is
+// not empty.
+func (c *Client) deniedPublishMatching(subjects []string, under string, sentAt time.Time) error {
+	if denial := c.deniedPublishOf(subjects, sentAt); denial != nil || under == "" {
+		return denial
+	}
+	return c.deniedPublishUnder(under, sentAt)
 }
 
 // refusedAfter is send, made on the caller's goroutine, with the server's refusal of one of the

@@ -51,13 +51,14 @@ type refusalSeen struct {
 	at     time.Time
 }
 
-// requireUnansweredBeside runs call, named what, whose own request the relay drops, while the
-// connection earns two refusals of subject, a request call does not send, once call's own request
-// is on the wire (refusalOfAnotherSubject). It requires call to end with its own unanswered
-// request, and not with that refusal, and the refusal to be left in the record. It also fails the
-// row unless the refusal was recorded before call ended: one recorded after the call had read the
-// record could not have answered it, and the row would hold nothing.
-func requireUnansweredBeside(t *testing.T, relay *unansweredRelay, client *Client, what, subject string, call func() error) {
+// besideRefusal runs call while the connection earns two refusals of subject, a request call does
+// not send at that moment, once call's own request is on the wire (refusalOfAnotherSubject), and
+// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). It
+// returns call's error, and requireLeft, which the row runs once it has judged that error, named
+// what: it fails the row unless the refusal was recorded before call ended, since one recorded
+// after the call had read the record could not have answered it and the row would hold nothing,
+// and unless the refusal is still in the record for the request that earned it.
+func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject string, release chan struct{}, call func() error) (requireLeft func(what string), err error) {
 	t.Helper()
 	owner := clientOwning(client.Conn)
 	if owner == nil {
@@ -67,25 +68,41 @@ func requireUnansweredBeside(t *testing.T, relay *unansweredRelay, client *Clien
 	go func() {
 		denial := refusalOfAnotherSubject(t, relay, owner, client.Conn, subject)
 		seen <- refusalSeen{denial: denial, at: time.Now()}
+		if release != nil {
+			close(release)
+		}
 	}()
 	sentAt := time.Now()
-	err := call()
+	err = call()
 	ended := time.Now()
 	got := <-seen
+	return func(what string) {
+		t.Helper()
+		if got.denial == nil || !got.at.Before(ended) {
+			t.Fatalf("the connection recorded no refusal of %s before the %s ended (%v), so the %s met none and this row holds nothing",
+				subject, what, got.denial, what)
+		}
+		if denial := owner.deniedPublish(subject, sentAt); denial == nil {
+			t.Fatalf("the record holds no refusal of %s after the %s: the %s took it", subject, what, what)
+		}
+	}, err
+}
+
+// requireUnansweredBeside runs call, named what, whose own request the relay drops, beside two
+// refusals of subject, a request call does not send then (besideRefusal). It requires call to end
+// with its own unanswered request, and not with that refusal, and the refusal to be left in the
+// record.
+func requireUnansweredBeside(t *testing.T, relay *unansweredRelay, client *Client, what, subject string, call func() error) {
+	t.Helper()
+	requireLeft, err := besideRefusal(t, relay, client, subject, nil, call)
 	if errors.Is(err, ErrPublishDenied) {
-		t.Fatalf("the %s, whose own request drew no answer, ended with %v, the refusal of %s, which it never sends; want its own unanswered request",
+		t.Fatalf("the %s, whose own request drew no answer, ended with %v, the refusal of %s, which it did not send then; want its own unanswered request",
 			what, err, subject)
 	}
 	if !unanswered(err) {
 		t.Fatalf("the %s, whose own request drew no answer, = %v, want its own unanswered request", what, err)
 	}
-	if got.denial == nil || !got.at.Before(ended) {
-		t.Fatalf("the connection recorded no refusal of %s before the %s ended (%v), so the %s met none and this row holds nothing",
-			subject, what, got.denial, what)
-	}
-	if denial := owner.deniedPublish(subject, sentAt); denial == nil {
-		t.Fatalf("the record holds no refusal of %s after the %s: the %s took it", subject, what, what)
-	}
+	requireLeft(what)
 }
 
 // readModeBucket has admin create bucket, with AllowDirect, as CreateKeyValue makes every bucket,
@@ -214,11 +231,17 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 // grant refuses ends at once naming that refusal. AddConsumer reads the consumer first, which the
 // server answers ("stream not found": no stream is needed), and then creates it; UpdateConsumer
 // only creates. Both go through the client's own JetStream context (readsRefusals).
+//
+// A filter that ends in a full wildcard, as the Dispatch intake's `notifications.github.>` does,
+// puts that wildcard at the end of the create's subject, and the subject is still matched as it is
+// sent: the refusal of a narrower create of the same consumer is another request's.
 func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
-	const stream, name, filter = "ENVOY_CONSUMER_SUBJECT", "subject", "events.x"
+	const stream, name, filter, wide = "ENVOY_CONSUMER_SUBJECT", "subject", "events.x", "notifications.github.>"
 	unfiltered := jsAPI("CONSUMER.CREATE", stream, name)
 	filtered := jsAPI("CONSUMER.CREATE", stream, name, filter)
 	durableCreate := jsAPI("CONSUMER.DURABLE.CREATE", stream, name)
+	wideFiltered := jsAPI("CONSUMER.CREATE", stream, name, wide)
+	narrower := jsAPI("CONSUMER.CREATE", stream, name, "notifications.github.x")
 	add := func(js nats.JetStreamContext, cfg *nats.ConsumerConfig) error {
 		_, err := js.AddConsumer(stream, cfg)
 		return err
@@ -238,6 +261,8 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 		{"AddConsumer of a durable filtered on every subject", add, nats.ConsumerConfig{Durable: name, FilterSubject: ">", AckPolicy: nats.AckExplicitPolicy}, unfiltered, durableCreate},
 		{"UpdateConsumer of a durable", update, nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy}, unfiltered, durableCreate},
 		{"UpdateConsumer of a named filtered consumer", update, nats.ConsumerConfig{Name: name, FilterSubject: filter, AckPolicy: nats.AckExplicitPolicy}, filtered, unfiltered},
+		{"AddConsumer of a durable filtered on a full wildcard", add, nats.ConsumerConfig{Durable: name, FilterSubject: wide, AckPolicy: nats.AckExplicitPolicy}, wideFiltered, narrower},
+		{"UpdateConsumer of a durable filtered on a full wildcard", update, nats.ConsumerConfig{Durable: name, FilterSubject: wide, AckPolicy: nats.AckExplicitPolicy}, wideFiltered, narrower},
 	} {
 		t.Run(create.name+" lost beside a refusal of a subject it does not send", func(t *testing.T) {
 			t.Parallel()
@@ -303,5 +328,101 @@ func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 		if took > refusalAnswerBound {
 			t.Errorf("%s before the first connect ended after %s, want within %s: nats.go sends nothing and fails it at once", name, took, refusalAnswerBound)
 		}
+	}
+}
+
+// AddConsumer of a named consumer takes only the refusal of the request it is on. nats.go's
+// AddConsumer reads the consumer and creates it only when the read finds no consumer
+// (nats.go@v1.55.0 jsm.go:447-471), so a refusal of the create does not answer the call while its
+// read is in flight, nor once the read has found the consumer and no create is sent. The grant of
+// each row refuses the consumer's create, and the row has the connection earn that refusal, as
+// another request of the same consumer would, while the call's read waits: once with the read
+// lost, which the call answers with its own silence, and once with the read held and then
+// answered over a consumer the server's admin made, which the call answers with that consumer.
+func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
+	const stream, name = "ENVOY_ADD_CONSUMER_STEP", "step"
+	read := jsAPI("CONSUMER.INFO", stream, name)
+	create := jsAPI("CONSUMER.CREATE", stream, name)
+	config := nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy}
+	t.Run("its read lost beside a refusal of its create", func(t *testing.T) {
+		t.Parallel()
+		_, client, relay := deniedRelayedClient(t, read, create)
+		cfg := config
+
+		relay.arm(1)
+		requireUnansweredBeside(t, relay, client, "AddConsumer", create, func() error {
+			_, err := client.JS().AddConsumer(stream, &cfg)
+			return err
+		})
+		if sends := relay.sent(); sends != 1 {
+			t.Fatalf("reads of the consumer = %d, want 1: a read lost is the call's answer", sends)
+		}
+	})
+	t.Run("its read held over a found consumer beside a refusal of its create", func(t *testing.T) {
+		t.Parallel()
+		admin, client, relay := deniedRelayedClient(t, read, create)
+		js, err := admin.JetStream()
+		if err != nil {
+			t.Fatalf("open the admin's JetStream: %v", err)
+		}
+		if _, err := js.AddStream(&nats.StreamConfig{Name: stream, Subjects: []string{"add.consumer.step.>"}, Storage: nats.MemoryStorage}); err != nil {
+			t.Fatalf("the admin creates the stream: %v", err)
+		}
+		cfg := config
+		if _, err := js.AddConsumer(stream, &cfg); err != nil {
+			t.Fatalf("the admin creates the consumer: %v", err)
+		}
+
+		release := make(chan struct{})
+		relay.holdNext(release)
+		requireLeft, err := besideRefusal(t, relay, client, create, release, func() error {
+			_, err := client.JS().AddConsumer(stream, &cfg)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("an AddConsumer whose read found the consumer = %v, want the consumer: the refusal of %s is of a create it never sent", err, create)
+		}
+		requireLeft("AddConsumer")
+	})
+}
+
+// A start's create of a bucket takes only the refusal of the request it is on. nats.go's
+// CreateKeyValue asks the account for its JetStream info, then creates the bucket's stream, and on
+// "stream name already in use" reads the stream and may update it (nats.go@v1.55.0 kv.go:422-551);
+// EnsureKeyValue makes those requests one at a time (createBucketStream). The grant of each row
+// refuses the update of the bucket's stream, and the row has the connection earn that refusal, as
+// a raise of the same bucket would, while the start's info request, or its stream's create, has
+// lost its answer. The start sends its create again, as it sends any request the server left
+// unanswered, and goes on.
+func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
+	for _, row := range []struct {
+		name, bucket string
+		lost         func(bucket string) string
+	}{
+		{"its account info lost", "envoy_create_step_info", func(string) string { return accountInfoSubject() }},
+		{"its stream's create lost", "envoy_create_step_create", createSubject},
+	} {
+		t.Run(row.name+" beside a refusal of its stream's update", func(t *testing.T) {
+			t.Parallel()
+			update := updateSubject(row.bucket)
+			_, client, relay := deniedRelayedClient(t, row.lost(row.bucket), update)
+			js, err := client.Conn.JetStream(nats.MaxWait(RequestTimeout))
+			if err != nil {
+				t.Fatalf("open JetStream: %v", err)
+			}
+
+			relay.arm(1)
+			requireLeft, err := besideRefusal(t, relay, client, update, nil, func() error {
+				_, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: row.bucket, Storage: nats.MemoryStorage})
+				return err
+			})
+			if err != nil {
+				t.Fatalf("a start whose create lost one answer, beside a refusal of %s, which that request is not = %v, want the start to send its create again and go on", update, err)
+			}
+			requireLeft("start")
+			if sends := relay.sent(); sends != 2 {
+				t.Fatalf("sends of %s = %d, want 2: the lost one and the one sent again", row.lost(row.bucket), sends)
+			}
+		})
 	}
 }

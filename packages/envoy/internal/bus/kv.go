@@ -176,12 +176,19 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
-// refusedOn is call, a request kv makes once in a while of its bucket's stream (a watch's create,
-// a read of the stream), read for the server's refusal of subjects as it arrives (refusedBy), in
-// the record of the client that owns kv's connection, found when kv was built. A handle on a
-// connection no client owns sends as call does.
+// refusedOn is call, a request kv makes once in a while of its bucket's stream (a read of the
+// stream), read for the server's refusal of subjects as it arrives (refusedBy), in the record of
+// the client that owns kv's connection, found when kv was built. A handle on a connection no client
+// owns sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
 	return refusedBy(kv.owner, subjects, call)
+}
+
+// refusedWatchOn is refusedOn for a watch's create, whose consumer name nats.go picks as it sends,
+// so the refusal of any create under the bucket's stream answers it (refusedUnder,
+// watchCreatePrefix).
+func refusedWatchOn(kv KeyValue, call func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
+	return refusedUnder(kv.owner, kv.watchCreatePrefix(), call)
 }
 
 // refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
@@ -258,10 +265,11 @@ func readsDirect(legacy nats.KeyValue) bool {
 	return useDirect.Bool()
 }
 
-// watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
-// it sends (jetstream ordered consumers): every consumer create under the bucket's stream.
-func (kv KeyValue) watchSubjects() []string {
-	return []string{jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket(), ">")}
+// watchCreatePrefix is what the request a watch sends to create its consumer begins with, the
+// consumer name nats.go picks as it sends and the filter following it (jetstream ordered
+// consumers): `$JS.API.CONSUMER.CREATE.KV_<bucket>.`.
+func (kv KeyValue) watchCreatePrefix() string {
+	return jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket()) + "."
 }
 
 // Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
@@ -305,7 +313,7 @@ func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
+	watcher, err := refusedWatchOn(kv, func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -319,7 +327,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 			return nil, err
 		}
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
+	watcher, err := refusedWatchOn(kv, func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -373,10 +381,11 @@ func invalidKey(key any, err error) error {
 //
 // The read is a direct get, as every read of this build's buckets is: nats.go sends a KV get
 // to the stream's $JS.API.DIRECT.GET subject whenever that stream carries AllowDirect, and every
-// bucket here carries it. CreateKeyValue sets AllowDirect on the stream it creates and
-// nats.KeyValueConfig holds no field that unsets it; mapStreamToKVS, which both CreateKeyValue
-// and KeyValue return a handle through, reads that stream's AllowDirect back as the handle's
-// useDirect; and kvs.get passes nats.DirectGet to the GetLastMsg behind every read that flag is
+// bucket here carries it. A start creates its buckets with AllowDirect set, as nats.go's
+// CreateKeyValue does (bucketStreamConfig), and nats.KeyValueConfig holds no field that unsets it;
+// mapStreamToKVS, which both CreateKeyValue and KeyValue return a handle through, reads that
+// stream's AllowDirect back as the handle's useDirect (readsDirect); and kvs.get passes
+// nats.DirectGet to the GetLastMsg behind every read that flag is
 // set on. Neither KV surface takes a per-read option for it: the legacy nats.KeyValue.Get takes a
 // key alone and jetstream.KeyValue.Get a context and a key, and the jetstream side builds the
 // same read (prepareKeyValueConfig sets AllowDirect, its own mapStreamToKVS sets useDirect, and
