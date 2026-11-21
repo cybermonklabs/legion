@@ -142,6 +142,12 @@ func (e *MemberKindUncheckable) Error() string {
 // Unwrap is the failure, so errors.Is reads ErrBrokerRefused and ErrUnknownMemberKind through it.
 func (e *MemberKindUncheckable) Unwrap() error { return e.Err }
 
+// CallerEnded reports whether the read failed because the caller gave up (its context was
+// cancelled: a client that closed its connection) rather than because Dispatch could not be
+// asked. The refusal stands either way; only the log line differs, since such a read says nothing
+// about Dispatch. The shared call never fails this way: it runs on none of its readers' contexts.
+func (e *MemberKindUncheckable) CallerEnded() bool { return errors.Is(e.Err, context.Canceled) }
+
 // uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
 // in words a refused caller may read: Dispatch refusing the broker's own account, which the
 // deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
@@ -157,15 +163,21 @@ func uncheckableReason(err error) string {
 }
 
 // Restricted reports whether Dispatch calls person a restricted member (MemberRestricted), for a
-// caller about to enroll, decide or release something for that person. Any MemberKind failure is
-// a *MemberKindUncheckable naming person, which the caller returns as it is: a check that cannot
-// decide refuses.
+// caller about to enroll, decide or release something for that person. MemberFull and MemberNone
+// are not; any other kind, and any MemberKind failure, is a *MemberKindUncheckable naming person,
+// which the caller returns as it is: a check that cannot decide refuses, whatever Access answered.
 func Restricted(ctx context.Context, a Access, person string) (bool, error) {
 	kind, err := a.MemberKind(ctx, person)
 	if err != nil {
 		return false, &MemberKindUncheckable{Person: person, Err: err}
 	}
-	return kind == MemberRestricted, nil
+	switch kind {
+	case MemberFull, MemberNone:
+		return false, nil
+	case MemberRestricted:
+		return true, nil
+	}
+	return false, &MemberKindUncheckable{Person: person, Err: fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)}
 }
 
 // Answer is Dispatch's answer for one project and one person.
@@ -314,9 +326,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 // answer, a person's reads wait on one call at a time, each for no longer than that call's
 // requestTimeout, rather than each making a call of its own.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
-	person = record.CanonicalLogin(person)
-	if person == "" {
-		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
+	person, err := askedPerson(person)
+	if err != nil {
+		return "", err
 	}
 	c.mu.Lock()
 	if cached, ok := c.kinds[person]; ok && c.now().Sub(cached.at) < CacheTTL {
@@ -346,31 +358,73 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	}
 }
 
-// askKind makes flight's one call for person's member kind and settles it: an answer is kept
-// CacheTTL, aged from before its question, unless one to a question asked later is already held;
-// a failure is kept failureTTL from when it came back. The flight leaves c.flights under the same
-// lock, so a read that finds no flight finds what this one settled.
+// memberKindAskedNow is MemberKind with no failure an earlier read kept and no call already in
+// flight: a fresh answer from the cache, else a call of its own on ctx, settled as any other. A
+// read whose failure lets something through asks it (ListAllowed), so that what it lets through
+// lasts no longer than Dispatch does not answer.
+func (c *Client) memberKindAskedNow(ctx context.Context, person string) (string, error) {
+	person, err := askedPerson(person)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	if cached, ok := c.kinds[person]; ok && c.now().Sub(cached.at) < CacheTTL {
+		c.mu.Unlock()
+		return cached.kind, nil
+	}
+	c.mu.Unlock()
+	asked := c.now()
+	kind, err := c.readKind(ctx, person)
+	c.mu.Lock()
+	c.settleKindLocked(person, asked, kind, err)
+	c.mu.Unlock()
+	return kind, err
+}
+
+// askedPerson is person as a member-kind read asks Dispatch about them: their canonical login,
+// and a refusal when it names no one.
+func askedPerson(person string) (string, error) {
+	person = record.CanonicalLogin(person)
+	if person == "" {
+		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
+	}
+	return person, nil
+}
+
+// askKind makes flight's one call for person's member kind and settles it (settleKindLocked). The
+// flight leaves c.flights under the same lock, so a read that finds no flight finds what this one
+// settled.
 func (c *Client) askKind(ctx context.Context, person string, flight *kindFlight) {
 	asked := c.now()
 	kind, err := c.readKind(ctx, person)
 	c.mu.Lock()
 	delete(c.flights, person)
+	c.settleKindLocked(person, asked, kind, err)
+	c.mu.Unlock()
+	flight.kind, flight.err = kind, err
+	close(flight.done)
+}
+
+// settleKindLocked keeps the outcome of a member-kind call for person asked at asked: an answer
+// is kept CacheTTL, aged from before its question, unless one to a question asked later is
+// already held, and clears a kept failure; a failure is kept failureTTL from when it came back,
+// unless it is the caller's own giving up, which says nothing of Dispatch. c.mu is held.
+func (c *Client) settleKindLocked(person string, asked time.Time, kind string, err error) {
 	if len(c.kinds) >= maxCached || len(c.failures) >= maxCached {
 		c.sweepLocked()
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, context.Canceled):
+	case err != nil:
 		if len(c.failures) < maxCached {
 			c.failures[person] = failedKind{err: err, at: c.now()}
 		}
-	} else {
+	default:
 		delete(c.failures, person)
 		if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
 			c.kinds[person] = cachedKind{kind: kind, at: asked}
 		}
 	}
-	c.mu.Unlock()
-	flight.kind, flight.err = kind, err
-	close(flight.done)
 }
 
 // readKind asks Dispatch's person route for person's member kind, a call bounded by
@@ -589,12 +643,14 @@ func (c *Client) clock() time.Time { return c.now() }
 // ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
 // either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
 // list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
-// logs that it did so unchecked.
+// logs that it did so unchecked. Because that failure lets the list through, the member kind is
+// asked afresh (memberKindAskedNow on a *Client), never answered by a failure an earlier read
+// kept: the list goes through unchecked only while Dispatch does not answer.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
-	kind, err := a.MemberKind(ctx, person)
+	kind, err := askedNow(ctx, a, person)
 	switch {
 	case errors.Is(err, ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
@@ -608,4 +664,13 @@ func ListAllowed(ctx context.Context, a Access, person string, projects []string
 		return fmt.Errorf("%w: %s", ErrListRequired, person)
 	}
 	return fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)
+}
+
+// askedNow is a's member kind for person with no failure an earlier read kept: a *Client's
+// memberKindAskedNow, and MemberKind for any other Access, which keeps none.
+func askedNow(ctx context.Context, a Access, person string) (string, error) {
+	if c, ok := a.(*Client); ok {
+		return c.memberKindAskedNow(ctx, person)
+	}
+	return a.MemberKind(ctx, person)
 }

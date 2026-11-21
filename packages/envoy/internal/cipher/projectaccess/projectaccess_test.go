@@ -273,6 +273,28 @@ func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 	}
 }
 
+// TestRestrictedRefusesAKindItDoesNotKnow: Restricted decides from the three kinds alone, whatever
+// Access answers: full and none are no restricted member, restricted is one, and any other kind is
+// a MemberKindUncheckable naming the person, ErrUnknownMemberKind, in the words that say Dispatch
+// answered a kind the broker does not know. So a check that cannot decide refuses even through an
+// Access that is not this package's Client.
+func TestRestrictedRefusesAKindItDoesNotKnow(t *testing.T) {
+	recording := &recordingAccess{kinds: map[string]string{
+		"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull, "gus@example.com": "guest",
+	}}
+	for person, want := range map[string]bool{"bob@example.com": true, "carol@example.com": false, "alice@example.com": false} {
+		if restricted, err := projectaccess.Restricted(t.Context(), recording, person); err != nil || restricted != want {
+			t.Errorf("Restricted(%s) = %t, %v; want %t", person, restricted, err, want)
+		}
+	}
+	restricted, err := projectaccess.Restricted(t.Context(), recording, "gus@example.com")
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if restricted || !errors.As(err, &uncheckable) || uncheckable.Person != "gus@example.com" || !errors.Is(err, projectaccess.ErrUnknownMemberKind) ||
+		err.Error() != "whether Dispatch calls gus@example.com a restricted member cannot be read: Dispatch answered a member kind this broker does not know" {
+		t.Fatalf("Restricted(gus, answered %q) = %t, %v; want a MemberKindUncheckable naming gus, ErrUnknownMemberKind", "guest", restricted, err)
+	}
+}
+
 // TestStatesAnswersOneEntryPerProjectItHolds: States answers each project Dispatch holds, as it
 // is to a caller naming no person, and leaves out the one it does not.
 func TestStatesAnswersOneEntryPerProjectItHolds(t *testing.T) {
@@ -494,6 +516,81 @@ func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
 	}
 }
 
+// TestOnePersonsCallInFlightIsNoOtherPersonsAnswer: a read of one person's member kind never
+// joins another person's call in flight. bob, a restricted member, is asked first and his call is
+// held at the stand-in; carol, a full member, is asked while it is held, and makes a call of her
+// own; each gets their own kind. A key shared between people would hand carol bob's
+// "restricted", or, the other way round, a restricted member a full member's "full". No clock
+// decides it: bob's call is released only once carol's read has answered or joined his (SetJoined),
+// and the minute bounds a box too stalled to get there at all, which can only fail the test.
+func TestOnePersonsCallInFlightIsNoOtherPersonsAnswer(t *testing.T) {
+	kinds := map[string]string{"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull}
+	var mu sync.Mutex
+	calls := map[string]int{}
+	called := func(person string) int { mu.Lock(); defer mu.Unlock(); return calls[person] }
+	bobHeld, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	free := func() { releaseOnce.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		person := r.URL.Query().Get("person")
+		mu.Lock()
+		calls[person]++
+		first := calls[person] == 1
+		mu.Unlock()
+		if person == "bob@example.com" && first {
+			close(bobHeld)
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"person":%q,"member_kind":%q}`, person, kinds[person])
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(free)
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	var joined atomic.Int32
+	projectaccess.SetJoined(client, func() { joined.Add(1) })
+	type read struct {
+		kind string
+		err  error
+	}
+	bob, carol := make(chan read, 1), make(chan read, 1)
+	go func() {
+		kind, err := client.MemberKind(context.Background(), "bob@example.com")
+		bob <- read{kind, err}
+	}()
+	select {
+	case <-bobHeld:
+	case <-time.After(time.Minute):
+		t.Fatal("bob's call did not reach the stand-in in a minute")
+	}
+	go func() {
+		kind, err := client.MemberKind(context.Background(), "carol@example.com")
+		carol <- read{kind, err}
+	}()
+	var carolRead read
+	carolAnswered := false
+	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool {
+		select {
+		case carolRead = <-carol:
+			carolAnswered = true
+		default:
+		}
+		return carolAnswered || joined.Load() > 0
+	}) {
+		t.Fatalf("in a minute carol's read neither answered nor joined a call in flight (calls: bob %d, carol %d)", called("bob@example.com"), called("carol@example.com"))
+	}
+	free()
+	bobRead := <-bob
+	if !carolAnswered {
+		carolRead = <-carol
+	}
+	if bobRead.err != nil || bobRead.kind != projectaccess.MemberRestricted || carolRead.err != nil || carolRead.kind != projectaccess.MemberFull ||
+		joined.Load() != 0 || called("bob@example.com") != 1 || called("carol@example.com") != 1 {
+		t.Fatalf("bob = %q, %v; carol = %q, %v (calls: bob %d, carol %d; joined %d); want bob restricted and carol full, each from a call of their own",
+			bobRead.kind, bobRead.err, carolRead.kind, carolRead.err, called("bob@example.com"), called("carol@example.com"), joined.Load())
+	}
+}
+
 // TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger: while Dispatch does not answer, a
 // person's member-kind read that failed is the answer to the next reads of that person for
 // FailureTTL from when it came back, and they ask Dispatch nothing; once FailureTTL has passed a
@@ -520,6 +617,100 @@ func TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger(t *testing.T) 
 	clock.advance(time.Millisecond)
 	if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted || server.Calls() != asked+2 {
 		t.Fatalf("MemberKind(bob) %s after the failure = %q, %v with %d more calls; want restricted from a call of its own: a failure is kept no longer", projectaccess.FailureTTL, kind, err, server.Calls()-asked)
+	}
+}
+
+// TestAReaderThatGivesUpFailsNoOtherReadOfThatPerson: the first reader of bob's member kind
+// starts the one call and then gives up (its context is cancelled) while a second reader waits
+// on the same call. The second reader gets Dispatch's answer, and a third read is answered from
+// the cache with no new call. The stand-in holds the call until the first reader has given up,
+// so no clock decides it; the bounds can only fail.
+func TestAReaderThatGivesUpFailsNoOtherReadOfThatPerson(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"person":"bob@example.com","member_kind":"restricted"}`)
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(free)
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	joined := make(chan struct{}, 1)
+	projectaccess.SetJoined(client, func() { joined <- struct{}{} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.MemberKind(ctx, "bob@example.com")
+		first <- err
+	}()
+	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool { return calls.Load() == 1 }) {
+		t.Fatal("the first read's call did not reach Dispatch in a minute")
+	}
+	type read struct {
+		kind string
+		err  error
+	}
+	second := make(chan read, 1)
+	go func() {
+		kind, err := client.MemberKind(context.Background(), "bob@example.com")
+		second <- read{kind, err}
+	}()
+	select {
+	case <-joined:
+	case <-time.After(time.Minute):
+		t.Fatal("the second read did not join the call in flight in a minute")
+	}
+	cancel()
+	select {
+	case err := <-first:
+		if err == nil {
+			t.Fatal("the first read, cancelled, answered nil; want its context's error")
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the cancelled first read did not return in a minute")
+	}
+	free()
+	select {
+	case got := <-second:
+		if got.err != nil || got.kind != projectaccess.MemberRestricted {
+			t.Fatalf("the second read, beside a first that gave up, = %q, %v; want restricted", got.kind, got.err)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the second read did not return in a minute")
+	}
+	if kind, err := client.MemberKind(context.Background(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted || calls.Load() != 1 {
+		t.Fatalf("a third read = %q, %v after %d calls; want restricted from the cache and one call", kind, err, calls.Load())
+	}
+}
+
+// TestAnEmptyListAsksDispatchAfreshOnceItAnswersAgain: ListAllowed's empty list is the one place
+// a failure to ask lets something through (ErrUnchecked, which the exchange mints on), so it never
+// takes a failure an earlier read kept: once Dispatch answers again, the next ListAllowed asks it,
+// and a restricted member's empty list is refused ErrListRequired even within FailureTTL of the
+// failure. A secrets path's read in that window still gets the kept failure, which refuses. The
+// client reads a fake clock, so no wait decides it.
+func TestAnEmptyListAsksDispatchAfreshOnceItAnswersAgain(t *testing.T) {
+	server := standIn(t)
+	client := clientOf(server)
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	projectaccess.SetClock(client, clock.read)
+	server.SetDown(true)
+	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrUnchecked) {
+		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want ErrUnchecked", err)
+	}
+	server.SetDown(false)
+	clock.advance(time.Second)
+	if _, err := client.MemberKind(t.Context(), "bob@example.com"); err == nil {
+		t.Fatalf("MemberKind(bob) %s after the failure answered, want the kept failure", time.Second)
+	}
+	asked := server.Calls()
+	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrListRequired) || server.Calls() != asked+1 {
+		t.Fatalf("ListAllowed(bob, none) %s after the failure, with Dispatch answering = %v with %d more calls; want ErrListRequired from a call of its own, not the kept failure", time.Second, err, server.Calls()-asked)
 	}
 }
 
