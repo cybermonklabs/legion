@@ -712,6 +712,89 @@ answers a single image and an index the way the real one does. Its fakes, fixtur
 assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
 `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
+## project-privacy-measure.sh
+
+Measures the listener's privacy read on the path a listener's own read crosses, and derives the
+listener's read timeout, `k7ReadTimeout` in `cmd/listener/project_privacy.go`, from it. In the
+required privacy mode a listener reads the broker's `GET /v1/project-privacy` once per decision
+batch, and the broker reads Dispatch, so each read is one listener → broker → Dispatch round trip.
+
+```bash
+packages/envoy/scripts/project-privacy-measure.sh run \
+  --source <the broker's base URL, the listener's ENVOY_AGENT_SECRETS_URL> \
+  --token-file <a projected token of the broker's audience> \
+  --metrics-url <pod>=http://<the pod's address>:9020/metrics [--metrics-url ...]
+packages/envoy/scripts/project-privacy-measure.sh verdict <the log a run printed>
+packages/envoy/scripts/project-privacy-measure.sh job --run <id> --image <the listener's image> \
+  --source <the broker's base URL> --audience <the broker's token audience> \
+  --metrics-url <pod>=http://<the pod's address>:9020/metrics [--metrics-url ...]
+```
+
+`run` reads for at least an hour (`--minutes`, 60 by default, and a run asked for less is refused
+with exit 2). Each `--metrics-url` is `NAME=URL`, `NAME` the listener pod's name, or a bare URL
+that names itself. In the required mode both the webhook listener (`envoy-listener`) and the
+clustered hub's session listener (`envoy-nats-listener`) hold and decide frames, so a production
+run names every pod of both. Each second it reads the counters at every `--metrics-url` and spreads
+one decision for each increment over the next second: by default `envoy_messages_received_total`,
+every message the listener's consumer takes, and `envoy_listener_requests_total`, every `/v1`
+request it admits (`--counter`, repeatable, names others). That counts each decision as a batch
+of its own, which is at least as many reads as the listener's reader makes, so the bound errs
+long. A read serves every decision due when it starts, so at most one read is in flight and a
+decision that arrives during a read waits for the next one, as the listener's reader does. Each
+read sends the token file's current token as its bearer, read again before every read, and is
+timed by curl from its start to its last byte, a new connection each time.
+
+It prints tab-separated lines a later `verdict` reads back: `start`, a `listener` line naming each
+pod and its URL, `batches` for each second that counted decisions (with each pod's share,
+`NAME=count`), `read` for each read (its time in microseconds, its status and the decisions it
+served), `minute`, `end`, and the verdict, which also prints `decisions by listener:` with each pod's
+count. The first read that fails (no answer within
+`--max-time`, no connection, a status other than 200, or a body that is not a whole
+`{"projects":[...]}` answer) and the first counter read that fails, a counter the listener does not
+expose among them, end the run.
+
+### Verdict and exit codes
+
+The verdict prints the count of answered reads, their p50 and p99 (nearest rank) and the longest,
+then one of:
+
+- `verdict: k7ReadTimeout = <constant>` (exit 0): twice the longest read, rounded up to the next
+  100 ms, written as the Go constant it sets.
+- `verdict: over the cap` (exit 1): twice the longest read exceeds the 2 s the listener ships with,
+  so no constant is set and the numbers go to whoever owns the timeout.
+- `verdict: UNKNOWN` (exit 3), after an `UNKNOWN:` line for each reason: a read or a counter read
+  failed, no read happened, the run covered less than an hour, was stopped or did not finish, or
+  the log is not one run. A bound needs an hour of answered reads.
+
+A usage error exits 2 and a missing tool 4. The script needs bash 5, curl, sort and sleep, which
+the listener's own image carries, so it runs in that image.
+
+### The production run's manifest
+
+`job` prints the manifest of one production run: the ServiceAccount `project-privacy-measure`
+and a Job that runs `run` under it, both in namespace `envoy`. The broker answers that account's
+reads as a privacy reader of its own, not as a listener. The Job's pods carry
+`app.kubernetes.io/name: project-privacy-measure`: the broker's ingress admits that label, and no
+listener's Service selects it. The Job mounts the script from a ConfigMap named as the Job
+(`project-privacy-measure-<run>`), which the caller creates from the committed script. Its token is
+a projected token of `--audience`, and its deadline is the run's minutes and a quarter of an hour.
+`--run` is 1 to 30 lower-case letters and digits, and a run shorter than an hour is refused as
+`run` refuses it.
+
+`project-privacy-measure.test.sh` proves each verdict over fixture logs (a longest read one
+millisecond longer changes the constant), and the run over a fake that serves a listener's
+`/metrics` and the broker's route on 127.0.0.1: a planted slow read sets a longer constant than a
+run without it, at most one read is in flight, a failed or incomplete answer stops the run at that
+read, and counters that never move are UNKNOWN with no read made. A run there takes a minute of
+100 ms (`PROJECT_PRIVACY_MEASURE_MINUTE_MS`, read by the test alone); a run records its minute and
+a verdict refuses a log whose minute is not its own, so such a run never sets a bound. It also
+holds `job`'s manifest to the account `project-privacy-measure` in `envoy`, with the same check
+run over that manifest with the pods moved to `envoy-listener` as its control, which must fail. A
+run over a webhook listener and a session listener names both and counts each one's decisions; its
+control, the same run without the session listener, must fail naming it.
+CI runs it in the `envoy-go-checks` job, whose steps are in
+`.github/workflows/ci-job-envoy-go-checks.yaml`.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded

@@ -46,9 +46,10 @@ jobs:
     # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
     # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
-    # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 110
+    # 10, the bus matrix's own 5, the auth service's own 5 and the listener's outage test's own 5
+    # are 111, the integration step's 5 is less, and the callout check's own 6, after the seconds
+    # those two steps measure, is less too.
+    timeout-minutes: 115
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -244,7 +245,10 @@ jobs:
       # consumer loses its old-form message. internal/broker/natscallout has one too: that the
       # image the hub runs lets a user with an empty publish allow list publish anywhere, the
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
-      # runs. Each package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
+      # runs. cmd/listener has the privacy read's outage test, which runs four outages of the
+      # read's chain against a listener in the required privacy mode; a run whose output holds a
+      # skip, or that ran no test, fails the step, since go test reports either as a pass. Each
+      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
       # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
       # step above, and internal/bus and internal/broker/natscallout in envoy-go-race, which the
       # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
@@ -259,6 +263,9 @@ jobs:
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/broker/natscallout)
           go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/
+          outage=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
+          GOMAXPROCS=8 go test -count=1 -timeout 5m -tags natslive -run "$outage" -v ./cmd/listener/ | tee "$RUNNER_TEMP/listener-natslive.txt"
+          if grep -E -e '--- SKIP|no tests to run' "$RUNNER_TEMP/listener-natslive.txt"; then exit 1; fi
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
