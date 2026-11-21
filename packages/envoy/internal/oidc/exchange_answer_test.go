@@ -89,6 +89,46 @@ func TestCodeFlowExchangeReadsABodyThatBreaksOffAsAnOutage(t *testing.T) {
 	}
 }
 
+// A caller that leaves while the token endpoint's body is still arriving - the browser left the
+// callback mid-answer - is the caller gone, not the issuer down: the exchange fails with the
+// caller's context error, not ErrIssuerUnavailable, so the broker writes no issuer_unreachable and
+// logs no ERROR for it. x/oauth2 reports the body read that failed without wrapping its error, so
+// only the read failure the recorder keeps names the caller's context. The token request's own
+// timeout is far longer than the caller's here, so only the caller ends the read.
+func TestCodeFlowExchangeReadsACallerWhoLeavesMidBodyAsGone(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		leave func() (context.Context, context.CancelFunc)
+		want  error
+	}{
+		{"its deadline passes", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 300*time.Millisecond)
+		}, context.DeadlineExceeded},
+		{"it is cancelled", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(300*time.Millisecond, cancel)
+			return ctx, cancel
+		}, context.Canceled},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowForDomain(t, flowDomain)
+			if err := flow.Discover(context.Background()); err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			issuer.StallToken(http.StatusOK)
+			client := *flow.http
+			client.Timeout = 30 * time.Second
+			flow.http = &client
+			ctx, cancel := c.leave()
+			defer cancel()
+			_, err := flow.Exchange(ctx, flowRedirect, "a-code", "a-nonce")
+			if !errors.Is(err, c.want) || errors.Is(err, ErrIssuerUnavailable) {
+				t.Fatalf("Exchange whose caller's context ends mid-body (%s): err = %v, want %v and not ErrIssuerUnavailable", c.name, err, c.want)
+			}
+		})
+	}
+}
+
 // A code exchange whose own context ends before the token endpoint answers - the browser left the
 // callback - fails with that context's error, not ErrIssuerUnavailable: the issuer was not shown
 // unable to answer, so a caller writes no outage for it. The flow has discovered its issuer, so the

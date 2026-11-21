@@ -27,9 +27,11 @@ func Record(ctx context.Context, answered *Recorder) context.Context {
 // went to (Host); the answer's status, or 0 where the request got no answer (Status), so a
 // redirect whose target fails is not read as the redirect; and the answer's body, which records
 // how a read of it failed (ReadErr), so an answer the client could not read whole is not read as
-// one it read, and keeps what was read of it (Answer). It records the status of every answer its
-// transport returns, whatever the error beside it. One call at a time uses it: it is built for
-// one call, whose requests and body reads run in the caller's goroutine.
+// one it read, and keeps what was read of an answer that is no 2xx (Answer). It keeps nothing of a
+// 2xx answer's body, a token answer holding a person's tokens among them, so no copy of a
+// successful answer stays in memory. It records the status of every answer its transport returns,
+// whatever the error beside it. One call at a time uses it: it is built for one call, whose
+// requests and body reads run in the caller's goroutine.
 type Recorder struct {
 	// Host is the host the last request went to.
 	Host string
@@ -44,7 +46,7 @@ func (r *Recorder) RoundTrip(request *http.Request) (*http.Response, error) {
 	r.Host, r.Status, r.body = request.URL.Host, 0, nil
 	if response != nil {
 		r.Status = response.StatusCode
-		r.body = &readOf{ReadCloser: response.Body}
+		r.body = &readOf{ReadCloser: response.Body, keep: response.StatusCode/100 != 2}
 		response.Body = r.body
 	}
 	return response, err
@@ -59,8 +61,9 @@ func (r *Recorder) ReadErr() error {
 	return r.body.err
 }
 
-// Answer is what was read of the last answer's body, at most answerKept bytes. It is the server's
-// text, for a reader that prints a registered code alone (internal/redact, Answered).
+// Answer is what was read of the last answer's body, at most answerKept bytes, and nil for a 2xx
+// answer, whose body a Recorder does not keep. It is the server's text, for a reader that prints a
+// registered code alone (internal/redact, Answered).
 func (r *Recorder) Answer() []byte {
 	if r.body == nil {
 		return nil
@@ -73,16 +76,17 @@ func (r *Recorder) Answer() []byte {
 const answerKept = 64 << 10
 
 // readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in,
-// and the first answerKept bytes read of it.
+// and, when keep is set, the first answerKept bytes read of it.
 type readOf struct {
 	io.ReadCloser
+	keep bool
 	err  error
 	kept []byte
 }
 
 func (r *readOf) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
-	if room := answerKept - len(r.kept); room > 0 {
+	if room := answerKept - len(r.kept); r.keep && room > 0 {
 		r.kept = append(r.kept, p[:min(n, room)]...)
 	}
 	if err != nil && err != io.EOF && r.err == nil {

@@ -1,6 +1,8 @@
 package approval
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -12,7 +14,8 @@ import (
 // token endpoint's raw answer, as an exchange that is no outage returns it: the code is written
 // only from a refusal, a 4xx that is no 408 or 429, and only when it is one of the four the status
 // names. A 5xx, a 408 or a 429 naming one of the four, a 2xx naming one, a refusal naming another
-// code and one naming none write nothing.
+// code and one naming none write nothing, and so does an exchange whose caller left mid-answer,
+// which oidc returns as its context's error (TestCodeFlowExchangeReadsACallerWhoLeavesMidBodyAsGone).
 func TestSignInFailureCodeReadsATokenEndpointCodeOnlyFromARefusal(t *testing.T) {
 	answered := func(status int, code string) error {
 		return &oauth2.RetrieveError{Response: &http.Response{StatusCode: status}, ErrorCode: code}
@@ -32,6 +35,7 @@ func TestSignInFailureCodeReadsATokenEndpointCodeOnlyFromARefusal(t *testing.T) 
 		{"a 400 naming invalid_grant", answered(http.StatusBadRequest, codeInvalidGrant), codeInvalidGrant},
 		{"a 403 naming unauthorized_client", answered(http.StatusForbidden, codeUnauthorizedClient), codeUnauthorizedClient},
 		{"a wrapped 401 naming invalid_client", fmt.Errorf("oidc: exchange code: %w", answered(http.StatusUnauthorized, codeInvalidClient)), codeInvalidClient},
+		{"an exchange whose caller left mid-answer", fmt.Errorf("oidc: exchange code: %w: %w", context.DeadlineExceeded, errors.New("oauth2: cannot fetch token: context deadline exceeded")), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := signInFailureCode(c.err); got != c.want {

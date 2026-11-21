@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -45,11 +44,13 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if failure := flow.token; failure.status != 0 || failure.drop {
+		// The failure and the refresh count are read and kept under the lock; the answer is written
+		// without it, as the delay above and handleRevoke's failure answer are.
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
 		}
+		i.mu.Unlock()
 		switch {
 		case failure.drop:
 			if hijacker, ok := w.(http.Hijacker); ok {
@@ -65,7 +66,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
-			breakOff(w, r, failure.cut, &i.mu)
+			breakOff(w, r, failure.cut)
 		case failure.code == "":
 			http.Error(w, http.StatusText(failure.status), failure.status)
 		default:
@@ -73,6 +74,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	defer i.mu.Unlock()
 	clientID, clientSecret, basic, err := basicCredentials(r)
 	if err != nil {
 		tokenError(w, http.StatusUnauthorized, "invalid_client")
@@ -265,9 +267,9 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 // breakOff ends an answer whose body the token endpoint promised and did not send, as how says:
 // cutClose aborts the response, so the server closes the connection; cutReset takes the
 // connection and resets it (a TCP RST: SO_LINGER of zero, then close); cutStall sends nothing
-// more until the client hangs up, so the client's own timeout ends its read. The caller holds mu,
-// which a stall gives up while it waits.
-func breakOff(w http.ResponseWriter, r *http.Request, how cutAnswer, mu *sync.Mutex) {
+// more until the client hangs up, so the client's own timeout ends its read. The caller holds no
+// lock of the issuer's.
+func breakOff(w http.ResponseWriter, r *http.Request, how cutAnswer) {
 	switch how {
 	case cutReset:
 		if hijacker, ok := w.(http.Hijacker); ok {
@@ -280,9 +282,7 @@ func breakOff(w http.ResponseWriter, r *http.Request, how cutAnswer, mu *sync.Mu
 			}
 		}
 	case cutStall:
-		mu.Unlock()
 		<-r.Context().Done()
-		mu.Lock()
 		return
 	}
 	panic(http.ErrAbortHandler)
