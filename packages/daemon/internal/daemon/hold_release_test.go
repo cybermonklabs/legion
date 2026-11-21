@@ -387,11 +387,11 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	// A message ahead of the consumer's own ack floor, never consumed in this test, is what keeps
-	// caughtUp false: the label-adding LEGION-EDGE event itself, still sitting on the stream
+	// A message on the consumer's own filter, never consumed in this test, is what keeps the
+	// consumer from idle: the label-adding LEGION-EDGE event itself, still sitting on the stream
 	// unconsumed, is exactly the real event Reconcile's own listing snapshot cannot yet be told
 	// apart from.
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.LEGION-EDGE.issue.created", []byte(`{"seq":1,"type":"issue.created","payload":{"status":"backlog"}}`)); err != nil {
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.issue.CAPTURE.LEGION-EDGE.issue.created", []byte(`{"seq":1,"type":"issue.created","payload":{"status":"backlog"}}`)); err != nil {
 		t.Fatalf("publish LEGION-EDGE's own pending event: %v", err)
 	}
 
@@ -532,7 +532,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 		t.Fatal("Held() = false after seeding a behind record, want it held")
 	}
 
-	// A reader stuck at an ack floor that never reaches target 5: the hold this poll would
+	// A reader stuck behind messages it never acknowledges, never idle: the hold this poll would
 	// otherwise never explain.
 	reader := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false}}
 	w := &workflowRuntime{
@@ -552,8 +552,8 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	<-done
 
 	msg := logBuf.String()
-	if !strings.Contains(msg, "target=5") || !strings.Contains(msg, "ack_floor=0") {
-		t.Fatalf("warn log = %q, want it to name the target and the ack floor", msg)
+	if !strings.Contains(msg, "ack_floor=0") || !strings.Contains(msg, "idle=false") || strings.Contains(msg, "target=") {
+		t.Fatalf("warn log = %q, want it to name the ack floor and that the consumer is not idle, and no stream target", msg)
 	}
 }
 

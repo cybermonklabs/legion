@@ -313,19 +313,19 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	dispatch, err := openConsumer(ctx, js, pool, spec.Logger, consumer(dispatchConsumerName(spec.Project), dispatchIssueFilter(spec.Project)), fromStoredPosition)
 	if err != nil {
-		return nil, fmt.Errorf("open the Dispatch durable consumer: %w", err)
+		return nil, fmt.Errorf("open the Dispatch durable consumer on stream %s: %w", notificationStream, err)
 	}
 	github, err := openConsumer(ctx, js, pool, spec.Logger, consumer(githubConsumerName(spec.Project), githubFilter), fromStoredPosition)
 	if err != nil {
-		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
+		return nil, fmt.Errorf("open the GitHub durable consumer on stream %s: %w", notificationStream, err)
 	}
 	wake, err := openConsumer(ctx, js, pool, spec.Logger, consumer(wakeConsumerName(spec.Project), wakeOn), fromStoredPosition)
 	if err != nil {
-		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
+		return nil, fmt.Errorf("open the listener wake durable consumer on stream %s: %w", notificationStream, err)
 	}
 	ready, err := openConsumer(ctx, js, pool, spec.Logger, consumer(readyConsumerName(spec.Project), legionWakeSubject), atCreation)
 	if err != nil {
-		return nil, fmt.Errorf("open the listener ready durable consumer: %w", err)
+		return nil, fmt.Errorf("open the listener ready durable consumer on stream %s: %w", notificationStream, err)
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, dispatch: dispatch, github: github, wake: wake, ready: ready,
 		repos: slices.Clone(spec.Repositories)}
