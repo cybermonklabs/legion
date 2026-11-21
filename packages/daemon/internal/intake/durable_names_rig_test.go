@@ -151,6 +151,7 @@ type consumerCalls struct {
 	creates  []string
 	updates  []string
 	deletes  []string
+	infos    []string
 }
 
 // watchConsumerCalls starts the spy on conn, which must be granted `$JS.API.CONSUMER.>`.
@@ -197,6 +198,8 @@ func (c *consumerCalls) read(t testing.TB) {
 				c.creates = append(c.creates, tokens[6])
 			case len(tokens) >= 6 && tokens[3] == "DELETE":
 				c.deletes = append(c.deletes, tokens[5])
+			case len(tokens) >= 6 && tokens[3] == "INFO":
+				c.infos = append(c.infos, tokens[5])
 			}
 		default:
 			return
@@ -213,13 +216,14 @@ func (c *consumerCalls) created(t testing.TB) []string {
 	return slices.Clone(c.creates)
 }
 
-// touched are the names the server was sent a create, an update or a delete of.
+// touched are the names the server was sent a create, an update, a delete or an info of: every
+// call that reads or writes one consumer.
 func (c *consumerCalls) touched(t testing.TB) []string {
 	t.Helper()
 	c.read(t)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Concat(c.creates, c.updates, c.deletes)
+	return slices.Concat(c.creates, c.updates, c.deletes, c.infos)
 }
 
 // deleted are the names the server was sent a delete of.

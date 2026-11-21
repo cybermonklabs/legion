@@ -561,8 +561,11 @@ func TestABootSettlesTheCreateAnotherDaemonLeftOpen(t *testing.T) {
 			wake := wakeConsumerName(spec.Project)
 			seqs := publishWakes(t, js, 3)
 			candidate := consumernames.FreshName(wake)
+			// The settle age is the reservation's on the boot's clock, so the never-lands row measures
+			// from here, not from the boot's start.
+			reserved := time.Now()
 			putRecord(t, pool, wake, consumernames.Record{Start: seqs[1], Op: &consumernames.Op{
-				Kind: consumernames.OpCreate, Owner: "another daemon", Candidate: candidate, ReservedAt: time.Now(),
+				Kind: consumernames.OpCreate, Owner: "another daemon", Candidate: candidate, ReservedAt: reserved,
 			}})
 			land := func() {
 				if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{
@@ -582,7 +585,6 @@ func TestABootSettlesTheCreateAnotherDaemonLeftOpen(t *testing.T) {
 				defer timer.Stop()
 			}
 
-			began := time.Now()
 			openIntake(t, js, pool, spec)
 			rec := selectionOf(t, pool, wake)
 			if tc.adopted {
@@ -593,8 +595,8 @@ func TestABootSettlesTheCreateAnotherDaemonLeftOpen(t *testing.T) {
 					t.Fatalf("the boot created another wake consumer beside the adopted %s: %v", candidate, calls.created(t))
 				}
 			} else {
-				if waited := time.Since(began); waited < 2*time.Second {
-					t.Fatalf("the boot retired a candidate reserved now after %s, want at least the settle age, 2s", waited)
+				if aged := time.Since(reserved); aged < 2*time.Second {
+					t.Fatalf("the boot retired a candidate reserved %s before it returned, want at least the settle age, 2s", aged)
 				}
 				if rec.Current == candidate || !isFresh(wake, rec.Current) || !slices.Contains(rec.Retired, candidate) {
 					t.Fatalf("the record = %+v, want %s retired and a fresh current", rec, candidate)
