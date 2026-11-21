@@ -74,23 +74,26 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * (`walkThroughPin`). Where the inputs stage placed his own answer, its inventory line records
  * the judged moment, the statement that stood then; this walk must place his own answer at that
  * statement itself, by its event id, type and time. Where it placed no answer of his, an answer
- * not his own, or none after a statement, the line records no moment, and this walk must place
- * the same. Two walks of one log place one answer at one moment, so a line either way it does
- * not is refused. A settlement's verdict is its kind and its pair the one document at that
- * version; an `ask.answered`'s verdict is read from the option he chose and its pairs from that
- * event's approval, both as the build's corpus records that event. A request whose answer is not
- * his own, or is none, is on a line the inputs stage made a deviation, whose `inputs` deviation
- * (or `unjudged`) it keeps; his own answer that the build holds no case of is a deviation
- * (`answer`); an outcome whose judged documents (`judgement.documents`) are not his answered
- * pairs is a deviation (`documents`).
+ * not his own, or his own answer with no statement before it, the line records no moment, and is
+ * a deviation, and this walk must place the same. Two walks of one log place one answer at one
+ * moment, so a line either way it does not, or a ready line with no moment, is refused. A
+ * settlement's verdict is its kind and its pair the one document at that version; an
+ * `ask.answered`'s verdict is read from the option he chose and its pairs from that event's
+ * approval, both as the build's corpus records that event. A request whose answer is not his own,
+ * or is none, is on a line the inputs stage made a deviation, whose `inputs` deviation (or
+ * `unjudged`) it keeps; his own answer that the build holds no case of is a deviation (`answer`);
+ * an outcome whose judged documents (`judgement.documents`) are not his answered pairs is a
+ * deviation (`documents`).
  *
  * **The kept evidence (point 6).** Before an outcome counts, every file the judged record names
  * must be there with the sha256 it names (`judgedStageOf`), and a verdict's record must name each
  * judge's transcript and bundle and the answers: a request whose transcript is lost is a
  * `transcript` deviation, whose answers are lost an `answers` one, and whose other kept files (its
- * bundles, its calls, the sandbox's record, its `started.json`) are lost a `sandbox` one. A lost
- * or changed `outcome.json` or `outcomes.jsonl`, or any file outside every request's directory,
- * refuses the stage: no outcome can be read from it.
+ * bundles, its calls, the sandbox's record, its `started.json`, an outcome kept pending while
+ * its read-back did not run) are lost a `sandbox` one. A lost or changed `outcome.json` or
+ * `outcomes.jsonl`, or any file outside every request's directory, refuses the stage: no outcome
+ * can be read from it. A request with a pending outcome and no `outcome.json` is `started` until a
+ * run commits that outcome.
  *
  * **The verdict, recomputed (points 2 and 6).** Each verdict outcome is recomputed by point 2's
  * rule from the five answers its sandbox result kept (`recordedAnswersOf`, `ruleVerdictOf`). A
