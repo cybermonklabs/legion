@@ -10,8 +10,8 @@
 // keys outside it every pod needs.
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
+// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `nats_daemon_service_token_file`,
+// `operator_token_file`, `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
@@ -153,6 +153,10 @@ type Config struct {
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
 	// then reads NATS_DAEMON_NKEY_SEED_FILE or NATS_DAEMON_NKEY_SEED from the daemon's environment).
 	NatsDaemonNkeySeedFile string
+	// NatsDaemonServiceTokenFile is the file holding the platform identity token the daemon's own
+	// connection presents to a hub whose connections the NATS auth service admits
+	// (natsauth.ConnectService), never handed to a pane, "" when the file names none.
+	NatsDaemonServiceTokenFile string
 
 	// Stage 3's workflow dependencies. DispatchTokenFile remains a pointer here: boot reads the
 	// bearer only after every local configuration refusal has passed.
@@ -399,15 +403,17 @@ type fileConfig struct {
 	NatsNkeySeedFile     *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
-	DispatchURL            *string
-	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// NatsDaemonServiceTokenFile is `nats_daemon_service_token_file`.
+	NatsDaemonServiceTokenFile *string
+	DispatchURL                *string
+	DispatchTokenFile          *string
+	Projects                   map[string]Project
+	Gates                      *Gates
+	GitHubApps                 *GitHubApps
+	Linger                     *time.Duration
+	ProductionCheckBound       *time.Duration
+	PodUpdateGrace             *time.Duration
+	StalledTreeNotice          *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -1316,6 +1322,9 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	}
 	if file.NatsDaemonNkeySeedFile != nil {
 		cfg.NatsDaemonNkeySeedFile = underConfig(*file.NatsDaemonNkeySeedFile, configDir)
+	}
+	if file.NatsDaemonServiceTokenFile != nil {
+		cfg.NatsDaemonServiceTokenFile = underConfig(*file.NatsDaemonServiceTokenFile, configDir)
 	}
 	return nil
 }

@@ -699,19 +699,20 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 	return entry.person, []string{entry.project}, true
 }
 
-// ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no entry lists. An account that opens with "system:serviceaccount:"
-// is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the same entries Pod and
-// Google mint from, so a grant made from this answer and the token of that account cannot
-// disagree. A workflow is no account and is answered false.
-func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
+// MappedForAccount is the person and the projects this configuration gives a token minted for
+// one account, and false for an account no entry lists. An account that opens with
+// "system:serviceaccount:" is read as a Kubernetes subject, any other as a Google account address,
+// so a caller passes the string its own configuration holds and spells no principal. It reads the
+// same entries Pod and Google mint from, so a grant made from this answer and the token of that
+// account cannot disagree: the token exchange holds that token's projects to what Dispatch says
+// its person may see, and a reader of this answer can ask Dispatch about the same person. A
+// workflow is no account and is answered false.
+func (s *Set) MappedForAccount(account string) (person string, projects []string, ok bool) {
 	principal := GooglePrincipal(account)
 	if strings.HasPrefix(account, "system:serviceaccount:") {
 		principal = AccountPrincipal(account)
 	}
-	_, projects, ok := s.MappedProjects(principal)
-	return projects, ok
+	return s.MappedProjects(principal)
 }
 
 // entryProjects is the list a token an operator's entry maps carries: that entry's one project,

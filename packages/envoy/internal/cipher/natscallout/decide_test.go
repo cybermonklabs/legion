@@ -133,8 +133,9 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, reading only its own replies (TestNoCalloutGrantReadsAnotherInbox), named
-// <kind>/<machine id or account>, expiring with the token.
+// grant from natsgrant, Dispatch's and a listener's with the private-projects bucket beside it and
+// a daemon's with its account's own reply prefix (scopeGrant), named <kind>/<machine id or
+// account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -145,9 +146,9 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: withOwnReplies(natsgrant.Dispatch("example-dispatch"), "system:serviceaccount:dispatch:dispatch", true), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: withOwnReplies(natsgrant.Listener("example-hub"), listenerAccount, true), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: withOwnReplies(natsgrant.Daemon(), daemonAccount, false), Expires: now.Add(30 * time.Minute)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: dispatchCalloutGrant("example-dispatch", "system:serviceaccount:dispatch:dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token": {Name: "listener/example-hub", Grant: listenerCalloutGrant("example-hub", listenerAccount), Expires: now.Add(time.Hour)},
+		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {

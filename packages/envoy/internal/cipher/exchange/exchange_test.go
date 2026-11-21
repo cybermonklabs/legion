@@ -276,7 +276,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 // TestAnAccountEntryWithNoProjectNamesNone: an account entry may name a person and no project,
 // which is the shared public-session account's entry. Its pods' tokens are named, act for the
 // entry's person, and name no project; a request naming one is refused as any entry's is; and
-// MappedProjects and ProjectsForAccount answer the same empty list. Only an account entry may do
+// MappedProjects and MappedForAccount answer the same empty list. Only an account entry may do
 // this: a workflow's and a person-naming Google entry's empty project is still refused (the
 // table above), and a blank project that is not empty is still refused too.
 func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
@@ -295,8 +295,8 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
 		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
 	}
-	if projects, ok := set.ProjectsForAccount(workerAccount); len(projects) != 0 || !ok {
-		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
+	if gotPerson, projects, ok := set.MappedForAccount(workerAccount); gotPerson != person || len(projects) != 0 || !ok {
+		t.Fatalf("MappedForAccount = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
 	}
 	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
 		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")

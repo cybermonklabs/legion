@@ -63,12 +63,12 @@ const (
 // account's exchange entry lists", and the account is written as BROKER_API_ACCOUNTS writes one
 // (config.ParseAccount). It refuses, naming the entry: an unknown kind; a dispatch or listener
 // entry with no machine id, and a daemon or measure entry with one; a machine id that is not one
-// subject token; a measure entry with -, since its grant holds a KV read no project scope can
-// hold and it reads no project's messages; an account config.ParseAccount refuses (a namespace's
-// default account, a Google default or service-agent account); an account given twice, since
-// one account connects as one service; and a second measure entry, naming both, since the
-// measurement job's grant subscribes one fixed reply prefix (natsgrant.Measure), which a second
-// account would share.
+// subject token; a dispatch, listener or measure entry with -, since each grant holds KV calls no
+// project scope can hold (natsgrant.WithinProjects refuses them), so such an entry could only ever
+// be refused; an account config.ParseAccount refuses (a namespace's default account, a Google
+// default or service-agent account); an account given twice, since one account connects as one
+// service; and a second measure entry, naming both, since the measurement job's grant subscribes
+// one fixed reply prefix (natsgrant.Measure), which a second account would share.
 func ParseServices(raw string) ([]ServiceEntry, error) {
 	var services []ServiceEntry
 	seen := map[string]string{}
@@ -127,8 +127,11 @@ func parseService(text string) (ServiceEntry, error) {
 	case allProjectsScope:
 		entry.AllProjects = true
 	case exchangeScope:
-		if entry.Kind == KindMeasure {
+		switch entry.Kind {
+		case KindMeasure:
 			return ServiceEntry{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", ServicesVariable, text)
+		case KindDispatch, KindListener:
+			return ServiceEntry{}, fmt.Errorf("%s entry %q holds a %s to its exchange projects, which its grant cannot be held to: it reads and writes KV buckets every project shares, so write *", ServicesVariable, text, entry.Kind)
 		}
 	default:
 		return ServiceEntry{}, form()

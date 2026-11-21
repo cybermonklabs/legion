@@ -3939,14 +3939,15 @@ The daemon/pane split limits what a leaked pane seed can do, not what a pane pro
 the process boundary holds only when the daemon runs apart from its agents, as a user or in a pod of its own (the Kubernetes runtime).
 Every command the daemon itself starts (git and jj in a managed repository's checkout, `mise where`, a key command) runs without `NATS_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED`, so a seed passed by value never reaches a repository's tooling;
 still, prefer the file forms (`nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, or the `_FILE` variables), since a value stays in the daemon's own process environment.
-At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed), `paneUser=true|false`, and `seed=daemon|pane|none`.
-`legion config check` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
+At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed, or, for the service token below, the account the token names), `paneUser=true|false`, and `seed=service-token|daemon|pane|none`.
+`legion config check` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line, or, for the service token below, `nats-daemon-service-account=` and the account the token names, never the token.
 Every permission the server refuses the daemon's connection, a subscription or a publish (its JetStream consumers' API requests included), is logged at error as `NATS refused the daemon a permission: its NATS user lacks that grant` with its `operation` and `subject`;
 the server reports a refusal asynchronously, and nats.go's default handler would only write it to stderr, outside the daemon's log.
+Every refusal of the connection's credential on a reconnect (an authorization violation, for a seed or the service token below) is logged at warn as `NATS refused the connection's credential` with its `error`.
 Every other asynchronous error is logged at warn with the `subject` of the subscription it names, a dropped connection at warn as `NATS connection lost` with its `error`, the reconnect at info as `NATS connection restored` with its `server`, and a terminal close (a fatal server `-ERR`) at error, once, as `NATS
 connection closed` with its `error`.
 Reconnects never run out: the connection never drops a server from its pool for having failed too many times, so an outage mid-run shows as `NATS
-connection lost` and then, once NATS answers again, `NATS connection restored` — never a close — at nats.go's own default 2 s reconnect wait.
+connection lost` and then, once NATS answers again, `NATS connection restored` — never a close — at nats.go's own default 2 s reconnect wait (the service token's connection, below, waits on its own schedule).
 A server that keeps refusing to reconnect for any reason short of the two shapes that do close it
 — an unrecognized server `-ERR`, or the same authorization error twice in a row (nats.go's own terminal-close rules)
 — never closes the connection and so never logs either of those two lines again:
@@ -3977,10 +3978,23 @@ The backfill of an issue record that holds no repository details is the one exce
 A stop during a wait ends the boot at once.
 
 A malformed seed refuses the boot immediately at startup, before any network connection is attempted.
-A NATS authorization violation at connect time is the same: the server said no synchronously, and the boot refuses it at once.
+A NATS authorization violation at connect time is the same, for a seed or no credential: the server said no synchronously, and the boot refuses it at once (the service token below waits it out).
 An EOF during the NATS handshake also refuses at once
 — the connection simply closed, and nats.go returns that synchronously too
 — though no crash in the audited journal took this shape, so refusing rather than waiting here is a judgment call.
+
+Behind the NATS auth service in the secrets broker, the daemon's own connection may present a platform identity token instead of a seed:
+`nats_daemon_service_token_file` (relative to `legion.yaml`'s directory) names a projected ServiceAccount token for the broker's `BROKER_NATS_K8S_AUDIENCE`, whose account the broker's `BROKER_NATS_SERVICES` lists as a `daemon` entry.
+The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
+List the daemon's entry with `*`, the daemon's whole grant (with its own reply prefix).
+Do not list it with `-` yet: `-` holds the grant to the projects the account's exchange entry lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service), and that grant names the consumers a daemon opens only once it opens its consumers per project, and drops the stream reads today's daemon makes, so today's daemon would be refused at boot.
+`-` is for daemon entries once the daemon release gate opens for such a daemon; the change that lists them waits on it.
+A daemon seed beside the token file refuses boot naming both, and so does a token file that cannot be read, is empty, or names no account.
+The auth service refuses a token while it is away, or, for a daemon held to its exchange projects (`-`), while it holds no complete read yet of Dispatch's answers about those projects, so the token's connection waits a refusal out, at boot and while running alike, on one schedule (one second, doubling, capped at a minute):
+at boot each refused attempt is logged as the `connect Envoy NATS` probe's retry with its `detail` (`nats: Authorization Violation`), and the daemon serves nothing, its `/readyz` answering nothing, until the token is admitted;
+while running each refused reconnect is logged at warn as `NATS refused the connection's credential` with its `error`.
+A seed's refusal, or a refusal of a connection with no credential, still refuses boot, and a seed's connection the server refuses twice with the same error still closes.
+NATS tells the daemon only that it was refused, never why: the reason is in the secrets broker's log, on its `natscallout: refused a NATS connection` line, as its `reason` (for example `project not visible to the account's person: <KEY>`) and its `label` (for example `service_not_listed`, `no_complete_pass`, `project_not_visible`), which `broker_nats_callout_decisions_total` counts as its `reason`.
 
 A NATS permission violation on a JetStream call (a refused consumer or stream grant) is reported asynchronously:
 the server tells the connection of it well before the blocked call's own attempt bound runs out, but the blocked call itself does not return early on that report

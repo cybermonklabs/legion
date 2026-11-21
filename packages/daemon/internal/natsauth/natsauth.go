@@ -1,8 +1,9 @@
-// Package natsauth resolves the NATS nkey user a Legion process connects to Envoy's NATS as, and
-// connects as it.
+// Package natsauth resolves the NATS credential a Legion process connects to Envoy's NATS with (an
+// nkey user's seed, or the daemon's platform identity token), and connects with it.
 package natsauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,9 +15,16 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
+
+// ServiceTokenFileKey is the configuration key naming the file of the platform identity token the
+// daemon's own connection presents to a hub whose connections the NATS auth service admits.
+const ServiceTokenFileKey = "nats_daemon_service_token_file"
 
 // SeedFileKey is the configuration key naming the seed's file, in `legion.yaml` and the operator's
 // controller configuration alike. SeedFileVariable and SeedVariable are the two variables a process
@@ -157,6 +165,12 @@ func (s source) seed() (string, error) {
 // test fixture reporting a connection a test left open can say which client it was. It is
 // appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
 // does not win here.
+//
+// It leaves nats.go's IgnoreAuthErrorAbort at its default: a seed's user is one a hub admits by its
+// own configuration, never asking the NATS auth service, and the auth service admits no connection
+// with no credential, so the same refusal twice is a refusal for good and the connection closes
+// (TestADaemonSeedRefusedTwiceCloses). The credential the auth service decides is
+// ConnectService's, which retries a refusal.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
@@ -172,6 +186,68 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	// Last, so these pings and this name hold whatever a caller passed before them.
 	options = append(options, detectSilentCuts, nats.Name(name))
 	return nats.Connect(strings.Join(urls, ","), options...)
+}
+
+// ServiceIdentity is the account the platform identity token in the file at tokenFile names (its
+// subject, which for a projected Kubernetes token is system:serviceaccount:<namespace>:<name>),
+// read unverified, as natscred.Identity reads it: what the daemon says it connects as. The file is
+// refused, naming ServiceTokenFileKey and the path, when it cannot be read, is empty, or holds no
+// token that names an account. No error carries the token.
+func ServiceIdentity(tokenFile string) (string, error) {
+	token, err := natscred.ServiceFile(tokenFile).Read()
+	if err != nil {
+		return "", fmt.Errorf("%s names %s, whose token could not be read: %w", ServiceTokenFileKey, tokenFile, err)
+	}
+	identity, err := natscred.Identity(token)
+	if err != nil {
+		return "", fmt.Errorf("%s names %s, whose token names no account: %w", ServiceTokenFileKey, tokenFile, err)
+	}
+	return identity, nil
+}
+
+// ConnectService dials urls as the service the platform identity token in the file at tokenFile
+// names: user natscred.ServiceUser and that token, read afresh at each CONNECT (natscred.Service),
+// which the NATS auth service verifies and answers with the grant its BROKER_NATS_SERVICES entry
+// lists for the account (kind daemon). It pings and names itself as Connect does.
+//
+// Three things a seed's connection does not do:
+//   - It sets nats.go's IgnoreAuthErrorAbort (natscred.Service does): a hub refuses every client the
+//     auth service decides while that service is away or does not yet hold an answer the decision
+//     needs, so this connection retries a refusal rather than closing after the same one twice (as
+//     a seed's connection does, TestADaemonSeedRefusedTwiceCloses).
+//   - Its reply inboxes are natsgrant.InboxPrefix of the account the token names, the one reply
+//     prefix the auth service grants this account in place of _INBOX.>, so no other client's
+//     replies reach it.
+//   - It moves to a later token natscred.ServiceRenewBefore before the one it presented lapses
+//     (natscred.Keeper), since the user the auth service answers expires with the token; the keeper
+//     runs until the connection closes.
+func ConnectService(urls []string, tokenFile, name string, options ...nats.Option) (*nats.Conn, error) {
+	identity, err := ServiceIdentity(tokenFile)
+	if err != nil {
+		return nil, err
+	}
+	credential, keeper := natscred.Service(natscred.ServiceFile(tokenFile))
+	// Last, as Connect's, so this credential, prefix, pings and name hold whatever a caller passed.
+	options = append(options, credential, nats.CustomInboxPrefix(natsgrant.InboxPrefix(identity)), detectSilentCuts, nats.Name(name))
+	conn, err := nats.Connect(strings.Join(urls, ","), options...)
+	if err != nil {
+		return nil, err
+	}
+	// The keeper ends when the connection closes, the daemon's own Close included. nats.go sends
+	// CLOSED to a status listener registered before the close, into a buffered channel, so the
+	// event is kept even when it comes before the goroutine waits; a close before the listener is
+	// registered sends nothing, which the IsClosed read after the registration catches.
+	closed := conn.StatusChanged(nats.CLOSED)
+	keep, stop := context.WithCancel(context.Background())
+	go func() {
+		defer stop()
+		if conn.IsClosed() {
+			return
+		}
+		<-closed
+	}()
+	go keeper.Keep(keep, conn)
+	return conn, nil
 }
 
 // ReconnectForever is the connection option that never gives up reconnecting. nats.go's own
@@ -214,8 +290,9 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 // asynchronously: at error, every permission the server refuses it, a subscription or a publish,
 // the JetStream API requests a consumer makes included, and a terminal close (a fatal server -ERR,
 // or — for a caller that has not also set ReconnectForever — reconnects exhausted), once, with
-// its cause; at warn, every other asynchronous error, with the subject of the subscription it
-// names, and every disconnect, with its cause; at info, every reconnect, with the server. nats.go's
+// its cause; at warn, every refusal of the connection's credential on a reconnect (Refused), with
+// its reason, every other asynchronous error, with the subject of the subscription it names, and
+// every disconnect, with its cause; at info, every reconnect, with the server. nats.go's
 // default handler writes a refusal to stderr unlabelled and nothing for the rest. It owns the
 // connection's AsyncErrorCB, DisconnectedErrCB, ReconnectedCB and ClosedCB: an option after it
 // that sets one replaces its handler. It also sets NoCallbacksAfterClientClose, so the daemon's
@@ -223,6 +300,12 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 func LogEvents(log *slog.Logger) nats.Option {
 	return func(o *nats.Options) error {
 		o.AsyncErrorCB = func(_ *nats.Conn, sub *nats.Subscription, err error) {
+			if Refused(err) {
+				// nats.go reports each refusal of a reconnect's CONNECT here: a seed's connection
+				// closes after the same one twice, the service token's tries again (ConnectService).
+				log.Warn("NATS refused the connection's credential", "error", err)
+				return
+			}
 			if !errors.Is(err, nats.ErrPermissionViolation) {
 				subject := ""
 				if sub != nil {
@@ -303,6 +386,34 @@ func Unreachable(err error) bool {
 	}
 	var opErr *net.OpError
 	return errors.As(err, &opErr)
+}
+
+// Refused reports whether err is the server refusing the connection's credential: nats.go's
+// authorization violation, which a hub whose connections the NATS auth service admits answers for
+// every refusal of that service, whatever its reason (the service tells the server why, and the
+// server tells the client only that it was refused). For a seed's connection that is a
+// misconfiguration, which Unreachable refuses; for the daemon's service token it is waited out,
+// at boot and while running alike (ConnectService, ReconnectBackoff).
+func Refused(err error) bool {
+	return errors.Is(err, nats.ErrAuthorization)
+}
+
+// ReconnectBackoff is the connection option that waits initial before the first reconnect of a
+// lost connection, doubling each attempt up to max: the daemon's service-token connection's wait
+// while running, the same schedule its boot waits a refusal out on (daemon.readinessRetry), so a
+// hub whose auth service refuses every client while it is away is not met with a reconnect per
+// client every two seconds.
+func ReconnectBackoff(initial, max time.Duration) nats.Option {
+	return nats.CustomReconnectDelay(func(attempts int) time.Duration {
+		wait := initial
+		for range attempts - 1 {
+			if wait >= max/2 {
+				return max
+			}
+			wait *= 2
+		}
+		return min(wait, max)
+	})
 }
 
 // PublicKey is the public key of the nkey user seed is the seed of, a seed Seed answered: what a

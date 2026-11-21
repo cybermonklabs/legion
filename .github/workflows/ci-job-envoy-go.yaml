@@ -46,9 +46,10 @@ jobs:
     # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
     # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
-    # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 110
+    # 10, the bus matrix's own 5, the auth service's own 5 and natsgrant's own 5 (measured at
+    # under a minute on a dev box) are 111, the integration step's 5 is less, and the callout
+    # check's own 6, after the seconds those two steps measure, is less too.
+    timeout-minutes: 115
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -247,10 +248,14 @@ jobs:
       # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
       # image the hub runs lets a user with an empty publish allow list publish anywhere, the
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
-      # runs. Each package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
-      # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
-      # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
-      # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # runs. natsgrant has one of its own: a Legion daemon's grant held to its projects
+      # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
+      # receives no other project's message while today's grant, the control, does. Each package
+      # runs only the tests its tag adds:
+      # `-tags natslive ./pkg` would re-run the package's untagged tests, which already run
+      # elsewhere - internal/testnats and natsgrant in the unit step above, and internal/bus and
+      # internal/cipher/natscallout in envoy-go-race, which the unit step's grep -Ev leaves out -
+      # so the -run comes from .github/scripts/go-tagged-tests.sh,
       # which reads the names off the source at run time, and no test name is spelled here. Each
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.
@@ -260,6 +265,8 @@ jobs:
           go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
+          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
           go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
         working-directory: packages/envoy

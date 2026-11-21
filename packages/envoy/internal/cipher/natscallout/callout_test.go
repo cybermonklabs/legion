@@ -24,8 +24,20 @@ import (
 )
 
 // startService runs the auth service against the server at url with keys' seeds, deps and decide,
-// stopped when the test ends, and returns once its subscription has reached the server.
+// admitting exampleServices, stopped when the test ends, and returns once its subscription has
+// reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
+	t.Helper()
+	return startServiceAdmitting(t, url, keys, exampleServices, deps, decide)
+}
+
+// startServiceOf is startService admitting services, deciding as Decide does.
+func startServiceOf(t *testing.T, url string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps) *Service {
+	t.Helper()
+	return startServiceAdmitting(t, url, keys, services, deps, Decide)
+}
+
+func startServiceAdmitting(t *testing.T, url string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps, decide decideFunc) *Service {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, seed string) string {
@@ -38,7 +50,7 @@ func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps
 		SeedFile:       write("service.seed", keys.ServiceSeed),
 		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
 		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       exampleServices,
+		Services:       services,
 	}
 	service, err := start(t.Context(), settings, deps, decide)
 	require.NoError(t, err)

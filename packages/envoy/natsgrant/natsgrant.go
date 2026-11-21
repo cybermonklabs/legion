@@ -5,6 +5,33 @@
 // kind hold the same lists, built from the names internal/bus and internal/contracts export.
 //
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
+//
+// WithinProjects (projects.go) holds a grant to a Scope: the projects a token lists and the
+// account the token names. The auth service answers a Legion daemon whose entry is held to
+// projects with it. It writes _INBOX.> as the account's own reply prefix (InboxPrefix, which the
+// client sets with nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_'
+// included, as '_' and two hex digits, so no two accounts share one), each issue, role-exception
+// and Legion lane as the scope's projects', and each consumer call on the stream as the calls on
+// the daemon's own legion-go-<project>-<kind> consumers, each create subject naming its one
+// filter. It keeps every repository's GitHub events (notifications.github.>) whole, since a
+// GitHub event is a message of no project, which every service is granted, and grants each
+// project one GitHub consumer, legion-go-<project>-github, on that whole family: a grant could
+// name a consumer per repository only from a list of the repositories, which a Scope does not
+// hold. The daemon drops in its own process the events of a repository it does not work in.
+//
+// WithinProjects drops the stream's info and stored-message get, and refuses, naming the entry,
+// any other stored-message read, a create that names no filter, a KV bucket's call,
+// notifications.> and every entry it does not know. It refuses a grant whose publish or subscribe
+// list would end empty, since nats-server reads a user JWT with an empty allow list as allowing
+// every subject in that direction. It keeps the grant's deny lists (PublishDeny, SubscribeDeny) as
+// they are handed in, since a deny only narrows. Only a daemon's grant passes it: the listener's,
+// Dispatch's and the measurement job's hold notifications.> or a bucket, which it refuses, so an
+// auth-service entry of those kinds takes the whole grant.
+//
+// A daemon's ready consumer reads the one wake lane every daemon shares, where the listener also
+// puts every project's role and agent wake reports. So a daemon is held to its projects only once
+// it opens its consumers per project and every listener publishes each project's role and agent
+// wakes on that project's own lane.
 package natsgrant
 
 import (

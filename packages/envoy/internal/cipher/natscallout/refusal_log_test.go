@@ -1,6 +1,9 @@
 package natscallout
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -10,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -194,4 +198,40 @@ func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session, behind s
 	require.NoError(t, err, "the live session was not admitted (after %s): the slot it needed was held by %s", took, behind)
 	nc.Close()
 	require.Less(t, took, 500*time.Millisecond, "the live session was admitted after %s, behind %s", took, behind)
+}
+
+// A pass in which Dispatch refuses the broker's own token on one question and another question
+// fails is held as refused (every held daemon is refused project_access_refused), so no line of
+// it may tell the operator that the last complete pass is kept: that is the opposite of what the
+// broker does. Seen on the real stack: a 401 about one project beside another question whose
+// connection closed logged that the last complete pass is kept, at WARNING, while every held
+// daemon was refused. Here OPS's question is refused and PUB's fails.
+func TestARefusedPassLogsNoKeptPass(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}}}
+	tokens := map[string]platformToken{"token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	var logged bytes.Buffer
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"OPS", "PUB"}}),
+		Access: dispatch.access,
+		Log:    slog.New(slog.NewTextHandler(&logged, nil)),
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	deps.held.refresh(t.Context())
+	logged.Reset()
+
+	deps.held.access = func(_ context.Context, project, _ string) (projectaccess.Answer, error) {
+		if project == "OPS" {
+			return projectaccess.Answer{}, projectaccess.ErrBrokerRefused
+		}
+		return projectaccess.Answer{}, errors.New("projectaccess: ask dispatch: EOF")
+	}
+	deps.held.refresh(t.Context())
+
+	_, err := Decide(t.Context(), deps, services, serviceRequest("token"))
+	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
+	require.NotContains(t, logged.String(), "last complete pass is kept",
+		"a refused pass was logged as keeping the last complete pass:\n%s", logged.String())
 }

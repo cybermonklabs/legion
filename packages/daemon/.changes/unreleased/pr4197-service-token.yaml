@@ -1,0 +1,16 @@
+kind: Added
+custom:
+  Issue: pr4197
+body: |-
+  A new `legion.yaml` key, `nats_daemon_service_token_file`, names a projected ServiceAccount
+  token the daemon's own NATS connection presents, as user `service`, to a hub whose connections
+  the secrets broker's NATS auth service admits. The daemon reads the file afresh at each connect,
+  takes its account's own reply prefix, and moves to a later token ten minutes before the one it
+  presented lapses. A refusal of the token is waited out at boot and while running, on one
+  second, doubling, capped at a minute: at boot each refused attempt is logged with its reason and
+  the daemon is not ready until it is admitted, so it neither exits nor restarts. A daemon seed
+  beside the key, or a token file that cannot be read or names no account, refuses boot naming
+  it, and `legion config check` reads the token as boot does and names its account on its OK
+  line (`nats-daemon-service-account=`), never the token. Every refusal of a reconnect's
+  credential, a seed's included, is now logged at warn as `NATS refused the connection's
+  credential`. A seed's connection otherwise behaves as before.
