@@ -400,14 +400,18 @@ func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgai
 // units) and only its first part past that (model.EventBody), cut at the last blank line within
 // the bound, else at the last line break, else at the last character. A block holds up to 32,000
 // units as well, so a body whose first block fills the bound and breaks its lines with no blank
-// line between them is cut inside that block: the event holds the block's head, which no erased
-// text matches whole. The comment here is that body, its secret on the first line, written
-// through the API, and the test reads its comment.created event cut inside the first block with
-// the secret in it (the control). The comment's erase takes every byte of the cut body out of its
-// events, and no column of the database holds the secret afterwards. The keyword table is then
-// emptied, as the fill empties it for a log that was reset, and the fill runs again over the
-// whole log (textversions.FillToHorizon): the comment has no row and no blocks left, so the fill
-// reads its cut body from the event (body_from 'cut'), and no version it writes holds the secret.
+// line between them is cut inside that block: the event holds the block's head. The erase reads
+// the cut of the comment's body as it stands among its erased texts, so the event of an earlier
+// body is the one whose cut no erased text matches whole. The comment here is first written
+// through the API as that long body, its secret on the first line, and then edited to a short body
+// with no secret, so its comment.created event holds the head of a first block no erased text
+// holds whole. The test reads that event cut inside the block with the secret in it, and the
+// comment's body after the edit holding none (the control). The comment's erase takes every byte
+// of the cut body out of its events, and no column of the database holds the secret afterwards.
+// The keyword table is then emptied, as the fill empties it for a log that was reset, and the fill
+// runs again over the whole log (textversions.FillToHorizon): the comment has no row and no blocks
+// left, so the fill reads its first body from the event (body_from 'cut'), and no version it
+// writes holds the secret.
 func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -431,6 +435,15 @@ func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
 	if !truncated || !strings.Contains(cut, secret) || len(cut) >= len(first) || !strings.HasPrefix(first, cut) {
 		t.Fatalf("comment %s's comment.created event carries %d bytes of its %d-byte first block, truncated %t, holding the secret %t; want the head of that block alone, cut inside it with the secret in it, so this test would prove nothing",
 			comment, len(cut), len(first), truncated, strings.Contains(cut, secret))
+	}
+	edit, err := json.Marshal(map[string]string{"body": "The comment now says nothing secret.\n\nA second block of the same comment."})
+	if err != nil {
+		t.Fatalf("encode the edit: %v", err)
+	}
+	server.call(t, http.MethodPatch, "/api/v1/comments/"+comment, string(edit), http.StatusOK)
+	var now string
+	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1::uuid`, comment).Scan(&now); err != nil || strings.Contains(now, secret) {
+		t.Fatalf("after the edit comment %s reads %q (err %v), want a body with no secret, so that no erased text is the first body or its cut", comment, now, err)
 	}
 
 	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)

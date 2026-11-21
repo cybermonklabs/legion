@@ -165,6 +165,10 @@ type Erasure struct {
 	// nowhere else - no row, no record, no log - since each is the digest of an erased text, and
 	// they go with the process once the sweep has read them.
 	sums [][]byte
+	// needles are the text nodes of the erased texts as a stored display tree spells them, by
+	// which the run deleted trees where an event of the node carried a body it cut (treeNeedles).
+	// They are held as the sums are, and for the same reason.
+	needles [][]byte
 }
 
 // Mismatch reports whether a confirmed run read a listing other than the one its --confirm

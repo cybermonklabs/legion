@@ -215,6 +215,11 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		return err
 	}
 	e.sums = sums
+	needles, err := treeNeedles(read)
+	if err != nil {
+		return err
+	}
+	e.needles = needles
 	forgotten, err := e.forgetEmbeddings(ctx, tx, read)
 	if err != nil {
 		return err
@@ -289,7 +294,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	}
 	e.removed("search_term_queue", queued)
 	e.Recounted = recounted
-	if err := e.forgetTrees(ctx, tx, sums); err != nil {
+	if err := e.forgetTrees(ctx, tx, sums, needles); err != nil {
 		return err
 	}
 	if err := graphstore.EraseNode(ctx, tx, e.Kind, e.ID, read.tupleSeqs); err != nil {

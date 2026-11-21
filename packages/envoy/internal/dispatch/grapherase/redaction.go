@@ -121,12 +121,16 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		if refs.ItemKind(e.Kind) == refs.ItemComment {
 			comment = e.ID
 		}
-		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
+		payload, originals, cutBody, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
 		if len(originals) == 0 {
 			continue
+		}
+		if cutBody != "" {
+			read.cutBodies = append(read.cutBodies, cutBody)
+			read.listing.cutBody = true
 		}
 		read.events = append(read.events, redactedEvent{id: event.id, kind: event.kind, payload: payload, originals: originals})
 		read.listing.events = append(read.listing.events, fmt.Sprintf("events %d %s", event.id, event.kind))
@@ -152,15 +156,18 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // comment is the erased comment's id, empty for any other node. A payload that is that comment's
 // own (its `id`) and whose `body_truncated` is true carries only the first part of the body
 // (model.EventBody), cut at the last blank line, else line break, else character within the
-// event's bound, so the cut can fall inside a block: that block then stands in the payload in
-// part, which no erased text matches whole, and its bytes would stay. Every byte of that body is
-// the comment's own, so the whole value is replaced with the marker (ownCutBody).
-func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, error) {
+// event's bound, so the cut can fall inside a block. The texts carry the cut of the body as it
+// stands (readTexts), but not the cut of a body the comment held before an edit, whose first part
+// then holds the head of a block that no text matches whole, and those bytes would stay. Every
+// byte of a cut body is the comment's own, so the whole value is replaced with the marker
+// (ownCutBody), and redactPayload answers that body, empty where it cut none, since the display
+// tree of an earlier body is keyed by a text no row holds (treeNeedles).
+func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	var originals []string
 	// key is the key the value stands under, and the key of the array that holds it for an
@@ -206,15 +213,15 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool, c
 		}
 	}
 	if len(originals) == 0 {
-		return payload, nil, nil
+		return payload, nil, "", nil
 	}
 	var written bytes.Buffer
 	encoder := json.NewEncoder(&written)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return bytes.TrimSpace(written.Bytes()), originals, nil
+	return bytes.TrimSpace(written.Bytes()), originals, cutBody, nil
 }
 
 // ownCutBody answers the top-level `body` of value, a decoded payload, where the payload is the

@@ -21,6 +21,10 @@ import (
 // erased text: a value tuple is listed without its value and a row by its key alone.
 type listing struct {
 	tuples, rows, versions, reviews, embeddings, search, excerpts, events, documents, left, blockers []string
+	// cutBody is whether the run replaced with the marker the body an event of the node cut
+	// (ownCutBody). That body may be one the comment held before an edit, whose own display tree is
+	// keyed by a text no row holds any more, so the sweep after the commit takes trees by content.
+	cutBody bool
 }
 
 // lines renders the listing as Write prints it and as its digest is taken: the node first, then
@@ -47,6 +51,10 @@ func (l listing) lines(e *Erasure) []string {
 	section("live documents whose history is replaced", l.documents)
 	lines = append(lines, "  display trees: the text_trees row of every text above the run removes or rewrites goes; "+
 		"a tree of any other text is that text's, keyed by its digest, and is not listed")
+	if l.cutBody {
+		lines = append(lines, "  display trees of an earlier body: an event of the node carries a body it cut, so after the commit "+
+			"every text_trees row whose tree holds a text node of an erased text goes as well")
+	}
 	section("rows that hold the erased bytes and derive from another node, left as they are", l.left)
 	for _, blocker := range l.blockers {
 		lines = append(lines, "  blocked: "+blocker)

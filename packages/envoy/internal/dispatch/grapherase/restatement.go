@@ -2,6 +2,7 @@ package grapherase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
@@ -296,15 +298,75 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 	return sums, nil
 }
 
-// forgetTrees deletes the stored display tree of every text treeSums named. A reader of a text no
-// row holds a tree for makes it from the markdown, as for a text written before the table existed
-// (texttrees), so the cost of a row deleted here is one reading, and a text the run rewrote has
-// the tree of what it now says made the first time it is read.
-func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums [][]byte) error {
-	if len(sums) == 0 {
+// treeNeedles is, where the run cut a body an event of the node carried (erasedRead.cutBodies),
+// every text node of the display tree of each of the node's own texts and of each such body, as a
+// stored tree spells it: `"text":` and the node's text encoded as JSON. A body the comment held
+// before an edit is held whole by no row once the edit's event cut it, so the key of its stored
+// tree is the digest of a text the run never reads, and treeSums cannot name it. That tree holds
+// the text nodes of the body's blocks, which comment_block_texts holds at that revision
+// (readTexts), and of the head the event carried, so forgetTrees takes every tree that holds one
+// of them. A tree of another text that holds one of those nodes goes too, and is made from its
+// markdown at its next reading, as any tree forgetTrees deletes is. Where no event cut a body,
+// every tree of the run's texts is keyed by one of the sums, and treeNeedles is empty.
+func treeNeedles(read erasedRead) ([][]byte, error) {
+	if len(read.cutBodies) == 0 {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var needles [][]byte
+	var walk func(node any)
+	walk = func(node any) {
+		switch held := node.(type) {
+		case []any:
+			for _, child := range held {
+				walk(child)
+			}
+		case map[string]any:
+			if text, ok := held["text"].(string); ok && held["type"] == "text" && strings.TrimSpace(text) != "" {
+				// json.Marshal spells the string as the stored tree does (pmdoc.DisplayTreeToStore):
+				// no space after the colon, and <, > and & escaped. A string never fails to encode.
+				encoded, _ := json.Marshal(text)
+				if needle := append([]byte(`"text":`), encoded...); !seen[string(needle)] {
+					seen[string(needle)] = true
+					needles = append(needles, needle)
+				}
+			}
+			for _, child := range held {
+				walk(child)
+			}
+		}
+	}
+	for _, text := range slices.Concat(read.texts, read.cutBodies) {
+		tree := pmdoc.DisplayTreeToStore(text, pmdoc.DisplayLatest)
+		if tree == nil {
+			continue
+		}
+		var decoded any
+		if err := json.Unmarshal(tree, &decoded); err != nil {
+			return nil, fmt.Errorf("read the display tree of a text of the erased node: %w", err)
+		}
+		walk(decoded)
+	}
+	return needles, nil
+}
+
+// deleteTreesQuery deletes the stored display tree of every text whose sum is one of $1, and
+// every stored tree that holds one of the needles of $2 (treeNeedles).
+const deleteTreesQuery = `
+	delete from text_trees t
+	 where t.sum = any($1::bytea[])
+	    or exists (select 1 from unnest($2::bytea[]) as needle (bytes) where position(needle.bytes in t.tree) > 0)`
+
+// forgetTrees deletes the stored display tree of every text treeSums named, and every tree that
+// holds a needle treeNeedles made. A reader of a text no row holds a tree for makes it from the
+// markdown, as for a text written before the table existed (texttrees), so the cost of a row
+// deleted here is one reading, and a text the run rewrote has the tree of what it now says made
+// the first time it is read.
+func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums, needles [][]byte) error {
+	if len(sums) == 0 && len(needles) == 0 {
 		return nil
 	}
-	tag, err := tx.Exec(ctx, `delete from text_trees where sum = any($1::bytea[])`, sums)
+	tag, err := tx.Exec(ctx, deleteTreesQuery, sums, needles)
 	if err != nil {
 		return fmt.Errorf("delete the display trees of the texts holding the text of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -319,11 +381,11 @@ func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums [][]byte) err
 // the caller passes in, then deletes those keys in a statement of its own, and counts what it
 // found, so an operator reads whether the window was ever used.
 //
-// The keys it deletes are the ones the run held in memory (Erasure.sums): no digest of an erased
-// text is written anywhere to remember them, so a sweep that fails cannot be run again, and its
-// error says so.
+// The keys and needles it deletes by are the ones the run held in memory (Erasure.sums and
+// Erasure.needles): no digest or text node of an erased text is written anywhere to remember
+// them, so a sweep that fails cannot be run again, and its error says so.
 func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Duration) error {
-	if len(e.sums) == 0 {
+	if len(e.sums) == 0 && len(e.needles) == 0 {
 		return nil
 	}
 	wait := time.NewTimer(bound)
@@ -335,7 +397,7 @@ func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Dur
 			"before it ran (a read that began before the commit may have stored a tree it removed; "+
 			"no record keeps their keys, so the sweep cannot be run again): %w", ctx.Err())
 	}
-	tag, err := conn.Exec(ctx, `delete from text_trees where sum = any($1::bytea[])`, e.sums)
+	tag, err := conn.Exec(ctx, deleteTreesQuery, e.sums, e.needles)
 	if err != nil {
 		return fmt.Errorf("the erase committed, and its sweep of text_trees after the commit failed "+
 			"(no record keeps their keys, so the sweep cannot be run again): %w", err)

@@ -69,6 +69,10 @@ type erasedRead struct {
 	artifacts []string
 	numbers   []int32
 	events    []redactedEvent
+	// cutBodies are the bodies an event of the node cut (ownCutBody), each as the event carried
+	// it, which the redaction replaced whole with the marker. Each may be the head of a body the
+	// comment held before an edit, whose display tree no sum the run holds keys (treeNeedles).
+	cutBodies []string
 	embedded  []embeddingRow
 	owners    events.OwnerRows
 	listing   listing
