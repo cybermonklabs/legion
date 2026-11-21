@@ -52,17 +52,17 @@ package supervise
 // a credit a machine took and then let go without giving it back, or kept past the wake it was
 // taken for, by a path that no decision's end reaches. At each sweep the gate asks the machine
 // that holds each credit granted before the previous correction whether it still holds it, and
-// waits on nothing to ask (Machine.reclaimCredit). A machine that is deciding keeps the credit,
-// because the decision may be the turn of the wake that credit paid for: the turn takes the wake
-// off the machine's view, and the credit comes back only as the decision ends. A machine between
-// decisions keeps it while it holds it with a refresh wake of its own waiting. Every other such
-// credit is taken back there and then, and logged, since a credit taken back is one a path gave
-// up without giving it back. A credit granted since the previous correction is kept whatever its
-// machine shows, so a correction never lowers the count below the admissions granted since the
-// sweep before. A lost credit is therefore kept through the first correction after its admission
-// and taken back at the second, when its machine no longer holds it; if its machine is deciding
-// then, it is taken back at the first correction after that which finds the machine between
-// decisions. A credit still in its post has no machine to ask: the decision of that post, or the
+// waits on nothing to ask (Machine.reclaimCredit). A machine whose lock is held, deciding or being
+// read, keeps the credit, because a decision may be the turn of the wake that credit paid for: the
+// turn takes the wake off the machine's view, and the credit comes back only as the decision ends.
+// A machine between decisions keeps it while it holds it with a refresh wake of its own waiting.
+// Every other such credit is taken back there and then, and logged, since a credit taken back is
+// one a path gave up without giving it back. A credit granted since the previous correction is
+// kept whatever its machine shows, so a correction never lowers the count below the admissions
+// granted since the sweep before. A lost credit is therefore kept through the first correction
+// after its admission and taken back at the second, when its machine no longer holds it; if its
+// machine's lock is held then, it is taken back at the first correction after that which finds the
+// lock free. A credit still in its post has no machine to ask: the decision of that post, or the
 // stop's close of the inbox it waits in, gives it back, a machine's feed decides every event it
 // takes, and nothing else drops an inbox.
 //
@@ -340,12 +340,13 @@ const creditTakenBackMessage = "supervise: the refresh gate's correction took ba
 
 // reclaimCredit is the gate's correction asking this machine whether it still holds credit, a
 // credit it took (holdCredit) before the previous correction, and taking it back if it does not
-// (RefreshGate.Correct, the package doc). It waits on no decision: a machine whose lock is held is
-// deciding, and the decision may be the turn credit paid for, which gives it back as it ends, so
-// the credit is kept and the next sweep asks again. A machine between decisions holds credit only
-// as its own with a refresh wake of its own waiting; a credit it let go without giving it back, or
-// keeps with no such wake, is given back here, and the line names the claim, since a path that
-// gave a credit up without giving it back is a defect of the lane.
+// (RefreshGate.Correct, the package doc). It waits on no holder of the machine's lock: a machine
+// whose lock is held is deciding or being read, and a decision may be the turn credit paid for,
+// which gives it back as it ends, so the credit is kept and the next sweep asks again. A machine
+// between decisions holds credit only as its own with a refresh wake of its own waiting; a credit
+// it let go without giving it back, or keeps with no such wake, is given back here, and the line
+// names the claim, since a path that gave a credit up without giving it back is a defect of the
+// lane.
 //
 // It is a locked section that can change the credit, so it ends in unlock, as every such section
 // does.

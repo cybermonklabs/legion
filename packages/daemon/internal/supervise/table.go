@@ -215,10 +215,11 @@ type StalePlugin struct {
 	// this claim, or nil: the pass posts the controller's claim and a claim it read in a turn
 	// with none (internal/daemon's refreshStalePlugins). The decision of this post gives the
 	// credit back unless the machine takes it as its own (Machine.Handle, settleUntakenCredit,
-	// refreshPlugin): a row that ignores the post, a settle or fence that returns first, and a
-	// post over a credit already held all give it back as that decision ends. A credit the
-	// machine takes goes back at the end of the decision that ends with no refresh wake of this
-	// claim's waiting (endRefreshLane), and so at once where its decision raises none.
+	// refreshPlugin): a row that ignores the post, and a settle or fence that returns first, give
+	// it back as that decision ends, and a post over a credit already held gives it back at once
+	// (refreshPlugin). A credit the machine takes goes back at the end of the decision that ends
+	// with no refresh wake of this claim's waiting (endRefreshLane), and so at once where its
+	// decision raises none.
 	Credit *RefreshCredit
 }
 
