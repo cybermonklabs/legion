@@ -4,7 +4,9 @@
 // device login (`device-login.ts`, `withDeviceLoginLock`): `<file>.lock`, beside the login's file.
 //
 // - It is taken by creating the file exclusively, holding this process's pid and a value of this
-//   call's own, and its holder touches it every 5 s while it holds it.
+//   call's own, and its holder touches it every 5 s while it holds it. A lock is read through a
+//   file opened once without waiting, and only where that file is a regular one, so a named pipe
+//   left at its path holds no caller: it reads as no holder's lock, and is taken over once stale.
 // - A lock untouched for 15 s is taken as one whose holder died. Only one caller takes it over:
 //   the one that creates the take-over's own lock, `<file>.lock.steal`, and finds the lock still
 //   stale under it. A `.lock.steal` left for 5 s by a caller that died or stopped is removed.
@@ -28,14 +30,13 @@
 //   harm.
 
 import { randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import {
   type FileHandle,
   link,
   mkdir,
   open,
   readdir,
-  readFile,
   rename,
   rm,
   stat,
@@ -117,12 +118,34 @@ interface Seen {
   readonly value: string;
 }
 
+/**
+ * What `path` holds: "" where nothing is there, where it cannot be read, or where it is no regular
+ * file. A plain read of a named pipe left at a lock's path would wait until a process writes to
+ * it, and so would every caller of the lock; so the path is opened once without waiting, and read
+ * through that open file only where it is a regular one.
+ */
+async function holderValue(path: string): Promise<string> {
+  let handle: FileHandle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return "";
+  }
+  try {
+    if (!(await handle.stat()).isFile()) return "";
+    return await handle.readFile("utf8");
+  } catch {
+    return "";
+  } finally {
+    await handle.close();
+  }
+}
+
 /** `path` as it is now ({@link Seen}), or null where nothing is there. */
 async function look(path: string, named: string): Promise<Seen | null> {
   const stats = await statOrNone(path, named);
   if (stats === null) return null;
-  const value = await readFile(path, "utf8").catch(() => "");
-  return { stats, value };
+  return { stats, value: await holderValue(path) };
 }
 
 /** Whether a file as a caller looks at it is the very file `was` names: the same device, inode,
@@ -257,7 +280,7 @@ export async function withLoginLock<T>(
   }, LOCK_HEARTBEAT_MS);
   beat.unref();
   try {
-    return await work(async () => (await readFile(lock, "utf8").catch(() => "")) === mine);
+    return await work(async () => (await holderValue(lock)) === mine);
   } finally {
     clearInterval(beat);
     await removeOwn(lock, mine, `the lock beside ${named}`, named);

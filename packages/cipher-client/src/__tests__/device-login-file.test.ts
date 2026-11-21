@@ -9,6 +9,7 @@
 // step fails one filesystem call by its path (`rename`, `readFile`).
 
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { rmSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { chmod, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -24,7 +25,7 @@ import {
   type KeptDeviceLogin,
   startDeviceLogin,
 } from "../device-login";
-import { readDeviceLogin } from "../device-login-file";
+import { type DeviceLogin, readDeviceLogin } from "../device-login-file";
 import { DEVICE_LOGIN_COMMAND } from "../token-errors";
 
 const PERSON = "ada@example.com";
@@ -140,6 +141,49 @@ test("a login path that is not a regular file is refused before it is read", asy
   }
 });
 
+test("a login file swapped for a named pipe after it is looked at is never waited on", async () => {
+  // A read that looks at the path and then opens it again could open a named pipe another process
+  // put in its place between the two, and wait on it. The file is swapped for a pipe nobody
+  // writes to just after the read's first look at the path, whatever that look is: the read must
+  // settle, and read the file it looked at.
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    swapped = true;
+    rmSync(path);
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+  };
+  const realStat = fs.stat;
+  const realOpen = fs.open;
+  const stats = spyOn(fs, "stat").mockImplementation((async (
+    ...args: Parameters<typeof fs.stat>
+  ) => {
+    const info = await realStat(...args);
+    if (String(args[0]) === path) swap();
+    return info;
+  }) as typeof fs.stat);
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    const handle = await realOpen(...args);
+    if (String(args[0]) === path) swap();
+    return handle;
+  }) as typeof fs.open);
+  let read: DeviceLogin | Error;
+  try {
+    read = await readDeviceLogin(path).catch((error: unknown) => error as Error);
+  } finally {
+    stats.mockRestore();
+    opens.mockRestore();
+  }
+  expect(swapped).toBe(true);
+  expect(read).not.toBeInstanceOf(Error);
+  expect((read as DeviceLogin).credentialId).toBe(STAND_IN_CREDENTIAL);
+}, 10_000);
+
 test("an approved login whose save fails once it is written keeps a whole copy, and names it", async () => {
   const stub = broker({ credentialId: "cred-unsaved-1" });
   const path = loginPath();
@@ -185,18 +229,23 @@ test("an approved login whose lock was lost during its save keeps a whole copy, 
     const path = loginPath();
     const lock = `${path}.lock`;
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-    const real = fs.readFile;
+    // The lock is read through a file opened without waiting (`device-login-lock.ts`): the save's
+    // look at its lock is the first read of the lock, and the release reads it after.
+    const realOpen = fs.open;
     let lockReads = 0;
-    const reads = spyOn(fs, "readFile").mockImplementation((async (
-      ...args: Parameters<typeof fs.readFile>
+    const reads = spyOn(fs, "open").mockImplementation((async (
+      ...args: Parameters<typeof fs.open>
     ) => {
-      // The save's look at its lock is the first read of the lock: the release reads it after.
+      const handle = await realOpen(...args);
       if (String(args[0]) === lock) {
-        lockReads += 1;
-        if (lockReads === 1) return "another process's value\n";
+        const readHandle = handle.readFile.bind(handle);
+        handle.readFile = (async (...options: Parameters<typeof handle.readFile>) => {
+          lockReads += 1;
+          return lockReads === 1 ? "another process's value\n" : await readHandle(...options);
+        }) as typeof handle.readFile;
       }
-      return await real(...args);
-    }) as typeof fs.readFile);
+      return handle;
+    }) as typeof fs.open);
     const renames = failRenames((_, to) => keptCopyFails && to.startsWith(`${path}.kept-`));
     let lost: KeptDeviceLogin | Error;
     try {

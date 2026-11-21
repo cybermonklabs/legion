@@ -33,32 +33,52 @@ function staleTime(): Date {
 /**
  * Holds the first read of a file, once `arm` is called, that `match` takes by its path and what
  * it read, until `go` settles: the caller has read the file for a look, and does what it does
- * with that look only after. Any read of the file holds, by whatever name the caller reads it,
- * so the hold is between a look and what follows it however the protocol takes its look.
- * `read` answers what the held read read; `restore` ends the hold for every later row.
+ * with that look only after. Any read of the file holds, by whatever name the caller reads it and
+ * whether it reads the path (`readFile`) or a file it opened (`open`, then the handle's
+ * `readFile`), so the hold is between a look and what follows it however the protocol takes its
+ * look. `read` answers what the held read read; `restore` ends the hold for every later row.
  */
 function holdTheRead(match: (path: string, read: string) => boolean, go: Promise<void>) {
   const reached = Promise.withResolvers<string>();
-  const real = fs.readFile;
   let armed = false;
   let held = false;
-  const spy = spyOn(fs, "readFile").mockImplementation((async (
-    ...args: Parameters<typeof fs.readFile>
-  ) => {
-    const read = await real(...args);
-    if (armed && !held && typeof read === "string" && match(String(args[0]), read)) {
+  const hold = async (path: string, read: unknown) => {
+    if (armed && !held && typeof read === "string" && match(path, read)) {
       held = true;
       reached.resolve(read);
       await go;
     }
+  };
+  const realRead = fs.readFile;
+  const reads = spyOn(fs, "readFile").mockImplementation((async (
+    ...args: Parameters<typeof fs.readFile>
+  ) => {
+    const read = await realRead(...args);
+    await hold(String(args[0]), read);
     return read;
   }) as typeof fs.readFile);
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    const handle = await realOpen(...args);
+    const readHandle = handle.readFile.bind(handle);
+    handle.readFile = (async (...options: Parameters<typeof handle.readFile>) => {
+      const read = await readHandle(...options);
+      await hold(String(args[0]), read);
+      return read;
+    }) as typeof handle.readFile;
+    return handle;
+  }) as typeof fs.open);
   return {
     read: reached.promise,
     arm: () => {
       armed = true;
     },
-    restore: () => spy.mockRestore(),
+    restore: () => {
+      reads.mockRestore();
+      opens.mockRestore();
+    },
   };
 }
 
@@ -326,6 +346,33 @@ test("a dead take-over lock is removed only while it is still the dead one", asy
   expect(stealAtFirstWait).toBe("C takes over");
   expect(await stat(steal).catch(() => null)).toBeNull();
 });
+
+test("a named pipe at the lock's path is taken over as a dead lock, and read without waiting", async () => {
+  // A plain read of a named pipe nobody writes to waits until a process writes to it, and every
+  // caller of the lock reads the lock. One left at `<file>.lock` and untouched for the stale bound
+  // is a dead lock, taken over at once; a holder whose lock is swapped for one is told it no
+  // longer holds it, and leaves it, as it leaves any lock that is not its own.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
+  const old = staleTime();
+  await utimes(lock, old, old);
+  let heldAtFirst: boolean | undefined;
+  let heldAfterSwap: boolean | undefined;
+  await withDeviceLoginLock(path, async (held) => {
+    heldAtFirst = await held();
+    await Bun.file(lock).delete();
+    expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
+    heldAfterSwap = await held();
+  });
+  expect(heldAtFirst).toBe(true);
+  expect(heldAfterSwap).toBe(false);
+  expect((await readdir(dirname(path))).sort()).toEqual([
+    "device-login.json",
+    "device-login.json.lock",
+  ]);
+}, 10_000);
 
 test("a take-over that finds the holder back just before it moves the lock puts the lock back", async () => {
   const path = loginPath();
