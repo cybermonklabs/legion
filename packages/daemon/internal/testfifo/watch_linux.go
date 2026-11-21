@@ -1,6 +1,6 @@
 //go:build linux
 
-package fifotest
+package testfifo
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 )
 
 // tasks and record are where the kernel keeps each thread's record. They are variables for
-// fifotest's own test, which points record at a name no thread has to stand for a kernel that
+// the watch's own test, which points record at a name no thread has to stand for a kernel that
 // keeps none.
 var (
 	tasks  = "/proc/self/task"

@@ -1430,18 +1430,18 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 // whose derivation reads every entry before the launcher serves anything. A clock pass follows,
 // which is what a running pod reads every minute.
 //
-// The row bounds itself, so a read that runs away or waits fails the row and not the run: the
-// derivation and the pass run in a goroutine the row waits for under a deadline, a read of
-// /dev/zero, or of the gitdir past a mebibyte, is ended by endRunawayReads, which the row fails
-// on, and a reader the fifo holds is let go once the row has failed, so nothing of the row is
-// left running.
+// A read that runs away or waits fails the row and not the run: the derivation and the pass run
+// in a goroutine whose answer the row waits for with testwait.Receive, which fails it by name
+// before the test binary's deadline, and a read of /dev/zero, or of the gitdir past a mebibyte,
+// is ended by endRunawayReads, which the row fails on. The row's unstick runs once as the row
+// ends and lets go one read the fifo holds; a second read can then wait on until the binary ends.
 func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 	// writer is the descriptor the held fifo's row keeps open on it, which its unstick closes.
 	var writer *os.File
 	for _, row := range []struct {
 		name string
-		// plant makes gitdir what the row is about; unstick lets go a read of it that is
-		// waiting, for a row that has already failed.
+		// plant makes gitdir what the row is about; unstick lets go one read of it that is
+		// waiting, and runs once as the row ends.
 		plant   func(t *testing.T, c *lockClone, gitdir string)
 		unstick func(gitdir string)
 	}{
@@ -1560,24 +1560,10 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 				s.proc, s.recheck = proc, time.Millisecond
 				s.pass(context.Background(), false)
 			}()
-			bound := testwait.Bounded(t, 10*time.Second, time.Second)
-			select {
-			case <-done:
-			case <-time.After(bound):
-				// A read the fifo holds is let go as often as it is held — the derivation's,
-				// then the pass's — so the goroutine returns with the row.
-			unstuck:
-				for range 1000 {
-					row.unstick(gitdir)
-					select {
-					case <-done:
-						break unstuck
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
-				close(stop)
-				t.Fatalf("the derivation and a clock pass did not return within %s; the sweep's log:\n%s", bound, log.String())
-			}
+			// A read that waits on gitdir fails the row by name before the test binary's deadline
+			// (testwait.Receive); a slow derivation and pass are waited for.
+			t.Cleanup(func() { row.unstick(gitdir) })
+			testwait.Receive(t, "the derivation and a clock pass over "+gitdir, done)
 			close(stop)
 			if ended := <-ranAway; ended > 0 {
 				t.Fatalf("the sweep read %s past where any gitdir ends, and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
@@ -1999,10 +1985,11 @@ func (c *lockClone) breakPointer(t *testing.T, plant func(*testing.T, *lockClone
 	return plant(t, c, pointer)
 }
 
-// withinBound runs fn in a goroutine of its own and fails the row unless it returns within a
-// bound, or if a read of /dev/zero, or of watched past a mebibyte, had to be ended
-// (endRunawayReads). A read unstick can let go is let go once the row has failed, as often as it
-// waits, so the goroutine returns with the row. fn calls nothing that fails the row.
+// withinBound runs fn in a goroutine of its own and fails the row unless it returns before the
+// test binary's deadline (testwait.Receive), the only bound on the wait, or if a read of
+// /dev/zero, or of watched past a mebibyte, had to be ended (endRunawayReads). unstick runs once
+// as the row ends and lets go one read it can; a second read can then wait on until the binary
+// ends. fn calls nothing that fails the row.
 func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func(), fn func()) {
 	t.Helper()
 	stop := make(chan struct{})
@@ -2012,22 +1999,8 @@ func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func()
 		defer close(done)
 		fn()
 	}()
-	bound := testwait.Bounded(t, 10*time.Second, time.Second)
-	select {
-	case <-done:
-	case <-time.After(bound):
-	unstuck:
-		for range 1000 {
-			unstick()
-			select {
-			case <-done:
-				break unstuck
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
-		close(stop)
-		t.Fatalf("the sweep did not return within %s; its log:\n%s", bound, log.String())
-	}
+	t.Cleanup(unstick)
+	testwait.Receive(t, "the sweep over "+watched, done)
 	close(stop)
 	if ended := <-ranAway; ended > 0 {
 		t.Fatalf("the sweep read past where any pointer ends, and %d such read(s) had to be ended at end of file; its log:\n%s", ended, log.String())
@@ -2082,7 +2055,7 @@ func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
 // Case B of the table while the pod runs: a role breaks this workspace's .git and its own entry's
 // gitdir after the derivation. Each pass still sweeps the clone's git directory, its stale lock
 // gone each time, leaves the entry's locks, and names the .git's error once rather than once a
-// minute. Each pass is bounded, for the reasons the derivation's row above is.
+// minute. Each pass is waited for as the derivation's row above waits (withinBound).
 func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *testing.T) {
 	for _, bad := range unusablePointers {
 		t.Run(bad.name, func(t *testing.T) {

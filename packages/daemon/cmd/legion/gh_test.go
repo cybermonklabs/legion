@@ -18,13 +18,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/fifotest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -3111,53 +3111,35 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a planted named pipe plainly would wait there for a writer. The
-			// verdict comes from the kernel, not a clock: the row reads that wait between its own
-			// (fifotest.Watch). The correct check opens each file with O_NONBLOCK and holds it for
-			// a moment, which is no such wait. Only a case that planted a pipe needs the kernel's
-			// record, and where the kernel keeps none, as gVisor keeps none, such a case fails
-			// under CI and skips elsewhere (fifotest.Require). A check that is only slow is waited
-			// for, to 30 s before the test binary's deadline.
-			var watches []*fifotest.Watch
+			// A check that opened a planted named pipe plainly would wait there for a writer. Its
+			// answer is waited for with testwait.Receive, as main waits for it, the only bound on the
+			// wait. Beside that wait, the fifo watch reads from the kernel whether the check opens a
+			// planted pipe plainly (testfifo.WatchBeside), and its own open for writing is the
+			// writer that open needed, so the check then answers and the case fails naming the pipe
+			// at once. The correct check opens each file with O_NONBLOCK and holds it for a moment,
+			// which is no such wait. Only a case that planted a pipe needs the kernel's record, and
+			// where the kernel keeps none, as gVisor keeps none, such a case fails under CI and skips
+			// elsewhere (testfifo.RequireWatch).
+			var pipes []string
 			for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
 				path := filepath.Join(dir, name)
 				if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeNamedPipe != 0 {
-					watches = append(watches, &fifotest.Watch{Path: path})
+					pipes = append(pipes, path)
 				}
 			}
-			if len(watches) > 0 {
-				fifotest.Require(t)
+			stopWatch := func() (string, error) { return "", nil }
+			if len(pipes) > 0 {
+				testfifo.RequireWatch(t)
+				stopWatch = testfifo.WatchBeside(nil, pipes...)
 			}
-			bound := testwait.Bounded(t, 1<<60, 30*time.Second)
-			if bound <= 0 {
-				t.Fatalf("less than 30 s of the test binary's deadline was left when the case began: it has no time to wait for ghConfigShape")
-			}
+			defer func() { _, _ = stopWatch() }()
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
-			giveUp := time.After(bound)
-			poll := time.NewTicker(testwait.Poll)
-			defer poll.Stop()
-			var err error
-		wait:
-			for {
-				select {
-				case err = <-done:
-					break wait
-				case <-poll.C:
-					for _, watch := range watches {
-						opened, watchErr := watch.Opened()
-						if watchErr != nil {
-							t.Fatalf("cannot tell whether ghConfigShape waits in a plain open of %s: %v", watch.Path, watchErr)
-						}
-						if opened {
-							// The watch's own open was the writer that open needed, so the check
-							// goes on and its goroutine ends.
-							t.Fatalf("ghConfigShape opened the named pipe at %s plainly and waited there for a writer", filepath.Base(watch.Path))
-						}
-					}
-				case <-giveUp:
-					t.Fatalf("ghConfigShape did not return, to 30 s before the test binary's deadline, and waited in no plain open of a planted pipe")
-				}
+			err := testwait.Receive(t, "ghConfigShape with "+tc.name, done)
+			if opened, watchErr := stopWatch(); watchErr != nil {
+				t.Fatalf("cannot tell whether ghConfigShape waits in a plain open of a planted pipe: %v", watchErr)
+			} else if opened != "" {
+				t.Fatalf("ghConfigShape opened the named pipe at %s plainly and waited there for a writer", filepath.Base(opened))
 			}
 			switch {
 			case tc.want == "" && err != nil:

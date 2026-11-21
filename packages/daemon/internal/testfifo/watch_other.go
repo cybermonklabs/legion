@@ -1,6 +1,6 @@
 //go:build !linux
 
-package fifotest
+package testfifo
 
 // Opened answers ErrUnsupported: no kernel but Linux's keeps the record a Watch reads.
 func (w *Watch) Opened() (bool, error) { return false, ErrUnsupported }

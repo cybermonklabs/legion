@@ -1,6 +1,6 @@
 //go:build linux
 
-package fifotest
+package testfifo
 
 import (
 	"errors"
@@ -17,7 +17,7 @@ import (
 // and its own open for writing lets the waiting open go on. The verdict waits for the watch with no
 // span of its own: a loaded machine only makes the open slower to start.
 func TestAWatchSeesAPlainOpenOfItsFifoAndLetsItGoOn(t *testing.T) {
-	Require(t)
+	RequireWatch(t)
 	path := filepath.Join(t.TempDir(), "fifo")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestAWatchSeesAPlainOpenOfItsFifoAndLetsItGoOn(t *testing.T) {
 // check of the fifo is, and the watch does not take it for a plain open however many times it is
 // asked: the rule is two calls in a row with a thread asleep in a plain openat, not a reader alone.
 func TestAWatchTakesNoReaderThatDidNotWaitForAPlainOpen(t *testing.T) {
-	Require(t)
+	RequireWatch(t)
 	path := filepath.Join(t.TempDir(), "fifo")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
