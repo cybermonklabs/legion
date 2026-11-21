@@ -251,7 +251,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		if err == nil {
 			break
 		}
-		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
+		if answered && !req.Soft && req.IfClaimRevision == nil && bus.IsCASConflict(err) {
 			var readErr error
 			if tries.Err() == nil {
 				var next RoleClaim
@@ -283,7 +283,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			return Interest{}, errors.Join(err, holderErr, rollbackErr)
 		}
 		holder := current.HolderSessionID
-		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
+		// A conditional claim that lost the write's own compare-and-swap (bus.IsCASConflict)
 		// lost it to a claim that landed after the read this call weighed its precondition on:
 		// the precondition failing a moment later, not a storage failure, and the caller is
 		// told exactly that rather than reading an unexplained failure or another session's
@@ -304,7 +304,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// with whatever claim stands.
 		heldBySession := holderErr == nil && holder == req.SessionID
 		heldByClaimant := heldBySession && current.HeldByProcess(req.ClientInstanceID)
-		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && errors.Is(err, nats.ErrKeyExists)
+		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && bus.IsCASConflict(err)
 		if heldByClaimant && !conditionalLoss {
 			return item, nil
 		}
@@ -319,7 +319,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 				Holder:   holder,
 			}
 		}
-		// A soft claim that lost its conditional write (wrong last sequence, nats.ErrKeyExists)
+		// A soft claim that lost its conditional write (wrong last sequence, bus.IsCASConflict)
 		// lost to a concurrent claimant; report that as held rather than as a storage failure.
 		if req.Soft && holder != "" {
 			return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: holder}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -469,13 +468,27 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 	return revision, invalidKey(key, err)
 }
 
-// IsCASConflict reports whether err is a compare-and-swap revision conflict
-// (as opposed to a real transport/storage error). Create returns ErrKeyExists
-// when the key already exists; Update returns a "wrong last sequence" API error
-// when the revision moved.
+// IsCASConflict reports whether err is JetStream's refusal of a conditional write over a record
+// another write moved, as opposed to a transport or storage failure: a Create of a key that is
+// there, an Update, Delete or Purge at a revision that is no longer the key's last
+// (nats.LastRevision), or a publish whose expected last sequence for its subject did not match
+// (PublishCursorAt). JetStream answers each with wrong last sequence, error 10071; the leader of a
+// stream of more than one copy answers 10164 instead to a write that meets another write of the
+// same subject still being replicated (nats-server's checkMsgHeadersPreClusteredProposal), which
+// is how a loser of a race on a replicated bucket is answered when it reaches the leader before the
+// winner has landed. nats.go v1.55.0 names a Create's conflict nats.ErrKeyExists and an Update's,
+// Delete's or Purge's nats.ErrKeyRevisionMismatch, under either code, but nats.ErrKeyExists itself
+// matches an error by its code, 10071 alone: a lost Update, Delete or Purge on a replicated bucket
+// is not nats.ErrKeyExists. A conflict is therefore asked of this and never of nats.ErrKeyExists. A
+// publish's 10164 nats.go names nothing, so it is matched by its code.
 func IsCASConflict(err error) bool {
-	return errors.Is(err, nats.ErrKeyExists) || strings.Contains(err.Error(), "wrong last sequence")
+	return errors.Is(err, nats.ErrKeyExists) || errors.Is(err, nats.ErrKeyRevisionMismatch) || errors.Is(err, wrongLastSequenceReplicated)
 }
+
+// wrongLastSequenceReplicated is JetStream's wrong last sequence as the leader of a replicated
+// stream answers a write that met another write of its subject still being replicated: error
+// 10164, which nats.APIError's Is matches by code.
+var wrongLastSequenceReplicated = &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamWrongLastSequenceConstant}
 
 func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
