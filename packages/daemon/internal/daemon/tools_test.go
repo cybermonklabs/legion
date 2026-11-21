@@ -1,14 +1,18 @@
 package daemon
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 func executable(t *testing.T, dir, name string) string {
@@ -42,6 +46,85 @@ func fakeJJ(t *testing.T, dir, version string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// The jj the worker image pins merges two commits with more than one merge base as it merges any
+// other two. m1 and m2 below are two merges of the same n commits, each of which changes f from
+// the root's "c" to "b", so f is "b" on both sides and in every merge base, and a merge of m1 and
+// m2 can only be a clean "b". That is the minimal case of jj-vcs/jj#6369, where jj merges such
+// commits back to the root's "c" without a conflict to say so. The pinned jj must carry the port of
+// jj-vcs/jj#10100, which fixes it, so this test is red at every pin that lacks that port.
+func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the jj the worker image pins, which CI's daemon-go job installs at ARG JJ_TOOL of packages/daemon/docker/worker.Dockerfile: %v", err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test reads its fixture's merge bases with a real git: %v", err)
+	}
+	home := t.TempDir()
+	version := fixturegit.Isolated(t, home).Run(home, jj, "--version")
+	t.Logf("%s is %s", jj, version)
+	for _, tc := range []struct {
+		name string
+		n    int
+	}{{"two merge bases", 2}, {"three merge bases", 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			run := fixturegit.Isolated(t, t.TempDir())
+			write := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "f"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A commit is named by its commit id, which in a colocated repository is git's id of the
+			// same commit, so git merge-base reads the ids jj prints.
+			commitID := func(revision string) string {
+				t.Helper()
+				return run.Out(repo, jj, "log", "-r", revision, "--no-graph", "-T", "commit_id")
+			}
+			init := fixturegit.JJInit(repo, true)
+			init[0] = jj
+			run.Run(repo, init...)
+			write("c\n")
+			run.Run(repo, jj, "commit", "-m", "root")
+			root := commitID("@-")
+			var bases []string
+			for i := 1; i <= tc.n; i++ {
+				run.Run(repo, jj, "new", root, "-m", fmt.Sprintf("x%d", i))
+				write("b\n")
+				run.Run(repo, jj, "new")
+				bases = append(bases, commitID("@-"))
+			}
+			// Each merge keeps its description, so the next `jj new` leaves it in place rather than
+			// abandoning it as an empty working-copy commit.
+			merges := make([]string, 2)
+			for i := range merges {
+				run.Run(repo, slices.Concat([]string{jj, "new"}, bases, []string{"-m", fmt.Sprintf("m%d", i+1)})...)
+				merges[i] = commitID("@")
+			}
+			listed := strings.Fields(run.Out(repo, git, "merge-base", "--all", merges[0], merges[1]))
+			slices.Sort(listed)
+			want := slices.Sorted(slices.Values(bases))
+			if !slices.Equal(listed, want) {
+				t.Fatalf("the fixture is wrong, not jj: git merge-base --all m1 m2 lists %v, want the %d commits x1 to x%d, %v", listed, tc.n, tc.n, want)
+			}
+			for i, merge := range merges {
+				if held := run.Out(repo, jj, "file", "show", "-r", merge, "f"); held != "b\n" {
+					t.Fatalf("the fixture is wrong, not jj: m%d holds %q in f, want \"b\\n\", as each of its parents does", i+1, held)
+				}
+			}
+			run.Run(repo, jj, "new", merges[0], merges[1], "-m", "merge")
+			state := run.Out(repo, jj, "log", "-r", "@", "--no-graph", "-T", `if(conflict, "conflict", "clean")`)
+			held := run.Out(repo, jj, "file", "show", "-r", "@", "f")
+			if state != "clean" || held != "b\n" {
+				t.Errorf("%s merges m1 and m2, two merges of the same %d commits that each hold \"b\\n\" in f, into a %s commit holding %q in f; want a clean one holding \"b\\n\". "+
+					"This is jj-vcs/jj#6369, and the pinned jj must carry the port of jj-vcs/jj#10100", version, tc.n, state, held)
+			}
+		})
+	}
 }
 
 // Boot resolves the binaries Legion itself runs or hands a pane — git, jj and the real gh a pane's
