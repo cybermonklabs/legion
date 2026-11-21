@@ -199,7 +199,9 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// delete commits with. It is the version that settlement would write, which then finds nothing
 	// to version, so the delete adds no version and no approval move or carry the settlement would
 	// not have made (SettleVersion says why). A reject of a replace or a delete takes no text out,
-	// and a mark already gone takes nothing out either, so neither settles here.
+	// so it settles nothing here. A mark already gone left the document before this delete, by an
+	// earlier reject, whose own settlement writes the document's next version, or by a browser
+	// edit, which wrote a version of its own, so the delete settles nothing for it either.
 	var settled *docs.VersionResult
 	if rejectedInsert && !s.deleteLeavesSettlement {
 		written, err := s.deps.Docs.SettleVersion(documentCtx, comment.Anchor.ArtifactID, actor)

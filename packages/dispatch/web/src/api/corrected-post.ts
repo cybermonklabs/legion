@@ -43,8 +43,10 @@ import type {
 } from "./types";
 
 /** What a post's correction writes into each copy of the post: the time of an edit, or the mark
- *  of a delete, with whether the delete emptied the comment's anchor quote, which an insert
- *  suggestion's mark holds as the comment's own words. */
+ *  of a delete, with whether the comment's anchor quote is empty as the delete left it
+ *  (`quoteCleared`): the delete empties the quote of an insert suggestion no accept made document
+ *  text, pending or rejected, since that quote is the comment's own words, and a quote empty
+ *  before the delete stays empty. */
 type PostMark =
   | { readonly kind: "edited"; readonly at: string }
   | { readonly kind: "deleted"; readonly deletion: PostDeletion; readonly quoteCleared: boolean };
@@ -841,8 +843,8 @@ function editedAfter(current: string | null | undefined, at: string): string {
     : at;
 }
 
-/** A deleted comment's `anchor` as the delete left it: the quote emptied where the delete emptied
- *  the comment's (`quoteCleared`), since an insert suggestion's quote is the text it put in the
+/** A deleted comment's `anchor` as the delete left it: the quote emptied where the delete left the
+ *  comment's empty (`quoteCleared`), since an insert suggestion's quote is the text it put in the
  *  document, the comment's own words; any other quote is the document's own text, and stays. */
 function deletedAnchor<A extends { readonly quote?: string }>(anchor: A, quoteCleared: boolean): A {
   return quoteCleared ? { ...anchor, quote: "" } : anchor;
