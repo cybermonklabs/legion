@@ -500,13 +500,15 @@ func (w XidWindow) Violations() []string {
 }
 
 // xidRuntimeWaitProblem names a window that keeps D6 only by taking its goroutine's waits on the
-// runtime (XidGap.GoRunnable) out of its gaps. No such wait can be laid to the machine: the
-// operation's own goroutines may hold every P, and the trace cannot show that an idle P was free
-// to run the goroutine, since the runtime hands a P to a locked goroutine's thread through a stop
-// that reads as idle until that thread starts it (xidTraceReading.transition). So the rig cannot
-// say whose time those waits were, and the window is UNKNOWN, a rig problem that fails a run as
-// one (XidReport.Err). Made still takes the waits out, so a window that keeps D6 with them counted
-// as the code's passes, and one that breaks D6 anyway is a violation; this is "" for both.
+// runtime (XidGap.GoRunnable) out of its gaps, beyond the sleep on the runtime's handoff of a P the
+// trace proves (XidGap.HandedOff). No other such wait can be laid to the machine: the operation's
+// own goroutines may hold every P, and a P's state in the trace cannot show that one was free to
+// run the goroutine, since the runtime hands a P to a locked goroutine's thread through a stop that
+// reads as idle until that thread starts it (xidTraceReading.handedOff counts goroutines instead).
+// So the rig cannot say whose time those waits were, and the window is UNKNOWN, a rig problem that
+// fails a run as one (XidReport.Err). Made still takes the waits out, so a window that keeps D6
+// with them counted as the code's passes, and one that breaks D6 anyway is a violation; this is ""
+// for both.
 func xidRuntimeWaitProblem(w XidWindow) string {
 	if len(w.Violations()) > 0 {
 		return ""
@@ -590,6 +592,9 @@ func (w XidWindow) Detail() string {
 				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s; its goroutine waited %s on the runtime, %s on what it asked for and %s in system calls",
 					XidMillis(gap.Ran), XidMillis(gap.Asleep()), XidMillis(gap.Runnable),
 					XidMillis(gap.GoRunnable), XidMillis(gap.GoWaiting), XidMillis(gap.GoSyscall))
+				if gap.HandedOff > 0 {
+					read += fmt.Sprintf(", and its thread slept %s of the runtime's wait on a P the trace shows handed to it", XidMillis(gap.HandedOff))
+				}
 			}
 			softirqs := "; its CPU's softirqs uncounted"
 			if gap.Counted {

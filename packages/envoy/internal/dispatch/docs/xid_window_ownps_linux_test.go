@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -22,6 +24,12 @@ import (
 // Taking that wait out as the runtime's, the rig before this row read such a gap - a reviewer's
 // forcing of 145 workers at 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as
 // 0.159 ms made, and the window kept D6 (2026-11-21).
+//
+// The spinners run on threads of their own kept off the CPU the window's thread is pinned to. On
+// that CPU they made the window's thread queue for it outside the runtime's wait, where the rig
+// cannot place a queue and reads it as the code's (storetest.XidGap.Made): 2 of 20 runs broke D6
+// so, the thread queued up to 12.0 ms; kept off it, 0 of 20, at most 1.6 ms (a box load of
+// about 970, 2026-11-21).
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
@@ -33,11 +41,18 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 		release := make(chan struct{})
 		var spinning sync.WaitGroup
 		var stop atomic.Bool
+		var failed atomic.Value
+		var away unix.CPUSet
 		for range workers {
 			spinning.Add(1)
 			go func() {
 				defer spinning.Done()
 				<-release
+				// Never unlocked: the goroutine ends locked, and the runtime ends its thread with it.
+				runtime.LockOSThread()
+				if err := unix.SchedSetaffinity(0, &away); err != nil {
+					failed.Store(err)
+				}
 				for !stop.Load() {
 				}
 			}()
@@ -45,12 +60,24 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 		defer spinning.Wait()
 		defer stop.Store(true)
 		runRigTransactionDoing(t, database, func() {
+			var mine unix.CPUSet
+			if err := unix.SchedGetaffinity(0, &mine); err != nil {
+				failed.Store(err)
+			}
+			for cpu := range len(mine) * 64 {
+				if !mine.IsSet(cpu) {
+					away.Set(cpu)
+				}
+			}
 			close(release)
 			for until := time.Now().Add(xidOwnPsSpin); time.Now().Before(until); {
 				runtime.Gosched()
 			}
 			stop.Store(true)
 		})
+		if err, _ := failed.Load().(error); err != nil {
+			t.Fatalf("keep the spinners off the window's CPU: %v", err)
+		}
 	})
 	if len(report.Windows) != 1 {
 		t.Fatalf("the rig judged %d windows with problems %v, want the one transaction", len(report.Windows), report.Problems)
