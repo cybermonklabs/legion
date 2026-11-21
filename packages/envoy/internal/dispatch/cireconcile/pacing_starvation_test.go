@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rows of this file are the floor of the passes after a starved one (Reconciler.starved, and
@@ -54,31 +55,43 @@ func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
 // neither. GitHub holds the first head's check runs until the pass's bound gives the request up,
 // so a pass that lists the heads reaches none of them however fast the machine runs; a pass the
 // machine kept from listing them within its second reached no head either, and is run again
-// rather than read as the row's verdict. It then lets GitHub answer at speed again under a bound
-// of five seconds, which holds the few requests of these rows many times over: 30 passes reading
-// both heads at the ceiling's 500ms, the slowest pace these rows read at, took 2.01 to 2.11 s at
-// a box load of 688 to 1,559 on 288 CPUs. What the passes after it read turns on their pace alone.
+// rather than read as the row's verdict. The passes stop at the test binary's own deadline less
+// starveMargin (testwait.Bounded): a stand-in that never lists the heads fails the row by name,
+// with the last pass's line, rather than in the binary's panic. It then lets GitHub answer at
+// speed again under a bound of five seconds, which holds the few requests of these rows many
+// times over: 30 passes reading both heads at the ceiling's 500ms, the slowest pace these rows
+// read at, took 2.01 to 2.11 s at a box load of 688 to 1,559 on 288 CPUs. What the passes after
+// it read turns on their pace alone.
 func starveFirstPass(t *testing.T, h *harness) {
 	t.Helper()
 	h.reconciler.PassTimeout = time.Second
 	h.github.stall(runsOf(head(7)), time.Minute)
-	for {
+	var line map[string]any
+	listed := testwait.Holds(testwait.Bounded(t, 24*time.Hour, starveMargin), testwait.Poll, func() bool {
 		h.pass()
-		line := h.passLine()
+		line = h.passLine()
 		if number(t, line, "heads") != 0 {
 			t.Fatalf("a pass reached %v heads while GitHub held the first head's check runs, want none: nothing here is tested: %v", line["heads"], line)
 		}
-		if number(t, line, "heads_known") != 2 {
-			continue
-		}
-		if line["deadline_reached"] != true {
-			t.Fatalf("the pass that listed both heads and reached neither reads deadline_reached %v, want its bound to end it: nothing here is tested: %v", line["deadline_reached"], line)
-		}
-		break
+		return number(t, line, "heads_known") == 2
+	})
+	if !listed {
+		t.Fatalf("no pass listed both heads before the test binary's deadline drew near, want one that lists them and reaches neither: nothing here is tested: the last pass: %v", line)
+	}
+	if line["deadline_reached"] != true {
+		t.Fatalf("the pass that listed both heads and reached neither reads deadline_reached %v, want its bound to end it: nothing here is tested: %v", line["deadline_reached"], line)
 	}
 	h.github.stall(runsOf(head(7)), 0)
 	h.reconciler.PassTimeout = 5 * time.Second
 }
+
+// starveMargin is what starveFirstPass leaves of the test binary's deadline once it gives up: the
+// one more pass testwait.Holds asks for after its bound, the failure itself and the harness's
+// cleanup -- its NATS server, its database and its stand-in -- before the binary's own panic.
+// The extra pass ends at the one-second bound starveFirstPass sets at the latest. With GitHub
+// listing no head and a -timeout of two minutes, it gave up at 90.0 s in 3 of 3 runs and the
+// binary ended 0.50 to 0.93 s later, at a box load of 258 to 359.
+const starveMargin = 30 * time.Second
 
 // A rate limit that ends the passes after a starved one leaves the floor in place: the limit,
 // not the pace, stopped them, and they learned no work either. So the pass after the limit's

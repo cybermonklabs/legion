@@ -38,15 +38,18 @@ const (
 //
 // The passes after a pass that its own bound ended before it reached a head -- read one whole or
 // gave one up (counts.heads) -- read at the floor until one reaches a head (Reconciler.starved).
-// That pass learned no page of any head it listed, so the work the arithmetic spreads over the
-// bound is each repository's identity alone, and nine tenths of a bound of a second or more over
-// one request is above the ceiling: the gap would be Pace. A pass at Pace under a short bound can
-// reach no head either and learn nothing again, so every pass after it would end on its bound at
-// Pace and no cycle would close. At the floor a pass reads as fast as this package ever lets it,
-// so it reaches a head wherever the bound holds one head's requests at the floor, learns that
-// head's pages, and the pass after it paces itself by them. This needs no count of the listings a
-// head takes: a bound that does not hold one head's requests at the floor holds them at no slower
-// pace either.
+// In a process's first cycle such a pass learned no page of any head it listed, so the work the
+// arithmetic spreads over the bound is each repository's identity alone, and nine tenths of a
+// bound of a second or more over one request is above the ceiling: the gap would be Pace. A pass
+// at Pace under a short bound can reach no head either and learn nothing again, so every pass
+// after it would end on its bound at Pace and no cycle would close. At the floor a pass reads as
+// fast as this package ever lets it, so it reaches a head wherever the bound holds one head's
+// requests at the floor, learns that head's pages, and the pass after it paces itself by them.
+// Later, the Reconciler holds the pages of the heads earlier cycles read, and a pass its bound
+// cut in a head's status read keeps that head's other pages (readHead), so the arithmetic can
+// answer faster than Pace there; the floor is then only the faster answer, never a slower one,
+// until a pass reaches a head. This needs no count of the listings a head takes: a bound that
+// does not hold one head's requests at the floor holds them at no slower pace either.
 func (r *Reconciler) gap(rows int) time.Duration {
 	if r.Pace <= 0 {
 		// A caller that waits for nothing, which is what every test of this package is.
