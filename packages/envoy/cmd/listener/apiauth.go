@@ -57,8 +57,9 @@ func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 type listenerAPIAuth struct {
 	// token is ENVOY_API_TOKEN, the shared bearer; empty takes none.
 	token string
-	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset.
-	verifier *oidc.Verifier
+	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset. It
+	// reads its issuer when first needed, so until it has, a projected token is answered 503.
+	verifier *oidc.LazyVerifier
 	// accounts is ENVOY_OIDC_ACCOUNTS, the subjects the projected-token branch admits. Empty admits
 	// every subject verifier verifies, as the branch did before the list existed.
 	accounts []string
@@ -93,8 +94,9 @@ type googleIdentities struct {
 	// audience is ENVOY_OIDC_GOOGLE_AUDIENCE, the audience the caller asks its metadata server for.
 	audience string
 	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience; apiAuth refuses
-	// Google identities without one.
-	verifier *oidc.Verifier
+	// Google identities without one. It reads Google's discovery document when first needed, so
+	// until it has, a Google identity token is answered 503.
+	verifier *oidc.LazyVerifier
 	// accounts is ENVOY_OIDC_GOOGLE_ACCOUNTS, each address in lower case.
 	accounts []string
 }

@@ -2,17 +2,19 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestDiscoverRefusesAnIssuerThatNeverAnswers is the case a 404 issuer does not
-// cover: a partition or a black-holing proxy accepts the connection and then
-// says nothing. Without a deadline the boot hangs there forever instead of
-// refusing, and a hung boot never binds a port, so nothing reports it.
-func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
+// TestALazyVerifierAnswersPastAnIssuerThatNeverAnswers is the case a 404 issuer does not cover: a
+// partition or a black-holing proxy accepts the connection and then says nothing. A request that
+// needs the issuer must not wait on it past its own deadline, so a verifier asked under a short
+// deadline answers ErrIssuerUnavailable, naming the issuer, once that deadline ends; the discovery
+// attempt itself runs on under its own bound (discoveryAttemptTimeout).
+func TestALazyVerifierAnswersPastAnIssuerThatNeverAnswers(t *testing.T) {
 	silent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -23,9 +25,8 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 	// channel. Nothing here synchronizes the goroutine's exit — there is no
 	// WaitGroup — so this narrows the window for a send on a closed channel
 	// rather than closing it. Reaching it would need a connection accepted in
-	// the instant before Close and still mid-send, and Discover issues exactly
-	// one GET, buffered long before the deadline; net/http does not redial
-	// after a cancellation.
+	// the instant before Close and still mid-send, and the attempt issues exactly
+	// one GET; net/http does not redial after a cancellation.
 	accepted := make(chan net.Conn, 4)
 	t.Cleanup(func() {
 		close(accepted)
@@ -45,28 +46,20 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 	}()
 
 	issuer := "http://" + silent.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
 	start := time.Now()
-	verifier, err := Discover(context.Background(), issuer, "dispatch", 300*time.Millisecond)
+	claims, err := NewLazyVerifier(issuer, "dispatch").Verify(ctx, "any-token")
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatalf("Discover against a silent issuer returned verifier %#v and no error", verifier)
+	if !errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("Verify against a silent issuer = %#v, %v; want an error matching ErrIssuerUnavailable", claims, err)
 	}
 	if !strings.Contains(err.Error(), issuer) {
-		t.Errorf("Discover error %q does not name the issuer %s", err, issuer)
+		t.Errorf("Verify's error %q does not name the issuer %s", err, issuer)
 	}
 	if elapsed > 5*time.Second {
-		t.Errorf("Discover took %s to give up, want the deadline to bound it", elapsed)
-	}
-}
-
-// TestDiscoverIsNilWhenNoIssuerIsConfigured pins the "unset means no verifier"
-// half of the contract, which is what keeps both binaries byte-identical to
-// their pre-OIDC behaviour.
-func TestDiscoverIsNilWhenNoIssuerIsConfigured(t *testing.T) {
-	verifier, err := Discover(context.Background(), "", "", time.Second)
-	if err != nil || verifier != nil {
-		t.Fatalf("Discover(\"\") = %#v, %v; want nil, nil", verifier, err)
+		t.Errorf("Verify took %s to give up, want the caller's deadline to bound it", elapsed)
 	}
 }
 

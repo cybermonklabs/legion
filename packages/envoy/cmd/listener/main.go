@@ -1025,22 +1025,31 @@ func main() {
 		log.Fatal(err)
 	}
 	// Dispatch's own principal is read beside the bearers it is proved by, so a value no
-	// credential this listener takes could prove refuses the start before any issuer is asked.
+	// credential this listener takes could prove refuses the start.
 	dispatchPrincipal, err := resolveListenerDispatchPrincipal(os.Getenv, oidcIssuer, oidcAccounts, googleAccounts)
 	if err != nil {
 		log.Fatal(err)
 	}
-	apiVerifier, err := oidc.Discover(context.Background(), oidcIssuer, oidcAudience, oidc.DiscoveryTimeout)
-	if err != nil {
-		log.Fatal(err)
+	// Neither issuer is read here. Each verifier reads its issuer's discovery document in the
+	// background from now on (oidc.LazyVerifier.Run: at once, then after a wait that doubles from
+	// a second up to 30 s, logging a failure at most once a minute) and on the first token that
+	// needs it. So a listener started while the cluster's issuer or Google's cannot be read serves
+	// everything that does not need that issuer, the shared token, an open /v1, /healthz, /metrics
+	// and the webhooks, and answers a token of that issuer 503 until it is read
+	// (refuseIdentityToken). A start that read them first exited when either read failed, and a
+	// listener of one replica restarted during either outage then served nobody. Each Run ends
+	// once its issuer is read; while it is not, it runs until the process ends, holding nothing
+	// a shutdown has to stop.
+	var apiVerifier *oidc.LazyVerifier
+	if oidcIssuer != "" {
+		apiVerifier = oidc.NewLazyVerifier(oidcIssuer, oidcAudience)
+		go apiVerifier.Run(context.Background())
 	}
 	// A Google identity token's issuer is Google itself, so only its audience is a setting.
 	var googleCallers *googleIdentities
 	if googleAudience != "" {
-		googleVerifier, err := oidc.Discover(context.Background(), oidc.GoogleIssuer, googleAudience, oidc.DiscoveryTimeout)
-		if err != nil {
-			log.Fatal(err)
-		}
+		googleVerifier := oidc.NewLazyVerifier(oidc.GoogleIssuer, googleAudience)
+		go googleVerifier.Run(context.Background())
 		googleCallers = &googleIdentities{audience: googleAudience, verifier: googleVerifier, accounts: googleAccounts}
 	}
 	// The broker-token settings are read here, beside the bearers' own, so a

@@ -182,6 +182,37 @@ func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	return verifier.Verify(ctx, raw)
 }
 
+// VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering
+// it first as Verify does; before that every error matches ErrIssuerUnavailable.
+func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Claims, error) {
+	verifier, err := v.discovery.discover(ctx)
+	if err != nil {
+		return Claims{}, err
+	}
+	return verifier.VerifyGoogleIdentity(ctx, raw)
+}
+
+// Issues is Verifier.Issues. It reads only raw's iss claim and the issuer's name, and nothing the
+// discovery document holds, so it answers the same before the issuer is discovered as after, and
+// reads nothing from the issuer: a caller picks the verifier a token is for while that issuer is
+// down, and the token is then answered as one that verifier could not check.
+func (v *LazyVerifier) Issues(raw string) bool {
+	claims, err := decodeUnverifiedClaims(raw)
+	return err == nil && issuerNamed(v.discovery.issuer, claims.Issuer)
+}
+
+// DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a
+// caller that builds a Verifier itself, from keys it holds (NewWithKeys), and hands it where a
+// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one.
+func DiscoveredVerifier(v *Verifier) *LazyVerifier {
+	if v == nil {
+		return nil
+	}
+	discovered := newDiscovery(v.issuer, func(context.Context) (*Verifier, error) { return v, nil })
+	discovered.value, discovered.discovered = v, true
+	return &LazyVerifier{discovery: discovered}
+}
+
 // Discover reads the issuer's discovery document unless it has been read; its error matches
 // ErrIssuerUnavailable.
 func (v *LazyVerifier) Discover(ctx context.Context) error {

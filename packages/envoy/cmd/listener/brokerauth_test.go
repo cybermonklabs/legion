@@ -669,10 +669,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker.Says(token, sessionAnswer("ses_elsewhere", "ada@example.com", caller.JKT()))
 
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	bound := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -683,7 +680,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		shared     string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 	}{
 		{
