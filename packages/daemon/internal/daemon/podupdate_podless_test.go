@@ -472,7 +472,12 @@ func (r *podUpdateRig) recordPause(end store.PausePodHoldEnd, stopped ...claim.R
 // of the suspended claim (outbox's start). The rig's wake pacing decides when the launch runs.
 func (r *podUpdateRig) heldStart(role claim.Role) {
 	r.t.Helper()
-	r.handle(role, supervise.RequestRuleResume{Claim: r.tokens[role], Reason: "a wake for the launch the project's pause held"})
+	r.handle(role, r.heldStartRequest(role))
+}
+
+// heldStartRequest is the resume by rule of role that the held start of role makes (heldStart).
+func (r *podUpdateRig) heldStartRequest(role claim.Role) supervise.RequestRuleResume {
+	return supervise.RequestRuleResume{Claim: r.tokens[role], Reason: "a wake for the launch the project's pause held"}
 }
 
 // writeLetOut writes letOut as the stuck clock of role's open resume, as the daemon writes the

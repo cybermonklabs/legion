@@ -598,48 +598,62 @@ func TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession(
 // what keeps the pod.
 const byIssueNotDueLine = "supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open"
 
-// takeHeldWakeUnderLaunchTurn has the next replacement that hold stops under the pod's launch turn
-// (fake's HoldReplacePod or HoldReplaceIssuePod) take a wake of role there, held by pause, as the
-// outbox takes the delivery of a row that pause held (store.Store.TakePodWake, outbox's
-// wakeForDelivery). The wake opens a resume of pause for role (store.PodRecords.PauseOfWake). The
-// hold clears itself, so the sweeps after that replacement find the runtime as it left it. It
-// sweeps until that replacement has taken the wake, and so has asked its last word.
-func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim.Role, pause int64) {
+// underLaunchTurn has the next replacement that hold stops under the pod's launch turn (fake's
+// HoldReplacePod or HoldReplaceIssuePod) run act there. The hook clears itself before act runs,
+// so the sweeps after that replacement find the runtime as it left it. It sweeps until that
+// replacement has run act, and so has asked its last word. what names that event in the wait's
+// failure.
+func (r *podUpdateRig) underLaunchTurn(hold func(func()), what string, act func()) {
 	r.t.Helper()
-	woke := false
+	ran := false
 	hold(func() {
 		hold(nil)
+		act()
+		ran = true
+	})
+	testwait.Eventually(r.t, what, func() bool {
+		r.tick()
+		return ran
+	})
+}
+
+// takeHeldWakeUnderLaunchTurn has the next replacement that hold stops under the pod's launch turn
+// take a wake of role there, held by pause (underLaunchTurn), as the outbox takes the delivery of
+// a row that pause held (store.Store.TakePodWake, outbox's wakeForDelivery). The wake opens a
+// resume of pause for role (store.PodRecords.PauseOfWake).
+func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim.Role, pause int64) {
+	r.t.Helper()
+	r.underLaunchTurn(hold, fmt.Sprintf("a replacement to take the wake of the %s under the pod's launch turn", role), func() {
 		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], pods.WakeDelivery, r.clock.Now(), pause)
 		if err != nil || !taken {
 			r.t.Fatalf("take the wake of the %s that the pause held = %t, %v; want it taken", role, taken, err)
 		}
-		woke = true
-	})
-	testwait.Eventually(r.t, fmt.Sprintf("a replacement to take the wake of the %s under the pod's launch turn", role), func() bool {
-		r.tick()
-		return woke
 	})
 }
 
 // holdPodUnderLaunchTurn has the next replacement that hold stops under the pod's launch turn
-// (fake's HoldReplacePod or HoldReplaceIssuePod) find a project's pause that holds the issue's pod:
-// a pause of LEGION opens there, and it holds the pod at the rig's clock, as recordPause records a
-// pause and its hold (openLegionPause, holdLegionPod). The hold clears itself, so the sweeps after
-// that replacement find the runtime as it left it. It sweeps until that replacement has opened the
-// hold, and so has asked its last word.
+// find a project's pause that holds the issue's pod (underLaunchTurn): a pause of LEGION opens
+// there, and it holds the pod at the rig's clock, as recordPause records a pause and its hold
+// (openLegionPause, holdLegionPod). The pause's hold of the pod stays after that replacement.
 func (r *podUpdateRig) holdPodUnderLaunchTurn(hold func(func())) {
 	r.t.Helper()
-	held := false
-	hold(func() {
-		hold(nil)
+	r.underLaunchTurn(hold, "a replacement to find the pod held by a pause under the pod's launch turn", func() {
 		pause := openLegionPause(r.t, r.pool, r.clock.Now())
 		holdLegionPod(r.t, r.st, pause, podUpdateIssue, r.clock.Now())
-		held = true
 	})
-	testwait.Eventually(r.t, "a replacement to find the pod held by a pause under the pod's launch turn", func() bool {
-		r.tick()
-		return held
-	})
+}
+
+// wantRefusedUnderTurn holds the daemon's log to one refusal of a replacement under the pod's
+// launch turn: line is logged once, and the reason field of that line holds reason.
+func (r *podUpdateRig) wantRefusedUnderTurn(line, reason string) {
+	r.t.Helper()
+	refusals := loggedMessages(r.t, r.logs.String(), line)
+	if len(refusals) != 1 {
+		r.t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
+	}
+	if got := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(got, reason) {
+		r.t.Errorf("the refusal's reason is %q, want it to hold %q", got, reason)
+	}
 }
 
 // dispatch://INFRA-4109 review round 5: the last word on a replacement through a process reads
@@ -673,13 +687,7 @@ func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testin
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times, want none: the pause owes the %s a launch", len(calls), woken)
 	}
-	refusals := loggedMessages(t, rig.logs.String(), backgroundNotDueLine)
-	if len(refusals) != 1 {
-		t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
-	}
-	if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, fmt.Sprintf("%s has not answered it", woken)) {
-		t.Errorf("the refusal's reason is %q, want it to name the %s as not answered", reason, woken)
-	}
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it", woken))
 	rig.wantPodKept(fmt.Sprintf("the answer of the %s", woken))
 }
 
@@ -710,13 +718,7 @@ func TestTheByIssueReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testi
 	if calls := rig.issueReplacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced by issue %d times, want none: the pause owes the %s a launch", len(calls), woken)
 	}
-	refusals := loggedMessages(t, rig.logs.String(), byIssueNotDueLine)
-	if len(refusals) != 1 {
-		t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
-	}
-	if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, fmt.Sprintf("owes the %s a launch", woken)) {
-		t.Errorf("the refusal's reason is %q, want it to say that the pause owes the %s a launch", reason, woken)
-	}
+	rig.wantRefusedUnderTurn(byIssueNotDueLine, fmt.Sprintf("owes the %s a launch", woken))
 	rig.tick()
 	rig.tick()
 	rig.settleAll()
@@ -756,13 +758,7 @@ func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
 		if calls := rig.replacements(); len(calls) != 0 {
 			t.Fatalf("the pod was replaced %d times, want none: a project's pause holds it", len(calls))
 		}
-		refusals := loggedMessages(t, rig.logs.String(), backgroundNotDueLine)
-		if len(refusals) != 1 {
-			t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
-		}
-		if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, "a project's pause holds the pod") {
-			t.Errorf("the refusal's reason is %q, want it to name the pause's hold of the pod", reason)
-		}
+		rig.wantRefusedUnderTurn(backgroundNotDueLine, "a project's pause holds the pod")
 		rig.wantPodKept("the end of the pause's hold")
 	})
 
@@ -785,13 +781,7 @@ func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
 		if calls := rig.issueReplacements(); len(calls) != 0 {
 			t.Fatalf("the pod was replaced by issue %d times, want none: a project's pause holds it", len(calls))
 		}
-		refusals := loggedMessages(t, rig.logs.String(), byIssueNotDueLine)
-		if len(refusals) != 1 {
-			t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
-		}
-		if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, "a project's pause holds the pod") {
-			t.Errorf("the refusal's reason is %q, want it to name the pause's hold of the pod", reason)
-		}
+		rig.wantRefusedUnderTurn(byIssueNotDueLine, "a project's pause holds the pod")
 		rig.tick()
 		rig.tick()
 		rig.settleAll()

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -56,14 +55,7 @@ func TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSessio
 			rig.awaitRound(stopped, podUpdateRound)
 
 			m, _ := rig.sup.Machine(token)
-			go func() {
-				_ = m.Handle(rig.ctx, supervise.RequestRuleResume{Claim: token, Reason: "a wake for the launch the project's pause held"})
-			}()
-			select {
-			case <-holding:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the %s's launch did not reach the runtime", stopped)
-			}
+			rig.heldStartUntilHeld(stopped, holding)
 			if c := m.View().Claim; c.State != supervise.StateLaunching || c.Locator != nil || (c.Session == "") != forgot {
 				t.Fatalf("the %s is %s recording session %q and process %+v, want launching with no process and its session forgotten: %t",
 					stopped, c.State, c.Session, c.Locator, forgot)

@@ -39,6 +39,24 @@ func holdInRuntime(t *testing.T) (hold func(context.Context) error, reached <-ch
 	}, holding
 }
 
+// heldStartUntilHeld runs the held start of role (heldStartRequest) where holdInRuntime's hold
+// stops the launch inside the runtime. The machine's handle of that start does not return while
+// the hold stands, so the start runs on its own goroutine, and its error is not read. It waits up
+// to 10 s for the launch to reach the runtime (reached, holdInRuntime's channel).
+func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct{}) {
+	r.t.Helper()
+	m, _ := r.sup.Machine(r.tokens[role])
+	start := r.heldStartRequest(role)
+	go func() {
+		_ = m.Handle(r.ctx, start)
+	}()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		r.t.Fatalf("the %s's launch did not reach the runtime", role)
+	}
+}
+
 // scriptForgottenSession scripts the next launch of role to forget the role's session
 // (supervise's startFresh). No session store holds the session, so the resume fails
 // (runtime.ErrSessionFileMissing). The launch then forgets the session and spawns a fresh agent in
@@ -80,22 +98,13 @@ func forgottenOwedLaunch(t *testing.T, others ...podUpdateRole) *podUpdateRig {
 	rig := newPodUpdateRig(t, members...)
 	rig.recordPause(store.PausePodHoldResumed, stopped)
 	rig.drifts(podUpdateDrift)
-	token := rig.tokens[stopped]
 	hold, holding := holdInRuntime(t)
 	rig.scriptForgottenSession(stopped, hold)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleTester, podUpdateRound)
 	rig.awaitRound(stopped, podUpdateRound)
-	m, _ := rig.sup.Machine(token)
-	go func() {
-		_ = m.Handle(rig.ctx, supervise.RequestRuleResume{Claim: token, Reason: "a wake for the launch the project's pause held"})
-	}()
-	select {
-	case <-holding:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the %s's launch did not reach the runtime", stopped)
-	}
+	rig.heldStartUntilHeld(stopped, holding)
 	rig.wantForgottenLaunch()
 
 	rig.signal(claim.RoleTester, "a1b2c3d")
