@@ -115,13 +115,105 @@ function checkPrivate(
   }
 }
 
+/** The sticky bit: in a directory that has it, only an entry's owner, the directory's owner or
+ *  root may remove or rename the entry. */
+const STICKY = 0o1000;
+
+/**
+ * Refuses `info`, a directory the system looks a name up in on the way to `what`, where another
+ * user could replace what is in it: one its group or anyone else may write to without the sticky
+ * bit, or that neither this user nor root owns. This is OpenSSH's StrictModes rule for the
+ * directories above a key, so a sticky one others may write to, as /tmp is, is taken, and so is
+ * one of root's own.
+ */
+function checkOnTheWay(info: Stats, what: string): void {
+  const onTheWay = `a directory on the way to ${what}`;
+  const mode = info.mode & 0o7777;
+  if ((mode & 0o022) !== 0 && (mode & STICKY) === 0) {
+    throw new Error(
+      `${onTheWay} is mode ${mode.toString(8).padStart(4, "0")}, which lets others replace what is in it; remove their write access (chmod go-w) or set its sticky bit (chmod +t), or keep the login elsewhere`
+    );
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid && info.uid !== 0) {
+    throw new Error(
+      `${onTheWay} is owned by uid ${info.uid}, neither this user (uid ${uid}) nor root; keep the login under directories of this user's own`
+    );
+  }
+}
+
+/** `path`'s own status, a link's and not what it names, or null where nothing is there. `what`
+ *  names the directory it is on the way to in an error. */
+async function lstatOnTheWay(path: string, what: string): Promise<Stats | null> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (readErrorCode(error) === "ENOENT") return null;
+    throw refusedBy(error, `read a directory on the way to ${what}`);
+  }
+}
+
+/**
+ * Refuses `dir`, named as `what` names it, where a directory the system looks a name up in to
+ * reach it fails {@link checkOnTheWay}: each one from `/` down, the working directory's own where
+ * `dir` is relative, and the one each link on the way is in, since another user who replaces that
+ * link picks where the way goes. The names are walked as an open walks them: each by its `lstat`,
+ * a link by its `readlink`, from `/` where its target is absolute and else from the directory it
+ * is in, and `..` up from the directory reached, which is no link. At most
+ * {@link LINKS_FOLLOWED_AT_MOST} links are followed. A name that is not there ends the walk, which
+ * the caller's own look at `dir` refuses.
+ */
+async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
+  const names = (isAbsolute(dir) ? dir : `${process.cwd()}/${dir}`).split("/");
+  let reached = "/";
+  let info = await lstatOnTheWay(reached, what);
+  let followed = 0;
+  for (let name = names.shift(); name !== undefined; name = names.shift()) {
+    if (info === null) return;
+    if (name === "" || name === ".") continue;
+    if (name === "..") {
+      reached = dirname(reached);
+      info = await lstatOnTheWay(reached, what);
+      continue;
+    }
+    checkOnTheWay(info, what);
+    const next = reached === "/" ? `/${name}` : `${reached}/${name}`;
+    const here = await lstatOnTheWay(next, what);
+    if (here === null || !here.isSymbolicLink()) {
+      reached = next;
+      info = here;
+      continue;
+    }
+    followed += 1;
+    if (followed > LINKS_FOLLOWED_AT_MOST) throw notARegularFile("a loop of links");
+    let target: string;
+    try {
+      target = await readlink(next);
+    } catch (error) {
+      // The link was replaced or removed since its lstat: the name is looked at again.
+      const code = readErrorCode(error);
+      if (code !== "EINVAL" && code !== "ENOENT") {
+        throw refusedBy(error, `read a directory on the way to ${what}`);
+      }
+      names.unshift(name);
+      continue;
+    }
+    names.unshift(...target.split("/"));
+    if (isAbsolute(target)) {
+      reached = "/";
+      info = await lstatOnTheWay(reached, what);
+    }
+  }
+}
+
 /**
  * Refuses `dir`, the login's directory, where another user could replace the login or its lock
  * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
  * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
  * `~/.config/legion` that envoy.json lives in: the login's file is 0600 itself, and its name is
- * no secret. Each refusal names the directory as `what` does, by the file's setting, and the fix.
- * `absent`, where it is given, is the refusal of a directory that is not there.
+ * no secret. Each directory on the way to it is checked too ({@link checkDirectoriesOnTheWay}).
+ * Each refusal names the directory as `what` does, by the file's setting, and the fix. `absent`,
+ * where it is given, is the refusal of a directory that is not there.
  */
 async function checkLoginDirectory(
   dir: string,
@@ -142,6 +234,7 @@ async function checkLoginDirectory(
     "lets others replace the login in it; run chmod 700 on it",
     "keep the login in a directory of this user's own"
   );
+  await checkDirectoriesOnTheWay(dir, what);
 }
 
 /**

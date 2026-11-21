@@ -359,6 +359,105 @@ test("a login reached through a link in a directory others may write is refused 
   }
 });
 
+/**
+ * A login in a directory of this user's own (`real`), reached through `shared/sub`, a link to
+ * `real` in a directory `shared` of its own, in the two ways a setting can: by a path under that
+ * link, and by a link (in a third directory, `own`) to such a path. Answers `shared`, the login's
+ * file and the two settings.
+ */
+async function throughADirectoryLink(broker: string) {
+  const base = makeDirectory();
+  const shared = join(base, "shared");
+  await mkdir(shared, { mode: 0o700 });
+  const login = join(base, "real", "device-login.json");
+  await writeDeviceLoginFile(login, broker);
+  await fs.symlink(dirname(login), join(shared, "sub"));
+  const underTheLink = join(shared, "sub", "device-login.json");
+  const own = join(base, "own");
+  await mkdir(own, { mode: 0o700 });
+  const toTheLink = join(own, "device-login.json");
+  await fs.symlink(underTheLink, toTheLink);
+  return { shared, login, settings: [underTheLink, toTheLink] };
+}
+
+test("a login reached through a directory link in a directory others may write is refused before it is opened", async () => {
+  // A directory link sits in the directory above it: another user who can write there replaces
+  // the link, and with it the directory the login is read from. Every directory on the way is
+  // checked, as OpenSSH's StrictModes checks each directory above a key.
+  const stub = broker();
+  const { shared, login, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o777);
+  const watch = watchOpensAndLooks();
+  try {
+    for (const setting of settings) {
+      const refused = await readDeviceLogin(setting).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message, setting).toContain("mode 0777");
+      expect(refused?.message, setting).toContain("on the way to");
+      expect(refused?.message, setting).not.toContain(shared);
+    }
+    for (const at of [...settings, login]) expect(watch.opened).not.toContain(at);
+    // Control: with that directory 0755 both are read, and the spies see the read's open.
+    await chmod(shared, 0o755);
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+    expect(watch.opened).toContain(settings[0]);
+  } finally {
+    watch.restore();
+  }
+});
+
+test("a directory on the way to the login that neither this user nor root owns is refused", async () => {
+  // Its owner may replace what is in it whatever its mode. No test can make a directory another
+  // user owns, so the one on the way reads as owned by such a user.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o755);
+  // The walk names each directory by the way it reached it, which is its real path.
+  const reached = await fs.realpath(shared);
+  const other = (process.getuid?.() ?? 0) + 4242;
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    const info = await realLstat(...args);
+    if (String(args[0]) !== reached) return info;
+    return new Proxy(info, {
+      get: (seen, key) => (key === "uid" ? other : Reflect.get(seen, key)),
+    });
+  }) as typeof fs.lstat);
+  try {
+    for (const setting of settings) {
+      const refused = await readDeviceLogin(setting).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message, setting).toContain(`owned by uid ${other}, neither this user`);
+      expect(refused?.message, setting).toContain("on the way to");
+    }
+  } finally {
+    lstats.mockRestore();
+  }
+  // Control: owned by this user, the same directory is no refusal.
+  for (const setting of settings) {
+    expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  }
+});
+
+test("a directory others may write with the sticky bit, as /tmp is, is no refusal on the way to the login", async () => {
+  // In a sticky directory only an entry's owner, or root, can remove or rename it, so no other user
+  // replaces the link there.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o1777);
+  for (const setting of settings) {
+    expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  }
+});
+
 test("a relative link in a directory reached through a link climbs from where the link really is", async () => {
   // The system resolves a `..` in a link's target from the directory the link is really in. Here
   // the login's directory is a link, so `..` from it is not what the path's own spelling says.
