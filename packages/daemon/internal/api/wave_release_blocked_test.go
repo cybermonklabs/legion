@@ -658,11 +658,12 @@ func TestWaveReleaseDoesNotRecordAChildFromAWriteALaterEventOvertook(t *testing.
 	h, statuses := releaseHarness(t, true)
 	child := "LEGION-209"
 	statuses.issues[child] = backlogChild(child)
-	// The person's backlog, one event after the release's write (sequence 8), already applied:
-	// the mirror holds it, and the workflow recorded nothing for a child in backlog.
+	// The person's backlog, one event after the release's write (sequence 8), already applied: the
+	// copy holds it as an issue fact the daemon applied (record.DispatchReading.Applied, as
+	// blockers.Mirror writes an event), and the workflow recorded nothing for a child in backlog.
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: child, Project: testDispatchProject, Seq: 9,
-			Status: record.Carry("backlog"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
+			Status: record.Carry("backlog"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil), Applied: true})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", child, err)
 	}

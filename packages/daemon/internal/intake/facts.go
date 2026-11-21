@@ -103,7 +103,8 @@ type DispatchIssue struct {
 	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
 	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
 	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
-	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
+	// issue fact of the issue has applied (the copy's applied sequence,
+	// record.Store.DispatchIssueApplied): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
 	// (release_children, or another delivery, recording it meanwhile), or nothing when Delivered is
 	// nil, so a state the view shows never reaches a record without the actor of the event that
@@ -1745,10 +1746,13 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // or nothing when it was prepared in place of none. Every other fact applies as it is, so no
 // handler sees Observed or Delivered.
 //
-// A view older than an event of the issue the daemon has already applied (the mirror, which every
-// applied issue event writes first, holds a later sequence) applies nothing while the issue is
-// unrecorded: Dispatch has said something since, which the view does not show — a person's
-// withdrawal after the release's write, say — and that later event, applied, recorded no issue.
+// A view older than an issue fact of the issue the daemon has already applied (the copy's applied
+// sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
+// fact) applies nothing while the issue is unrecorded: Dispatch has said something since, which the
+// view does not show — a person's withdrawal after the release's write, say — and that later fact,
+// applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
+// re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
+// edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -1761,11 +1765,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 	}
 	switch {
 	case recorded == nil:
-		mirrored, found, err := store.DispatchIssueSeq(ctx, tx, issue.Key)
+		applied, err := store.DispatchIssueApplied(ctx, tx, issue.Key)
 		if err != nil {
 			return nil, false, err
 		}
-		if found && mirrored > issue.Seq {
+		if applied > issue.Seq {
 			return nil, false, nil
 		}
 		issue.Observed, issue.Delivered = false, nil
