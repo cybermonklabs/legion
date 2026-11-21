@@ -780,6 +780,49 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
   }
 });
 
+// A read asked again that holds no answer is out again rather than failed while it runs, and its
+// line stays drawn through that run, its Retry busy and still holding the focus, so a second
+// press asks nothing and the focus never leaves the line (`slots/view-plan.tsx`'s
+// `failedWithNothing`, `FailedReadLine`).
+test("a refused read's line stays drawn while its Retry reads again, its Retry busy and focused", async () => {
+  setViewport(1440);
+  const again = Promise.withResolvers<never>();
+  let specReads = 0;
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
+    if (id !== SPEC_ARTIFACT) return again.promise;
+    specReads += 1;
+    return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
+  }) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(slotClient({ specHeld: false }), issueRead());
+  try {
+    const line = () => view.container.querySelector('[data-plan-unreadable="statements"]');
+    await waitFor(() => {
+      if (line() === null) throw new Error("the view says nothing of the refused statements read");
+    });
+    await userEvent.click(retryOf(view, "statements"));
+    await waitFor(() =>
+      expect(specReads, "Retry on the statements line does not read the spec's blocks").toBe(2)
+    );
+    await settled();
+    expect(line(), "the statements line leaves while its read runs again").not.toBeNull();
+    const retry = retryOf(view, "statements");
+    expect(retry.getAttribute("aria-busy"), "the Retry of a read running again is not busy").toBe(
+      "true"
+    );
+    expect(document.activeElement, "the focus leaves the Retry while its read runs again").toBe(
+      retry
+    );
+    await userEvent.click(retry);
+    await settled();
+    expect(specReads, "a second press of a busy Retry asks the spec's blocks again").toBe(2);
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 /** The reads as the slot hands them on where `reads` failed before they first answered, in the
  *  order given, each after its first failure and not running again, each Retry noting its read in
  *  `asked`. */
