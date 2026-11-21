@@ -213,7 +213,7 @@ pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
@@ -3561,7 +3561,7 @@ Manager Secret Version Adder (`roles/secretmanager.secretVersionAdder`).
 
 `core.Authorization` is a NATS server's nkey authorization: the users it knows by public key, what
 each may publish and subscribe to, the user a client presenting no credential becomes, and, with
-a callout, the auth service ([dispatch://INFRA-840](dispatch://INFRA-840)) that admits every
+a callout, the auth service that admits every
 other client. A NATS server's configuration is rendered from it, so it holds public keys only.
 `aws:NatsService` takes it as its `authorization` input, an `aws:Authorization` of `aws:User`s,
 with the properties below; `envoy-infra render nats-start-script` reads the same from its file,
@@ -3573,8 +3573,8 @@ server's from their `users`, `listener` and `sessionUser`, with `authCallout` an
 [The hub's users](docs/nats-hub.md#the-hubs-users) and
 [The auth service](docs/nats-hub.md#the-auth-service)). A hub refuses its own listener beside
 `authCallout`, naming both: the listener connects as a user whose seed the hub stores, and its
-service identity, with which it would connect through the auth service, arrives with
-dispatch://INFRA-840 (t-e-13). With `privateProjects`, a hub also refuses an
+service identity, with which it would connect through the auth service, arrives in a later
+change. With `privateProjects`, a hub also refuses an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -3707,14 +3707,14 @@ before, after 3 to 4 if it sent data up to the hang. Under nats-server's default
 2 minutes, `ping_max` 2: `const.go:120-123`) it is 4 to 8 minutes. `core/nats_ping_live_test.go`
 measures it on the hub's image, with the control that under the defaults the hung replica keeps its
 place and clients are refused. The ping is the hub's backstop for a replica that stops reading its
-connection, because its process froze or its node lost its network. dispatch://INFRA-840 must give
+connection, because its process froze or its node lost its network. The auth service must give
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
 in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
 lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
 process runs, since nats.go answers a PING from its read loop (nats.go v1.55.0 `processPing`,
 called at `nats.go:4278`, from `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
 group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
-connection, so INFRA-840's service must do that when its handler stops answering.
+connection, so the auth service must do that when its handler stops answering.
 
 The two options apply to every client connection on the server. A client whose event loop blocks,
 or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
@@ -3850,7 +3850,7 @@ user a host's sessions share (`HostPermissions`) and Dispatch's.
 So every session on a host can write another session's record in any of those buckets, its
 session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
 them.
-dispatch://INFRA-840, which gives each session a NATS user of its own, is the place that narrows
+The auth service's per-session credentials, which give each session a NATS user of its own, are what narrow
 that reach; nothing here can, since one user serves every session on the host.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
@@ -3883,8 +3883,8 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the per-session credentials
-of dispatch://INFRA-840.
+relay frames, until the auth service's
+per-session credentials.
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
@@ -3899,7 +3899,7 @@ A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its liste
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
 session on the host share: in each direction the listener's base entries, the session consumers'
 left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
-shared host user's sessions at today's reach until dispatch://INFRA-840;
+shared host user's sessions at today's reach until the auth service's per-session credentials;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
 registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
 `listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one

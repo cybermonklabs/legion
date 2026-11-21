@@ -1425,7 +1425,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// are candidates in one term, each refuses the other (processVoteRequest), and the group waits
 	// for a second draw: a split vote. Measured: 13 of 12,482 runs of this phase in a scratch
 	// harness took a second round, every one a split vote, one of them at 15.40 s; CI run
-	// 43462859890 failed this wait at 15 s with the same signature (dispatch://INFRA-3529). One
+	// 43462859890 failed this wait at 15 s with the same signature. One
 	// round is at most 9 s plus 0.8 s (maxCampaignTimeoutDefault), the campaign of a survivor that
 	// refused a candidate with a shorter log. Three rounds and the read's 500 ms fit in 30 s, so
 	// the wait fails only when three draws in a row split. The publisher's 30 s per message is the

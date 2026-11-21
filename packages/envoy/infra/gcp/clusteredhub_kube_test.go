@@ -215,7 +215,7 @@ func TestClusteredNatsHubChartValuesFollowTheSizes(t *testing.T) {
 	require.Equal(t, want, values)
 }
 
-// With INFRA-546's streamMaxBytes the chart takes the sizes it gives
+// With the measured streamMaxBytes the chart takes the sizes it gives
 // (TestClusteredNatsHubSizingFollowsStreamMaxBytes): a 53Gi claim holding at most 47Gi, and
 // nats-server at 5Gi under a GOMEMLIMIT of 80% of it, 4096MiB; an explicit natsMemory of 4.5Gi
 // gives ⌊0.8 × 4608⌋ = 3686MiB. Without streamMaxBytes, TestClusteredNatsHubChartValues pins

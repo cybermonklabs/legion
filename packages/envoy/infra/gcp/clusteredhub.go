@@ -58,7 +58,7 @@ const (
 	clusteredHubExporterMemory = "128Mi"
 )
 
-// The sizes INFRA-546 measured for the session listener's notification stream, from which the hub
+// The sizes measured for the session listener's notification stream, from which the hub
 // sizes JetStream's file store and nats-server's memory for a given streamMaxBytes (hubSizing):
 // sjawhar/legion#2362's description, section "Sizing of ENVOY_STREAM_MAX_BYTES", over the window
 // 2026-10-27 02:35:54Z to 03:55:54Z.
@@ -81,8 +81,7 @@ var (
 var (
 	// clusteredHubIdleMemory is nats-server's own memory beside the duplicate map: 38,486,016 B,
 	// nats-server v2.15.1's resident memory (/varz mem) after a three-server JetStream cluster
-	// formed on loopback with a meta leader, the largest of the three, measured 2026-10-27 by
-	// INFRA-549's implementer.
+	// formed on loopback with a meta leader, the largest of the three, measured 2026-10-27.
 	clusteredHubIdleMemory = new(big.Rat).SetInt64(38486016)
 	// clusteredHubGoMemLimitFraction is nats-server's GOMEMLIMIT as a fraction of its container's
 	// memory limit: 80%, as the nats chart 2.15.1's README recommends ("NATS Container Resources",
@@ -579,7 +578,7 @@ func monitorBesidePrivateProjects(namespaces []string) error {
 //
 // Without streamMaxBytes, the volume is 10 GiB, the store ⌊0.9 × diskSizeGb⌋ and at least 1, and
 // nats-server's memory 2Gi. With streamMaxBytes, which newClusteredHubSettings has checked is at
-// least 1, the sizes follow INFRA-546's measurement:
+// least 1, the sizes follow the measurement above:
 //   - the store holds S (clusteredHubStoreBytes), the stream at its limit, the KV buckets' budget
 //     and the Raft log's headroom: ⌈S⌉ GiB by default, and an explicit maxFileStoreGb below S is
 //     refused naming it and streamMaxBytes, since JetStream refuses to create a stream past

@@ -95,7 +95,7 @@ func standaloneListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerAr
 func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 	type A = gcp.ClusteredNatsHubArgs
 	str := pulumi.StringRef
-	// limit is INFRA-546's streamMaxBytes, for the sizing rows.
+	// limit is the measured streamMaxBytes, for the sizing rows.
 	limit := func(a *A) *A {
 		a.StreamMaxBytes = pulumi.IntRef(infra546StreamMaxBytes)
 		return a
@@ -134,7 +134,7 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"diskSizeGb 0", func(a *A) { a.DiskSizeGb = pulumi.IntRef(0) }, "diskSizeGb", []string{"diskSizeGb 0 must be above maxFileStoreGb 1"}},
 		{"diskSizeGb at an explicit store", func(a *A) { a.DiskSizeGb, a.MaxFileStoreGb = pulumi.IntRef(5), pulumi.IntRef(5) }, "maxFileStoreGb",
 			[]string{"maxFileStoreGb 5 must be below diskSizeGb 5"}},
-		// INFRA-546's limit needs S = 46.1 GiB of store and F ≈ 4.31 GiB (4409.4 MiB) of memory
+		// The measured limit needs S = 46.1 GiB of store and F ≈ 4.31 GiB (4409.4 MiB) of memory
 		// (TestClusteredNatsHubSizingFollowsStreamMaxBytes, whose acceptance rows at 47, 4410Mi
 		// and 4.5Gi these rows bound).
 		{"maxFileStoreGb below S", func(a *A) { limit(a).MaxFileStoreGb = pulumi.IntRef(46) }, "maxFileStoreGb",
