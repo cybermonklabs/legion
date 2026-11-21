@@ -10,7 +10,7 @@ body: |-
   expires at most ten minutes after the decision. A second new kind, `probe`
   (`probe/-/*=<account>`), is the hold's probe, granted publish and subscribe of
   `_ENVOY_HOLD_PROBE.none` alone. The hold's row, its records and each family's cutover row live in
-  the broker's Postgres (migration `0040_nats_hold`), each signed by the operator's Ed25519 key,
+  the broker's Postgres (migration `0041_nats_hold`), each signed by the operator's Ed25519 key,
   whose public halves are `BROKER_NATS_HOLD_SIGNING_KEYS`, and written only through the operator's
   `/v1/nats-hold` routes. With `BROKER_NATS_HOLD_READ=true` (default `false`) the auth service reads
   the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while
