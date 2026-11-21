@@ -100,6 +100,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	natsURL := js.Conn().ConnectedUrl()
 
+	testbuild.ProvisionFixtureBuckets(t, natsURL)
 	listener := startListener(t, binaries.listener, natsURL)
 
 	logs := &warnings{}
@@ -328,7 +329,7 @@ func seedRedeliveredIssue(t *testing.T, pool *pgxpool.Pool) {
 // (testbuild.EnvoyBinary).
 type envoyBinaries struct{ listener, dispatch string }
 
-// builtEnvoyBinaries is the pair of paths, each built on the first test of this process that
+// builtEnvoyBinaries is the set of paths, each built on the first test of this process that
 // asked for it.
 func builtEnvoyBinaries(t *testing.T) envoyBinaries {
 	t.Helper()

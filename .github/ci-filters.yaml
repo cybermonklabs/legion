@@ -337,6 +337,8 @@ daemon_go_tests:
   - *daemon_envoy_deps
   - *dispatch_server
   - *listener_command
+  - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
+  - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
@@ -416,6 +418,9 @@ plugin_pack:
   - *omp_install
   - 'packages/daemon/**'
   - *dispatch_server
+  - *listener_command
+  - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
+  - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
@@ -1602,6 +1607,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/fixtureenv/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/logtest/*'
+  - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
@@ -2022,6 +2028,7 @@ listener_server_change:
   - 'packages/envoy/infra/README.md'
   - 'packages/envoy/infra/docs/nats-hub.md'
   - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
+  - 'packages/envoy/deploy/compose/single-node.compose.yml'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipherclient/**'
@@ -2256,6 +2263,7 @@ envoy_smoke:
   - '!packages/envoy/dispatchbody/**/*_test.go'
   - '!packages/envoy/going/**/*_test.go'
   - '!packages/envoy/infra/aws/**/*_test.go'
+  - '!packages/envoy/infra/buckets/**/*_test.go'
   - '!packages/envoy/infra/cmd/**/*_test.go'
   - '!packages/envoy/infra/core/**/*_test.go'
   - '!packages/envoy/infra/gcp/**/*_test.go'
@@ -2334,6 +2342,8 @@ envoy_e2e_local:
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
+  - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
+  - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/testport/*'
   # why: .github/ci-notes/ci.md#envoy_e2e_local-the-job-reads-no-markdown-file-the-listener-the-renderer
   - '!**/*.md'

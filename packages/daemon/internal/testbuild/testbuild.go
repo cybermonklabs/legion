@@ -159,3 +159,15 @@ func envoyModule() (string, error) {
 	}
 	return module, nil
 }
+
+// ProvisionFixtureBuckets runs envoy's fixturebuckets command, built once per test process
+// (EnvoyBinary), on the NATS server at natsURL, which then holds every bucket a listener copies.
+// No listener creates one, so a test's own server is given them before a listener
+// starts on it; the command leaves a server it already provisioned as it is.
+func ProvisionFixtureBuckets(t testing.TB, natsURL string) {
+	t.Helper()
+	binary := EnvoyBinary(t, "./internal/testnats/cmd/fixturebuckets")
+	if output, err := exec.Command(binary, "-url", natsURL).CombinedOutput(); err != nil {
+		t.Fatalf("fixturebuckets could not provision %s with the buckets a listener copies: %v\n%s", natsURL, err, output)
+	}
+}

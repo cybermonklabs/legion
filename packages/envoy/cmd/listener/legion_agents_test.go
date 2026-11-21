@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -31,9 +32,12 @@ type legionListener struct {
 	mux  http.Handler
 }
 
+// newLegionListener is the listener the /v1/legion/agents routes are tested on, built on client,
+// whose connection it marks as a fixture's (bustest.Fixture) so its session registry creates its
+// bucket.
 func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	t.Helper()
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), bustest.Fixture(client.Conn), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

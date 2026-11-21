@@ -72,10 +72,10 @@ given alone is sent as the token, and `user:password` as a password. So:
 - **A server nats.go discovers copies the configured URL's userinfo** (nats.go:2025-2027). So
   `nc.ConnectedUrl()` carries the credential even when the URL it names was never configured.
 - **Remove all userinfo before a URL reaches a log line or a logged error.** `internal/bus` does
-  this with `natsURLWithoutUserinfo`. It parses the URL and sets `User = nil`. When the URL does not
-  parse, it keeps only what follows the last `@`, so nothing before an `@` can leak. That fallback
-  departs from the rule "compose from parsed parts" in the LEGION-791 page, and it can drop the
-  host of a URL with an `@` past its authority.
+  this with `NATSURLWithoutUserinfo`, which `envoy-infra buckets` calls too. It parses the URL and
+  sets `User = nil`. When the URL does not parse, it keeps only what follows the last `@`, so
+  nothing before an `@` can leak. That fallback departs from the rule "compose from parsed parts"
+  in the LEGION-791 page, and it can drop the host of a URL with an `@` past its authority.
 - **Test fixtures with no userinfo hide this leak.** `testnats.URL` does carry `tN:tN`, so a test
   that reads a logged URL from a connection made with it does catch the leak.
 

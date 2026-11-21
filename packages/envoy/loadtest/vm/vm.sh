@@ -8,7 +8,8 @@
 #   vm.sh up --config FILE [--run ID] [--loadgen PATH]
 #       Starts every container of the deployment by image digest, each on the machine the
 #       deployment file puts it on, with the CPU and memory limits of the specification below
-#       and nothing silently defaulted, installs loadgen and the stub embedder on the load
+#       and nothing silently defaulted, gives NATS the buckets a listener copies before any
+#       listener starts (nats_provision), installs loadgen and the stub embedder on the load
 #       machine, makes the database cloudsql.database names when the instance does not hold it
 #       yet, and waits until Dispatch answers /healthz. With no --run it makes the run
 #       directory and names the run in <root>/current; with --run it starts the
@@ -643,6 +644,8 @@ remote_root() { cfg_valid path .paths.remote_root; }
 nats_store() { cfg_valid path .paths.nats_store "$(remote_root)/nats"; }
 cert_path() { cfg_valid path .paths.cert "$(remote_root)/stub-embed.pem"; }
 remote_loadgen() { cfg_valid path .paths.remote_loadgen "$(remote_root)/loadgen"; }
+# remote_fixturebuckets: up's copy of fixturebuckets on the NATS machine (nats_provision).
+remote_fixturebuckets() { printf '%s/fixturebuckets\n' "$(remote_root)"; }
 remote_work() { cfg_valid path .paths.remote_work "$(remote_root)/work"; }
 
 # production_seed: the baseline population's own seed on the load machine, beside the loop seed.
@@ -1114,6 +1117,22 @@ container_stop() {
   docker_on "$(container_vm "$role")" rm -f "$role" >/dev/null 2>&1 || true
 }
 
+# nats_provision: the buckets a listener copies, made on NATS before any listener starts on it,
+# since no listener creates one. up runs it once NATS is started, and reset once
+# NATS is started again on its emptied store. fixturebuckets provisions only a server on its own
+# machine's loopback, so it runs on the NATS machine, from the copy up put there, against the
+# port the container publishes on that machine: once a second until NATS takes the connection,
+# for up to a minute.
+nats_provision() {
+  local vm
+  vm=$(container_vm nats)
+  # shellcheck disable=SC2016 # expanded by the NATS machine's sh
+  on_vm "$vm" sh -c 'i=0; until "$1" -url "$2"; do i=$((i + 1)); [ "$i" -lt 60 ] || exit 1; sleep 1; done' \
+    sh "$(remote_fixturebuckets)" "nats://127.0.0.1:$(port_of nats)" >/dev/null ||
+    die "fixturebuckets could not give NATS on the $vm VM the buckets a listener copies"
+  note "NATS on the $vm VM holds the buckets a listener copies (fixturebuckets)"
+}
+
 # ---- the stub embedder --------------------------------------------------------------------------
 
 # stub_embed_start: loadgen stub-embed on the load machine, detached, with its certificate
@@ -1391,6 +1410,10 @@ loadgen_bin() {
   printf '%s\n' "${OPT[loadgen]:-$(cfg .paths.loadgen "${LOADTEST_ROOT:-${TMPDIR:-/tmp}/dispatch-loadtest}/bin/loadgen")}"
 }
 
+# fixturebuckets_bin: the path of this pod's fixturebuckets, for the copy onto the NATS machine:
+# the one beside loadgen, which stack.sh setup builds into the same directory.
+fixturebuckets_bin() { printf '%s/fixturebuckets\n' "$(dirname -- "$(loadgen_bin)")"; }
+
 # endpoints [PPROF]: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS. Each
 # one is the deployment's own, which is what R2 asks and what check reads back. PPROF is the
 # profiling endpoint loadgen is given: the deployment file's own by default, and a step's tunnel
@@ -1539,9 +1562,12 @@ cmd_up() {
   parse "config run loadgen" "" "$@"
   positional 0 "no positional arguments"
   if [ -n "${OPT[run]:-}" ]; then use_run; else new_run; fi
-  local role vm bin
+  local role vm bin fixturebuckets
   bin=$(loadgen_bin)
   [ -x "$bin" ] || die "up: no loadgen at $bin: build it (packages/envoy/loadtest/stack.sh setup) or name it with --loadgen"
+  fixturebuckets=$(fixturebuckets_bin)
+  [ -x "$fixturebuckets" ] ||
+    die "up: no fixturebuckets at $fixturebuckets, beside loadgen: build both (packages/envoy/loadtest/stack.sh setup)"
   # The way in, before anything is started: no ssh of this script authenticates until the run's
   # key is imported and the OS Login user read (oslogin_ready).
   oslogin_ready
@@ -1555,6 +1581,7 @@ cmd_up() {
   on_vm "$LOAD_VM" mkdir -p -- "$(remote_work)" || die "up: making $(remote_work) on the $LOAD_VM VM failed"
   put_file "$LOAD_VM" "$bin" "$(remote_loadgen)"
   on_vm "$LOAD_VM" chmod 755 "$(remote_loadgen)" || die "chmod of $(remote_loadgen) on the $LOAD_VM VM failed"
+  put_file "$(container_vm nats)" "$fixturebuckets" "$(remote_fixturebuckets)" 755
   # The database Dispatch opens, if the instance does not hold it yet. A new instance ships with
   # the login's own database and no other, and Dispatch exits "database does not exist" rather
   # than making one; its migrations run themselves once it can open it.
@@ -1572,6 +1599,7 @@ cmd_up() {
   stub_embed_start
   for role in "${CONTAINERS[@]%% *}"; do
     container_start "$role"
+    [ "$role" != nats ] || nats_provision
   done
   wait_healthz
   note "up done: ${CONTAINERS[*]%% *} started; run $RUN"
@@ -1978,8 +2006,9 @@ reset_deployment() {
   psql_at postgres "create database $database template $template" >/dev/null ||
     die "create database $database from $template failed"
   steps+=("create database $database template $template")
-  # 4. NATS again on a fresh JetStream store: the store is its machine's disk, so the restart
-  # alone would keep every stream, consumer and KV bucket of the step before. The removal goes
+  # 4. NATS again on a fresh JetStream store, given the buckets a listener copies again
+  # (nats_provision): the store is its machine's disk, so the restart alone would keep every
+  # stream, consumer and KV bucket of the step before. The removal goes
   # through sudo, as every docker call on these machines does, because what is inside the store
   # is the NATS container's: that container runs as root and makes jetstream/ there at mode 700,
   # which the ssh user cannot descend into, so that user's own rm -rf of the store is refused
@@ -1996,6 +2025,8 @@ reset_deployment() {
   steps+=("fresh jetstream store $(nats_store)")
   container_start nats
   steps+=("start nats")
+  nats_provision
+  steps+=("provision nats")
   container_start hub-listener
   steps+=("start hub-listener")
   # 5. the four load listeners and the Dispatch listener.

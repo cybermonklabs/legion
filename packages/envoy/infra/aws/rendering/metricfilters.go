@@ -167,6 +167,24 @@ var ListenerLogSignals = []LogSignal{
 			"info ENVOY_NOTIFICATIONS listener-<machine id>`, push_bound, and stop it); any other " +
 			"error is JetStream failing the consumer lookup, create or update.",
 	},
+	{
+		// A copied KV bucket a listener found missing (cmd/listener/missing_buckets.go): the ERROR
+		// it logs at each check, every 30 s while the bucket stays missing, from the start's wait
+		// and from the self-health monitor alike, so the alarm stays raised until the bucket is back.
+		alarm:  "bucket-missing",
+		metric: "BucketsMissing",
+		filters: []struct{ name, pattern string }{
+			{"bucket-missing-filter", `{ $.level = "ERROR" && $.msg = "listener KV bucket is missing" }`},
+		},
+		description: "An Envoy listener found a KV bucket it copies missing (`listener KV bucket is missing`, " +
+			"the line's `bucket` names it): no listener creates one, since a bucket created again under a " +
+			"running listener loses every write the deleted bucket acknowledged. Until it is back, " +
+			"every write that needs it answers 503, and `/healthz` answers 200 `degraded` with `missing_buckets`; " +
+			"a start waits at its gate, serving no route, and its `/healthz` answers 503 `waiting`, which the " +
+			"container health check reads as unhealthy. Make it with `envoy-infra buckets create`, with `--break-glass` " +
+			"until the auth service's cutover, which needs no listener stopped, by the runbook " +
+			"(cybermonklabs/legion packages/envoy/infra/README.md#envoy-infra-buckets). Read %s for the bucket.",
+	},
 }
 
 // AlarmName is the signal's alarm's logical name in a WebhookListener named name.

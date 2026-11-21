@@ -50,12 +50,13 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
+	inboxPrefix                 string
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the retry of WithImmediateReconnect and WithInboxPrefix's reply inboxes,
+// each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -63,6 +64,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.immediateReconnect {
 		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -166,6 +170,15 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 // takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
+}
+
+// WithInboxPrefix has every connection of the client take its reply inboxes under prefix, in place
+// of nats.go's _INBOX: every request it sends, a JetStream API call included, asks for its answer on
+// prefix.<token>. A NATS user whose grant subscribes prefix.> alone can then run the client, where
+// one granted _INBOX.> would receive every other client's replies under _INBOX - a session's push
+// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets.
+func WithInboxPrefix(prefix string) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.inboxPrefix = prefix })
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
