@@ -131,7 +131,10 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "control: a restart since the record; findings: %v", report.Findings)
 		require.True(t, findingNames(report, routes.PasswordRead, h.release+"-2", "has run a new container since the record", "restartCount 1"),
 			"findings: %v", report.Findings)
-		require.Len(t, report.Findings, 1, "the restart alone: its new log begins with the start line and names no other address: %v", report.Findings)
+		// The new container started with authorization, so its log holds no reload that loaded it:
+		// no window, and no route connection judged (routes.authorizationWindow).
+		require.True(t, findingNames(report, routes.Unknown, h.release+"-2", `holds no "[INF] Reloaded: cluster"`), "findings: %v", report.Findings)
+		require.Len(t, report.Findings, 2, "the restart alone: its new container's record and its log with no window, and nothing else: %v", report.Findings)
 	})
 
 	t.Run("an impostor named as a hub server", func(t *testing.T) {
