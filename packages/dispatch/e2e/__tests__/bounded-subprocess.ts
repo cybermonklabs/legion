@@ -815,10 +815,11 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Six files of this directory run children that are
+ *  This never throws for an exit status. Seven files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
  *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
- *  `replace-blocks-guard.test.ts` and `round-robin-proxy.test.ts` - so a helper that always threw
+ *  `outside-agent-acceptance.test.ts`, `replace-blocks-guard.test.ts` and
+ *  `round-robin-proxy.test.ts` - so a helper that always threw
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *
