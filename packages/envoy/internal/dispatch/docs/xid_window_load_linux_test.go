@@ -261,7 +261,8 @@ func threadCPU(t *testing.T) time.Duration {
 // thread's clocks alone, that sleep is time the code made, over the bound; read off the execution
 // trace, it is the runtime's, and the window keeps D6. A receive on a channel the code waits on
 // for as long is a wait the code asked for (GoWaiting), and still breaks D6. Each arm first holds
-// that the wait happened: its gap, read off the thread's clocks alone, is over the bound.
+// that the wait happened: its gap, read off the thread's clocks alone, is over the bound. The one P
+// is set inside the measured operation, since Measure runs its operation with idle Ps beside it.
 func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
@@ -274,8 +275,8 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 	} {
 		t.Run(probe.name, func(t *testing.T) {
 			_, database, tracer := xidService(t)
-			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 			report := tracer.Measure(t, database.Pool, func() {
+				defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 				runRigTransactionDoing(t, database, probe.wait)
 			})
 			if len(report.Problems) > 0 || len(report.Windows) != 1 {
@@ -322,13 +323,15 @@ const xidHandoffNice = 19
 // One run, which fails if the thread and the runtime did not both wait 1 ms in the gap, as a run
 // that planted no wait proves nothing. The window runs on a goroutine of its own that ends locked
 // to its thread, so the runtime ends that thread and none of the process's later work runs at that
-// niceness; that goroutine reports its failures to the test's, which alone may stop the test.
+// niceness; that goroutine reports its failures to the test's, which alone may stop the test. The
+// one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
+// it.
 func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	_, database, tracer := xidService(t)
 	crowded := crowdACPU(t)
 	report := tracer.Measure(t, database.Pool, func() {
+		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 		failed := make(chan error, 1)
 		go func() {
 			// Never unlocked: the goroutine ends locked, and the runtime ends its thread with it.

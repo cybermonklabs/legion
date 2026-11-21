@@ -27,7 +27,8 @@ type xidPoll struct {
 // and answers the xid windows of the transactions operation's marked context ran (MarkXid). pool
 // is the pool under test; the poller dials a connection of its own from its configuration,
 // untraced, so it never waits for one of the pool's. operation runs on its caller's goroutine with
-// the collector held off (runWithoutCollector).
+// idle Ps beside it (runWithIdlePs) and the collector held off (runWithoutCollector). Measures run
+// one at a time (xidMeasuring).
 //
 // A run that sets XidRequireGapsEnv and cannot judge gaps fails here, naming why
 // (xidUnjudgedGapsProblem, as RequireXidGapJudgment fails), instead of judging the window's shape
@@ -35,6 +36,8 @@ type xidPoll struct {
 // rig takes one of its own.
 func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *XidReport {
 	t.Helper()
+	xidMeasuring.Lock()
+	defer xidMeasuring.Unlock()
 	if problem := xidUnjudgedGapsProblem(); problem != "" {
 		t.Fatal(problem)
 	}
@@ -126,17 +129,19 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 
 	var traced *xidTrace
 	var started, finished time.Time
-	runWithoutCollector(func() {
-		if XidJudgesGaps() {
-			var err error
-			if traced, err = startXidTrace(); err != nil {
-				t.Fatalf("XID RIG PROBLEM (not a finding about the code): start the execution tracer, which the rig reads the runtime's own waits off: %v", err)
+	runWithIdlePs(func() {
+		runWithoutCollector(func() {
+			if XidJudgesGaps() {
+				var err error
+				if traced, err = startXidTrace(); err != nil {
+					t.Fatalf("XID RIG PROBLEM (not a finding about the code): start the execution tracer, which the rig reads the runtime's own waits off: %v", err)
+				}
+				defer traced.stop()
 			}
-			defer traced.stop()
-		}
-		started = time.Now()
-		operation()
-		finished = time.Now()
+			started = time.Now()
+			operation()
+			finished = time.Now()
+		})
 	})
 	endCapture()
 
@@ -161,6 +166,39 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 		}
 	}
 	return analyzeXidWindows(statements, polls, finished.Sub(started), reading)
+}
+
+// xidMeasuring makes Measures run one at a time. A Measure changes the whole process's GOMAXPROCS
+// and collector for its operation, so two at once would put each other's settings back early. No
+// test that measures calls t.Parallel, and Go runs a parallel test only beside other parallel
+// ones, so no other test runs beside a Measure and this lock is never waited on; it makes sure
+// no later one interleaves.
+var xidMeasuring sync.Mutex
+
+// xidIdlePs is how many Ps Measure adds to GOMAXPROCS for the operation. A goroutine locked to its
+// thread, as a window's is, that comes back from a system call to find every P taken waits
+// runnable on the runtime with its thread asleep until a P is handed to it (exitsyscall, then
+// stoplockedm): a sleep of the runtime's that the thread's clocks cannot tell from a sleep of the
+// code's (XidGap.Made), and Made counts it as the code's. With a P to spare, the system call's
+// exit takes an idle one at once, and sysmon takes no P from a system call under 10 ms while one
+// is idle (retake). In 1,000 forced runs at GOMAXPROCS 8 on a loaded machine (2026-11-21), 18
+// gaps waited over 1 ms on the runtime, and one, which slept 8.3 ms through such a wait, broke D6
+// behind 0.121 ms of the code's CPU. A P is idle whenever fewer goroutines want one than there
+// are: in 238 operations measured with these Ps - 100 forced runs, the route table and the xid
+// suites, sampled every 200 µs off runtime/metrics on the same day - at most 36 goroutines were
+// running, runnable or in a system call at once, and 64 Ps, whatever the process had, are more
+// than that. Ps are cheap: each holds a cache of small objects, and an idle one runs nothing. A
+// test that wants fewer Ps sets them inside its operation.
+const xidIdlePs = 64
+
+// runWithIdlePs runs operation with xidIdlePs more Ps than the process had, and puts GOMAXPROCS
+// back after it on every way out: a deferred call runs on a panic and on t.Fatal's
+// runtime.Goexit. Setting GOMAXPROCS stops the world, so it is done outside the operation, and no
+// window holds that pause. It also stops the runtime from moving a default GOMAXPROCS to a CPU
+// limit changed later, for the rest of the process, as each test that sets GOMAXPROCS already did.
+func runWithIdlePs(operation func()) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(runtime.GOMAXPROCS(0) + xidIdlePs))
+	operation()
 }
 
 // runWithoutCollector runs operation with the collector held off - no memory limit, and a GOGC
