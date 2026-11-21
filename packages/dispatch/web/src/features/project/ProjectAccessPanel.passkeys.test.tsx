@@ -59,6 +59,31 @@ test("the owner's rows show each passkey's enrollment time, and Invite and Reset
   }
 });
 
+// A person a project of another owner names directly gets no link from this owner (the route
+// refuses it, 409 LISTED_BY_ANOTHER_OWNER, and the answer leaves them out of invitable). The row
+// says why there is no Invite, so the owner is not left guessing.
+test("a person another owner's project names has no Invite, and the row says why", async () => {
+  const panel = renderPanel({
+    answer: withPasskeys({ invitable: [], listed_by_another_owner: [ana], passkeys: [] }),
+  });
+  try {
+    await screen.findByRole("heading", { name: "People" });
+    const anaRow = personRow(ana);
+    expect(within(anaRow).queryByRole("button", { name: /^Invite/ })).not.toBeInTheDocument();
+    expect(
+      within(anaRow).getByText(
+        "Another project's owner also names this person, so no link can be made here: a passkey would read that project too."
+      )
+    ).toBeInTheDocument();
+    // Carol is named by no other owner's project: her row says nothing of the kind.
+    expect(
+      within(personRow("carol@example.com")).queryByText(/Another project's owner/)
+    ).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+  }
+});
+
 test("a person Dispatch would make a link for, with no passkey yet, is told apart from one who has one", async () => {
   const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
   try {

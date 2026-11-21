@@ -80,6 +80,7 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
 export function AccessPersonRow({
   email,
   invitable,
+  listedByAnotherOwner,
   notSignedIn,
   onRemove,
   onReset,
@@ -92,6 +93,9 @@ export function AccessPersonRow({
 }: {
   readonly email: string;
   readonly invitable: boolean;
+  /** A project of another owner names the person directly, so this owner makes them no link
+   *  (409 LISTED_BY_ANOTHER_OWNER): one owner binds a person from outside. */
+  readonly listedByAnotherOwner: boolean;
   readonly notSignedIn: boolean;
   readonly onRemove: () => void;
   readonly onReset: () => void;
@@ -213,13 +217,19 @@ export function AccessPersonRow({
           Remove<span className="sr-only"> {email}</span>
         </RefusableButton>
       </div>
-      {shown && (invitable || enrolled.length > 0 || link !== undefined) ? (
+      {shown && (invitable || enrolled.length > 0 || link !== undefined || listedByAnotherOwner) ? (
         <div className="grid basis-full gap-2">
           <p className="sr-only" data-testid="access-invitation-announcement" role="status">
             {link === undefined
               ? ""
               : `Made a link for ${email}. It works once, until ${exactTimeLabel(new Date(link.expires_at))}.`}
           </p>
+          {listedByAnotherOwner ? (
+            <p className={`text-sm ${textSecondaryOnSurface}`}>
+              Another project's owner also names this person, so no link can be made here: a passkey
+              would read that project too.
+            </p>
+          ) : null}
           {enrolled.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>No passkey yet</p>
           ) : (

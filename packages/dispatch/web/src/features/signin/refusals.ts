@@ -101,6 +101,13 @@ const eitherCeremony: Partial<Record<PasskeyRefusal, CeremonyRefusal>> = {
     message: "Too many passkey requests reached Dispatch just now. Wait a moment, then try again.",
     retry: true,
   },
+  // Only a proxy between the person and Dispatch's load balancer adds a second X-Forwarded-For
+  // line, so a second press meets it again.
+  FORWARDED_FOR_INVALID: {
+    message:
+      "Dispatch could not tell where this request came from, so it made no passkey request. A network proxy between you and Dispatch may cause this: try another network, or tell the project's owner.",
+    retry: false,
+  },
 };
 
 /** What the person reads when the ceremony (`create` enrolls, `get` signs in) failed with

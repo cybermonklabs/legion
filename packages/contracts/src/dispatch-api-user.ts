@@ -179,6 +179,9 @@ export interface PasskeySignedIn {
  * - `PASSKEY_REFUSED` (400): the credential did not verify for any other reason.
  * - `PASSKEY_RATE_LIMITED` (429): too many begins reached Dispatch at once; the next press a moment
  *   later begins anew.
+ * - `FORWARDED_FOR_INVALID` (400): a begin reached Dispatch through its load balancer with an
+ *   `X-Forwarded-For` other than the one line the balancer writes, so Dispatch cannot tell which
+ *   address to bound; no press of the person's gets past it.
  *
  * A step sent from a page of another origin (an `Origin` that is not the outside origin, or none
  * with a `Sec-Fetch-Site` other than `same-origin`) is refused 403 `{"error":"invalid request
@@ -199,6 +202,7 @@ export const PASSKEY_REFUSALS = [
   "CEREMONY_EXPIRED",
   "PASSKEY_REFUSED",
   "PASSKEY_RATE_LIMITED",
+  "FORWARDED_FOR_INVALID",
 ] as const;
 
 export type PasskeyRefusal = (typeof PASSKEY_REFUSALS)[number];

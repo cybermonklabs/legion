@@ -329,6 +329,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   // control.
   const passkeys = access.data.passkeys;
   const invitable = new Set(access.data.invitable ?? []);
+  const listedByAnotherOwner = new Set(access.data.listed_by_another_owner ?? []);
   const listedGroups = access.data.groups ?? [];
   const isPrivate = access.data.visibility === "private";
   const channelsText = (access.data.slack_channels ?? []).join(" ");
@@ -560,6 +561,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
                 email={email}
                 invitable={invitable.has(email)}
                 key={email}
+                listedByAnotherOwner={listedByAnotherOwner.has(email)}
                 notSignedIn={notSignedIn.has(email)}
                 onRemove={() => write.save({ email, kind: "remove-person" })}
                 onReset={() => write.save({ email, kind: "reset-person" })}

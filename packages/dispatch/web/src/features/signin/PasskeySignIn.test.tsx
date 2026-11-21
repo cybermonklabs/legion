@@ -138,6 +138,10 @@ test("a passkey Dispatch refuses is said in plain words beside the button, which
       "PASSKEY_RATE_LIMITED",
       "Too many passkey requests reached Dispatch just now. Wait a moment, then try again.",
     ],
+    [
+      "FORWARDED_FOR_INVALID",
+      "Dispatch could not tell where this request came from, so it made no passkey request. A network proxy between you and Dispatch may cause this: try another network, or tell the project's owner.",
+    ],
   ] as const) {
     const finish = spyOn(api, "passkeySignIn").mockRejectedValue(
       new ApiError(401, { code, error: code.toLowerCase() })
