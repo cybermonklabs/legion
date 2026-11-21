@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A hand-back that states no process no longer marks a role claim granted after it read the claim in the same millisecond. Such a grant could then not renew, and the role claim reaper freed it while its holder still answered. Every grant now writes a new optional `grant_id` into the claim record, which renewals, the adoption and the hand-back mark carry over, and the mark lands only on the grant the hand-back read. A record an earlier build wrote has no `grant_id` and renews, is adopted, released and marked as before; an earlier build reads a record that has one and drops the field when it rewrites the record.'
+time: 2026-11-21T09:16:18.000000000Z
+custom:
+    Issue: pr4777
