@@ -137,8 +137,9 @@ attested on main when asked for `refs/heads/Main`, so a deployment's check, whic
 releases and tags check nothing of the kind; the listener's `latest` step alone also checks that
 its commit is on main. The `github.ref` comparisons that stay, in cache conditions
 (setup-bun's `no-cache`, worker-image.yaml's `cache-to`, the `restore-keys` lines) and in
-worker_image_attest's `skip_attest`, still take `Main` for main, and on `Main` they write only
-`Main`'s own cache scope or skip an attestation.
+worker_image_attest's `skip_attest`, still take `Main` for main. On `Main`, `no-cache` and
+`cache-to` write only `Main`'s own cache scope, the `restore-keys` lines write nothing and only
+restore less, and `skip_attest` skips an attestation.
 
 `github.ref_protected` would answer only while the rulesets protect `main` and no branch named
 `Main`, which a settings change outside this tree can alter. The `ref` job holds no permission
