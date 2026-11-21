@@ -33,8 +33,8 @@ import (
 // repositoriesGitHub answers for and testRepositories serves at main.
 const startedAgainRepo = "acme/widgets"
 
-// startedAgainDispatch is the Dispatch board the daemon of each subtest reads: the repository
-// mapping and the other calls every boot makes (servedBootCall), no issues listed, and every
+// startedAgainDispatch is the Dispatch board the daemon of each subtest reads: the calls every
+// boot makes (servedBootCall), no issues listed, and every
 // other call unavailable, as a Dispatch whose dependencies are down answers.
 //
 // It stands in for workflowConfig's board, which fails the test on a call it does not model.
