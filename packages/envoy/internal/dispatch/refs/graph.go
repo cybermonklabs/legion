@@ -145,25 +145,28 @@ func documentBlockIDs(param string) string {
 // position, and the edges at it drop out of every list until a revision holds its id again.
 func itemBlockIDs(kind ItemKind, param string) string {
 	tables, _ := kind.tables()
-	return `(select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = ` + param + `::uuid and b.position is not null)`
+	return `(select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = ` + param + `::uuid and ` + itemBlockCurrent + `)`
 }
 
 // itemBlockLinks and itemBlockCurrent are the rule that a link a block of an item holds stands
-// while that block is one of the item's current ones, the one place Go writes it: itemBlockLinks
-// is the from of a read of the links the blocks of an item of kind hold, its link table aliased r
-// joined to its blocks table aliased b by the item and the block id, and itemBlockCurrent the
-// condition on b. A removed block keeps its row with no position, so the links it held drop out
-// until a revision holds the block again. The words are graph_edges' own for its three arms over
-// these tables; the caller selects its columns and writes its own conditions beside
-// itemBlockCurrent. An ask's own refs row holds the links of its question alone, so a link
-// written in an option or in the answer is in ask_block_refs and in no edge of the ask's row,
-// where a comment's or a message's row holds every link its blocks hold.
+// while that block is one of the item's current ones; askPartLinksFrom and askPartLinksCurrent
+// (refs/ask_blocks.go) still write it for closureQuery. itemBlockLinks is the from of a read of
+// the links the blocks of an item of kind hold, its link table aliased r joined to its blocks
+// table aliased b by the item and the block id, and itemBlockCurrent the condition on b. A
+// removed block keeps its row with no position, so the links it held drop out until a revision
+// holds the block again. The words are graph_edges' own for its three arms over these tables; the
+// caller selects its columns and writes its own conditions beside itemBlockCurrent. An ask's own
+// refs row holds the links of its question alone, so a link written in an option or in the answer
+// is in ask_block_refs and in no edge of the ask's row, where a comment's or a message's row holds
+// every link its blocks hold.
 func itemBlockLinks(kind ItemKind) string {
 	tables, _ := kind.tables()
 	return tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id`
 }
 
-// itemBlockCurrent is the condition itemBlockLinks' reader writes on the block holding a link.
+// itemBlockCurrent is the condition that the item's block aliased b is one of its item's current
+// ones: itemBlockLinks' reader writes it on the block holding a link, and itemBlockIDs on the
+// blocks it selects.
 const itemBlockCurrent = `b.position is not null`
 
 // keyedBlockArm is the arm of an "in" read over the current blocks of the node read, of storage

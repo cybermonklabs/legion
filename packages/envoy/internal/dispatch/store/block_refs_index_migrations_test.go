@@ -92,13 +92,7 @@ func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *tes
 	if returned.Before(commitSent) {
 		t.Errorf("store.Migrate returned %s after the read began, before the reader committed at %s: the drop did not wait for the reader", returned.Sub(held), commitSent.Sub(held))
 	}
-	var left bool
-	if err := store.Pool.QueryRow(ctx, "select exists (select from pg_indexes where schemaname = current_schema() and indexname = 'block_refs_to')").Scan(&left); err != nil {
-		t.Fatalf("read pg_indexes: %v", err)
-	}
-	if left {
-		t.Errorf("pg_indexes still holds block_refs_to")
-	}
+	assertDatabaseObjectsAbsent(t, ctx, store.Pool, "select indexname from pg_indexes where schemaname = current_schema()", []string{"block_refs_to"})
 	var recorded bool
 	if err := store.Pool.QueryRow(ctx, "select exists (select from schema_migrations where version = $1)", dropBlockRefsTargetIndex).Scan(&recorded); err != nil {
 		t.Fatalf("read schema_migrations: %v", err)
