@@ -850,16 +850,16 @@ type Config struct {
 	// Dispatch deployment sizes its preStop wait at, for the same reason. 0 is for a local run or
 	// a dev stack, where nothing propagates and the wait is pure delay.
 	DrainSeconds int
-	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry the
-	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
-	// the connection's own address, which is right only when nothing proxies the broker. Set it
-	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket. Only a header of
-	// one line is read, the line such a proxy writes when it folds what the client sent into its
-	// own; a request that carries the header as several lines is keyed on the connection's own
-	// address. The broker's edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its buckets key on the
-	// second-to-last entry of its one X-Forwarded-For line, the one its load balancer appends for
-	// the client.
+	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry, on
+	// its last line, the machine-login and secret-reread rate limiters take as the caller's
+	// address. Unset, they use the connection's own address, which is right only when nothing
+	// proxies the broker. Set it only when every request passes through your own reverse proxy,
+	// which appends that entry; otherwise a caller can forge the header and pick its own rate-limit
+	// bucket. The last line is read because a proxy that folds the lines into one, appends to the
+	// last line, or adds a line of its own leaves its entry at the end of the last line, after any
+	// line the client sent. The broker's edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its
+	// buckets key on the second-to-last entry of its one X-Forwarded-For line, the one its load
+	// balancer appends for the client.
 	TrustedProxyHeader string
 }
 

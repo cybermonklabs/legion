@@ -395,17 +395,17 @@ func newLauncherLimiter(limits LauncherLimits, address func(*http.Request) strin
 // proxy itself appended — rather than an earlier, client-supplied entry a caller could forge to
 // pick its own bucket.
 //
-// Only a header of one line is read. A proxy that appends to the header folds every line the
-// client sent into one line that ends in its own entry (Go's httputil.ReverseProxy joins them so),
-// so a request carrying several lines is one whose lines the proxy did not fold, and which line it
-// appended to cannot be told: a proxy that appended to the first line would leave a later line,
-// the client's own text, in the place this reads. Such a request keys on r.RemoteAddr, as one with
-// no header does, so the most a caller can do with extra lines is join the proxy's own bucket,
-// never pick one of its choice.
+// The entry read is the last of the header's last line. A proxy that appends to the header either
+// folds every line the client sent into one line that ends in its own entry (Go's
+// httputil.ReverseProxy joins them so), appends its entry to the last line, or adds a line of its
+// own after the client's; in each, the last line ends in the proxy's entry, and a line the client
+// sent itself comes before it. Reading the first line, as this did before, let a caller that sent a
+// line of its own pick its bucket by that line's last entry. A last line holding no entry keys on
+// r.RemoteAddr, as a request with no header does.
 func clientAddress(r *http.Request, trustedProxyHeader string) string {
 	if trustedProxyHeader != "" {
-		if lines := r.Header.Values(trustedProxyHeader); len(lines) == 1 {
-			hops := strings.Split(lines[0], ",")
+		if lines := r.Header.Values(trustedProxyHeader); len(lines) > 0 {
+			hops := strings.Split(lines[len(lines)-1], ",")
 			if candidate := strings.TrimSpace(hops[len(hops)-1]); candidate != "" {
 				return candidate
 			}

@@ -1202,9 +1202,9 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   back and decides nothing, which is the whole of what that name carries.
 - Behind a reverse proxy, set `BROKER_TRUSTED_PROXY_HEADER` so the machine-login, token-endpoint
   and secret-reread rate limiters see each caller's address rather than the proxy's. The broker
-  reads the header's last entry, and only from a header of one line, the line a proxy writes when
-  it folds what the client sent into its own: a request carrying the header as several lines is
-  keyed on the connection's own address, so a line a caller adds picks it no bucket. The token
+  reads the last entry of the header's last line: a proxy that folds the lines into one, appends
+  to the last line or adds a line of its own leaves its entry there, after any line a caller sent,
+  so a line a caller adds picks it no bucket. The token
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.

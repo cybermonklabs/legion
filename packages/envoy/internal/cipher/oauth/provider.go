@@ -558,8 +558,16 @@ func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, ses
 	return p.store.ReleasePodSessions(ctx, registrar, sessions)
 }
 
-// writeError answers err as the library's OAuth error JSON, logging a server error's cause.
+// writeError answers err as the library's OAuth error JSON, logging a server error's cause. A
+// request the store refused to keep (oauthstore.ErrUnstorableText, however the library wrapped it)
+// is the caller's, not the broker's: it is answered 400 invalid_request REQUEST_INVALID and logs
+// nothing.
 func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, err error) {
+	if errors.Is(err, oauthstore.ErrUnstorableText) {
+		WriteRefusal(w, &Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID",
+			Message: "the request holds a control character in a form parameter or a DPoP proof's jti, which the broker does not store"})
+		return
+	}
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {
 		slog.Error("broker: OAuth request failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
 	}
