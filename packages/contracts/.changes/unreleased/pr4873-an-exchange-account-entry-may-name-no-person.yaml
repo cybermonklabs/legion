@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `dispatch_whoami`'s description says that `service` may be the Kubernetes account an exchange
+  entry lists, for a broker token that names no person, and that such a token writes, recorded under
+  that account; a machine's broker token that names a service is still refused every write with
+  `SIGN_IN_REQUIRED`. `DISPATCH_SIGN_IN_REQUIRED`'s doc names the project scope `person` it is
+  answered for.
+time: 2026-11-21T17:54:41.000000000Z
+custom:
+  Issue: pr4873
