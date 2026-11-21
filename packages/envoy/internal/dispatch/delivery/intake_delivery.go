@@ -218,9 +218,16 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // drains the subscription the client holds for this one's registration
 // (bus.Client.DrainSubscription): a handle of the client's own once it has replaced its connection,
 // not sub, which went with the replaced connection while the client's handle went on delivering
-// here. The client holds nothing of this stopped callback's from the drain on. The messages waiting
-// behind their keys are taken before the drain, so that none of them starts its handler meanwhile;
-// they are held with the rest.
+// here. The client holds nothing of this stopped callback's from the drain on.
+//
+// The messages waiting behind their keys are taken first, before the give-up is armed and before
+// the drain, and held with the rest, so that none of them starts its handler meanwhile. The give-up
+// cancels the handlers' context (abandon), and a stop under a context that has already ended runs
+// it at once: with the queue still in the keyed runner, a given-up handler that returned let the
+// runner start the message behind it under that cancelled context, whose answer the stop's rule then
+// withheld with the first's, before the drain had answered, so the stop held nothing and handed
+// nothing back. Taking the queue is idempotent (keyedRunner.stop), so a second StopDelivering takes
+// nothing, and what the first takes goes to held (giveBack), which the once hands back.
 //
 // Every hand-back is withheld until the drain has answered, and for good when NATS did not take the
 // drain within bus.ConnLockWait, or took it with the link down, when DrainSubscription unsubscribes
@@ -233,15 +240,15 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // could read stopping before it was set and publish a hand-back the stop withholds.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	d.stopping.Store(true)
+	for _, waiting := range d.keys.stop() {
+		d.giveBack(waiting.msg)
+	}
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
 	if armed := stopGiveUpArmed.Load(); armed != nil {
 		(*armed)()
 	}
 	d.stopped.Do(func() {
-		for _, waiting := range d.keys.stop() {
-			d.giveBack(waiting.msg)
-		}
 		draining, answered := callNATS("drain the intake's subscription", func() (*natsgo.Subscription, error) {
 			return d.nats.DrainSubscription(d.sub)
 		})

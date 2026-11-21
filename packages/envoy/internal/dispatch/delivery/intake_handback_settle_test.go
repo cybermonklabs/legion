@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,5 +268,89 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 			row.recorded.barrier(t)
 			requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 		})
+	}
+}
+
+// A stop under a context that has already ended holds the message waiting behind its key, and
+// hands it back once its drain has answered, rather than letting it start its handler under the
+// cancelled context.
+//
+// The stop's give-up cancels the handlers' context, and under an ended context it runs at once. The
+// stop took the messages waiting behind their keys only after it had armed the give-up: a stop
+// descheduled between the two let the given-up handler return and the keyed runner start the
+// message behind it under the cancelled context. That handler's hand-back, like the first's, came
+// before the drain had answered, so the stop's rule withheld both, and the stop held nothing and
+// handed nothing back: the message waited for the take-over or the ack wait (intakeDelivery.stop).
+//
+// The row's handler does what Intake.deliver does with a given-up message: it waits for its context
+// to end and hands the message back. Two messages of one pull request are published, so the first is
+// in its handler and the second waits behind its key, on a link that moves. One stop runs under an
+// ended context, and once its give-up is armed (stopGiveUpArmed) it waits until the key has no
+// handler goroutine left: the first handler has returned, and the runner has either started the
+// second or found its queue taken. Then the row requires that one handler started, and, once every
+// hand-back has landed and the client has flushed, that the server was sent one hand-back: the
+// second message's, since the first's came before the drain answered. The negative control is the
+// stop that takes the queue after arming the give-up: two handlers start and the server is sent no
+// hand-back.
+func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T) {
+	var started atomic.Int32
+	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+		started.Add(1)
+		<-delivery.handling.Done()
+		delivery.handBack(message.msg)
+	}, true)
+	naks := watchHandBacks(t, row.uri)
+	delivery := row.delivery()
+	row.publishPullRequestSeven(t)
+	waitFor(t, 30*time.Second, func() bool { return started.Load() == 1 && queuedBehindKeys(delivery) == 1 }, func() string {
+		return fmt.Sprintf("control: %d handler(s) started and %d message(s) wait behind their key, want the first in its handler and the second behind it", started.Load(), queuedBehindKeys(delivery))
+	})
+
+	keyIdle := func() bool {
+		delivery.keys.mu.Lock()
+		defer delivery.keys.mu.Unlock()
+		return len(delivery.keys.queued) == 0
+	}
+	// Every wait and failure is on the row's goroutine; ended lets a stop still held in the hook go
+	// on when the row ends early.
+	idle := make(chan struct{})
+	ended := make(chan struct{})
+	t.Cleanup(func() { close(ended) })
+	var waiting sync.Once
+	armed := func() {
+		waiting.Do(func() {
+			for !keyIdle() {
+				select {
+				case <-ended:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			close(idle)
+		})
+	}
+	stopGiveUpArmed.Store(&armed)
+	t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
+	stopped := row.stopUnder(cancelled())
+	select {
+	case <-idle:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the given-up handler's key still had a handler goroutine 30 s after the give-up was armed")
+	}
+	testnats.AnswersWithin(t, 30*time.Second, "StopDelivering", stopped)
+	stopGiveUpArmed.Store(nil)
+	if n := started.Load(); n != 1 {
+		t.Fatalf("%d handlers started: the message waiting behind its key started its handler under the stop's ended context, rather than being held by the stop", n)
+	}
+	select {
+	case <-delivery.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("a hand-back publish was still waiting for NATS 30 s after the stop returned")
+	}
+	if err := row.conn.Flush(); err != nil {
+		t.Fatalf("flush the intake's client: %v", err)
+	}
+	if n := naks(); n != 1 {
+		t.Fatalf("the server was sent %d hand-back(s), want 1: the second message's, which the stop held and handed back once its drain answered", n)
 	}
 }
