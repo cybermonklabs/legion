@@ -152,6 +152,20 @@ func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row 
 	return mark, true, nil
 }
 
+// issueReleasing is whether a release of issue's pod is in progress: its mark stands. The mark is
+// written with the release's rows and deleted when the release finishes or a cancel undoes it
+// (deleteIssueRelease), so a mark that stands is a release whose rows may still stop the pod's
+// roles and take the pod away. The idle view reads it (readIdleView's Releasing) and so does the
+// design gate's move (PodRecords.IssueReleasing).
+func issueReleasing(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
+	var releasing bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2)`,
+		project, issue).Scan(&releasing); err != nil {
+		return false, fmt.Errorf("read whether %s is being released: %w", issue, err)
+	}
+	return releasing, nil
+}
+
 // roles is the mark's suspended set as the roles it names, in the order the stops recorded them.
 func (m releaseMark) roles() []claim.Role {
 	if len(m.suspended) == 0 {

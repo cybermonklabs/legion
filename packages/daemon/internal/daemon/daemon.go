@@ -465,10 +465,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
-		// Only a daemon with the workflow configured has issue records to read a phase or a tree
-		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
-		// tree closes.
+		// Only a daemon with the workflow configured has issue records to read a phase, a wait, a
+		// gate or a tree from; Stage 2's supervision runs on claims alone, where every delivery
+		// holds, no wait holds one back, no task carries a design gate's note, and every tree
+		// closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.waitHolds, plan.gateNote = workflow.waitHolds, workflow.gateNote
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
@@ -878,10 +880,13 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
-	// queued and every tree closes.
+	// phaseHolds, waitHolds, gateNote, rootHears, rootTask and treeClosable are the workflow's
+	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
+	// as it was queued, no wait holds one back, no task carries a design gate's note, and every
+	// tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error)
+	gateNote     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (supervise.GateNote, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
@@ -1529,6 +1534,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// quietByDesign answers, of the role runs it is given, the claims whose quiet the record
+	// explains by a reason of the daemon's own — a merger the closed design gate holds, or a wait
+	// that stands (workflowRuntime.quietByDesign, workflow's Engine.QuietByDesign) — read once per
+	// sweep over the claims the silence sweep would otherwise mint a fact for, so no such claim
+	// costs a fact's transaction each minute (tellSilentPhaseWorkers). nil in a deployment with no
+	// workflow, as applySweepFacts is; the workflow sets both where it attaches.
+	quietByDesign func(ctx context.Context, keys []record.RoleRunKey) (map[claim.Token]struct{}, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -1732,6 +1744,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		WaitHolds:               p.waitHolds,
+		GateNote:                p.gateNote,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		TreeClosable:            p.treeClosable,
@@ -3333,6 +3347,24 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
+	// Each wait that stands, judged here for the same reason and in the same snapshot: whether a
+	// wait stands is the daemon's one rule over the record (workflow.WaitStands), and a claim
+	// carries its wait on its view only while it does, so a wait row with no end that no longer
+	// stands — a fresh session, a phase that moved — shows on no claim. It is read in batches for
+	// the whole project, never per claim.
+	waits, err := workflow.StandingWaitsNow(ctx, tx, records, s.project, s.gatedSteps)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	// Each merger the design gate holds, judged here for the same reason and in the same snapshot:
+	// the hold is the daemon's one rule over the issue and its tree's gate rows
+	// (workflow.HeldByDesignGate), the rule the outbox's fence reads, so a merger carries its hold
+	// on its view exactly while the fence holds its phase start. It is read in batches for the
+	// project's merger claims, never per claim.
+	holds, err := workflow.HoldsNow(ctx, tx, records, s.project, s.gatedSteps, claims)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its
@@ -3350,7 +3382,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
-		Claims: claims, Stranded: stranded, Reports: s.reports(),
+		Claims: claims, Stranded: stranded, Waits: waits, Holds: holds, Reports: s.reports(),
 		Wakes: api.WakesWaitingOf(held, paced), Now: now,
 	})
 	if err != nil {

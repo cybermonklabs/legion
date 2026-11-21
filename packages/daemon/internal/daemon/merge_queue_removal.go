@@ -126,8 +126,10 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // has left merging at the row's head (mergingAt, the read row's own rule); what follows - a claim
 // that failed or retired, the design gate, the wake and the publish - is deliverHeld's. The design
 // gate holds this row because a merger the gate holds may not know the gate closed, and woken by
-// this message it could enqueue the pull request again against the gate, which holds the merge
-// (mergerWaitsForTheDesignGate holds its start the same way).
+// this message it could enqueue the pull request again against the gate, which holds the merge.
+// This wait is the row's own, apart from the fence's (mergerWaitsForTheDesignGate), which holds only
+// a start of the merger's phase work and lets the start of the wake this row would make pass
+// (dispatch://INFRA-2040 R7, D14 of its plan).
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")
@@ -183,10 +185,10 @@ type heldMessage struct {
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
-// role again. While the root's design gate is closed (designGateClosed) a released role is neither
-// woken nor told, and the row waits for the gate to open: a role the gate holds may not know the
-// gate closed, and woken by this message it would work against the gate. A role whose session
-// holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
+// role again. While the closed design gate holds the message (deliveryHeld) a released role is
+// neither woken nor told, and the row waits for the gate to open: a role the gate holds may not
+// know the gate closed, and woken by this message it would work against the gate. A role whose
+// session holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
 // the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a holder that
 // did not confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
 // (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
@@ -198,12 +200,13 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return nil
 	}
 	if held.Released() {
-		closed, err := r.designGateClosed(ctx, m.issue)
+		held, holds, err := r.deliveryHeld(ctx, m.issue, m.role)
 		if err != nil {
 			return err
 		}
-		if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+		if holds {
+			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s: version %d of its %s document (%s) is with its reviewer",
+				m.what, m.issue.Tree, m.role, held.LatestVersion, held.Step.OrSpec(), held.ArtifactID)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released

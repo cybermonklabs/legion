@@ -195,7 +195,8 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from; nil is time.Now, and a test pins it.
+	// from, and the moment a declared wait is recorded at (the wait route); nil is time.Now, and a
+	// test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time
@@ -366,7 +367,7 @@ type server struct {
 	trees     TreeLifecycles
 	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
 	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads
-	// (drawExperiments).
+	// (drawExperiments). now is also the moment a declared wait is recorded at (wait).
 	experiments []config.Experiment
 	source      func(uint64) (uint64, error)
 	now         func() time.Time
@@ -557,6 +558,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
 		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/wait", s.wait},
+		{"POST /legion/v1/claims/wait-news", s.waitNews},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},
 		{"POST /legion/v1/controller/secret", s.controllerSecret},

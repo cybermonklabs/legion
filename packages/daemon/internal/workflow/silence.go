@@ -25,24 +25,28 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // none of them and the next sweep applies the identical fact again, which is the retry. A notice
 // written in place of the error would end this silence for good, since its id does not move.
 //
-// A claim unpromptedPhaseWorker holds but whose own session's report explains its quiet
-// (ReportExplainsQuiet: background work running, or a reminder due later than now) leaves the
-// fact unspent (intake.Result.Unspent): the report can move between the sweep's read and this
-// transaction, and can clear — the reminder comes due and starts no turn — while the last step
-// and the launch the id is keyed on stand still. Spent, that id would be skipped at every later
-// sweep and the worker never repaired. Every other refusal spends it.
+// A claim up between turns (phaseWorkerBetweenTurns) whose quiet is explained — by its own
+// session's report (ReportExplainsQuiet: background work running, or a reminder due later than
+// now), or by the record (quietByDesign: the design gate holding a merger, or a wait that stands)
+// — leaves the fact unspent (intake.Result.Unspent): each can clear while the last step and the
+// launch the id is keyed on stand still. The report can move between the sweep's read and this
+// transaction, and can clear — the reminder comes due and starts no turn; the gate can open with
+// no turn of the merger's, as when `gates.design` changes across a restart; and a wait can end
+// before its worker takes a turn. Spent, that id would be skipped at every later sweep and the
+// worker never repaired. Every other refusal spends it. The rule is asked first, so what it
+// answers decides the repair (SilentPhaseWorker), and what explains a refusal is asked only of a
+// claim it refused.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
 	issue, now := read.issue, e.now()
-	if unpromptedPhaseWorker(issue, read.root, read.gate, fact.Role, read.run) &&
-		ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now) {
-		return intake.Result{Unspent: true}, nil
-	}
-	if !SilentPhaseWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
-		return intake.Result{}, nil
+	if !SilentPhaseWorker(issue, read.root, read.gate, fact.Role, read.run, read.row, fact.Bound, now) {
+		explained := phaseWorkerBetweenTurns(issue, read.root, read.gate, fact.Role, read.run) &&
+			(quietByDesign(issue, read.root, read.gate, fact.Role, read.run, read.row) ||
+				ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now))
+		return intake.Result{Unspent: explained}, nil
 	}
 	// A step after the fact's is a turn taken since the sweep read; that silence is over, and a
 	// later one is a later fact's.
@@ -106,6 +110,60 @@ type phaseWorkerReading struct {
 	gate  record.TreeGate
 	run   record.RoleRun
 	row   record.PhaseRow
+}
+
+// QuietByDesign is, of the role runs keys names, every claim whose quiet the record explains by a
+// reason of the daemon's own (quietByDesign): a merger the design gate holds, or a wait that
+// stands. It is the silence sweep's own filter (internal/daemon's tellSilentPhaseWorkers), read
+// once per sweep over the claims the sweep would otherwise tell the workflow of, so a waiting or
+// held claim costs no fact's transaction each minute. The handlers ask the same rule again inside
+// each fact (workerSilent, workerBackgroundStalled), so a claim the record moved after this read
+// is decided there.
+//
+// It reads in batches, never per claim: the project's wait rows with no end
+// (record.Store.StandingWaits); then, only for the keys of those claims and for mergers, since no
+// other claim can be held or waiting, what the two rules read of each (readWaitTermsOf): their
+// issues and those issues' roots, the roots' gates and, for the claims with a wait row, their
+// phases rows and their claims. A sweep that judges neither costs the one read of the waits. A
+// key whose issue or root the record does not hold is answered nothing, as the handlers pass it
+// over (phaseWorkerRecord).
+func (e *Engine) QuietByDesign(ctx context.Context, tx pgx.Tx, keys []record.RoleRunKey) (map[claim.Token]struct{}, error) {
+	quiet := make(map[claim.Token]struct{})
+	if len(keys) == 0 {
+		return quiet, nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return nil, err
+	}
+	waits, err := e.store.StandingWaits(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	waiting := make(map[claim.Token]struct{}, len(waits))
+	for _, wait := range waits {
+		waiting[wait.Token] = struct{}{}
+	}
+	var judged []record.RoleRunKey
+	for _, key := range keys {
+		if _, waits := waiting[key.Token]; waits || key.Role == claim.RoleMerger {
+			judged = append(judged, key)
+		}
+	}
+	if len(judged) == 0 {
+		return quiet, nil
+	}
+	terms, err := readWaitTermsOf(ctx, tx, e.store, e.cfg.Project, e.cfg.Steps, judged, waiting)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range judged {
+		read, found := terms[key.Token]
+		if found && quietByDesign(read.issue, read.root, read.gate, key.Role, read.run, read.row) {
+			quiet[key.Token] = struct{}{}
+		}
+	}
+	return quiet, nil
 }
 
 // repairSilence writes the start row that sends the silent worker its work again and the
@@ -194,14 +252,21 @@ const workerBackgroundNotice record.NoticeKind = "worker-background-stalled"
 // inside the fact's own transaction as workerSilent does, and returning store errors as it does.
 // It writes one notice and no start row: nothing in the daemon tells a long job from a hung one,
 // so the architect decides.
+//
+// A claim up between turns whose quiet the record explains (quietByDesign: the design gate holding
+// a merger, or a wait that stands) leaves the fact unspent, as workerSilent leaves its own: the
+// hold or the wait ends while the report the id is keyed on stands still, which is the very report
+// of a hung job, and spent, that id would tell nobody once the hold or the wait was over.
 func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact intake.WorkerBackgroundStalled) (intake.Result, error) {
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
 	issue, now := read.issue, e.now()
-	if !BackgroundStalledWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
-		return intake.Result{}, nil
+	if !BackgroundStalledWorker(issue, read.root, read.gate, fact.Role, read.run, read.row, fact.Bound, now) {
+		explained := phaseWorkerBetweenTurns(issue, read.root, read.gate, fact.Role, read.run) &&
+			quietByDesign(issue, read.root, read.gate, fact.Role, read.run, read.row)
+		return intake.Result{Unspent: explained}, nil
 	}
 	// A report of another moment than the fact's is another reading than the one the sweep
 	// judged — a session sends one at its turns' ends, and an Oh My Pi session on each change of
@@ -223,10 +288,11 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 // session reports background work of its own running, with that report past bound. It is the
 // claim SilentPhaseWorker refuses for that report. The `worker-background-stalled` handler reads
 // it, and so does admission's tick list (admit's silentWorkers), which names such a worker too.
-func BackgroundStalledWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+// row is the role's phases row, read as SilentPhaseWorker reads it.
+func BackgroundStalledWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun, row record.PhaseRow,
 	bound time.Duration, now time.Time,
 ) bool {
-	if !unpromptedPhaseWorker(issue, root, gate, role, run) {
+	if !unpromptedPhaseWorker(issue, root, gate, role, run, row) {
 		return false
 	}
 	c := run.Claim

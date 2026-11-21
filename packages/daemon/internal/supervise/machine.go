@@ -945,6 +945,29 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// WaitHolds names the wait that holds d back from c's phase worker now, "" when none does
+	// (dispatch://INFRA-2040 R3): the wait the worker declared stands, and d is a task the claim
+	// had already taken when it declared — one a death in its turn took back (Delivery.Interrupted,
+	// interrupted), or one of a phase entry no higher than the entry it had taken — or the
+	// daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch), which hands
+	// no work and ends no wait. Any other task is new work: the answer ends the wait, in a write
+	// of its own, and answers "", so the send goes on. It is asked of every delivery sendPending
+	// is about to send a phase worker, once the phase check has kept it, and never of an
+	// architect's or the controller's, which declare no wait. It is asked holding the machine's
+	// lock, so it takes no lock of the daemon's. nil holds no delivery.
+	WaitHolds func(ctx context.Context, c Claim, d Delivery) (string, error)
+	// GateNote is the design gate's state that d, a delivery of c's merger, carries at its send
+	// (dispatch://INFRA-2040 R7): the note the workflow builds from the gate of the merger's tree
+	// as it stands at that moment (workflow.MergerGateNote), which the prompt opens with
+	// (Delivery.message), and nothing for a merger whose tree has no registered gated step. For the
+	// design gate's own task (Delivery.GateMessage, R8) it is the gate's whole message, built the
+	// same way (workflow.MergerGateMessage): the closing message while the gate is closed, and the
+	// opening message once it stands open. It is asked before every send of a merger's delivery,
+	// once every other hold has let it through, and of no other role's; the note is never stored
+	// and never rotates the delivery's id, so a task queued before the gate moved and sent after it
+	// says what the gate is at the send. It is asked holding the machine's lock, so it takes no
+	// lock of the daemon's. nil carries no note.
+	GateNote func(ctx context.Context, c Claim, d Delivery) (GateNote, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -1394,6 +1417,11 @@ type Machine struct {
 	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
 	// (holdSuspendUntilReady), nil for none.
 	held *RequestSuspend
+	// waitHeld is the last delivery a phase worker's standing wait held back (waitHolds) and the
+	// wait that held it, so the line that says so is written once for each, rather than at every
+	// sweep, hello and ready that asks again while the wait stands. It is memory only, as askFirst
+	// is: a restarted daemon writes it once more.
+	waitHeld heldByWait
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
 	// cleared with it (dropHeld, letGo). A project pause's stop owes the role that launch at the
@@ -1898,16 +1926,17 @@ const (
 //     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
 //     error for as long as the write stays owed. A write the store refuses outright is not owed
 //     (writeOwed): the mark stays in memory alone, the row's next attempt finds it and finishes,
-//     and after a restart, which loads the claim without it, the sweep asks the role again under
-//     a new row's dedupe key.
+//     and after a restart, which loads the claim without it, the sweep asks the role again in a
+//     new row, under the ask's own dedupe key all the same (record.UpdateAskKey: one claim and
+//     one round opening give one key).
 //
 // What is left is a daemon that dies between a delivered publish and the write of its mark, a
 // crash rather than a stop, which the write outlives. It boots with the row still queued and the
-// claim unmarked, so the row publishes once more, under the row's own dedupe key
-// (record.OutboxKey), which the listener answers as a repeat, forwarding nothing, to a holder it
-// already forwarded that key to within its dedupe window (ten minutes, in the listener's memory).
-// Past that window, or across a listener restart, the role reads the ask twice: one message more,
-// never an ask lost (dispatch://INFRA-4109 R4 accepts it).
+// claim unmarked, so the row publishes once more, under the ask's own dedupe key
+// (record.UpdateAskKey, the outbox's updateAsk), which the listener answers as a repeat,
+// forwarding nothing, to a holder it already forwarded that key to within its dedupe window (ten
+// minutes, in the listener's memory). Past that window, or across a listener restart, the role
+// reads the ask twice: one message more, never an ask lost (dispatch://INFRA-4109 R4 accepts it).
 //
 // It is no event, as PodUpdateTold is none: the outbox's publish is what reaches the role, and the
 // mark is bookkeeping of it.
@@ -4064,11 +4093,11 @@ func (m *Machine) forgetSend() {
 // are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
 // take no deadline: what they wait on is an advisory lock another transaction holds, so a
 // deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// of the record — PhaseHolds, WaitHolds, GateNote, RootHears, RootTask, TreeClosable — which
+// decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage; a write it cuts short is owed and
+// made again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()

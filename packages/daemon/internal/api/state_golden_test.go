@@ -242,6 +242,11 @@ func populatedState(t *testing.T) State {
 	// queued to its claim, and a turn of it confirmed that task.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
+	// LEGION-215's merger's handshake, the pair of times a child carries for the role of its
+	// current phase: the task of the merger's entry was queued to its claim, and a turn of it
+	// confirmed that task, before the design gate of its tree closed.
+	mergerQueued := time.Date(2026, 9, 22, 8, 40, 2, 0, time.UTC)
+	mergerConfirmed := time.Date(2026, 9, 22, 8, 40, 37, 0, time.UTC)
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
@@ -333,10 +338,13 @@ func populatedState(t *testing.T) State {
 			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
 			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
 			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
-			// much part of the row's schema as a filled one.
+			// much part of the row's schema as a filled one. LEGION-215, the merger the design
+			// gate holds below, stands here too: merging is past the review and holds no slot, and
+			// its tree's gate is not open, so its word is `design_gate`, held by its root.
 			Held: []HeldIssue{
 				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
+				{Issue: "LEGION-215", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-208"}},
 			},
 		},
 		Issues: map[string]Issue{
@@ -449,6 +457,15 @@ func populatedState(t *testing.T) State {
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
+							// The wait this worker declared earlier in the turn it is in, which
+							// stands: what it waits on, when its time comes, and when the daemon
+							// recorded the declaration, to the microsecond the record keeps.
+							Wait: &WaitView{
+								ID:         "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+								WaitingOn:  "the review of LEGION-207's pull request",
+								WakeAt:     time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC),
+								DeclaredAt: time.Date(2026, 9, 22, 9, 17, 5, 123456000, time.UTC),
+							},
 						},
 						HandoffCommit: "",
 						// Three passes through the stretch, two of them ended by a review that
@@ -872,6 +889,42 @@ func populatedState(t *testing.T) State {
 					Status:          GatedStepApproved,
 				}},
 			},
+			// LEGION-215 is a child of LEGION-208's tree that reached merging before its root's
+			// architect sent version 7 of the spec to its reviewer. That row of the root's one gated
+			// step stands `waiting` (above), and no approval has opened it, so the design gate holds
+			// this merger (workflow.HeldByDesignGate, the rule the outbox's fence reads): its claim
+			// carries the hold, which names the gated step, the root's document and the version
+			// that is with the reviewer. The daemon released the merger's pod during the hold, so
+			// its claim is suspended and carries no locator, and the gate's opening wakes it. A
+			// child carries no gated steps of its own, since the rows that hold it are its root's,
+			// and merging is past the review, so the issue holds no slot and stands in
+			// `admission.held` under the design gate's word.
+			"LEGION-215": {
+				Key:           "LEGION-215",
+				Generation:    1,
+				Phase:         phase.Merging,
+				Status:        "retro",
+				Tree:          "LEGION-208",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					claim.RoleMerger: {Claim: ClaimView{
+						Session: "ses_merger_215",
+						State:   "suspended",
+						Hold: &HoldView{
+							Step:       record.DesignStepSpec,
+							ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+							Version:    7,
+						},
+					}},
+				},
+				// Merging names the merger, which holds the work of the phase's one entry, and the
+				// two times beside the numbers are its claim's handshake of that entry.
+				PhaseEntry:       1,
+				GivenEntry:       1,
+				EntryQueuedAt:    &mergerQueued,
+				EntryConfirmedAt: &mergerConfirmed,
+			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
 		// two and a half minutes ago and waits behind it (record.Store.HeldRows).
@@ -1002,9 +1055,9 @@ func populatedState(t *testing.T) State {
 			{Name: "legion-go-LEGION-wake", Unavailable: "read the consumer's info: context deadline exceeded"},
 		}),
 	}
-	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
-	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// LEGION-208's tree was drawn into the memory group, so its root and its children LEGION-209
+	// and LEGION-215 all show the draw as internal/projection fills them, while every other issue
+	// of the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
 	// that name (config.Project.ExperimentsDeclared), and the three memory fields are that one
 	// assignment spelled out as the readers of contract 49 have always read it.
 	//
@@ -1050,6 +1103,15 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	merging := state.Issues["LEGION-215"]
+	merging.Assignments = []AssignmentView{
+		memoryDrawn,
+		{Experiment: "plan-length", Variant: "short", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+	}
+	merging.MemoryGroup = "memory"
+	merging.MemoryDrawMode = string(config.ExperimentRandom)
+	merging.MemoryDrawnAt = &memoryDrawnAt
+	state.Issues["LEGION-215"] = merging
 	// The oldest plugin any pod of the fixture's project runs, which the state route reads from
 	// the claims of its own snapshot (api's lowestPluginContract). The floor is the reading this
 	// change records of the fleet, and the fixture carries a value so that the golden and every
@@ -1517,6 +1579,28 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 				FirstAt: released.Add(65 * time.Minute), At: released.Add(65 * time.Minute), Passes: 1},
 		},
 	}))
+}
+
+// The answer to a recorded wait (POST /legion/v1/claims/wait): the id the daemon minted, the text
+// as recorded (trimmed), the wait's time and when the daemon recorded the declaration. The
+// declaration's time is the daemon's own clock kept to the microsecond the record keeps, so it
+// carries a fraction on the wire; the wait's time is the worker's, here a whole second.
+func TestWaitResponseGolden(t *testing.T) {
+	declaredAt := time.Date(2026, 11, 14, 6, 0, 0, 123456000, time.UTC)
+	golden(t, "wait.json", WaitResponse{Wait: WaitView{
+		ID:         "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+		WaitingOn:  "the review of LEGION-207's pull request",
+		WakeAt:     time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC),
+		DeclaredAt: declaredAt,
+	}})
+}
+
+// The answers to a news report (POST /legion/v1/claims/wait-news): one that ended the wait it
+// names, and one whose reported delivery was the claim's own update ask, which ended nothing.
+// `updateAsk` is left out of every other answer.
+func TestWaitNewsResponseGolden(t *testing.T) {
+	golden(t, "wait-news.json", WaitNewsResponse{Ended: true})
+	golden(t, "wait-news-update-ask.json", WaitNewsResponse{UpdateAsk: true})
 }
 
 // A session's report shows on its claim as the names it proved and the gaps it did not, each side

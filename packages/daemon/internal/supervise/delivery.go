@@ -166,6 +166,14 @@ type Delivery struct {
 	// delivery the release before stored can be, is sent with the daemon's sentences naming no
 	// commit and no entry at its end.
 	RoundNamed bool
+	// GateMessage marks the design gate's own task of a merger, from the start row that queued it
+	// (record.SuperviseRequest.GateMessage, RequestDeliver.GateMessage): its Task says only that
+	// the gate moved, and the send asks for the gate's whole message in front of it
+	// (Deps.GateNote), the closing message when the gate is closed at that send and the opening
+	// message when it stands open. It is persisted with the delivery, so a task queued at the close
+	// and sent after the opening, or after a restart, says what the gate is when the merger reads
+	// it (dispatch://INFRA-2040 R8).
+	GateMessage bool
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -206,9 +214,30 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 // confirm reads).
 type sentences struct{ abandoned, ended bool }
 
+// GateNote is the design gate's state a merger's delivery carries at its send (Deps.GateNote,
+// dispatch://INFRA-2040 R7): Text is the sentence the prompt opens with, empty for no note, and
+// State ("closed" or "open"), Step and Version are what the send's line names of it — the closed
+// step and its document's version, or the step whose approval stands newest under an open gate.
+// It is built at each send from the gate as it stands then and never stored, so a task queued
+// before the gate moved and sent after it says what the gate is when the merger reads it.
+type GateNote struct {
+	Text, State, Step string
+	Version           int
+}
+
+// InFrontOf is text as the merger reads it behind the note: the note, a blank line, and text. A
+// note with no text leaves text as it is.
+func (n GateNote) InFrontOf(text string) string {
+	if n.Text == "" {
+		return text
+	}
+	return n.Text + "\n\n" + text
+}
+
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
 // tells (sentences): its task, behind the sentences the claim's state gives it that say what
-// became of the agent's earlier work, and then the provider's. In order:
+// became of the agent's earlier work, and then the provider's, all behind the design gate's note
+// a merger's send carries (note). In order:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
 //     (abandonedTask), and says that everything of the old session is gone. A record that still
@@ -254,6 +283,11 @@ type sentences struct{ abandoned, ended bool }
 // since there is no task to continue (abandonedTask); the record's sentence does not, because it
 // is the text.
 //
+// A merger's prompt opens with the design gate's state at this send (note, Deps.GateNote), in
+// front of everything else here, since it is the last of the send's rewrites: whatever the
+// prompt goes on to say, the merger reads first whether the gate holds the merge. The relaunch's
+// record carries it too, because the merger takes up its phase once it has read that record.
+//
 // A task of the reviewer ends with the daemon's two sentences of its review round, the last two
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
 // prompt of a delivery is composed, so it is where the rule holds for every task, whatever queued
@@ -269,7 +303,7 @@ type sentences struct{ abandoned, ended bool }
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward sends the note for that end.
-func (d Delivery) message(c Claim) (string, sentences) {
+func (d Delivery) message(c Claim, note GateNote) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
@@ -302,7 +336,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
 	}
-	return prefix + text, carried
+	return note.InFrontOf(prefix + text), carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -512,7 +546,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
+		GateMessage: request.GateMessage}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -602,14 +637,15 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-// the phase the task was queued for, the root of a root architect's task of a run has an architect
-// to hear it, the claim's connection is registered, and — for a task that adopts the working
-// copy the issue's roles share (adopts) — no other claim of the issue is in a turn or has a
-// prompt on its way to one. A missing connection is not a failure — the shim's next hello sends
-// it. A delivery an earlier daemon may have sent is sent again only after the agent says it is
-// not already in a turn; if it is, that turn is taken as the delivery's — except for a root
-// architect's task of a run, which no turn of the agent's own is ever taken for, since it may be
-// a task nobody has sent at all (asksRoot).
+// the phase the task was queued for, no standing wait of a phase worker holds a task it had taken
+// (waitHolds), the root of a root architect's task of a run has an architect to hear it, the
+// claim's connection is registered, and — for a task that adopts the working copy the issue's
+// roles share (adopts) — no other claim of the issue is in a turn or has a prompt on its way to
+// one. A missing connection is not a failure — the shim's next hello sends it. A delivery an
+// earlier daemon may have sent is sent again only after the agent says it is not already in a
+// turn; if it is, that turn is taken as the delivery's — except for a root architect's task of a
+// run, which no turn of the agent's own is ever taken for, since it may be a task nobody has sent
+// at all (asksRoot).
 //
 // Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
@@ -790,6 +826,26 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
+	// A phase worker whose wait stands is sent no task it had taken when it declared (waitHolds,
+	// dispatch://INFRA-2040 R3): the task stays pending and unconfirmed, as a task held for an
+	// answered update round does, and goes at the first send after the wait ends — the sweep's next
+	// observation of the live process, the end of the worker's next turn, a hello, a ready, or a
+	// start that reaches the claim. A task that is new work has ended the wait by the time the
+	// answer is "", and goes on below.
+	//
+	// No send of this daemon carries such a task while the wait stands, so the question a restart
+	// left is false of it, as it is of the task an answered round holds (openRoundHoldsTask), and
+	// it is put down here. Left armed, the first turn of the worker's own — news, which is what a
+	// worker waits on — would be taken for this task's turn (turnStarted), and that turn's end
+	// would retire the task unsent.
+	wait, err := m.waitHolds(ctx, *p)
+	if err != nil {
+		return err
+	}
+	if wait != "" {
+		m.askFirst = false
+		return nil
+	}
 	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
 	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
 	// its root has no architect to hear it, across restarts — and the decisions it names are held
@@ -819,7 +875,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		if !sends {
 			return m.relaunchAfterDrop(ctx)
 		}
-		m.startSend(conn, *m.claim.Pending)
+		// A root architect's task carries no design gate's note: only a merger's does (gateNote).
+		m.startSend(conn, *m.claim.Pending, GateNote{})
 		return nil
 	}
 	// The question a restart left — whether the turn the agent may be in is the pending
@@ -876,7 +933,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return nil
 		}
 	}
-	m.startSend(conn, *p)
+	// A merger's task goes with the design gate's state in front of it, read now, at its send
+	// (gateNote), and never stored with the delivery.
+	note, err := m.gateNote(ctx, *p)
+	if err != nil {
+		return err
+	}
+	m.startSend(conn, *p, note)
 	return nil
 }
 
@@ -1065,6 +1128,45 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	return holds, nil
 }
 
+// waitHolds asks whether the wait a phase worker declared holds d back now (Deps.WaitHolds), and
+// names that wait when it does, "" when nothing holds d. An architect's and the controller's
+// claims declare no wait and are never put to the answer, nor is any claim of a daemon with no
+// workflow, which supplies none. The line that says a held task waits is written once for each
+// delivery and wait (waitHeld): every sweep, hello and ready asks again while the wait stands.
+func (m *Machine) waitHolds(ctx context.Context, d Delivery) (string, error) {
+	if m.deps.WaitHolds == nil || m.claim.Role == claim.RoleArchitect || m.claim.Role == claim.RoleController {
+		return "", nil
+	}
+	wait, err := m.deps.WaitHolds(ctx, m.claim, d)
+	if err != nil {
+		return "", fmt.Errorf("read whether the wait of %s holds its task: %w", m.claim.Token, err)
+	}
+	if held := (heldByWait{delivery: d.ID, wait: wait}); wait != "" && held != m.waitHeld {
+		m.waitHeld = held
+		m.log.Info("supervise: a task the claim had taken waits: the claim's wait stands",
+			"issue", m.claim.Issue, "role", m.claim.Role, "delivery", d.ID, "wait", wait)
+	}
+	return wait, nil
+}
+
+// heldByWait is a delivery and the wait that held it back (Machine.waitHeld).
+type heldByWait struct{ delivery, wait string }
+
+// gateNote asks the design gate's state d carries at this send (Deps.GateNote, dispatch://INFRA-2040
+// R7). Only a merger's delivery is put to the answer, since the gate holds only the merger's work;
+// every other claim, and every claim of a daemon with no workflow, which supplies none, carries no
+// note.
+func (m *Machine) gateNote(ctx context.Context, d Delivery) (GateNote, error) {
+	if m.deps.GateNote == nil || m.claim.Role != claim.RoleMerger {
+		return GateNote{}, nil
+	}
+	note, err := m.deps.GateNote(ctx, m.claim, d)
+	if err != nil {
+		return GateNote{}, fmt.Errorf("read the design gate's state for the task of %s: %w", m.claim.Token, err)
+	}
+	return note, nil
+}
+
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
 // behind and for an older daemon's ask of an update round, dropUpdateTask for the ask of a
@@ -1223,11 +1325,18 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // records, this marks which the prompt carries the sentence of, as message composed it
 // (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
 // copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
-// hold in sendPending was decided against.
-func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
+// hold in sendPending was decided against. note is the design gate's state a merger's prompt
+// opens with (gateNote), and the send of a prompt that carries one says so on a line of its own,
+// naming the state, the step and the version, which is what a reading of the log matches against
+// the gate's moves.
+func (m *Machine) startSend(conn runtime.Conn, d Delivery, note GateNote) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
-	prompt, carried := d.message(m.claim)
+	prompt, carried := d.message(m.claim, note)
+	if note.Text != "" {
+		m.log.Info("supervise: the merger's task carries the design gate's state", "issue", m.claim.Issue, "delivery", d.ID,
+			"state", note.State, "step", note.Step, "version", note.Version)
+	}
 	m.carried.abandoned = m.carried.abandoned || carried.abandoned
 	m.carried.ended = m.carried.ended || carried.ended
 	if p := m.claim.Pending; p != nil && p.ID == d.ID {

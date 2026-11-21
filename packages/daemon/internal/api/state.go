@@ -1023,6 +1023,38 @@ type ClaimView struct {
 	// cause word the launch chooses, and this key says which check refused it, from the first
 	// refused try on.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// Wait is the wait the claim's worker declared (POST /legion/v1/claims/wait) while it stands
+	// — its id, what it waits on, when its time comes and when the daemon recorded the
+	// declaration — and is absent for a claim with no wait that stands: one that declared none,
+	// one whose wait ended, and one whose wait row has no end yet but no longer stands, a fresh
+	// session or a phase that moved (workflow.WaitStands). It is no field of the claim record:
+	// the wait is kept apart from the claim's per-launch columns so a relaunch keeps it, and the
+	// state's source judges the project's waits and hands those that stand to the projection.
+	Wait *WaitView `json:"wait,omitempty"`
+	// Hold is the closed design gate that holds this merger's work while the hold stands
+	// (workflow.HeldByDesignGate, the rule the outbox's fence reads): the gated step, its document
+	// and the version of that document that is with its reviewer. It is absent for every other
+	// claim: another role's, a merger whose issue is not in merging, and a merger whose tree's
+	// gated steps stand open or have no registered row. Like the wait it is no field of the claim
+	// record: the state's source judges the hold over the issue and its tree's gate rows and hands
+	// each hold that stands to the projection.
+	Hold *HoldView `json:"hold,omitempty"`
+}
+
+// HoldView is the closed design gate that holds a merger, as a claim view shows it
+// (ClaimView.Hold): the gated step whose row holds the merger, the document registered for that
+// step, and the version of that document that is with its reviewer.
+type HoldView struct {
+	Step       record.DesignStep `json:"step"`
+	ArtifactID string            `json:"artifactId"`
+	Version    int               `json:"version"`
+}
+
+// HoldViewOf is gate, the gate row that holds a merger (workflow.HeldByDesignGate), as a claim
+// view shows it. A row built with no step is the spec's (DesignStep.OrSpec), as the note of the
+// merger's task names it (workflow.MergerGateNote).
+func HoldViewOf(gate record.DesignGate) *HoldView {
+	return &HoldView{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, Version: gate.LatestVersion}
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -1105,8 +1137,10 @@ func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
 // ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
 // view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
 // here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
-// capability report is not of the claim — it is what the claim's session last reported — so its
-// caller sets it beside this.
+// capability report is not of the claim — it is what the claim's session last reported — and
+// neither is the wait that stands (WaitViewOf), which is kept apart from the claim record and
+// judged against the issue's, nor the design gate's hold (HoldViewOf), which is judged over the
+// issue and its tree's gate rows, so the caller sets each beside this.
 func ClaimViewOf(c supervise.Claim) ClaimView {
 	return ClaimView{
 		Session:           c.Session,

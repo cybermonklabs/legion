@@ -61,6 +61,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wait's time", WakeKind: pods.WakeWaitTime},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "the gate moved", WakeKind: pods.WakeDesignGate, GateMessage: true},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -76,6 +78,11 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
 		CheckBound{},
+		WaitDue{Token: "legion-legion-208-tester", WaitID: "9b2f4c1e-wait"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3,
+			Task: "The time of your wait 9b2f4c1e-wait came.", WaitID: "9b2f4c1e-wait"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3,
+			Task: "The design gate of LEGION-208 moved.", GateMessage: true},
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
@@ -265,7 +272,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindWaitDue, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
 		OutboxKindMergeForward, OutboxKindPlanRecord}
@@ -346,6 +353,11 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
 		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
 		OutboxKindPlanRecord: "",
+		// A wait's time ends the wait and queues the wait's own start, or wakes the released worker,
+		// in the fact's transaction (dispatch://INFRA-2040 R3), and starts no turn itself: the start
+		// it queues is held, and a wake it takes during a pause is a held wake, as a CI settlement's
+		// is (workflow's wakeReleased, Pods.PauseOfWake).
+		OutboxKindWaitDue: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -463,6 +475,18 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
 		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
+		{name: "a wait's time with no claim", payload: WaitDue{WaitID: "9b2f4c1e-wait"}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's time with no wait", payload: WaitDue{Token: "legion-legion-208-tester"}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait's start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Task: "t", WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait's start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", Entry: 2, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "the gate's message on a tester's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Phase: phase.Merging, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", Entry: 2, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a wait's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", WaitID: "w", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
@@ -641,6 +665,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check wake without a look", row: OutboxRow{ID: 40, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"reason":"the tester's own wake"}`)}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", row: OutboxRow{ID: 42, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1}`)}, reason: "check wake requires the reason it wakes the check"},
 		{name: "a check wake with an unknown field", row: OutboxRow{ID: 43, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1,"reason":"the tester's own wake","build":"b00f"}`)}, reason: "unknown field"},
+		{name: "a wait's time with no wait", row: OutboxRow{ID: 60, Kind: OutboxKindWaitDue, Payload: json.RawMessage(`{"token":"legion-legion-208-tester"}`)}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's time with an unknown field", row: OutboxRow{ID: 61, Kind: OutboxKindWaitDue, Payload: json.RawMessage(`{"token":"legion-legion-208-tester","waitId":"w","wakeAt":"2026-11-14T06:00:00Z"}`)}, reason: "unknown field"},
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
@@ -677,6 +703,15 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// waitStartRefusal is the validation's words for a supervise row that names a wait and is not a
+// start with a task, no phase and no entry: the start of a wait's time is that start and no other.
+const waitStartRefusal = "a supervise start of a wait's time is a start with a task, no phase, no entry and no check look"
+
+// gateStartRefusal is the validation's words for a supervise row that carries the mark of the
+// design gate's own message and is not a merger's start with a task, no phase, no entry and no
+// wait: the gate's own start of a merger is that start and no other.
+const gateStartRefusal = "a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait"
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import updateAskKey from "../fixtures/daemon-api/update-ask-key.json";
 import dedupeKeys from "../fixtures/dedupe-keys.json";
 import { dedupeKeyNamesItsEvent, EnvelopeSchema } from "./envelope";
 import {
@@ -480,5 +481,21 @@ describe("dedupeKeyNamesItsEvent", () => {
     dedupeKeys.keys.map((row) => [row.name, row.envelope, row.names] as const)
   )("%s", (_name, envelope, names) => {
     expect(dedupeKeyNamesItsEvent(envelope)).toBe(names);
+  });
+});
+
+// The Legion daemon publishes an update round's ask under a key it derives from the claim, the
+// round and the round's opening (`record.UpdateAskKey`); `internal/record`'s
+// TestUpdateAskKeyIsTheContractFixturesKey holds the daemon to this fixture's key. The Envoy
+// client keeps a key on the card it hands the session only when this rule says it names its
+// event, and the plugin reports the card's key with the news, which is how the daemon tells its
+// own update ask from news (dispatch://INFRA-2040 D9). So the key is kept bare, as the listener
+// publishes it, and behind the role arbiter's forward mark, as a host may receive it.
+describe("dedupeKeyNamesItsEvent keeps the Legion daemon's update ask key", () => {
+  test.each([
+    ["bare", updateAskKey.key],
+    ["behind the role-forward mark", `envoy.role.forward.${updateAskKey.key}`],
+  ])("%s", (_name, key) => {
+    expect(dedupeKeyNamesItsEvent({ source: "agent", dedupe_key: key })).toBe(true);
   });
 });

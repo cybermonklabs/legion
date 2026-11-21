@@ -48,11 +48,12 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// one of the two alone would describe a shape at a contract no entry declares. 202 is
+// repositoriesLiveContract rather than its number for the same reason: it is
+// dispatch://INFRA-4401's contract, and a renumber of that change moves the constant and this
+// list with it. The last is waitContract, this daemon's own contract (dispatch://INFRA-2040),
+// named for the same reason: a renumber of it moves waitContract and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, waitContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -78,6 +79,8 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerWait               AnswerID = "wait"
+	AnswerWaitNews           AnswerID = "wait-news"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -198,6 +201,13 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
+	// version.go's 207: the wait a phase worker declared, as the daemon recorded it
+	// (`api.WaitResponse`). The route arrives with the answer, so no contract below 207 records
+	// either.
+	{ID: AnswerWait, Routes: []string{"POST /legion/v1/claims/wait"}, Since: waitContract},
+	// version.go's 207: whether a report of news ended the wait it names (`api.WaitNewsResponse`),
+	// arrived with its route as the wait's answer did.
+	{ID: AnswerWaitNews, Routes: []string{"POST /legion/v1/claims/wait-news"}, Since: waitContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -301,6 +311,13 @@ var stateEnumeratedFields = []EnumeratedField{
 	// the rest of the round report (shaping.go's withoutClaimRoundReport).
 	{Answer: AnswerState, KeyPath: "issues.*.architect.updateState", Values: updateStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.updateState", Values: updateStates},
+	// `step` of a merger's hold, the gated step whose row of the closed design gate holds it
+	// (api.HoldView.Step, record.DesignStep). It arrived with `hold` at waitContract and is served
+	// down below that contract with the whole key (shaping.go's withoutWaitAndHold), so no body
+	// below 207 carries a value of it. The architect's view and each worker's carry the one key,
+	// as every claim view does, though the gate holds a merger alone.
+	{Answer: AnswerState, KeyPath: "issues.*.architect.hold.step", Values: holdSteps},
+	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.hold.step", Values: holdSteps},
 	// `state` of the pull request the daemon observed (api.PullRequestView.State,
 	// record.PullRequestState).
 	{Answer: AnswerState, KeyPath: "issues.*.pullRequest.state", Values: pullRequestStates},
@@ -585,6 +602,12 @@ var designSteps = valuesFrom(gatedStepsContract,
 	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
 var gatedStepStatuses = valuesFrom(gatedStepsContract,
 	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
+
+// holdSteps is the same three steps at the contract `hold` arrived at, which a merger's hold
+// names its step from: no claim view carries a hold below that contract at all (shaping.go's
+// withoutWaitAndHold).
+var holdSteps = valuesFrom(waitContract,
+	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.

@@ -417,8 +417,14 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the one row the retry writes: the retry is the way back the repair leaves",
 			member, owed)
 	}
-	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
-		t.Fatalf("after the retry the waiting line is %v, want %s in it: it holds no slot and owes its tester a start again", line, member)
+	// The retry puts the issue back in the line, and a slot stands free, so the line's next pass,
+	// a tick of stopTickInterval away, grants it that slot: a read after the retry meets the issue
+	// in the line or already holding the slot, and either is the way back. What the stop must not
+	// leave is the issue in neither, its start ended for good, and the launch below proves the
+	// slot reaches the worker.
+	if admission := d.state().Admission; !slices.Contains(admission.Waiting, member) && !slices.Contains(admission.Active, member) {
+		t.Fatalf("after the retry the waiting line is %v and the slots are held by %v, want %s in one of them: it owes its tester a start again, and the free slot reaches it",
+			admission.Waiting, admission.Active, member)
 	}
 	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches

@@ -543,7 +543,7 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 			if !p.Interrupted {
 				t.Fatalf("the task after the death is %+v, want it taken back from the turn", p)
 			}
-			message, _ := p.message(h.claim())
+			message, _ := p.message(h.claim(), GateNote{})
 			wantSays(t, message, row.says...)
 			wantSaysNot(t, message, row.saysNot...)
 		})
@@ -679,7 +679,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 			if p.Interrupted || !p.ConfirmedAt.IsZero() {
 				t.Fatalf("the task after the death is %+v, want the one the busy answer left waiting, in no turn", p)
 			}
-			message, _ := p.message(h.claim())
+			message, _ := p.message(h.claim(), GateNote{})
 			wantSays(t, message, row.says...)
 			wantSaysNot(t, message, row.saysNot...)
 		})
@@ -776,7 +776,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 					if !p.Interrupted {
 						t.Fatalf("the task after the death is %+v, want it taken back from the turn", p)
 					}
-					sentence, _ = p.message(h.claim())
+					sentence, _ = p.message(h.claim(), GateNote{})
 				}
 				wantSays(t, sentence, row.says...)
 				wantSaysNot(t, sentence, row.saysNot...)

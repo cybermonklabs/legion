@@ -43,10 +43,10 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // Such a stop undoes every start older than it, and it may run before them, so every rule that
 // reads it counts only a queued start newer than it: StartFor, asking what a re-admitted tree's
 // promotion must start, OwedEntry, asking whether a role is owed its entry's work,
-// unpromptedPhaseWorker, asking whether nothing will prompt a live claim, ArchitectRelaunchOf,
-// asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
-// asking whether a queued row covers a ready claim. One body is what keeps them from reading the
-// same rows differently.
+// phaseWorkerBetweenTurns, asking whether a live claim is up between turns with nothing on its
+// way to it, ArchitectRelaunchOf, asking whether a start is a root architect's next move, and
+// catch_up.go's queuedRowCovers, asking whether a queued row covers a ready claim. One body is
+// what keeps them from reading the same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64
@@ -89,7 +89,7 @@ func lastStartRow(run record.RoleRun) int64 {
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
 //
-// Its reading of run.Queued is queuedStartActs, which unpromptedPhaseWorker and catch_up.go's
+// Its reading of run.Queued is queuedStartActs, which phaseWorkerBetweenTurns and catch_up.go's
 // queuedRowCovers share.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
 	stop := actingStop(run, root)
@@ -105,7 +105,7 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 }
 
 // queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor,
-// unpromptedPhaseWorker and catch_up.go's queuedRowCovers all read it, so they answer that term
+// phaseWorkerBetweenTurns and catch_up.go's queuedRowCovers all read it, so they answer that term
 // alike, and effects.go's architectStartQueued reads it with a stop of 0, which every row's id is
 // above (the outbox's ids start at one), so any queued start for current counts.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {

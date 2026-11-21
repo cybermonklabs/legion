@@ -263,6 +263,32 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
+ * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
+ * its primary document. */
+const legionDesignStep = z.enum(GATED_STEPS);
+
+/** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
+ * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
+ * microsecond. The daemon writes all four, and each is optional here, since no plugin code reads
+ * it yet (LEGION_ANSWER_READS). */
+const legionWait = z.object({
+  id: nonEmptyString.optional(),
+  waitingOn: nonEmptyString.optional(),
+  wakeAt: timestamp.optional(),
+  declaredAt: timestamp.optional(),
+});
+
+/** `api.HoldView` — the closed design gate that holds a merger while the hold stands: the gated
+ * step whose row holds it, the document registered for that step, and the version of that document
+ * that is with its reviewer. The daemon writes all three, and each is optional here, since no
+ * plugin code reads it yet (LEGION_ANSWER_READS). */
+const legionHold = z.object({
+  step: legionDesignStep.optional(),
+  artifactId: nonEmptyString.optional(),
+  version: z.number().int().positive().optional(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
@@ -354,6 +380,20 @@ const legionClaimView = z.object({
    * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
+  /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands: the
+   * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
+   * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
+   * stands — a fresh session, or a phase that moved. A caller below 207, by the contract it states
+   * or its pod records, is served the state with no such key at all (the daemon's
+   * `withoutWaitAndHold`), so every reader takes it as optional. */
+  wait: legionWait.optional(),
+  /** The closed design gate that holds this merger while the hold stands — the same rule the
+   * outbox's fence reads, so it is present exactly while the daemon holds the merger's phase
+   * start. Absent for every other claim: another role's, a merger whose issue is not in
+   * `merging`, and a merger whose tree's gated steps stand open or have no registered row. A
+   * caller below 207, by the contract it states or its pod records, is served the state with no
+   * such key at all (the daemon's `withoutWaitAndHold`), so every reader takes it as optional. */
+  hold: legionHold.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -473,11 +513,6 @@ const legionGateView = z.object({
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),
 });
-
-/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
- * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
- * its primary document. */
-const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
@@ -1501,6 +1536,71 @@ export const LegionActivityRequest = z.strictObject({
 });
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
+
+/** `api.WaitRequest`, the body of `POST /legion/v1/claims/wait`: a phase worker declaring that it
+ * waits on something outside its own work — a person's answer, a CI run, another issue — until
+ * `wakeAt`, so the daemon's own wakes leave it be until then. It is authenticated by the
+ * registration's secret, as `claims/activity` is, and the daemon holds it to the session the claim
+ * records. `waitingOn` says what the wait is for: the daemon refuses one empty once trimmed
+ * (`WAIT_TEXT_REQUIRED`). `wakeAt` is a `LegionInstant`, which the daemon decodes with
+ * `time.Parse(time.RFC3339, …)`, and it must fall from one minute to 24 hours after the daemon
+ * records the declaration (`WAIT_TOO_SOON`, `WAIT_TOO_FAR`). A claim that does not work its
+ * issue's open phase is refused `WAIT_NOT_OPEN_PHASE`, and a merger the design gate holds
+ * `WAIT_HELD_BY_DESIGN_GATE`; every refusal is a `LegionErrorResponse` and records nothing. */
+export const LegionWaitRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitingOn: nonEmptyString,
+  wakeAt: LegionInstant,
+});
+
+export type LegionWaitRequestBody = z.output<typeof LegionWaitRequest>;
+
+/** `api.WaitResponse`, the body `POST /legion/v1/claims/wait` answers once the wait is recorded.
+ * A claim keeps one standing wait: a new declaration ends the one it replaces. The daemon always
+ * writes `wait`, and it is optional here, since no plugin code reads it yet
+ * (LEGION_ANSWER_READS). */
+export const LegionWaitResponse = z.object({
+  wait: legionWait.optional(),
+});
+
+export type LegionWait = z.output<typeof LegionWaitResponse>;
+
+/** `api.WaitNewsRequest`, the body of `POST /legion/v1/claims/wait-news`: a phase worker's plugin
+ * reporting that news reached its session after the declaration of the wait `waitId` names — an
+ * Envoy delivery, a message to its role, or a person's message — so the daemon ends that wait.
+ * `waitId` is the `wait.id` the declaration's answer named. `deliveryKey` is the reported
+ * delivery's own dedupe key, verbatim as the plugin read it off the delivery, bare or behind the
+ * listener's role-forward mark, and absent for a person's message, which has none. It is
+ * authenticated by the registration's secret, as `claims/wait` is, and the daemon holds it to the
+ * session the claim records. A daemon task is not news. */
+export const LegionWaitNewsRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitId: nonEmptyString,
+  deliveryKey: nonEmptyString.optional(),
+});
+
+export type LegionWaitNewsRequestBody = z.output<typeof LegionWaitNewsRequest>;
+
+/** `api.WaitNewsResponse`, the body `POST /legion/v1/claims/wait-news` answers: `ended` is whether
+ * this report ended the wait it names, and `false` keeps the wait standing in the plugin. A report
+ * naming a wait a newer declaration replaced, or one already ended (a second report of the same
+ * wait among them), answers `false` and changes nothing. A report whose `deliveryKey` is a key of
+ * the claim's own update ask — the daemon publishes each update round's ask to the role under a
+ * key it derives from the claim, the round and its opening — ends nothing, records nothing and
+ * answers `false` with `updateAsk: true`, during the round and after it: an update round and its
+ * ask end no wait. Every other report, with any other key or none, is news, whether or not an
+ * update round is open. `updateAsk` is absent from every other answer. The daemon always writes
+ * `ended`, and it is optional here, since no plugin code reads it yet (LEGION_ANSWER_READS). */
+export const LegionWaitNewsResponse = z.object({
+  ended: z.boolean().optional(),
+  updateAsk: z.literal(true).optional(),
+});
+
+export type LegionWaitNews = z.output<typeof LegionWaitNewsResponse>;
 
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size

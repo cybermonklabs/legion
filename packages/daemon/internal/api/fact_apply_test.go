@@ -119,16 +119,20 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
 	controller := "the controller's grant notes no requester (redeem): the controller runs no step"
 	table := map[string]agentRoute{
-		"GET /legion/v1/state":                         {none: "a read of the daemon's state; " + noFact},
-		"GET /legion/v1/issues/{key}/record":           {none: "a read of one issue's record; " + noFact},
-		"GET /healthz":                                 {none: "the liveness answer; " + noFact},
-		"GET /readyz":                                  {none: "the readiness answer; " + noFact},
-		"POST /legion/v1/claims/register":              {none: "a launch's registration of its session; " + noFact},
-		"POST /legion/v1/claims/ready":                 {none: "the claim's report to its own machine; " + noFact},
-		"POST /legion/v1/claims/ready-for-update":      {none: "the claim's report to its own machine; " + noFact},
-		"POST /legion/v1/claims/exit":                  {none: "the claim's report to its own machine; " + noFact},
-		"POST /legion/v1/claims/turn-outcome":          {none: "the claim's report to its own machine; " + noFact},
-		"POST /legion/v1/claims/activity":              {none: "the claim's report to its own machine; " + noFact},
+		"GET /legion/v1/state":                    {none: "a read of the daemon's state; " + noFact},
+		"GET /legion/v1/issues/{key}/record":      {none: "a read of one issue's record; " + noFact},
+		"GET /healthz":                            {none: "the liveness answer; " + noFact},
+		"GET /readyz":                             {none: "the readiness answer; " + noFact},
+		"POST /legion/v1/claims/register":         {none: "a launch's registration of its session; " + noFact},
+		"POST /legion/v1/claims/ready":            {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/ready-for-update": {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/exit":             {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/turn-outcome":     {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/activity":         {none: "the claim's report to its own machine; " + noFact},
+		"POST /legion/v1/claims/wait": {none: "the claim's registration secret authenticates it and it redeems no grant, so no requester is noted " +
+			"and its fact (intake.WaitDeclared) waits for nothing; a declaration ends no step"},
+		"POST /legion/v1/claims/wait-news": {none: "the claim's registration secret authenticates it and it redeems no grant, so no requester is " +
+			"noted and its fact (intake.WaitNews) waits for nothing; a report of news ends no step"},
 		"POST /legion/v1/claims/release-records":       {none: "a read of the claim's release records; " + noFact},
 		"POST /legion/v1/grants":                       {none: "a grant's mint; " + noFact},
 		"POST /legion/v1/controller/secret":            {none: "the controller's secret; " + noFact},

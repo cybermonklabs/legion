@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -108,23 +110,124 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
 // pod once.
+//
+// A merger the design gate holds is not woken by its backstop while the gate is closed
+// (dispatch://INFRA-2040 R1, D13 of its plan): the backstop stays due, and the first pass that
+// reads the gate open takes it. So the pass first reads, in one read-only transaction outside the
+// fact lock, which of the due backstops are a held merger's (heldMergerBackstops), and applies no
+// fact for them: a held backstop costs that read each minute and no fact's transaction, as the
+// silence sweep's filter spares a held merger (supervision.quietByDesign). The fact reads the
+// hold again in its own transaction (workflow's podBackstopDue) and leaves the backstop unfired
+// when the gate closed after this read, which its answer says (intake.Result.Unspent). Either way
+// the pass logs `wake: a held merger's backstop waits for the design gate` once per backstop and
+// per boot (heldBackstops), and `wake: a held merger's backstop is taken` at the pass that takes
+// a backstop it logged so. A read of the hold that fails fires nothing and is logged: every row is
+// still due at the next pass, which reads again.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
 		w.log.Warn("wake: could not read the backstops that came due", "error", err)
 		return
 	}
+	held, err := w.heldMergerBackstops(ctx, due)
+	if err != nil {
+		w.log.Warn("wake: could not read which due backstops are a merger's the design gate holds; this pass fires none", "error", err)
+		return
+	}
+	w.forgetBackstopsNotDue(due)
 	for _, backstop := range due {
 		if ctx.Err() != nil {
 			return
 		}
+		if gate, holds := held[backstop.ID]; holds {
+			w.backstopWaits(backstop, gate)
+			continue
+		}
 		fact := intake.PodBackstopDue{ID: backstop.ID, Issue: backstop.Issue, Role: backstop.Role}
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
-		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
+		result, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...)
+		if err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
 			continue
 		}
+		if result.Unspent {
+			w.backstopWaits(backstop, record.DesignGate{})
+			continue
+		}
+		if _, logged := w.heldBackstops[backstop.ID]; logged {
+			delete(w.heldBackstops, backstop.ID)
+			w.log.Info("wake: a held merger's backstop is taken", "issue", backstop.Issue, "role", backstop.Role,
+				"backstop", backstop.ID)
+		}
 		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
+	}
+}
+
+// heldMergerBackstops is, of due, each merger's backstop whose merger the design gate holds, with
+// the closed gate's row, by the backstop's id: the engine's batched reading over the issues of
+// those backstops (workflow's Engine.HeldMergers), in a read-only transaction of its own and
+// outside the fact lock. No other role can be held, so a pass with no merger's backstop due
+// reads nothing.
+func (w *workflowRuntime) heldMergerBackstops(ctx context.Context, due []store.PodWakeBackstop) (map[int64]record.DesignGate, error) {
+	held := make(map[int64]record.DesignGate)
+	var issues []string
+	for _, backstop := range due {
+		if backstop.Role == claim.RoleMerger {
+			issues = append(issues, backstop.Issue)
+		}
+	}
+	if len(issues) == 0 {
+		return held, nil
+	}
+	var gates map[string]record.DesignGate
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		gates, err = w.engine.HeldMergers(ctx, tx, issues)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read which mergers the design gate holds: %w", err)
+	}
+	for _, backstop := range due {
+		if gate, holds := gates[backstop.Issue]; holds && backstop.Role == claim.RoleMerger {
+			held[backstop.ID] = gate
+		}
+	}
+	return held, nil
+}
+
+// backstopWaits logs that the design gate holds backstop's merger and leaves the backstop due,
+// once per backstop and per boot: gate is the closed gate's row the pass read, or the zero row
+// where the fact's own read found the hold.
+func (w *workflowRuntime) backstopWaits(backstop store.PodWakeBackstop, gate record.DesignGate) {
+	if _, logged := w.heldBackstops[backstop.ID]; logged {
+		return
+	}
+	if w.heldBackstops == nil {
+		w.heldBackstops = make(map[int64]struct{})
+	}
+	w.heldBackstops[backstop.ID] = struct{}{}
+	attributes := []any{"issue", backstop.Issue, "role", backstop.Role, "backstop", backstop.ID,
+		"due", backstop.DueAt.UTC().Format(time.RFC3339)}
+	if gate.Issue != "" {
+		attributes = append(attributes, "step", gate.Step.OrSpec(), "artifact", gate.ArtifactID, "version", gate.LatestVersion)
+	}
+	w.log.Info("wake: a held merger's backstop waits for the design gate", attributes...)
+}
+
+// forgetBackstopsNotDue drops from heldBackstops every backstop that is no longer due: a wake
+// cancelled it (store.TakePodWake), a release replaced it, or a pass took it.
+func (w *workflowRuntime) forgetBackstopsNotDue(due []store.PodWakeBackstop) {
+	if len(w.heldBackstops) == 0 {
+		return
+	}
+	still := make(map[int64]struct{}, len(due))
+	for _, backstop := range due {
+		still[backstop.ID] = struct{}{}
+	}
+	for id := range w.heldBackstops {
+		if _, due := still[id]; !due {
+			delete(w.heldBackstops, id)
+		}
 	}
 }
 
@@ -427,7 +530,16 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// backstop has nothing left to bring back. The cancel comes first whatever is armed after it, so
+// a claim that a start brought back since that release, still holding its backstop, holds none
+// once this release takes its pod again.
+//
+// A worker whose wait stands gets none (dispatch://INFRA-2040 R3): the wait's time wakes it
+// (workflow's waitDue), and a backstop would wake it before that for nothing it waits on. The
+// wait is read as every reader of a wait reads it (standingWait). A merger the closed design
+// gate holds gets its backstop as any released worker does (R1): no wait stands under the hold
+// (workflow.WaitStands), and the wake tick leaves that backstop due until it reads the gate open
+// (fireDueBackstops).
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err
@@ -446,6 +558,15 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	for _, c := range released {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
+		}
+		wait, stands, err := r.standingWait(ctx, c.Token)
+		if err != nil {
+			return err
+		}
+		if stands {
+			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's worker: the claim's wait stands, and its time wakes it",
+				"issue", issue.Key, "role", role, "claim", c.Token, "wait", wait.ID, "wake_at", wait.WakeAt.UTC().Format(time.RFC3339))
+			return nil
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",

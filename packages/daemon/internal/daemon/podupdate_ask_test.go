@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,10 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
+// askedOpenedAt is when the round was opened on every claim askRunner puts in a round, to the
+// nanosecond as the daemon that opened it holds it (supervise.Claim.UpdateOpenedAt).
+var askedOpenedAt = time.Date(2026, 11, 14, 22, 50, 13, 123456789, time.UTC)
+
 // The three lines the executor writes, one for each way a row ends without an error. The first
 // is the line the production check reads (requirement R8).
 const (
@@ -31,14 +36,18 @@ const (
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
-// rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
-// no claim this daemon supervises.
+// rounds gets a claim on LEGION-208 in the round given, opened at askedOpenedAt, or "" for no
+// round; a role not in rounds has no claim this daemon supervises.
 func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {
+		var opened *time.Time
+		if round != "" {
+			opened = &askedOpenedAt
+		}
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
-			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued, UpdateRound: round}, ""); err != nil {
+			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued, UpdateRound: round, UpdateOpenedAt: opened}, ""); err != nil {
 			t.Fatalf("create the %s's claim: %v", role, err)
 		}
 	}
@@ -56,9 +65,12 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 
 // The ask reaches the role it names on that role's own topic, a worker and the architect alike,
 // since the architect's process runs in the pod too. The message is the sweep's text unchanged,
-// under the row's own key, so a retried row is one delivery. When the publisher has taken it, the
-// executor writes the one line the production check greps for, with the row, the issue, the round,
-// the pod, the claim, the role and the topic.
+// under the ask's own key rather than the row's: record.UpdateAskKey of the claim, the round and
+// the opening the claim records, a key of the listener's minted publish shape that the claim's
+// plugin reports with the delivery and the news route knows as the claim's own update ask
+// (dispatch://INFRA-2040 D9). When the publisher has taken it, the executor writes the one line
+// the production check greps for, with the row, the issue, the round, the pod, the claim, the
+// role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
@@ -70,12 +82,16 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			}
 			token := mustClaimToken(t, "LEGION-208", role)
 			topic := notify.RoleTopicPrefix + string(token)
+			key := record.UpdateAskKey(token, askedRound, &askedOpenedAt)
 			published := publisher.publishes()
 			if len(published) != 1 {
 				t.Fatalf("publishes = %#v, want the one ask", published)
 			}
-			if got := published[0]; got.topic != topic || got.message != askedText || got.payload != any(askedText) || got.key != record.OutboxKey(row.ID) {
-				t.Fatalf("the ask went as %#v, want %q on %s under %s", got, askedText, topic, record.OutboxKey(row.ID))
+			if got := published[0]; got.topic != topic || got.message != askedText || got.payload != any(askedText) || got.key != key {
+				t.Fatalf("the ask went as %#v, want %q on %s under %s", got, askedText, topic, key)
+			}
+			if !mintedPublishKey.MatchString(key) || !record.IsUpdateAskKey(token, key) || key == record.OutboxKey(row.ID) {
+				t.Fatalf("the ask's key %s is not a minted publish key the %s's claim knows as its own update ask", key, role)
 			}
 			lines := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`)
 			if len(lines) != 1 {
@@ -90,8 +106,55 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			if lines[0]["level"] != "INFO" {
 				t.Errorf("the line's level = %v, want INFO", lines[0]["level"])
 			}
-			t.Logf("the %s was asked on %s: %v", role, topic, lines[0])
+			t.Logf("the %s was asked on %s under %s: %v", role, topic, key, lines[0])
 		})
+	}
+}
+
+// mintedPublishKey is the listener's minted publish key, `publish.` and 32 lowercase hex digits,
+// one of the shapes MINTED_DEDUPE_KEY_PATTERN in packages/contracts accepts, so the Envoy client
+// keeps it on the card it hands the session.
+var mintedPublishKey = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
+
+// A retry of one ask publishes under one key, since the key is the claim's, the round's and the
+// opening's, not the row's: the row the sweep enqueues again once an ask reached no session
+// (askRound), and that row's next attempt after a holder that did not confirm it in time, each go
+// under the first publish's key, and the listener and each host drop a repeat of it. The same
+// opening read back from the store, to the microsecond, gives the same key, so a daemon
+// restarted between two rows publishes the later one under it too. Once an attempt reaches the
+// role, the claim is marked asked and a later row of the round publishes nothing.
+func TestPodUpdateAskOfOneRoundOpeningPublishesEveryRetryUnderOneKey(t *testing.T) {
+	publisher := &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
+	runner, _ := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
+	if err := runner.execute(context.Background(), askRow(t, 78, claim.RoleImplementer)); err != nil {
+		t.Fatalf("the ask no session holds = %v, want the row finished", err)
+	}
+	notDelivered := notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"}
+	publisher.err = fmt.Errorf("publish to the implementer's topic: %w", notDelivered)
+	again := askRow(t, 79, claim.RoleImplementer)
+	if err := runner.execute(context.Background(), again); !errors.Is(err, notDelivered) {
+		t.Fatalf("the sweep's second row of the ask = %v, want the holder's failure, retried", err)
+	}
+	publisher.err = nil
+	for range 2 {
+		if err := runner.execute(context.Background(), again); err != nil {
+			t.Fatalf("the retry of the sweep's second row of the ask: %v", err)
+		}
+	}
+	if err := runner.execute(context.Background(), askRow(t, 80, claim.RoleImplementer)); err != nil {
+		t.Fatalf("a later row of the ask to a claim it reached: %v", err)
+	}
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	readBack := askedOpenedAt.Truncate(time.Microsecond).Local()
+	key := record.UpdateAskKey(token, askedRound, &readBack)
+	published := publisher.publishes()
+	if len(published) != 3 {
+		t.Fatalf("publishes = %#v, want three: the ask no session held, the attempt no holder confirmed and the retry that reached the role", published)
+	}
+	for i, got := range published {
+		if got.key != key {
+			t.Fatalf("publish %d of the ask went under %s, want every one under %s", i, got.key, key)
+		}
 	}
 }
 

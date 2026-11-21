@@ -1473,6 +1473,65 @@ type WorkerBackgroundStalled struct {
 
 func (f WorkerBackgroundStalled) namedIssue() (string, bool) { return f.Issue, true }
 
+// WaitDeclared is a phase worker declaring that it waits on something outside its own work
+// until WakeAt (POST /legion/v1/claims/wait, dispatch://INFRA-2040 R2): the claim Token on
+// Issue's Role, in the session Session, under the id WaitID the route minted, waiting on
+// WaitingOn. Generation is the issue generation of the run whose task the claim's worker took
+// (supervise.Claim.ServingRun), which the engine holds to the issue's own run, and TakenEntry the
+// phase entry of the task it had taken (api's takenEntry), which the wait records so that a later
+// send of a task it had taken is told from new work. At is when the daemon received the
+// declaration: the wait's time is measured from it (workflow.MinWaitAhead, MaxWaitAhead) and the
+// wait records it as its declaration. The route reads every claim field of it from one read of
+// the claim, and the engine refuses or records it in the fact's own transaction (workflow's
+// waitDeclared).
+type WaitDeclared struct {
+	Token      claim.Token
+	Issue      string
+	Role       claim.Role
+	Session    string
+	Generation uint64
+	WaitID     string
+	WaitingOn  string
+	WakeAt     time.Time
+	TakenEntry int64
+	At         time.Time
+}
+
+func (f WaitDeclared) namedIssue() (string, bool) { return f.Issue, true }
+
+// WaitNews is a phase worker's plugin reporting that news reached its session after the
+// declaration of the wait WaitID (POST /legion/v1/claims/wait-news, dispatch://INFRA-2040 R3's
+// second end): an Envoy delivery, a message to its role, or a person's message, answer or comment
+// routed to its session. Token is the claim the reporting session holds, on Issue's Role, as the
+// route's one read of the claim names them. The engine ends that wait of the claim, if it has no
+// end yet, in the fact's own transaction (workflow's waitNews), and answers whether this fact
+// ended it (Result.WaitEnded). The route applies none for a report of the claim's own update
+// ask (record.IsUpdateAskKey), which reaches the session as a role message and is no news (D9 of
+// dispatch://INFRA-2040's plan).
+type WaitNews struct {
+	Token  claim.Token
+	Issue  string
+	Role   claim.Role
+	WaitID string
+}
+
+func (f WaitNews) namedIssue() (string, bool) { return f.Issue, true }
+
+// WaitDue is a phase worker's wait coming to its time (the wait_due row at the wait's WakeAt,
+// record.WaitDue): the wait WaitID of the claim Token, on Issue. It is never decoded from an
+// event — the outbox applies one per row, under `wait-due:<waitID>`, so a row run again is a
+// duplicate. The engine decides in the fact's own transaction (workflow's waitDue): a wait that is
+// not the claim's wait with no end changes nothing; one that still stands ends with the cause that
+// its time came, and its own task is written; one that no longer stands ends with the cause its
+// first failing term names, and no task is written.
+type WaitDue struct {
+	Token  claim.Token
+	Issue  string
+	WaitID string
+}
+
+func (f WaitDue) namedIssue() (string, bool) { return f.Issue, true }
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
@@ -1484,10 +1543,15 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// WaitEnded is a WaitNews fact's answer: the wait it names ended in this fact. It is false for a
+// wait a newer declaration replaced or something already ended, and for a duplicate, which no
+// handler ran for: the first report of that wait is the one that ended it.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	WaitEnded bool
 }
 
 type commitHooksKey struct{}
@@ -1525,6 +1589,29 @@ func OnCommit(ctx context.Context, fn func()) {
 func CommitScoped(ctx context.Context) bool {
 	_, ok := ctx.Value(commitHooksKey{}).(*[]func())
 	return ok
+}
+
+type appliedFactKey struct{}
+
+// appliedFact is the source and event id ApplyFact applies a fact under.
+type appliedFact struct{ source, eventID string }
+
+// AppliedFact is the source and event id of the fact whose transaction ctx scopes, as ApplyFact
+// was handed them (or a pass outside a fact named itself with, WithAppliedFact), and false on a
+// context nothing named. A handler names by them the fact a write of its own was caused by, where
+// the record keeps that name beside the write: a wait's end keeps the fact that ended it
+// (workflow's EndStaleWaits, record.ClaimWait.EndedBy).
+func AppliedFact(ctx context.Context) (source, eventID string, ok bool) {
+	fact, ok := ctx.Value(appliedFactKey{}).(appliedFact)
+	return fact.source, fact.eventID, ok
+}
+
+// WithAppliedFact is ctx naming source and eventID as the fact whose transaction it scopes
+// (AppliedFact). ApplyFact names every fact it applies this way; a pass that writes the workflow
+// in a transaction of its own, outside any fact (internal/daemon's reconcileListing), names itself,
+// so a write it causes is named as a fact's would be.
+func WithAppliedFact(ctx context.Context, source, eventID string) context.Context {
+	return context.WithValue(ctx, appliedFactKey{}, appliedFact{source: source, eventID: eventID})
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -1601,7 +1688,8 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). Every handler's context names the fact by the source
+// and event id it applies under (AppliedFact).
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1666,6 +1754,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		handlers = nil
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
+	ctx = WithAppliedFact(ctx, source, eventID)
 	ctx, settle := OpenSettlers(ctx, handlers...)
 	var result Result
 	for _, handler := range handlers {
@@ -1677,6 +1766,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 			result.Refusal = candidate.Refusal
 		}
 		result.Unspent = result.Unspent || candidate.Unspent
+		result.WaitEnded = result.WaitEnded || candidate.WaitEnded
 	}
 	if err := settle(ctx, tx); err != nil {
 		return Result{}, err

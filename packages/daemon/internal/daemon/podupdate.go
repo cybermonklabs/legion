@@ -1525,7 +1525,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox). An enqueue that fails, or a read of the queued asks that
-// fails, enqueues nothing, and the next tick asks again.
+// fails, enqueues nothing, and the next tick asks again. A row the sweep enqueues again for a
+// claim its earlier ask did not reach publishes under that ask's key, since one claim and one
+// round opening give one key (record.UpdateAskKey).
 //
 // A claim no machine of this daemon holds is asked nothing: its row would find no machine to
 // publish under and end, so every tick would enqueue it again.

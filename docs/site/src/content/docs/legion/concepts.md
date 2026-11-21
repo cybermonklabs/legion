@@ -337,8 +337,10 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. Work already in flight carries on, but the merge
+waits: while a step that someone registered waits for a person's approval, the merger merges
+nothing, and each task it gets says the gate is closed. A step that nobody registered names no
+document, so it holds no merger. The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 

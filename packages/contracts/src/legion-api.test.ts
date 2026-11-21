@@ -51,6 +51,10 @@ import {
   LegionSignOffRequest,
   LegionStateResponse,
   LegionTurnOutcomeResponse,
+  LegionWaitNewsRequest,
+  LegionWaitNewsResponse,
+  LegionWaitRequest,
+  LegionWaitResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
@@ -148,6 +152,14 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // What a phase worker's declared wait comes back as once the daemon recorded it: its id, its
+  // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
+  "wait.json": LegionWaitResponse,
+  // What a phase worker's plugin's report of news after the declaration comes back as
+  // (`api.WaitNewsResponse`): one that ended the wait, and one whose delivery was the claim's own
+  // update ask, which ended nothing and says so.
+  "wait-news.json": LegionWaitNewsResponse,
+  "wait-news-update-ask.json": LegionWaitNewsResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -309,6 +321,17 @@ const schemas: Record<string, z.ZodType> = {
   // down as the route answered it, so that the case "the request schema takes exactly the ratings
   // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
   "plan-rating-cases.json": PlanRatingCases,
+  // Nor this one: one claim, one update round and the time it was opened on the claim, to the
+  // microsecond, with the key the daemon publishes that round's ask to the claim's role under
+  // (`record.UpdateAskKey`). `internal/record`'s TestUpdateAskKeyIsTheContractFixturesKey holds
+  // the daemon's derivation to it, and `src/envelope.test.ts` holds the Envoy client's dedupe
+  // rule to keeping that key, so a plugin can report it with the delivery.
+  "update-ask-key.json": z.strictObject({
+    claimToken: z.string().min(1),
+    round: z.string().min(1),
+    openedAt: LegionInstant,
+    key: z.string().regex(/^publish\.[0-9a-f]{32}$/),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -1650,6 +1673,83 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// Contract 207: a claim whose worker declared a wait that stands carries it on its view of the
+// state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
+// the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
+// The schema must name the key, since a key it does not name is stripped and the seat never sees
+// it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
+// and after. A daemon narrows it away for a caller below 207 (`api.withoutWaitAndHold`), so a claim
+// without it parses, and a wait with no text — which the daemon never records — is refused.
+test("a claim carries its standing wait", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { wait?: unknown } }> }>;
+  };
+  const waiting = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  if (waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-208's implementer");
+  }
+  const wait = {
+    id: "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+    waitingOn: "the review of LEGION-207's pull request",
+    wakeAt: "2026-09-22T11:00:00Z",
+    declaredAt: "2026-09-22T09:17:05.123456Z",
+  };
+  expect(waiting.wait).toEqual(wait);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues?.["LEGION-208"]?.workers?.implementer?.claim?.wait).toEqual(wait);
+  const carrying = Object.entries(parsed.issues ?? {}).flatMap(([key, issue]) => [
+    ...(issue?.architect?.wait === undefined ? [] : [`${key} architect`]),
+    ...Object.entries(issue?.workers ?? {})
+      .filter(([, worker]) => worker?.claim?.wait !== undefined)
+      .map(([role]) => `${key} ${role}`),
+  ]);
+  expect(carrying).toEqual(["LEGION-208 implementer"]);
+
+  waiting.wait = { ...wait, waitingOn: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  waiting.wait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// Contract 207: a merger the closed design gate holds carries the hold on its view of the state,
+// which is what `read_record` reads an issue's record from: the gated step whose row holds it, the
+// document registered for that step, and the version of it that is with its reviewer. The schema
+// must name the key, since a key it does not name is stripped and the seat never sees it: the
+// golden carries it on LEGION-215's merger alone, and this reads it before the parse and after. A
+// daemon narrows it away for a caller below 207 (`api.withoutWaitAndHold`), so a claim without it parses,
+// and a hold that names no gated step, or a version below 1, is refused.
+test("a held merger carries the design gate's hold", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { hold?: unknown } }> }>;
+  };
+  const held = state.issues["LEGION-215"]?.workers.merger?.claim;
+  if (held === undefined) {
+    throw new Error("state fixture lacks LEGION-215's merger");
+  }
+  const hold = {
+    step: "spec" as const,
+    artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    version: 7,
+  };
+  expect(held.hold).toEqual(hold);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues?.["LEGION-215"]?.workers?.merger?.claim?.hold).toEqual(hold);
+  const carrying = Object.entries(parsed.issues ?? {}).flatMap(([key, issue]) => [
+    ...(issue?.architect?.hold === undefined ? [] : [`${key} architect`]),
+    ...Object.entries(issue?.workers ?? {})
+      .filter(([, worker]) => worker?.claim?.hold !== undefined)
+      .map(([role]) => `${key} ${role}`),
+  ]);
+  expect(carrying).toEqual(["LEGION-215 merger"]);
+
+  held.hold = { ...hold, step: "design" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.hold = { ...hold, version: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.hold = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
@@ -1720,6 +1820,31 @@ test("every request-side object refuses a key it does not name", () => {
   expect(found.loose).toEqual([]);
   expect(found.refuses.length).toBeGreaterThan(0);
 });
+
+/** A body `POST /legion/v1/claims/wait` accepts: a phase worker's declared wait, its claim first. */
+const waitRequest = {
+  claimToken: "legion-legion-legion-208-implementer",
+  sessionId: "ses_implementer_208",
+  secret: CLAIM_SECRET,
+  waitingOn: "the review of LEGION-207's pull request",
+  wakeAt: "2026-11-14T08:00:00Z",
+};
+
+/** A body `POST /legion/v1/claims/wait-news` accepts: the plugin's report of news after the
+ * declaration, naming the wait its answer gave, its claim first. */
+const waitNewsRequest = {
+  claimToken: "legion-legion-legion-208-implementer",
+  sessionId: "ses_implementer_208",
+  secret: CLAIM_SECRET,
+  waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+};
+
+/** The same report of a delivery under its own key: the update ask's key from
+ * `update-ask-key.json`, behind the listener's role-forward mark as a host may hand it on. */
+const waitNewsDeliveryRequest = {
+  ...waitNewsRequest,
+  deliveryKey: "envoy.role.forward.publish.26d039781ce852c069c5873a1f1d3ab7",
+};
 
 // What only a real body can prove, route by route: the body each route sends parses, and a body
 // missing a required field is refused. That a body carrying a key no schema names is refused is
@@ -1836,6 +1961,12 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
+    // A phase worker's declared wait, authenticated by its claim as the activity report is.
+    ["wait", LegionWaitRequest, waitRequest],
+    // The plugin's report of news after the declaration, authenticated as the wait is.
+    ["wait news", LegionWaitNewsRequest, waitNewsRequest],
+    // The same report of a delivery under its own key, which the daemon reads verbatim.
+    ["wait news of a delivery", LegionWaitNewsRequest, waitNewsDeliveryRequest],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1855,6 +1986,31 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
+});
+
+// A declared wait names what it waits on and a time with seconds, as the daemon decodes one: an
+// empty text and a time with no seconds are refused before a body is sent.
+test("a wait refuses an empty text and a time without seconds", () => {
+  expect(LegionWaitRequest.safeParse({ ...waitRequest, waitingOn: "" }).success).toBeFalse();
+  expect(
+    LegionWaitRequest.safeParse({ ...waitRequest, wakeAt: "2026-11-14T08:00Z" }).success
+  ).toBeFalse();
+  expect(
+    LegionWaitRequest.safeParse({ ...waitRequest, wakeAt: "2026-11-14T08:00:00+01:00" }).success
+  ).toBeTrue();
+});
+
+// A news report names the wait it is about, the id the declaration's answer gave: a body with no
+// wait id, or an empty one, is refused before it is sent. A delivery's key is sent when the
+// delivery has one and left out when it has none, never sent empty.
+test("a news report refuses a body that names no wait, and an empty delivery key", () => {
+  const nameless: Record<string, unknown> = { ...waitNewsRequest };
+  delete nameless.waitId;
+  expect(LegionWaitNewsRequest.safeParse(nameless).success).toBeFalse();
+  expect(LegionWaitNewsRequest.safeParse({ ...waitNewsRequest, waitId: "" }).success).toBeFalse();
+  expect(
+    LegionWaitNewsRequest.safeParse({ ...waitNewsRequest, deliveryKey: "" }).success
+  ).toBeFalse();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {
@@ -2513,6 +2669,30 @@ test("a reader at the previous contract parses the state body this daemon serves
 // `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
 // served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
 // is this contract's own list.
+/** `body` with no claim view carrying `wait` or `hold`, the two keys contract 207 added, as the
+ * daemon serves a caller below 207 (`api.withoutWaitAndHold`): every issue's architect and every
+ * worker's claim. The body it is given is left as it was. */
+function withoutWaitAndHold<T extends Record<string, unknown>>(body: T): T {
+  const copy = structuredClone(body);
+  const issues = copy.issues;
+  if (!isJsonObject(issues)) return copy;
+  for (const issue of Object.values(issues)) {
+    if (!isJsonObject(issue)) continue;
+    const views = [issue.architect];
+    if (isJsonObject(issue.workers)) {
+      for (const worker of Object.values(issue.workers)) {
+        if (isJsonObject(worker)) views.push(worker.claim);
+      }
+    }
+    for (const view of views) {
+      if (!isJsonObject(view)) continue;
+      delete view.wait;
+      delete view.hold;
+    }
+  }
+  return copy;
+}
+
 test("a reader at contract 152 parses the repositories block served below 202", () => {
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
@@ -2563,13 +2743,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
-  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
-  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
-  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
-  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
+  // each claim view's `wait` and `hold` aside: the mark names the contract the caller is served at,
+  // 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
+  // INFRA-4605's, which moved no answer's shape; the lowest plugin contract reports the claims of
+  // the snapshot the route projected the body from, a pod at 201, which `state.json`'s own fixture
+  // does not hold; and `wait` and `hold` arrived at 207, a band above 202 (`api.withoutWaitAndHold`),
+  // so a caller at 201 is served neither. No other band stands above 199, so the narrowing below
+  // 202 changes this one block and nothing beside it.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2586,7 +2767,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  expect(narrowedRest).toEqual(withoutWaitAndHold(rest));
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,

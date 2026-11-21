@@ -37,6 +37,10 @@ import {
   LegionStateResponse,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
+  LegionWaitNewsRequest,
+  LegionWaitNewsResponse,
+  LegionWaitRequest,
+  LegionWaitResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
@@ -135,6 +139,20 @@ export interface LegionDaemonClient {
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
+  /** `api.WaitRequest`: a phase worker declaring that it waits on something outside its own work
+   * until `wakeAt`, so the daemon's wakes leave it be until then (dispatch://INFRA-2040). It is
+   * authenticated by the claim's secret and held to the session the claim records, as
+   * `readyForUpdate` is. The answer is the wait as the daemon recorded it, which a newer
+   * declaration replaces. */
+  readonly declareWait: (
+    input: z.input<typeof LegionWaitRequest>
+  ) => Promise<z.output<typeof LegionWaitResponse>>;
+  /** `api.WaitNewsRequest`: news reached the session after the declaration of the wait `waitId`
+   * names, so the daemon ends that wait. It is authenticated as `declareWait` is, and the answer
+   * says whether this report ended the wait. */
+  readonly waitNews: (
+    input: z.input<typeof LegionWaitNewsRequest>
+  ) => Promise<z.output<typeof LegionWaitNewsResponse>>;
   /** The deployment's idle-release records of one window: every release, resume and hold the
    * daemon recorded at or after `since`, oldest first. It is authenticated by the claim, as
    * `activity` is, and the claim's secret rides in the body rather than a query string, which
@@ -655,6 +673,10 @@ export function createLegionDaemonClient(
         input
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    declareWait: (input) =>
+      post("/legion/v1/claims/wait", LegionWaitRequest, LegionWaitResponse, input),
+    waitNews: (input) =>
+      post("/legion/v1/claims/wait-news", LegionWaitNewsRequest, LegionWaitNewsResponse, input),
     releaseRecords: (input) =>
       post(
         "/legion/v1/claims/release-records",

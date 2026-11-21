@@ -353,9 +353,11 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
 // here too. Issue i of the body carries value i of each list, and a list shorter than the longest
 // starts again at its first value, so the twelve issues carry every value of every list. Each
-// issue's architect carries a failure, a pending cause and a held task, as a worker does. No
-// other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
+// issue's architect carries a failure, a pending cause, a held task, a wait and a hold, as a
+// worker does. No other body carries them on an architect, so without this body no record
+// describes those keys at their architect paths, and the value comparison reads no value there.
+// Each hold's `step` takes a design step, the architect's value i and the worker's value i+1, so
+// the twelve issues carry every step at both key paths of `hold.step`. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the twelve issues carry all eight words at both key paths. The project's pause
 // waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
@@ -401,9 +403,10 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	cacheWords := []string{"cloning", "failing", "ready", "refused", "starting"}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
-	// list and whose held task was queued for taskPhase: every key of a failure and of a held
-	// task, so the architect's paths carry as many keys as a worker's do.
-	claimView := func(session string, update UpdateState, cause int, taskPhase phase.Phase) ClaimView {
+	// list, whose held task was queued for taskPhase, and which carries a wait and a hold on step:
+	// every key of a failure, of a held task, of a wait and of a hold, so the architect's paths
+	// carry as many keys as a worker's do.
+	claimView := func(session string, update UpdateState, cause int, taskPhase phase.Phase, step record.DesignStep) ClaimView {
 		return ClaimView{
 			Session:     session,
 			State:       "failed",
@@ -419,6 +422,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Phase: taskPhase, QueuedAt: at,
 				SendFailures: 1, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
 			},
+			Wait: &WaitView{ID: "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685", WaitingOn: "the review of the pull request",
+				WakeAt: at.Add(time.Hour), DeclaredAt: at},
+			Hold: &HoldView{Step: step, ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", Version: 7},
 		}
 	}
 	notSlot := false
@@ -432,7 +438,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		// The architect's task is queued for the phase after the one the issue was held from, and
 		// the worker's for that phase itself, so each view carries every phase over the twelve.
 		// The worker's cause starts three words further along the list than the architect's.
-		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)])
+		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)],
+			stepWords[i%len(stepWords)])
 		issues[key] = Issue{
 			Key:           key,
 			Generation:    1,
@@ -444,7 +451,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			HeldFrom:      string(heldFrom),
 			Architect:     &architect,
 			Workers: map[claim.Role]PhaseView{
-				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
+				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom,
+					stepWords[(i+1)%len(stepWords)])},
 			},
 			PullRequest: &PullRequestView{
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
@@ -676,6 +684,19 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The wait golden's own value (TestWaitResponseGolden): the wait as the daemon recorded it,
+		// whose four keys are always written.
+		AnswerWait: {roots: typesOf(WaitResponse{}), bodies: []any{WaitResponse{Wait: WaitView{
+			ID: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68", WaitingOn: "the review of LEGION-207's pull request",
+			WakeAt:     time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC),
+			DeclaredAt: time.Date(2026, 11, 14, 6, 0, 0, 123456000, time.UTC),
+		}}}},
+		// The two goldens of the news report (TestWaitNewsResponseGolden): a report that ended its
+		// wait, and the claim's own update ask, which ended nothing and says so under `updateAsk`.
+		// Between them they carry every key this answer writes.
+		AnswerWaitNews: {roots: typesOf(WaitNewsResponse{}), bodies: []any{
+			WaitNewsResponse{Ended: true}, WaitNewsResponse{UpdateAsk: true},
+		}},
 	}
 }
 

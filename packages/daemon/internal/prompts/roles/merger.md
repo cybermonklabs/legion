@@ -79,14 +79,24 @@ You resolve no review thread: the reviewer's approval already judged them, and t
 
 ## A closed design gate
 
-The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
+The root's design gate holds the merge. The gate closes when a gated document has a new version that no person approved yet. The design that this head implements can then change. The daemon tells you when the gate closes and when it opens.
+
+This message tells you that the gate closed: `The design gate of <tree> closed: version <n> of its <step> document (<id>) is with its reviewer. Merge nothing, enqueue nothing, and take a pull request you queued back out of the merge queue.` While the gate is closed, merge nothing and enqueue nothing. Do not complete while the gate is closed. If the pull request is in a merge queue, remove it from the queue at once. The queue can merge it while the gate is closed:
 
 ```bash
 gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}' \
   -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
 ```
 
-Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
+Each task from the daemon starts with the state of the gate at the time the daemon sent the task. The closed form is the closing message above. It holds the merge as the closing message does. This form tells you that the gate does not hold the merge: `The design gate of <tree> stands open: every gated step that someone registered is approved.`
+
+Before you merge (step 3) or enqueue (step 4), read your hold with the `legion` tool's `read_record` for your issue. While the closed gate holds you, `workers.merger.claim.hold` names the gated step, its document and the version with its reviewer. If your claim has a `hold`, merge nothing and enqueue nothing.
+
+While the closed gate holds you, do not declare a wait. The daemon refuses it. While the gate stays closed, no reminder follows a turn that ends with your phase open. The one exception is a turn that ends with a tool call written as text. That turn gets a reminder that the call did not run.
+
+If you were away when the gate closed or opened, the daemon wakes you with a task. You were away if your pod was released or your session was not running. That task starts with the message of the gate.
+
+End your turn while the gate is closed. This message releases the merge: `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every gated step that someone registered now stands open, so the design you are working to is the approved one. A merge the closed gate held is released.` The daemon sends it only when every gated step that someone registered stands open. A deployment that gates more than one document sends it for the last of them. Then start again at step 1. Read the head again, because it can move while you wait.
 
 ## Completion
 

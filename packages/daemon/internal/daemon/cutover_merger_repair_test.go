@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -879,14 +881,25 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
 // test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// (workflow.ResumePhaseTask), read from the issue as the record holds it now, behind the design
+// gate's state that a merger's task opens with at its send (workflow.MergerGateNote,
+// dispatch://INFRA-2040 R7), read from the tree's gate rows as they stand now.
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	stands := readIssue(t, r.pool, issue.key)
 	if stands == nil {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
-	want := workflow.ResumePhaseTask(*stands)
+	var gates map[record.DesignStep]record.DesignGate
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		var err error
+		gates, err = r.records.GatesOf(context.Background(), tx, stands.Tree)
+		return err
+	}); err != nil {
+		t.Fatalf("read the design gate of %s: %v", stands.Tree, err)
+	}
+	note := workflow.MergerGateNote(*stands, claim.RoleMerger, record.TreeGate{Steps: r.cfg.Gates.Steps(), Rows: gates})
+	want := note.InFrontOf(workflow.ResumePhaseTask(*stands))
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}

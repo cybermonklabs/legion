@@ -540,8 +540,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	return &issue, nil
 }
 
+// phaseColumns are the phases table's columns in the order scanPhase reads them, the one list
+// Phases and PhasesOf both select.
+const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head`
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head from phases
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -557,6 +561,33 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
+	}
+	return phases, nil
+}
+
+// PhasesOf is the phases rows of each of issues, by issue (Store.PhasesOf): one query whatever
+// the number of issues, each issue's rows in role order as Phases reads them. No issues read
+// nothing — the query is not made.
+func (s *Postgres) PhasesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PhaseRow, error) {
+	phases := make(map[string][]PhaseRow, len(issues))
+	if len(issues) == 0 {
+		return phases, nil
+	}
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
+		where issue = any($1) order by issue, role`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		phase, err := scanPhase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+		}
+		phases[phase.Issue] = append(phases[phase.Issue], phase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
 	}
 	return phases, nil
 }
@@ -595,7 +626,6 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	}
 	return entries, nil
 }
-
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	var decision []byte
 	if phase.Decision != nil {
@@ -3495,10 +3525,12 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 }
 
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
-// RoleClaims share, with the task pending on each claim read beside it (the two tables are
-// written apart and read together, as claimSelect reads them). The task's id is read with it,
-// since the id is what says a delivery is the daemon's own delivery of a relaunch's record, which
-// a reader of a role run reads as no work (supervise.Delivery.Relaunch; workflow's owed and
+// RoleClaims share, with the task pending on each claim and its wait with no end read beside it
+// (the tables are written apart and read together, as claimSelect reads the first two). Each join
+// matches at most one row of a claim: pending_task_deliveries is keyed by the claim, and
+// claim_waits_standing holds one row with no end per claim. The task's id is read with it, since
+// the id is what says a delivery is the daemon's own delivery of a relaunch's record, which a
+// reader of a role run reads as no work (supervise.Delivery.Relaunch; workflow's owed and
 // readyWorkerTask).
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
@@ -3515,10 +3547,13 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
 		c.update_round, c.step_at, c.turn_started_at,
-		c.activity_at, c.activity_background, c.activity_next_reminder_at,
+		c.activity_at, c.activity_background, c.activity_next_reminder_at, c.session,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false)
-		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
+		coalesce(d.interrupted, false),
+		`+claimWaitColumns+`
+		from claims c left join pending_task_deliveries d on d.claim_token = c.token
+		left join claim_waits w on w.project = c.project and w.claim_token = c.token and w.ended_at is null
+		where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
@@ -3545,10 +3580,13 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// has no activity_next_reminder_at. The zero time left in each is what says so to the
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+		// The wait's columns are all null for a claim with no wait row that has no end, which the
+		// left join matches nothing for (waitScan).
+		var wait waitScan
+		if err := rows.Scan(append([]any{&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
-			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted); err != nil {
+			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder, &held.Session,
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted}, wait.dest()...)...); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if ready != nil {
@@ -3581,6 +3619,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			}
 			held.Pending = &task
 		}
+		held.Wait = wait.wait()
 		found(claim.Token(token), &held)
 	}
 	if err := rows.Err(); err != nil {

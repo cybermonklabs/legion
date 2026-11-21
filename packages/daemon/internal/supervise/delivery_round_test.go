@@ -33,7 +33,7 @@ func TestEachTaskOfTheReviewerIsSentEndingWithTheDaemonsSentences(t *testing.T) 
 			want: "the record"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got, _ := tc.delivery.message(Claim{Role: tc.role}); got != tc.want {
+			if got, _ := tc.delivery.message(Claim{Role: tc.role}, GateNote{}); got != tc.want {
 				t.Fatalf("the %s is sent %q, want %q", tc.role, got, tc.want)
 			}
 		})

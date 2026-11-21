@@ -1,0 +1,40 @@
+-- 20261119055700_pending_delivery_gate_message.up.sql — the mark that a merger's pending task is
+-- the design gate's own message (dispatch://INFRA-2040 R8, D16 of its plan).
+--
+-- At each move of a tree's design gate the daemon writes a start of each merger in merging whose
+-- session is not live, in the transaction that tells the tree (workflow's deliverGateMove). The
+-- start's task says only that the gate moved, and its supervise row carries the mark `gateMessage`
+-- (record.SuperviseRequest.GateMessage). The claim's delivery of that start carries the mark in
+-- pending_task_deliveries.gate_message (supervise.Delivery.GateMessage), so the send puts the gate's
+-- whole message in front of the task, built as the gate stands at that send (supervise's
+-- Deps.GateNote, workflow.MergerGateMessage): the closing message while the gate is closed and the
+-- opening message once it stands open. A task queued at the close and sent after the opening, or
+-- after a restart that read the delivery back, says what the gate is when the merger reads it.
+--
+-- Every row the table already holds takes the default, false: the release before queued no such
+-- task. The add takes a short ACCESS EXCLUSIVE lock on pending_task_deliveries and rewrites no
+-- row.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   update outbox set payload = payload - 'gateMessage' where kind = 'supervise' and payload ? 'gateMessage';
+--   alter table pending_task_deliveries drop column if exists gate_message;
+--   delete from schema_version where version = 20261119055700;
+--   commit;
+--   SQL
+--
+-- The release before needs the first statement: it decodes an outbox row strictly
+-- (DisallowUnknownFields), so a start row that still carried `gateMessage` would be a row it
+-- retries for ever. Such a start keeps its task, which says that the gate moved. The drop and the
+-- delete are owed to the roll-forward: with the column dropped and the row deleted, store.apply
+-- finds no row of this version and runs this file again, which adds the column again at its
+-- default. The drop is also what keeps a stale mark from surviving: the release before replaces a
+-- claim's delivery by an upsert that does not name gate_message, so a column left in place would
+-- say `true` of the task that release wrote, and the roll-forward would send that task behind the
+-- gate's whole message. What the way back costs is the mark on each start row and delivery: a
+-- gate's own task queued before it is sent after the roll-forward behind the gate's note
+-- (workflow.MergerGateNote), which gives the gate's state at the send but not the opening message.
+alter table pending_task_deliveries add column gate_message boolean not null default false;

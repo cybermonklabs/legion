@@ -289,14 +289,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerWait, AnswerWaitNews:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerWait and AnswerWaitNews arrived whole at waitContract, so no older contract
+		// records any of those five at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -558,6 +560,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: waitContract, issue: withoutWaitAndHold, dropped: "the claim views' wait and hold"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -858,6 +861,23 @@ const quietTimeContract = 111
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
+
+// waitContract is the daemon contract this change lands under (version.go's 207,
+// dispatch://INFRA-2040), and the contract that added two keys to each claim view: `wait`, the
+// wait the claim's worker declared, while it stands (workflow.WaitStands), and `hold`, the closed
+// design gate that holds a merger, while the hold stands (workflow.HeldByDesignGate). A plugin
+// built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
+// whole body for either key, and one built after strips a key it does not name, so the band is
+// what keeps the two keys from a caller that did not ask for them rather than what keeps such a
+// caller reading at all: a caller below this contract is served every claim view without them, on
+// the state and on the issue record alike (withoutWaitAndHold). The words of `hold.step` arrived
+// with the key at this contract (answers.go's holdSteps), so no value strip is needed.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is. It moves only with
+// this change's own number, as the arrival contracts of this change's two new answers do
+// (answers.go's AnswerWait and AnswerWaitNews).
+const waitContract = 207
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
@@ -1597,6 +1617,15 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	return withEachClaimView(issue, func(view ClaimView) ClaimView {
 		view.UpdateState, view.Wake = "", nil
+		return view
+	})
+}
+
+// withoutWaitAndHold is the issue with no claim view carrying `wait` or `hold`, the two keys
+// waitContract added to the claim views.
+func withoutWaitAndHold(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.Wait, view.Hold = nil, nil
 		return view
 	})
 }

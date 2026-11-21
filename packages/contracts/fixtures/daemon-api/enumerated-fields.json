@@ -203,6 +203,42 @@
   },
   {
     "answer": "state",
+    "keyPath": "issues.*.architect.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 207
+      },
+      {
+        "value": "decisions",
+        "since": 207
+      },
+      {
+        "value": "spec",
+        "since": 207
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.workers.*.claim.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 207
+      },
+      {
+        "value": "decisions",
+        "since": 207
+      },
+      {
+        "value": "spec",
+        "since": 207
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "issues.*.pullRequest.state",
     "values": [
       {
@@ -1314,6 +1350,42 @@
       {
         "value": "open",
         "since": 193
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "architect.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 207
+      },
+      {
+        "value": "decisions",
+        "since": 207
+      },
+      {
+        "value": "spec",
+        "since": 207
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "workers.*.claim.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 207
+      },
+      {
+        "value": "decisions",
+        "since": 207
+      },
+      {
+        "value": "spec",
+        "since": 207
       }
     ]
   },

@@ -383,6 +383,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly signOff: (body: object) => Promise<unknown>;
     readonly childPark: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
+    readonly declareWait: (body: object) => Promise<unknown>;
+    readonly waitNews: (body: object) => Promise<unknown>;
   };
   const calls: ReadonlyArray<readonly [keyof WorkflowClient, string, object, string]> = [
     [
@@ -482,6 +484,31 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/children/rerun",
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
+    ],
+    // A phase worker's wait, in the claim-secret form: the declaration answers the wait as the
+    // daemon recorded it, and the report of news whether it ended that wait.
+    [
+      "declareWait",
+      "/legion/v1/claims/wait",
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer",
+        secret: CLAIM_SECRET,
+        waitingOn: "the review of LEGION-207's pull request",
+        wakeAt: "2026-11-14T08:00:00Z",
+      },
+      "wait.json",
+    ],
+    [
+      "waitNews",
+      "/legion/v1/claims/wait-news",
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer",
+        secret: CLAIM_SECRET,
+        waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+      },
+      "wait-news.json",
     ],
   ];
   const { fetch, requests } = daemon((url) => {

@@ -597,6 +597,10 @@ type RequestDeliver struct {
 	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
 	// task and the controller's carry none (Delivery.RoundNamed).
 	RoundNamed bool
+	// GateMessage marks the design gate's own task of a merger, from the start row that queued it
+	// (record.SuperviseRequest.GateMessage): the send puts the gate's whole message in front of it,
+	// built as the gate stands then (Delivery.GateMessage, Deps.GateNote).
+	GateMessage bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.

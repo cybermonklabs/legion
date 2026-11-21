@@ -2,7 +2,15 @@
 
 This Go daemon advances phases and starts every phase worker itself. It submits no merge and changes no merge setting of any pull request, and it reads neither the head you merge, nor its checks, nor the reviewer's approval: the merge is yours, as the part above says, and so is every read the part above gives you. Do not choose or start the next phase.
 
-The root's design gate holds the merge. While it is closed the daemon starts no merger, and when it closes over a merger already running it sends that merger a message naming the tree, the gated step whose document moved and that document's version; the message moves no phase and ends nothing, so the phase stays yours and so does the decision the part above gives you: merge nothing, take a queued pull request back out of the merge queue, and wait for the message that says the gate opened again.
+The root's design gate holds the merge. While the gate is closed, the daemon holds each start of your phase work until the gate opens. A wake still reaches you, such as a CI settlement or a message to your role or to your session. The merge-queue removal message waits for the opening, as the part above says. Each task from the daemon starts with the state of the gate at the time the daemon sent it.
+
+The closed form starts with `The design gate of <tree> closed: version <n> of its <step> document (<id>) is with its reviewer.` It holds the merge as the closing message does. The open form is `The design gate of <tree> stands open: every gated step that someone registered is approved.` It tells you that the gate does not hold the merge. No message of the gate moves your phase. The phase stays yours, and so does the decision that the part above gives you.
+
+At each move of the gate the daemon gives you one delivery. If your session is running, it is the message of the move on your role topic. If you were away when the gate closed or opened, the daemon wakes you with a task. You were away if your pod was released or your session was not running. That task starts with the message of the gate.
+
+Before you merge or enqueue, read your hold with the `legion` tool's `read_record` for your issue. While the closed gate holds you, `workers.merger.claim.hold` names the gated step (`step`), its document (`artifactId`) and the version with its reviewer (`version`). While your claim has a `hold`, merge nothing and enqueue nothing.
+
+While the closed gate holds you, do not declare a wait. The daemon refuses it with `WAIT_HELD_BY_DESIGN_GATE`. When the gate closes, the daemon also ends a wait that you declared before. While the gate stays closed, no reminder follows a turn that ends with your phase open. The one exception is a turn that ends with a tool call written as text. That turn gets a reminder that the call did not run.
 
 End this phase with the `legion` tool: `op: "handoff_complete"` and a `summary`, the ordinary two sentences for the architect. Your completion records your phase row — the claim, the commit the workspace stands on, and that summary, which the state read shows — and moves nothing: it posts no Dispatch message, publishes nothing and starts no phase. Wherever the steps above say not to complete, do not call `handoff_complete`.
 

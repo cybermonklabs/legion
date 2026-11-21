@@ -346,10 +346,12 @@ const DeliveryDuplicateWindow = ${DELIVERY_DUPLICATE_WINDOW_MS} * time.Milliseco
 // client predicts are one number.
 const IssueClaimUnresponsiveGrace = ${ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS} * time.Millisecond
 
-// MintedDedupeKeyPattern is the shape of a dedupe key minted once for its message, by the listener
-// or by the shared transport's idempotency key, which DedupeKeyNamesTheUpstreamEvent counts as
-// naming its event. Generated from MINTED_DEDUPE_KEY_PATTERN in packages/contracts, which the
-// hosts' dedupe reads too, so the stream and the hosts answer one question the same way.
+// MintedDedupeKeyPattern is the shape of a dedupe key minted once for its message: by the
+// listener, by the shared transport's idempotency key, or by the Legion daemon for an update
+// round's ask (record.UpdateAskKey, derived from the claim, the round and the round's opening).
+// DedupeKeyNamesTheUpstreamEvent counts such a key as naming its event. Generated from
+// MINTED_DEDUPE_KEY_PATTERN in packages/contracts, which the hosts' dedupe reads too, so the
+// stream and the hosts answer one question the same way.
 const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 
 // ReceiptTimeoutCause is what a delivery attempt records when the listener never answered its

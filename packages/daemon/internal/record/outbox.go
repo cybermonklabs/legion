@@ -2,6 +2,8 @@ package record
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,7 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindCheckWake        OutboxKind = "check_wake"
+	OutboxKindWaitDue          OutboxKind = "wait_due"
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
@@ -80,7 +83,8 @@ const (
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
 // stopped the roles). It also carries the production check's rows
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
-// with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
+// with the starts and suspends they queue, and a waiting worker's time (wait_due), whose own task
+// is a start of the same lane. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
@@ -122,7 +126,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindWaitDue},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -1111,9 +1115,10 @@ type SuperviseRequest struct {
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
-	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
-	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
-	// work no phase entry numbers at all.
+	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the task of a wait's
+	// time (workflow's waitDue, WaitID below), the design gate's own start of a merger (workflow's
+	// deliverGateMove, GateMessage below) and the resume of a cancelled idle release (the daemon's
+	// outbox). Each hands its role work it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -1208,6 +1213,23 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// WaitID names the wait whose time this start's task tells the worker of (WaitDue, written by
+	// workflow's waitDue): a start with no phase and no entry, so no phase fence holds it. The
+	// outbox finishes such a start with no delivery while a newer wait of the claim stands, since
+	// that task would end the newer wait as new work, and the time of a replaced wait sends
+	// nothing (dispatch://INFRA-2040 R3, D5 of its plan). Every other request names none.
+	WaitID string `json:"waitId,omitempty"`
+	// GateMessage marks the design gate's own start of a merger (workflow's deliverGateMove, at the
+	// gate's close and at its opening): a start with a task, no phase and no entry, so no phase
+	// fence holds it. The task says only that the gate moved; the gate's message, the closing
+	// message when the gate is closed at the send and the opening message when it stands open, is
+	// built at the send and goes in front of it (dispatch://INFRA-2040 R8, D16 of its plan). The
+	// outbox's start carries the mark into the claim's delivery (supervise.RequestDeliver and
+	// Delivery.GateMessage), where the send reads it (supervise.Deps.GateNote). Every other
+	// request carries none. The release before decodes strictly (DisallowUnknownFields), so the
+	// way back of 20261119055700_pending_delivery_gate_message deletes the key from each row
+	// before that release boots.
+	GateMessage bool `json:"gateMessage,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
 	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
@@ -1538,6 +1560,21 @@ type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
+// WaitDue is a phase worker's wait coming to its time: due at the wait's WakeAt, queued in the
+// transaction that records the declaration (workflow's waitDeclared), as a production check's next
+// look is a check_wake row. Token is the claim that declared the wait and WaitID the wait, so the
+// row of a wait a newer declaration replaced, or that something else ended, ends nothing and sends
+// nothing (workflow's waitDue). It runs on the lifecycle lane, which runs under every runtime, and
+// it is no row that holds a pod (store's idleWaitingKinds): an idle release may take the pod of a
+// worker that waits, and the row's own task brings it back (dispatch://INFRA-2040 R3, D5 of its
+// plan).
+type WaitDue struct {
+	Token  claim.Token `json:"token"`
+	WaitID string      `json:"waitId"`
+}
+
+func (WaitDue) OutboxKind() OutboxKind { return OutboxKindWaitDue }
+
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
@@ -1638,10 +1675,77 @@ type UpdateAsk struct {
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
 
-// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing is
-// put in front of it, since the text names the round and the topic it goes to is the role's own
-// claim on issue.
+// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing of
+// the round is put in front of it, since the text names the round and the topic it goes to is the
+// role's own claim on issue; a merger's ask alone opens with the design gate's state, which the
+// daemon's updateAsk reads at the publish (dispatch://INFRA-2040 R7).
 func (p UpdateAsk) Message(string) string { return p.Text }
+
+const (
+	// updateAskKeyPrefix begins every key UpdateAskKey writes: the Envoy listener's own publish
+	// key begins so too.
+	updateAskKeyPrefix = "publish."
+	// roleForwardKeyPrefix is the mark the Envoy listener puts in front of the key of a message it
+	// forwards to the holder of a role's topic (contracts.RoleForwardDedupePrefix in the envoy
+	// module, an internal package this module cannot import), so a host may hand the update ask
+	// to its session under it.
+	roleForwardKeyPrefix = "envoy.role.forward."
+	// updateAskTagLabel is hashed in front of a claim's token into the claim's tag
+	// (updateAskTag), so the tag is a hash of the token that nothing else takes.
+	updateAskTagLabel = "legion update ask\x00"
+	// updateAskOpeningLayout writes a round's opening into the key's second half: in UTC, to the
+	// microsecond.
+	updateAskOpeningLayout = "2006-01-02T15:04:05.000000Z07:00"
+)
+
+// updateAskKeyShape is the shape of every key UpdateAskKey writes: `publish.` and 32 lowercase
+// hex digits, a key of the shape the Envoy listener mints for a publish, which
+// MINTED_DEDUPE_KEY_PATTERN in packages/contracts accepts.
+var updateAskKeyShape = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
+
+// UpdateAskKey is the dedupe key the daemon publishes the ask of round to token's claim under
+// (the daemon's updateAsk), where openedAt is when the round was opened on that claim
+// (supervise.Claim.UpdateOpenedAt), nil when the claim records no opening. It is `publish.`,
+// then 16 hex digits of a SHA-256 of a fixed label and the token (the claim's tag), then 16 hex
+// digits of a SHA-256 of the round's id and the opening, written in UTC and cut to whole
+// microseconds, or of the round's id alone when there is no opening (dispatch://INFRA-2040 D9).
+//
+// The key has the shape the listener mints for a publish, so the listener keeps it as the
+// daemon gave it, the Envoy client keeps it on the card it hands the session
+// (dedupeKeyNamesItsEvent in packages/contracts), and the session's plugin reports it with news
+// (api's waitNews), where IsUpdateAskKey tells the ask from every other delivery. It is derived
+// rather than kept in the row: the row is deleted once the ask is published, and a report of the
+// ask can come after the round has ended. One claim and one round opening give one key, so a
+// retry of one ask publishes under one key — the row's next attempt, a row the sweep enqueues
+// again for the same opening after an ask that reached no session (the daemon's askRound), and a
+// row published again after a crash before its mark was written (supervise's PublishUpdateAsk) —
+// and the listener and each host drop a repeat of it. The opening is cut to the microsecond the
+// store keeps, so a daemon that restored the claim from the store derives the key the daemon that
+// opened the round did.
+func UpdateAskKey(token claim.Token, round string, openedAt *time.Time) string {
+	opening := round
+	if openedAt != nil {
+		opening += "\x00" + openedAt.UTC().Truncate(time.Microsecond).Format(updateAskOpeningLayout)
+	}
+	sum := sha256.Sum256([]byte(opening))
+	return updateAskKeyPrefix + updateAskTag(token) + hex.EncodeToString(sum[:8])
+}
+
+// IsUpdateAskKey is whether key is a key UpdateAskKey writes for token's claim, of any round,
+// bare or behind one mark of the listener's role forward. It reads the claim's tag alone, so a
+// report of the claim's own update ask is known after its round has ended, as when the plugin
+// sends a report again after a relaunch. A key another publisher minted carries the claim's tag
+// by chance once in 2^64.
+func IsUpdateAskKey(token claim.Token, key string) bool {
+	key, _ = strings.CutPrefix(key, roleForwardKeyPrefix)
+	return updateAskKeyShape.MatchString(key) && strings.HasPrefix(key, updateAskKeyPrefix+updateAskTag(token))
+}
+
+// updateAskTag is the first half of the hex digits of every UpdateAskKey of token's claim.
+func updateAskTag(token claim.Token) string {
+	sum := sha256.Sum256([]byte(updateAskTagLabel + string(token)))
+	return hex.EncodeToString(sum[:8])
+}
 
 // MergeQueueRead is the daemon's one read of a pull request that GitHub reported leaving the merge
 // queue (intake.PullRequestDequeued). The transaction that applies that event writes it, while the
@@ -2075,6 +2179,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindWaitDue:
+		value := WaitDue{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2312,6 +2422,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
+		if value.WaitID != "" && (value.Op != "start" || value.Task == "" || value.Phase != "" || value.Entry != 0 || value.CheckLook != 0) {
+			return fmt.Errorf("a supervise start of a wait's time is a start with a task, no phase, no entry and no check look")
+		}
+		if value.GateMessage && (value.Op != "start" || value.Role != claim.RoleMerger || value.Task == "" || value.Phase != "" ||
+			value.Entry != 0 || value.CheckLook != 0 || value.WaitID != "") {
+			return fmt.Errorf("a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait")
+		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
 				return fmt.Errorf("only a supervise start with a task names the decisions it kept")
@@ -2389,6 +2506,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
+		}
+	case WaitDue:
+		if value.Token == "" || value.WaitID == "" {
+			return fmt.Errorf("a wait's time names the claim that declared the wait and the wait")
 		}
 	case HookPrompt:
 		if value.Hook == "" {
@@ -2619,7 +2740,8 @@ func validSuperviseOp(op SuperviseOp) bool {
 // vocabulary a start's WakeKind is held to.
 func validWakeKind(kind string) bool {
 	switch kind {
-	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:
+	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause,
+		pods.WakeWaitTime, pods.WakeDesignGate:
 		return true
 	default:
 		return false
