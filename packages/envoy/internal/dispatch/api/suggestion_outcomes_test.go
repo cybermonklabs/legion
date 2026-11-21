@@ -135,7 +135,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 		t.Fatal("the hub did not connect within 10s")
 	}
 	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
-	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	// an event write of this database open then holds that back, so the wait is the horizon's.
 	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle.
@@ -458,8 +458,8 @@ func measureTouchedPass(t *testing.T, project string, pending bool) touchedPassC
 		t.Fatalf("vacuum write_suggestions: %v", err)
 	}
 
-	// Read outside the page's transaction: an observation of the horizon waits on every
-	// transaction id open on the instance, this test's own included (events.Horizon.Await).
+	// Read outside the page's transaction: an observation of the horizon waits on every event
+	// write of this database, this test's own included (events.Horizon.Await).
 	safe := safeHorizon(t, srv)
 	counter := &storetest.StatementCounter{}
 	counted := storetest.Traced(t, database.Pool, counter, map[string]string{"enable_seqscan": "off"})

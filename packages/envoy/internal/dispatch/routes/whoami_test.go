@@ -451,10 +451,9 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 }
 
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes a
-// transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs, and by the time the test ends; nothing else ends it, so a
-// whoami that waited on it would never answer.
+// transaction id, as a job in another database or another package's test does. It commits when
+// release runs, and by the time the test ends; nothing else ends it, so a whoami that waited on it
+// would never answer.
 func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
@@ -529,13 +528,12 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 	}
 }
 
-// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: the safe horizon waits on every transaction
-// holding a transaction id anywhere on the Postgres instance, snapshots being instance-wide, but
-// only a transaction in Dispatch's own database can write its event log. whoami's event_head waits
-// on those alone (Horizon.WriterFloor), so another service's job on the same instance, or another
-// package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
-// wait -- and the head it answers is still the log's newest id. The transaction stands until the
-// row releases it after whoami's answer, so a whoami that waited on it would never answer.
+// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: only a transaction in Dispatch's own
+// database can write its event log, so whoami's event_head waits on those alone
+// (Horizon.WriterFloor), and another service's job on the same instance, or another package's
+// test, does not hold every page's load for the two seconds eventFeedHead would otherwise wait --
+// and the head it answers is still the log's newest id. The transaction stands until the row
+// releases it after whoami's answer, so a whoami that waited on it would never answer.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)

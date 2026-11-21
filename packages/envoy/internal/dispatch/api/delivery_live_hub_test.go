@@ -1721,13 +1721,13 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 	}
 }
 
-// A transaction that holds an id anywhere on the Postgres instance keeps every safe horizon of the
-// event log from being proven, and an operator's psql session, a migration or another database's
-// job can hold one for as long as it likes. A fresh hub still serves its pages meanwhile: the
-// delivery change log has nothing to do with that horizon, and the relay subscription that waits
-// on it is taken on a goroutine of the generation's own (seedEvents), so the hub is ready at once,
-// answers a page its snapshot and carries a delivery change to it while the transaction is open,
-// and the issue event committed meanwhile reaches the page once the horizon is proven.
+// An event write of Dispatch's database that stays open keeps every safe horizon of the event log
+// from being proven past it, and a migration or a stalled request can hold one open for as long as
+// it likes. A fresh hub still serves its pages meanwhile: the delivery change log has nothing to
+// do with that horizon, and the relay subscription that waits on it is taken on a goroutine of the
+// generation's own (seedEvents), so the hub is ready at once, answers a page its snapshot and
+// carries a delivery change to it while the write is open, and the issue event committed meanwhile
+// reaches the page once the horizon is proven.
 func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
@@ -1737,7 +1737,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 
 	const hold = 3 * time.Second
 	heldAt := time.Now()
-	release := holdClusterTransactionID(t, hold)
+	release := holdEventWrite(t, rig.database, hold)
 	// The page's subscribe starts the hub's generation.
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
@@ -1874,7 +1874,7 @@ func waitReturned(t *testing.T, what string, running *sync.WaitGroup) {
 //
 // The test reads only the hub's and the relay's own listeners, through their dial (listenerDials).
 // The relay's listener dials once its generation's first cursor has awaited the event horizon
-// (firstRelayCursor), which a transaction open anywhere on the instance holds back, so the wait for
+// (firstRelayCursor), which an event write of this database open then holds back, so the wait for
 // it is the horizon's. After the drop the test waits for every goroutine of the hub and of the
 // relay to return: a listener's Run returns only once it has closed its connection.
 func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {

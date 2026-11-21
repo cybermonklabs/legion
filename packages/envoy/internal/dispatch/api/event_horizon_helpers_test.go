@@ -65,10 +65,10 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 }
 
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
-// a transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
+// a transaction id, as a job in another database or another package's test does. It holds no
+// event id of this database, so it holds no horizon back (events.Horizon): a row that needs the
+// horizon held holds it with holdEventWrite. It commits when release runs or after hold, whichever
+// comes first, and by the time the test ends; release returns once it has.
 func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
@@ -110,4 +110,66 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 	}
 	t.Cleanup(release)
 	return release
+}
+
+// holdEventWrite opens an event write of Dispatch's own database and holds it: a transaction that
+// takes its transaction id and inserts an ownerless event, as events.Broker.Append does, so the
+// event's id is open and no horizon passes it (events.Horizon) until the write ends. It rolls back
+// when release runs or after hold, whichever comes first, and by the time the test ends, so the
+// id it drew stays a gap, and its end sends no notification; release returns once it has.
+func holdEventWrite(t *testing.T, database *store.Store, hold time.Duration) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the event write that holds the horizon: %v", err)
+	}
+	for _, statement := range []string{
+		`select pg_current_xact_id()`,
+		`insert into events (seq, type, actor, payload, notify) values (0, 'test.held', '{"kind":"system","id":"test"}', '{}', false)`,
+	} {
+		if _, err := tx.Exec(t.Context(), statement); err != nil {
+			_ = tx.Rollback(context.Background())
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	released := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(hold)
+		defer timer.Stop()
+		select {
+		case <-released:
+		case <-timer.C:
+		}
+		_ = tx.Rollback(context.Background())
+	}()
+	var once sync.Once
+	release = func() {
+		once.Do(func() { close(released) })
+		<-done
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// holdTransactionIDWithoutAnEvent opens a transaction in Dispatch's own database that takes a
+// transaction id and writes a table other than events, as a write that appends no event does, and
+// holds it open until the test ends.
+func holdTransactionIDWithoutAnEvent(t *testing.T, database *store.Store) {
+	t.Helper()
+	tx, err := database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the transaction that writes no event: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	for _, statement := range []string{
+		`select pg_current_xact_id()`,
+		`create temporary table no_event (id int) on commit drop`,
+		`insert into no_event values (1)`,
+	} {
+		if _, err := tx.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
 }

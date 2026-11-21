@@ -1527,7 +1527,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   A pass reads the events after its cursor (`suggestion_outcome_cursor`, `0154`) and at or below the event log's safe horizon, as the per-process relay behind a reader's events subscription reads:
   event ids are not commit order, so a cursor moved past an event that could still commit would never judge by it.
   The pass takes that horizon once (`events.Horizon.Safe`, the server's one `Horizon`;
-  the first pass after a start takes `events.Horizon.Await`, which waits until the transactions holding an event id on the instance end, and ends with its context), and one left with an event above it asks for a pass 60 s on rather than re-reading at once, so a horizon an open transaction holds back costs one pass a minute;
+  the first pass after a start takes `events.Horizon.Await`, which waits until the event writes of Dispatch's database open at the call end, and ends with its context), and one left with an event above it asks for a pass 60 s on rather than re-reading at once, so a horizon an open event write holds back costs one pass a minute;
   the late commit's own `dispatch_events` notification wakes the loop as any other does.
   A pass also reads the suggestions no pass has judged yet (`write_suggestions.swept`, `0155`), in pages of 1,000, each page in a transaction that holds the cursor row `for update`, and judges only the pending suggestions those can resolve:
   the newly recorded ones, against all their events, and those whose source issue, source document or suggested issue a page's event names.
@@ -1620,7 +1620,7 @@ No route reads the table yet (Search, below), so search answers alike with the f
   These two wakes are the fill's own, on the shared listener (below).
   A pass reads the event log's safe horizon once (`events.Horizon`) and writes the rows of the events above the cursor up to that horizon, in id order.
   While the horizon stands below an id that a read of the horizon saw, the holder reads it again after 1 s, then 2 s, 4 s and 8 s, until the horizon passes that id.
-  A transaction that writes no event ends with no notification, so nothing else wakes the fill for the events that wait behind it.
+  An event write that rolls back ends with no notification, so nothing else wakes the fill for the events that wait behind it.
   A fill that is caught up holds no timer and sends no statement except the renewal of its hold.
 
 - Before each batch the fill asks `sessionanswers.Latency`, which times the answers reads (`GET /api/v1/agents/{session_id}/answers`) that this process serves.

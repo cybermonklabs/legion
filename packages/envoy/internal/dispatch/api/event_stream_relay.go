@@ -39,11 +39,10 @@ const (
 	// while a gap stands open above the safe horizon held by an older transaction
 	// (events.GapHeld): it first waits eventRelayGapMin, doubles the wait up to eventRelayGapMax
 	// while the horizon stays where it was, and starts again from eventRelayGapMin each time the
-	// horizon moves. The transaction holding the gap is usually a write whose commit notifies,
-	// and that notification reads at once; the fallback is for one that ends without notifying (a
-	// write that appends no event, another database's transaction on the instance, another
-	// process's observation), which nothing else would announce. It runs only while a gap is
-	// open.
+	// horizon moves. The transaction holding the gap is an event write whose commit notifies,
+	// and that notification reads at once; the fallback is for one that ends without notifying (an
+	// event write that rolls back, or one that only updated events), which nothing else would
+	// announce. It runs only while a gap is open.
 	eventRelayGapMin = 10 * time.Millisecond
 	eventRelayGapMax = 250 * time.Millisecond
 )
@@ -200,7 +199,7 @@ type eventStreamRelay struct {
 	closed bool
 	// starting is open while one caller runs a generation's first cursor read, which runs without
 	// mu so that no other caller's subscribe waits on the database while holding it: that read
-	// waits for a safe horizon, which any open write on the instance can hold back.
+	// waits for a safe horizon, which any open event write of this database can hold back.
 	starting chan struct{}
 	// generation is the running generation, nil while nobody subscribes.
 	generation *relayGeneration
@@ -273,7 +272,7 @@ type relaySubscription struct {
 // either published into this subscription or already at or below its head, never neither.
 //
 // A generation's first cursor read (firstRelayCursor) waits for a safe horizon, which an open
-// write anywhere on the instance can hold back, so it runs outside mu: the caller running it marks
+// event write of this database can hold back, so it runs outside mu: the caller running it marks
 // starting, and every other caller waits on starting (or its own ctx) rather than on mu or a spin.
 // A read that fails starts nothing and is the caller's error; the next subscription tries again.
 // Once the lifetime has ended, or a read ends after it has, subscribe refuses.
@@ -625,7 +624,7 @@ func (r *eventStreamRelay) window() time.Duration {
 // after the read and none committed before it, but those between the lowest late one and the
 // newest id. A gap still empty then is a rollback, and moves the cursor nowhere.
 //
-// The wait is the start's: as long as any transaction open on the instance holds the horizon back,
+// The wait is the start's: as long as an event write of this database holds the horizon back,
 // with the subscription's events_start not yet sent (feedEvents). The gap read covers the ids above
 // the floor, which are the ids written since a recent mark, however long the log. An event that
 // commits between the subscription's start and this read, a round trip apart, counts as committed

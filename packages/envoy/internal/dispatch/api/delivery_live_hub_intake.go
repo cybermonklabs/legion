@@ -89,7 +89,7 @@ type hubEventFeed struct {
 // the generation's first subscription and the one after a feed closed.
 //
 // The subscribe waits for the relay's first cursor when it starts a generation, which an open
-// write anywhere on the instance can hold back, which is why it does not run on the intake's
+// event write of this database can hold back, which is why it does not run on the intake's
 // goroutine: the hub's ready, its delivery changes and its views' answers do not wait for the
 // event horizon. The open P0 issues are read after the subscription stands, so they hold every
 // event at or below its head, none of which arrives on the feed.
