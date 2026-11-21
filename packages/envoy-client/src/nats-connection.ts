@@ -9,7 +9,6 @@ import { LoggableError, natsFailureReason } from "./errors";
 import { natsAuthOptions } from "./nats-auth";
 import {
   type BrokerNatsCredential,
-  type BrokerTokenRefusal,
   brokerTokenRefusals,
   type NatsCredential,
   natsAdmissions,
@@ -345,14 +344,12 @@ export interface NatsDialHooks {
   /** True once the caller stops: no further dial starts. Read before each dial and after each
    *  wait. */
   readonly stopped?: () => boolean;
-  /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. `refusal` is
-   *  what the hub's refusal of the broker token did (`brokerTokenRefusals`), where it refused it. */
-  readonly onRetry?: (
-    error: unknown,
-    delayMs: number,
-    attempt: number,
-    refusal?: BrokerTokenRefusal
-  ) => void;
+  /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. */
+  readonly onRetry?: (error: unknown, delayMs: number, attempt: number) => void;
+  /** The hub refused the session's broker token twice, and the dial `attempt` dropped it and
+   *  started another trade (`brokerTokenRefusals`). Called at the drop, before the dial's budget
+   *  is read, so a drop at the last dial a call can afford is told too. */
+  readonly onTokenDropped?: (error: unknown, attempt: number) => void;
   /** The credential `options` present (`natsConnectionOptions`'). Under a broker token, it alone
    *  decides how a refusal is answered (`brokerDialRefusals`): the wait drawn from the
    *  broker-token backoff, and the drop of a token refused twice. */
@@ -363,9 +360,9 @@ export interface NatsDialHooks {
   readonly delay?: (ms: number) => Promise<unknown>;
 }
 
-/** What a host's line for a failed dial adds where that dial's refusal dropped the session's
- *  broker token (`NatsDialHooks.onRetry`'s `refusal.dropped`), in the keeper's words for its own
- *  drop: pi-envoy's and the channel server's. */
+/** What a host logs when a dial's refusal dropped the session's broker token
+ *  (`NatsDialHooks.onTokenDropped`), in the keeper's words for its own drop: pi-envoy and the
+ *  channel server. */
 export const NATS_DIAL_TOKEN_DROPPED =
   "the hub refused the session's broker token twice, so the token was dropped and another trade started";
 
@@ -428,10 +425,10 @@ function errorCode(error: unknown): string | undefined {
 interface BrokerDialRefusals {
   /** For a dial that failed with `code`: undefined unless the hub refused it
    *  (`AUTHORIZATION_REFUSALS`); else the wait before the next dial, the `n`-th refusal's drawn
-   *  from `brokerRedialWaitMs(n)`, and what the refusal did to the token in hand. */
+   *  from `brokerRedialWaitMs(n)`, and whether the refusal dropped the token in hand. */
   readonly refused: (
     code: string | undefined
-  ) => { readonly waitMs: number; readonly token: BrokerTokenRefusal | undefined } | undefined;
+  ) => { readonly waitMs: number; readonly dropped: boolean } | undefined;
   /** A dial that began at `dialedAt` (`Date.now()`) was admitted (`noteNatsAdmission`). */
   readonly admitted: (dialedAt: number) => void;
 }
@@ -455,11 +452,11 @@ function brokerDialRefusals(
     refused: (code) => {
       if (code === undefined || AUTHORIZATION_REFUSALS[code] !== true) return undefined;
       refusals += 1;
-      const token = count.refused(code);
+      const dropped = count.refused(code)?.dropped === true;
       // Started, not awaited: the dial after a drop waits at least 4 s, and a trade that fails by
       // then leaves that dial's authenticator to start another.
-      if (token?.dropped) void broker.renew(AbortSignal.timeout(TRADE_DEADLINE_MS)).catch(() => {});
-      return { waitMs: brokerRedialWaitMs(refusals, random), token };
+      if (dropped) void broker.renew(AbortSignal.timeout(TRADE_DEADLINE_MS)).catch(() => {});
+      return { waitMs: brokerRedialWaitMs(refusals, random), dropped };
     },
     admitted: (dialedAt) => noteNatsAdmission(broker, dialedAt),
   };
@@ -479,7 +476,7 @@ function brokerDialRefusals(
  * A token the hub refuses twice is dropped and another trade started at once, once for the session
  * until a dial is admitted, across every call that dials with that credential
  * (`brokerTokenRefusals`), so a session refused pass after pass trades one token for the outage;
- * `onRetry` is told what each refusal did to the token.
+ * `onTokenDropped` is told of each drop as it is made, whether or not another dial follows.
  *
  * Each dial has one bound around its whole `connect()`: nats.js resolves the server's name outside
  * its own timer and gives each resolved address and each configured server a `timeout` of its own,
@@ -535,6 +532,7 @@ export async function connectNats(
     } catch (error) {
       failed = error;
       const refusal = brokerRefusals?.refused(errorCode(error));
+      if (refusal?.dropped === true) hooks.onTokenDropped?.(error, attempt);
       const waitMs = refusal?.waitMs ?? delayMs;
       if (
         !redialCures(error, options) ||
@@ -543,7 +541,7 @@ export async function connectNats(
       ) {
         throw error;
       }
-      hooks.onRetry?.(error, waitMs, attempt, refusal?.token);
+      hooks.onRetry?.(error, waitMs, attempt);
       await wait(waitMs);
       // A wait can run long (a blocked event loop): a later dial starts only with time to answer.
       if (plan.budgetMs - elapsed() < NATS_MIN_REDIAL_BOUND_MS) throw error;

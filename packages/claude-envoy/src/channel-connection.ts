@@ -132,11 +132,11 @@ export interface ChannelNatsSettings {
  * beside why it failed, as a log may print both
  * (`natsDialFailure`: no part of a server's text, and the reason nats.js's code or the server's
  * fixed refusal, never text derived from what the servers were set to or what the client sent),
- * and `warn` is handed the failed dial's error with its line, which adds where that refusal
- * dropped the session's broker token (`NATS_DIAL_TOKEN_DROPPED`). A dial that fails for good (an
- * authorization refusal of a seed or of no credential, or the end of a finite `plan`) throws the
- * same line, as a `LoggableError`; the error keeps no cause: nats.js's own error still carries
- * them. A token that cannot be taken fails with the credential's own line
+ * and `warn` is handed the failed dial's error with its line; a dial whose refusal dropped the
+ * session's broker token is warned of at the drop (`NATS_DIAL_TOKEN_DROPPED`). A dial that fails
+ * for good (an authorization refusal of a seed or of no credential, or the end of a finite `plan`)
+ * throws the same line, as a `LoggableError`; the error keeps no cause: nats.js's own error still
+ * carries them. A token that cannot be taken fails with the credential's own line
  * (`BrokerNatsCredential.ready`). `dial` is nats.js's `connect`, or a test's, and `waits` how the
  * dials wait between them, a test's where it sets one.
  *
@@ -203,11 +203,10 @@ export async function dialChannelNats(
         ...waits,
         stopped: () => signal?.aborted === true,
         credential: natsCredential,
-        onRetry: (error, delayMs, _attempt, refusal) =>
-          warn(
-            `${failed(error)}${refusal?.dropped === true ? `; ${NATS_DIAL_TOKEN_DROPPED}` : ""}; dialing again in ${delayMs} ms`,
-            error,
-          ),
+        onTokenDropped: (error, attempt) =>
+          warn(`${NATS_DIAL_TOKEN_DROPPED} (dial ${attempt})`, error),
+        onRetry: (error, delayMs) =>
+          warn(`${failed(error)}; dialing again in ${delayMs} ms`, error),
       },
     )
     let connection: NatsConnection

@@ -187,8 +187,9 @@ dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `
 unless no redial can cure the failure. Under a broker token (`hooks.credential`) a hub's refusal
 waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, and a token it
 refuses twice is dropped and another trade started at once, once for the session until a dial is
-admitted, on the count the keeper keeps on an open connection (`brokerTokenRefusals`); the host's
-line for that dial says so (`NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial during its
+admitted, on the count the keeper keeps on an open connection (`brokerTokenRefusals`); the host
+logs each drop as it is made, whether or not another dial follows (`hooks.onTokenDropped`,
+`NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial during its
 handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as

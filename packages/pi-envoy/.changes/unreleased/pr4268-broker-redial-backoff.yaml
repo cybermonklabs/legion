@@ -9,7 +9,7 @@ body: |-
   once between two planned redials while the hub refuses, and once more after each admission. A
   first dial the hub refuses waits on the same backoff, and a token it refuses twice is dropped and
   another trade started at once, once for the session until a dial is admitted, however many passes
-  the hub refuses; the dial's log line says so. A hub that refuses every session at once, as the
+  the hub refuses; a log line says so at the drop. A hub that refuses every session at once, as the
   NATS auth service's cutover and a maintenance window do, is asked again about 73 times a second
   by 1,100 sessions rather than 550, and each session's next redial comes within 20 s of the hub
   admitting again. A seed or no credential keeps the flat 2 s.

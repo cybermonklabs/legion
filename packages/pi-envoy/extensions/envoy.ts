@@ -1254,11 +1254,14 @@ export default function envoyExtension(hostApi: PiApi): void {
         // A broker token the hub refuses twice is dropped and another trade started at once, once
         // for the session until a dial is admitted, as the keeper does once the connection is open.
         credential: natsCredential,
+        // Said at the drop, so a drop at the last dial the pass can afford is logged too.
+        onTokenDropped: (_error, attempt) =>
+          logger.warn(`envoy: NATS dial ${attempt}: ${NATS_DIAL_TOKEN_DROPPED}`),
         // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
         // so the line says the next dial waits on that.
-        onRetry: (error, delayMs, attempt, refusal) =>
+        onRetry: (error, delayMs, attempt) =>
           logger.warn(
-            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)})${refusal?.dropped === true ? `; ${NATS_DIAL_TOKEN_DROPPED}` : ""}; dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
+            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
           ),
       }
     );

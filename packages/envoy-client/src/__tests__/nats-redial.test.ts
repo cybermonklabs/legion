@@ -384,7 +384,8 @@ interface OutageFixture {
 
 /**
  * The outage every row of the describe below reads, run once: nine clients on one hub, each
- * presenting its own broker token, are refused for 13 s and then admitted, and six of them switch
+ * presenting its own broker token, are refused until the hub has refused each one that keeps
+ * redialing three times (about 12 s) and then admitted, and six of them switch
  * sessions. Real time, on purpose: what is under test is nats.js's own redial loop, which sleeps
  * on the platform's timers between the handler's answers. Every draw is fixed. The handler's
  * clock is moved past the outage gap at the drop, so the drop starts an outage as one does after a
@@ -511,9 +512,24 @@ async function runOutage(fixture: OutageFixture): Promise<Outage> {
   shift = BROKER_REDIAL_OUTAGE_GAP_MS + 1;
   const dropped = Date.now();
   hub.refuseAndDrop();
-  // 13 s: the lowest schedule's first three redials (at once, 2 s, 6 s) and the highest's (at
-  // once, 4 s, 12 s) all come while the hub refuses.
-  await Bun.sleep(13_000);
+  // The hub admits again once it has refused each client that keeps redialing three times: the
+  // lowest schedule's at once, 2 s and 6 s, and the highest's at once, 4 s and 12 s. Read from the
+  // hub's record, not a sleep, so no client's third redial can come after the admit, however slow
+  // the runner.
+  const refusing = [backoff, switching, switchingBlind, r, q, rUnseen, unpolled];
+  const refusedThrice = (one: Client) =>
+    hub.answered.filter(
+      (answer) => answer.name === one.name && answer.at >= dropped && !answer.admitted
+    ).length >= 3;
+  const admitBy = dropped + 45_000;
+  while (!refusing.every(refusedThrice)) {
+    if (Date.now() > admitBy) {
+      throw new Error(
+        `the hub did not refuse each client three times in 45 s: ${JSON.stringify(hub.answered)}`
+      );
+    }
+    await Bun.sleep(20);
+  }
   const admitted = Date.now();
   hub.admit();
   await Bun.sleep(200);
@@ -548,7 +564,7 @@ async function runOutage(fixture: OutageFixture): Promise<Outage> {
   };
 }
 
-describe("broker-token sessions a hub refuses for 13 s and then admits, on real nats.js", () => {
+describe("broker-token sessions a hub refuses three times each and then admits, on real nats.js", () => {
   const fixture: OutageFixture = { hub: undefined, connections: [] };
   let outage: Outage | undefined;
   beforeAll(async () => {

@@ -10,12 +10,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "../nats-connection";
-import {
-  type BrokerNatsCredential,
-  type BrokerTokenRefusal,
-  natsAdmissions,
-  noAuthService,
-} from "../nats-credential";
+import { type BrokerNatsCredential, natsAdmissions, noAuthService } from "../nats-credential";
 import { type FakeNatsBehaviour, type FakeNatsServer, startFakeNats } from "./fake-nats-server";
 
 // Real nats.js against a local server, on the real clock on purpose: each row holds how long
@@ -293,15 +288,17 @@ function coded(code: string): Error {
 
 /**
  * Runs `connectNats` over `codes`, no network and no timer: each dial fails with the next code
- * while one is left, and then opens. A code that no redial cures ends the run there. Records each
- * wait announced, and what each refusal did to the token, and sleeps none of them.
+ * while one is left, and then opens. A code that no redial cures ends the run there, and so does
+ * a wait past `budgetMs`. Records each wait announced and each dial whose refusal dropped the
+ * token, and sleeps none of the waits.
  */
 async function scriptedDials(
   codes: readonly string[],
-  hooks: Pick<NatsDialHooks, "credential" | "random"> = {}
+  hooks: Pick<NatsDialHooks, "credential" | "random"> = {},
+  budgetMs = Number.POSITIVE_INFINITY
 ) {
   const delays: number[] = [];
-  const refusals: (BrokerTokenRefusal | undefined)[] = [];
+  const dropsAt: number[] = [];
   let dials = 0;
   const opened = await connectNats(
     async () => {
@@ -311,20 +308,18 @@ async function scriptedDials(
       return { close: async () => {} } as unknown as NatsConnection;
     },
     { servers: ["nats://127.0.0.1:4222"], ignoreAuthErrorAbort: true },
-    { firstDelayMs: 250, maxDelayMs: 4_000, budgetMs: Number.POSITIVE_INFINITY },
+    { firstDelayMs: 250, maxDelayMs: 4_000, budgetMs },
     {
       ...hooks,
       delay: async () => {},
-      onRetry: (_error, delayMs, _attempt, refusal) => {
-        delays.push(delayMs);
-        refusals.push(refusal);
-      },
+      onRetry: (_error, delayMs) => delays.push(delayMs),
+      onTokenDropped: (_error, attempt) => dropsAt.push(attempt),
     }
   ).then(
     () => true,
     () => false
   );
-  return { opened, dials, delays, refusals };
+  return { opened, dials, delays, dropsAt };
 }
 
 const REFUSED = "AUTHORIZATION_VIOLATION";
@@ -364,7 +359,7 @@ describe("connectNats with a broker token", () => {
   test("a caller that names no broker credential keeps the plan's waits for a refusal, and drops nothing", async () => {
     const run = await scriptedDials([REFUSED, REFUSED, REFUSED]);
     expect(run.delays).toEqual([250, 500, 1_000]);
-    expect(run.refusals).toEqual([undefined, undefined, undefined]);
+    expect(run.dropsAt).toEqual([]);
   });
 
   test("drops a token refused twice and starts a trade, once for the session across calls until a dial is admitted", async () => {
@@ -372,11 +367,11 @@ describe("connectNats with a broker token", () => {
     const hooks = { credential, random: () => 0 };
     const first = await scriptedDials([REFUSED, REFUSED, REFUSED, BAD], hooks);
     expect(first.opened).toBe(false);
-    expect(first.refusals.map((refusal) => refusal?.dropped)).toEqual([false, true, false]);
+    expect(first.dropsAt).toEqual([2]);
     expect(counts).toEqual({ drops: 1, trades: 1 });
     // A second pass of the same session, still refused: no second drop.
     const second = await scriptedDials([REFUSED, REFUSED, REFUSED, BAD], hooks);
-    expect(second.refusals.map((refusal) => refusal?.dropped)).toEqual([false, false, false]);
+    expect(second.dropsAt).toEqual([]);
     expect(counts).toEqual({ drops: 1, trades: 1 });
     // Admitted, which the dial notes for the session's redial handler too, the count starts
     // over: the next pass's second refusal drops again.
@@ -384,7 +379,24 @@ describe("connectNats with a broker token", () => {
     expect((await scriptedDials([], hooks)).opened).toBe(true);
     expect(natsAdmissions(broker).count).toBe(1);
     const third = await scriptedDials([REFUSED, REFUSED, BAD], hooks);
-    expect(third.refusals.map((refusal) => refusal?.dropped)).toEqual([false, true]);
+    expect(third.dropsAt).toEqual([2]);
     expect(counts).toEqual({ drops: 2, trades: 2 });
+  });
+
+  test("tells of a drop at the last dial its budget affords, which no redial follows", async () => {
+    // A pass with 3 s to dial in, at the lowest draws: refused at once, again 2 s on, and the 4 s
+    // wait after that second refusal is past the budget, so the call ends on the refusal that
+    // dropped the token.
+    const { credential, counts } = brokerCredential();
+    const run = await scriptedDials(
+      [REFUSED, REFUSED, REFUSED],
+      { credential, random: () => 0 },
+      3_000
+    );
+    expect(run.opened).toBe(false);
+    expect(run.dials).toBe(2);
+    expect(run.delays).toEqual([2_000]);
+    expect(run.dropsAt).toEqual([2]);
+    expect(counts).toEqual({ drops: 1, trades: 1 });
   });
 });
