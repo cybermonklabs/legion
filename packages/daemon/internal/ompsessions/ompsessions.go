@@ -34,35 +34,81 @@ import (
 // Oh My Pi's two session-storage variables (session-storage-config.ts): StorageVariable set to
 // SQLStorage keeps every session in the database whose postgres:// URL the file DSNFileVariable
 // names holds. Any other storage keeps each session a file.
+//
+// CreateTableVariable is its third, its SQL store's table creation (SESSION_SQL_CREATE_TABLE_ENV in
+// session-storage-config.ts at the release .omp-pin names): 0 or false opens the store with
+// createTable off, under which it makes no table and refuses to start, naming the table, where one
+// is missing (CreatesTables reads it as Oh My Pi does). A deployment whose session login may not
+// create in the tables' schema, the tables' owner having made them, sets it in every pod's
+// environment through the operator's pod env (runtime.kubernetes.pod.env, docs/kubernetes.md,
+// "Selecting the store").
 const (
-	StorageVariable = "OMP_SESSION_STORAGE"
-	DSNFileVariable = "OMP_SESSION_SQL_DSN_FILE"
-	SQLStorage      = "sql"
+	StorageVariable     = "OMP_SESSION_STORAGE"
+	DSNFileVariable     = "OMP_SESSION_SQL_DSN_FILE"
+	CreateTableVariable = "OMP_SESSION_SQL_CREATE_TABLE"
+	SQLStorage          = "sql"
 )
 
-// createTables are Oh My Pi's own Postgres statements for its two session tables at the pinned
-// release (buildQueries' createTable and createPartsTable), except that they name each table bare,
-// as every other statement of this package does, so the connecting login's search_path picks its
-// schema, where Oh My Pi names each table public.<table> and runs its statements under SET LOCAL
-// search_path = pg_catalog, pg_temp (PG_SCHEMA and PG_SEARCH_PATH, sql-session-storage.ts at the
-// pinned tag). Each is IF NOT EXISTS, so they change nothing Oh My Pi already made, which it
-// migrates itself when it starts. The pinned release makes a third table, its lease table
-// omp_session_leases, which Legion writes nothing to and leaves to Oh My Pi and the database's
-// owner.
-var createTables = []string{
-	"CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
-		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
-	"CREATE TABLE IF NOT EXISTS omp_session_files_parts (path TEXT NOT NULL, start_offset BIGINT NOT NULL, content TEXT NOT NULL, " +
-		"PRIMARY KEY (path, start_offset))",
+// CreatesTables is whether a CreateTableVariable of value leaves table creation on, read as Oh My
+// Pi reads it: trimmed and in any case, 0 and false turn it off, and anything else, the empty value
+// of an unset variable included, leaves it on.
+func CreatesTables(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value != "0" && value != "false"
 }
 
-// CreateTables makes Oh My Pi's two session tables where the database has none (createTables), so a
-// database no Oh My Pi has opened yet takes a session. Import runs it before its write, and a
-// writer of Append and Replace once per connection before its first.
-func CreateTables(ctx context.Context, conn *pgx.Conn) error {
-	for _, statement := range createTables {
-		if _, err := conn.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("create Oh My Pi's session tables: %w", err)
+// sessionTables are Oh My Pi's two session tables at the pinned release, each with its own Postgres
+// statement (buildQueries' createTable and createPartsTable), except that the statements and the
+// names name each table bare, as every other statement of this package does, so the connecting
+// login's search_path picks its schema, where Oh My Pi names each table public.<table> and runs its
+// statements under SET LOCAL search_path = pg_catalog, pg_temp (PG_SCHEMA and PG_SEARCH_PATH,
+// sql-session-storage.ts at the pinned tag). Each statement is IF NOT EXISTS, so it changes nothing
+// Oh My Pi already made, which it migrates itself when it starts. The pinned release makes a third
+// table, its lease table omp_session_leases, which Legion writes nothing to and leaves to Oh My Pi
+// and the database's owner.
+var sessionTables = []struct{ name, create string }{
+	{"omp_session_files", "CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
+		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)"},
+	{"omp_session_files_parts", "CREATE TABLE IF NOT EXISTS omp_session_files_parts (path TEXT NOT NULL, start_offset BIGINT NOT NULL, content TEXT NOT NULL, " +
+		"PRIMARY KEY (path, start_offset))"},
+}
+
+// EnsureTables readies Oh My Pi's two session tables on conn as the pinned release's own start
+// does: it first reads which of them the database holds (to_regclass, on the search_path their
+// statements resolve on), and when it holds both sends nothing more. So a login that holds the rows
+// of tables their owner made and may not create in their schema passes: PostgreSQL checks CREATE on
+// the schema before CREATE TABLE IF NOT EXISTS reads whether the table is there, and refuses that
+// statement to such a login even for a table that exists. With create it then makes each missing
+// table (sessionTables), so a database no Oh My Pi has opened yet takes a session; without, it
+// refuses, naming each missing table and making none, as Oh My Pi's store refuses with createTable
+// off. Import runs it with create before its write, and the role launcher's Claude Code keeper once
+// per connection before its first write of Append and Replace, with what its generation's
+// CreateTableVariable says (CreatesTables).
+func EnsureTables(ctx context.Context, conn *pgx.Conn, create bool) error {
+	var present [2]bool
+	if err := conn.QueryRow(ctx, "SELECT pg_catalog.to_regclass($1) IS NOT NULL, pg_catalog.to_regclass($2) IS NOT NULL",
+		sessionTables[0].name, sessionTables[1].name).Scan(&present[0], &present[1]); err != nil {
+		return fmt.Errorf("read which of Oh My Pi's session tables the database holds: %w", err)
+	}
+	var missing []string
+	for i, table := range sessionTables {
+		if !present[i] {
+			missing = append(missing, table.name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if !create {
+		return fmt.Errorf("%s turns table creation off, and the database has no %s: its owner makes Oh My Pi's session tables",
+			CreateTableVariable, strings.Join(missing, " and no "))
+	}
+	for i, table := range sessionTables {
+		if present[i] {
+			continue
+		}
+		if _, err := conn.Exec(ctx, table.create); err != nil {
+			return fmt.Errorf("create Oh My Pi's session table %s: %w", table.name, err)
 		}
 	}
 	return nil
@@ -228,12 +274,12 @@ func (e *ConflictError) Error() string {
 // wrote: the whole of it as the row's content, byte_len its size in bytes, mtime_ms mtime, no title
 // and no parts, with any part left under path by an earlier session deleted in the same
 // transaction, since a session reads as its row followed by its parts. It first creates the two
-// tables when the database has none (createTables). A session the table already holds is left as
+// tables when the database lacks either (EnsureTables). A session the table already holds is left as
 // it is: Identical when it is content byte for byte, a *ConflictError otherwise. Content Postgres
 // cannot keep as text, a byte sequence that is not UTF-8 or a NUL byte, Postgres refuses itself, and
 // the transaction writes nothing.
 func Import(ctx context.Context, conn *pgx.Conn, path string, content []byte, mtime time.Time) (Outcome, error) {
-	if err := CreateTables(ctx, conn); err != nil {
+	if err := EnsureTables(ctx, conn, true); err != nil {
 		return "", err
 	}
 	inserted := false
@@ -301,7 +347,7 @@ func describeLength(n int64) string {
 // transaction. It is a compare-and-set on the row: the row is locked first (lockSize's SELECT …
 // FOR UPDATE) and written only when its byte_len is saved, what the writer last saved, so a row
 // another writer moved, or none, is a *MovedError and nothing is written. The tables must exist
-// (CreateTables). Content Postgres cannot keep as text, a byte sequence that is not UTF-8 or a NUL
+// (EnsureTables). Content Postgres cannot keep as text, a byte sequence that is not UTF-8 or a NUL
 // byte, Postgres refuses itself, naming the session, and the transaction writes nothing.
 func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
 	if saved == Absent {
@@ -324,7 +370,7 @@ func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, conte
 // ending on a UTF-8 character boundary, in one transaction. It is a compare-and-set as Append is:
 // with saved Absent the row is written only when path has none (insertRowIfMissing), and
 // otherwise only when the locked row's byte_len is saved; any other row is a *MovedError and
-// nothing is written. The tables must exist (CreateTables), and content Postgres cannot keep as
+// nothing is written. The tables must exist (EnsureTables), and content Postgres cannot keep as
 // text is refused as Append's is.
 func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
 	return write(ctx, conn, path, saved, func(tx pgx.Tx) error {

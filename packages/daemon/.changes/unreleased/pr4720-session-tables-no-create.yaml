@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The role launcher's Claude Code keeper no longer sends `CREATE TABLE IF NOT EXISTS` for Oh My
+    Pi's two session tables when both are there: it reads which of them the database holds first,
+    so a session login with no `CREATE` on schema `public`, holding only the rows of tables their
+    owner made, keeps Claude Code sessions in the database. PostgreSQL refused that statement to
+    such a login even for a table that exists. A generation whose environment sets
+    `OMP_SESSION_SQL_CREATE_TABLE` to `0` or `false`, as Oh My Pi reads it, makes no missing table
+    either: its keeper refuses to start, naming the table. The runtime sets the variable nowhere;
+    an operator that keeps `CREATE` from the pods' login sets it in `runtime.kubernetes.pod.env`
+    (docs/kubernetes.md, "Selecting the store"). `legion sessions import` still makes missing
+    tables.
+time: 2026-11-21T02:08:25Z
+custom:
+    Issue: pr4720

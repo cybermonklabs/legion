@@ -967,6 +967,7 @@ The dialect follows the URL scheme; Legion delivers Postgres.
 On the first start with `sql`, Oh My Pi's own `SqlSessionStorage` runs `CREATE TABLE IF NOT EXISTS
 omp_session_files` (columns `path TEXT PRIMARY KEY`, `content TEXT NOT NULL`, `mtime_ms BIGINT NOT NULL`, `title TEXT`, `title_source TEXT`, `title_updated_at TEXT`) and warms its index from every row.
 From the pinned build on, it also makes `omp_session_leases` (one row per session a live process holds: `session_id`, `holder`, `host`, `pid`, `acquired_at`, `heartbeat_at`) and its index `omp_session_leases_holder` where they are missing, as whichever login starts it; a login that owns no table needs `SELECT`, `INSERT`, `UPDATE` and `DELETE` on that table, and its owner makes it first so that no agent login owns it (`docs/session.md` of the pinned tag gives the statements).
+The pinned build first looks for its tables and sends no `CREATE` where they all exist; where one is missing it makes it, unless `OMP_SESSION_SQL_CREATE_TABLE` is `0` or `false`, under which it makes none and refuses to start, naming the table ([Selecting the store](#selecting-the-store) says when a deployment sets it).
 Legion manages no schema and no migration: the tables are Oh My Pi's.
 One row is one session; `path` is the same string the session would have had as a file, `content` is the JSONL transcript.
 
@@ -1226,10 +1227,15 @@ With the store settled, every generation a launcher starts gets two variables in
 The pod baseline (`internal/podsafety`) keeps them, where it would otherwise set `OMP_SESSION_STORAGE=file`, and the worker shim, seeing the pointer in its environment, never exports the URL file into Oh My Pi's environment.
 Neither variable may be the operator's (`pod.env`) or a provider key's, and neither may `OMP_SESSION_SQL_DSN`, the name the URL file is mounted under (`CheckPod`).
 Oh My Pi creates and migrates its own tables, `omp_session_files` and `omp_session_files_parts`, and from the pinned build on `omp_session_leases` with its index, in the `public` schema when it starts; Legion manages no schema.
-So the deployment's login needs to create tables there:
+So by default the deployment's login needs to create tables there:
 since Postgres 15, `CREATE` on the database is not enough, and the create is refused with `permission denied for schema public`.
 Grant `USAGE, CREATE ON SCHEMA public` to the login (measured on Postgres 16.15:
 `CONNECT, CREATE ON DATABASE` alone is refused, the schema grant creates the table), or make the login the schema's owner.
+
+A deployment can instead keep `CREATE` from the pods' login, so that no agent can make a table or a function in `public` that another login's statements then run.
+The database's owner makes the three tables first, with the statements `docs/session.md` of the pinned tag gives (the lease table with its index on `holder`), and grants the pods' login `SELECT`, `INSERT`, `UPDATE` and `DELETE` on each; the operator then sets `OMP_SESSION_SQL_CREATE_TABLE: "0"` in `pod.env`, which reaches every generation beside the two variables above.
+With it, Oh My Pi sends no `CREATE` and refuses to start, naming the table, where one is missing, and so does a Claude Code generation's launcher, which keeps that session's files in the same two tables (`ompsessions.EnsureTables`); without it, a missing table is created, which that login is refused.
+The name is the operator's to set, and the runtime sets it nowhere itself (`TestEveryAgentPodSetsCreateTableOff`).
 
 **One login, every conversation: what that costs.**
 Under `postgres` every Legion pod's launcher container (an issue pod's `roles`, the controller's `controller`) mounts the providers Secret with the session database's URL among its keys, for every role of the pod, and the agent is told where that file is (`OMP_SESSION_SQL_DSN_FILE`, above), so every agent in the deployment holds the login the whole table sits behind.
@@ -1508,7 +1514,7 @@ The pods' cloud identity is the identity of the ServiceAccount that `runtime.kub
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 With `writer_audience`, the operator also supplies that fifth value and the four things that [Selecting the store](#selecting-the-store) lists for it.
-The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema, or the database's owner makes the tables and `pod.env` sets `OMP_SESSION_SQL_CREATE_TABLE: "0"`, as under `postgres`.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
