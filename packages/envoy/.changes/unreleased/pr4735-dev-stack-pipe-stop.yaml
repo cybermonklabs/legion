@@ -1,13 +1,16 @@
 kind: Fixed
 body: |-
-  `scripts/dev-stack.sh` drops both of its databases when it is stopped through a pipe
-  (`dev-stack.sh … | tee`) by a SIGTERM to its process group: the signal stops `tee` too, and the
-  first line its stop wrote after the broker's drop ended the run by SIGPIPE before the Dispatch
-  drop. A start whose listener or Dispatch exits after it reports its address now ends within
+  `scripts/dev-stack.sh` drops both of its databases when it is stopped by a SIGTERM to its process
+  group while its standard error is piped (`dev-stack.sh … 2>&1 | tee`): the signal stops `tee`
+  too, and the first line its stop wrote to standard error after the broker's drop ended the run by
+  SIGPIPE before the Dispatch drop. A closed terminal's SIGHUP no longer ends the stop part way
+  either. A start whose listener or Dispatch exits after it reports its address now ends within
   seconds, naming that process and printing its log, where it waited for good on a health check its
   port's keeper queued and nothing answered, and a SIGTERM with it: each readiness request gives
   up after 5 s. The stop gives each process 10 s after its SIGTERM and then kills it, saying so, so
-  one that ignores the signal no longer holds the stop and both databases for good.
+  one that ignores the signal no longer holds the stop and both databases for good, and it signals
+  only a process it started that is still running, never another that took the pid of one that
+  exited earlier.
 time: 2026-11-21T03:46:08Z
 custom:
     Issue: pr4735

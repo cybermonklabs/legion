@@ -125,12 +125,14 @@
 # and ends within seconds of the process that failed, one that exited after it reported its port
 # among them: every readiness request gives up after 5 s. Each process gets 10 s after its SIGTERM
 # and is then killed, which the log says, so one that ignores the signal delays the drops and does
-# not prevent them. A SIGTERM sent to the whole process group, as a supervisor's stop sends it, is
-# that same stop, and so is the same signal repeated while the stop runs, and so is either with
-# this script's output piped to a reader the signal stops too (`dev-stack.sh | tee`). The exception
-# is a signal this script cannot take: a run ended by SIGKILL, which no process can trap, leaves
-# its two databases on the server for someone to drop by hand, as does any other signal this
-# script does not trap.
+# not prevent them. Only a process this script started and that is still running is signalled,
+# never whatever holds the pid of one that exited earlier. A SIGTERM sent to the whole process
+# group, as a supervisor's stop sends it, is that same stop, and so is the same signal repeated
+# while the stop runs, and so is either with this script's standard error piped to a reader the
+# signal stops too (`dev-stack.sh 2>&1 | tee`: the stop writes its lines there), and so is a closed
+# terminal's SIGHUP arriving while the stop runs. The exception is a signal this script cannot
+# take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the server
+# for someone to drop by hand, as does any other signal this script does not trap.
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
 # scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
@@ -473,22 +475,39 @@ DISPATCH_PID=""
 BROKER_DB_CREATED=false
 DISPATCH_DB_CREATED=false
 
+# running_child PID: whether PID is a process this shell started that bash still counts as running
+# (jobs -rp), the one test each stop below makes before every signal it sends. A process of the
+# stack that exited early, a crash during a long run or the second broker callout-check.sh kills,
+# has been reaped and is listed no longer, and its pid is free: on a busy box the kernel hands it
+# to another process within minutes, which kill -0 cannot tell from the one this run started, so a
+# stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a process of someone
+# else's. A child that has exited and is not yet reaped still holds its pid, so it is listed and a
+# signal to it reaches no one else.
+running_child() {
+  local child
+  for child in $(jobs -rp); do
+    [ "$child" = "$1" ] && return 0
+  done
+  return 1
+}
+
 # stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to 10 s for it
 # to exit, then SIGKILL, which the log names, so a process that ignores or outlives its SIGTERM
 # holds the stop 10 s at most and the drops below still run. Cleanup ignores every further INT and
 # TERM, so a `wait` on such a process would have held the stop, and both databases, for good. The
-# look is kill -0 every 0.1 s, which a process this shell has reaped fails.
+# look is running_child every 0.1 s, so a process that exits during the 10 s is never signalled
+# again, whatever holds its pid by then.
 stop_bounded() {
   local name="$1" pid="$2" deadline
-  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+  if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
   kill "$pid" 2>/dev/null
   deadline=$((SECONDS + 10))
-  while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do
+  while running_child "$pid" && ((SECONDS < deadline)); do
     sleep 0.1
   done
-  if kill -0 "$pid" 2>/dev/null; then
+  if running_child "$pid"; then
     echo "dev-stack: $name (pid $pid) did not stop within 10 s of its SIGTERM; killing it" >&2
     kill -KILL "$pid" 2>/dev/null
   fi
@@ -504,16 +523,18 @@ stop_bounded() {
 # A stop by signal reaches this shell more than once: a process group's SIGTERM is delivered to
 # this shell as well as to every process of the stack, a supervisor repeats the signal, and a run
 # already on its way out through the EXIT trap (a process of the stack took that same signal
-# first) has its own still to take. So the first thing cleanup does is ignore INT, TERM and PIPE
-# for the rest of the run, and it returns at once when it is already running. What it must not do
-# is put any of them back on its default disposition, as `trap - INT TERM` here once did: a
+# first) has its own still to take. So the first thing cleanup does is ignore HUP, INT, TERM and
+# PIPE for the rest of the run, and it returns at once when it is already running. What it must not
+# do is put any of them back on its default disposition, as `trap - INT TERM` here once did: a
 # repeat arriving then kills the run between the kills and the drops below, and a signal bash has
 # taken but not yet run the handler for is re-raised by bash at its next trap check, the `wait` in
 # the loop below among them ("run_pending_traps: bad value in trap_list[15]: (nil)", then "signal
 # handler is SIG_DFL, resending 15 (SIGTERM) to myself"). Either way the two databases outlived
-# the run. PIPE because the same stop can take this script's output reader first: a group's
-# SIGTERM stops the tee of `dev-stack.sh | tee` too, and a run whose reader is gone comes here
-# through the EXIT trap, which bash runs on the SIGPIPE of the next line it writes. Every line
+# the run. HUP because a terminal that closes sends it to the whole group, and its default action
+# ends the run as TERM's does, between the kills and the drops. PIPE because the same stop can take
+# this script's output reader first: a group's SIGTERM stops the tee of `dev-stack.sh 2>&1 | tee`
+# too, the stop writes each of its lines to standard error, and a run whose reader is gone comes
+# here through the EXIT trap, which bash runs on the SIGPIPE of the next line it writes. Every line
 # cleanup writes then raises SIGPIPE, and left as it was that ended the run at the first of them,
 # after the broker's drop and before Dispatch's; ignored, a line nobody reads fails and the stop
 # goes on. Ignoring is also the one disposition a child inherits through the exec, so the psql
@@ -527,7 +548,7 @@ cleanup() {
   fi
   cleanup_running=true
   trap - EXIT
-  trap '' INT TERM PIPE
+  trap '' HUP INT TERM PIPE
   set +e
   stop_bounded dispatch "$DISPATCH_PID"
   stop_bounded listener "$LISTENER_PID"
@@ -1192,11 +1213,15 @@ $(project_access_exports)
   Press Ctrl-C to stop every process and drop both databases.
 EOF
 
-# stop_process PID stops one process of the stack by its pid and reaps it. The wait is repeated
-# because a restart signal arriving meanwhile ends a wait early, with the process still there.
+# stop_process PID stops one process of the stack by its pid and reaps it, when it is still a
+# running child of this shell (running_child). The wait is repeated because a restart signal
+# arriving meanwhile ends a wait early, with the process still there; the look before each pass is
+# running_child too, since kill -0 on a pid another process now holds would never fail and the
+# wait on it would fail at once, a loop with no end.
 stop_process() {
+  running_child "$1" || return 0
   kill "$1" 2>/dev/null || true
-  while kill -0 "$1" 2>/dev/null; do
+  while running_child "$1"; do
     wait "$1" 2>/dev/null || true
   done
 }
