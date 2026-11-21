@@ -264,6 +264,67 @@ func TestCodeFlowExchangeRefusesACodeTheIssuerRefuses(t *testing.T) {
 	}
 }
 
+// A code exchange the token endpoint refuses, an answer naming an OAuth error at a status that is a
+// refusal (oauthrefusal.Refusal: every 4xx but 408 and 429), fails as that refusal. Any other
+// failure of the request, a 5xx, a 408 or a 429 whatever error its body names,
+// or no answer at all, is an issuer that could not answer, and matches ErrIssuerUnavailable in
+// both modes, so a caller answers the person as it answers an issuer it cannot reach rather than
+// as a sign-in that did not verify.
+func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		fail        func(issuer *oidctest.Issuer)
+		unavailable bool
+	}{
+		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, false},
+		{"401 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "invalid_client") }, false},
+		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, true},
+		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, true},
+		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, true},
+		{"500 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "invalid_client") }, true},
+		{"429 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_grant") }, true},
+		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowForDomain(t, flowDomain)
+			c.fail(issuer)
+			_, err := flow.Exchange(context.Background(), flowRedirect, "a-code", "a-nonce")
+			if err == nil || errors.Is(err, ErrIssuerUnavailable) != c.unavailable {
+				t.Fatalf("Exchange against a token endpoint answering %s: err = %v, want an error matching ErrIssuerUnavailable: %t", c.name, err, c.unavailable)
+			}
+			_, err = flow.OnlineExchange(context.Background(), flowRedirect, "a-code", onlineSignIn("a-nonce"))
+			if err == nil || errors.Is(err, ErrIssuerUnavailable) != c.unavailable {
+				t.Fatalf("OnlineExchange against a token endpoint answering %s: err = %v, want an error matching ErrIssuerUnavailable: %t", c.name, err, c.unavailable)
+			}
+		})
+	}
+}
+
+// A code exchange whose own context ends before the token endpoint answers - the browser left the
+// callback - fails with that context's error, not ErrIssuerUnavailable: the issuer was not shown
+// unable to answer, so a caller writes no outage for it. The flow has discovered its issuer, so the
+// context ends only the token request.
+func TestCodeFlowExchangeTheCallerLeftIsNoIssuerOutage(t *testing.T) {
+	issuer, flow := newCodeFlowForDomain(t, flowDomain)
+	if err := flow.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := flow.Exchange(ctx, flowRedirect, "a-code", "a-nonce")
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("Exchange whose context ended: err = %v, want context.Canceled and not ErrIssuerUnavailable", err)
+	}
+	_, err = flow.OnlineExchange(ctx, flowRedirect, "a-code", onlineSignIn("a-nonce"))
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("OnlineExchange whose context ended: err = %v, want context.Canceled and not ErrIssuerUnavailable", err)
+	}
+	if got := issuer.TokenRequests(); len(got) != 0 {
+		t.Fatalf("the token endpoint received %q, want nothing: the context had ended", got)
+	}
+}
+
 func TestCodeFlowRefreshReadsThePersonsCurrentClaims(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	issuer.SignInAs(personClaims("dispatch-members"))
@@ -313,7 +374,9 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 		{"a revoked refresh token", func(issuer *oidctest.Issuer) { issuer.RevokeGrants() }, true},
 		{"400 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusBadRequest, "invalid_grant") }, true},
 		{"401 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusUnauthorized, "invalid_grant") }, true},
+		// A 403 naming invalid_grant is a refusal, but not one that ends a grant (oauthrefusal.EndsGrant).
 		{"403 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"408 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusRequestTimeout, "invalid_grant") }, false},
 		{"500", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusInternalServerError, "") }, false},
 		{"503", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusServiceUnavailable, "") }, false},
 		{"429", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusTooManyRequests, "") }, false},
@@ -629,29 +692,54 @@ func TestCodeFlowDiscoveryRefusesAnIssuerWithNoCodeFlowEndpoints(t *testing.T) {
 	}
 }
 
-// A discovery document whose token_endpoint_auth_methods_supported is not a list of strings is one
-// the code flow cannot read, as one whose revocation_endpoint is not a string is: its discovery
-// fails, naming the member, rather than guessing how the client authenticates.
+// A discovery document whose token_endpoint_auth_methods_supported is not an array of strings is
+// one the code flow cannot read, as one whose revocation_endpoint is not a string is: its
+// discovery fails, naming the member, rather than guessing how the client authenticates. A null is
+// not an array, and an array holding a null holds something that is not a string, though Go's
+// encoding/json reads the first into a []string as no list and the second as the empty string. An
+// array of strings, an empty one included, is read.
 func TestCodeFlowDiscoveryRefusesATokenAuthMethodsListItCannotRead(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/.well-known/openid-configuration" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
-			`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token",` +
-			`"token_endpoint_auth_methods_supported":"client_secret_basic"}`))
-	}))
-	t.Cleanup(server.Close)
-	flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
-	err := flow.Discover(context.Background())
-	if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint_auth_methods_supported") {
-		t.Fatalf("Discover against a document whose list is a string: err = %v, want ErrIssuerUnavailable naming token_endpoint_auth_methods_supported", err)
-	}
-	if flow.Discovered() {
-		t.Fatal("a document the code flow cannot read reads as discovered")
+	for _, c := range []struct {
+		name     string
+		list     string // the member's JSON
+		readable bool
+	}{
+		{"a string", `"client_secret_basic"`, false},
+		{"null", `null`, false},
+		{"an array holding null alone", `[null]`, false},
+		{"client_secret_basic and null", `["client_secret_basic",null]`, false},
+		{"client_secret_basic and a number", `["client_secret_basic",1]`, false},
+		{"client_secret_basic alone", `["client_secret_basic"]`, true},
+		{"an empty array", `[]`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/openid-configuration" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
+					`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token",` +
+					`"token_endpoint_auth_methods_supported":` + c.list + `}`))
+			}))
+			t.Cleanup(server.Close)
+			flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
+			err := flow.Discover(context.Background())
+			if c.readable {
+				if err != nil || !flow.Discovered() {
+					t.Fatalf("Discover against a document whose list is %s: err = %v, discovered = %t, want it read", c.list, err, flow.Discovered())
+				}
+				return
+			}
+			if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint_auth_methods_supported") {
+				t.Fatalf("Discover against a document whose list is %s: err = %v, want ErrIssuerUnavailable naming token_endpoint_auth_methods_supported", c.list, err)
+			}
+			if flow.Discovered() {
+				t.Fatal("a document the code flow cannot read reads as discovered")
+			}
+		})
 	}
 }
 

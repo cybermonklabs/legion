@@ -406,7 +406,7 @@ func (i *Issuer) AdvertiseTokenAuthMethods(methods ...string) {
 // FailToken makes the token endpoint answer every grant, a code exchange or a
 // refresh, with status instead of granting it, with code as the body's OAuth
 // error when code is not empty: 400 invalid_grant is an issuer refusing the
-// refresh token, a 5xx or a 429 one that cannot answer now. A status of 0
+// refresh token, a 5xx, a 408 or a 429 one that cannot answer now. A status of 0
 // makes it grant again, and undoes DropToken too.
 func (i *Issuer) FailToken(status int, code string) {
 	i.mu.Lock()
