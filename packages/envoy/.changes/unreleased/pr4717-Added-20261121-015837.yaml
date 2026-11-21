@@ -1,0 +1,5 @@
+kind: Added
+body: Dispatch's request line, the previous-shared-token warning and the GitHub proxy's two warnings hold back a private project's names. While a project is private, or while the private projects cannot be read, a private project's path keeps its identifiers and writes each name (an artifact's slug, an access route's person or group) as its placeholder, and the request line adds private_project=true; a route with a name and no project key writes its names as placeholders for every project, the unmatched route writes {unmatched}, a GitHub proxy path none of the proxy's paths reads writes /api/github/rest/{path}, and the proxy's warnings write neither the caller's query nor the error's text. With no private project every record is as before.
+time: 2026-11-21T01:58:37.943042243Z
+custom:
+    Issue: pr4717
