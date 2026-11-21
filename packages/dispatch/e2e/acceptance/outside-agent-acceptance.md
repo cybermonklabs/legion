@@ -245,8 +245,8 @@ reads a request body of at most 4 MiB.
 Programs on PATH: bash, curl, tmux, bun, `omp`, git and tar, and npm (with node), which the Codex
 leg installs `@openai/codex@0.171.0` and verifies the plugin's release with. The step needs about 50
 minutes: P5 waits up to 15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to
-expire (300 s), the Codex leg takes a few minutes (two npm installs, a build of the release's
-commit, and three interactive Codex runs, each bounded), and the T5 window lasts up to 20 minutes.
+expire (300 s), the Codex leg takes a few minutes (two npm installs and three interactive Codex
+runs, each bounded), and the T5 window lasts up to 20 minutes.
 
 After P10 and the revocations the leg opens the T5 window. It tells the peer
 `outside-e2e t5-open <nonce> at <ms>`, starts `OUTSIDE_T5_COMMAND`, trades P2's device login afresh
@@ -309,10 +309,11 @@ is, so the Codex agent trades the same login and no second one is approved. The 
   on, read to refuse a connection before and after the run (C6), and a run with `DISPATCH_URL` at
   `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control). It reads each screen of the interactive start and
   answers the two first-run ones as the outside person is told to: "Hooks need review" with
-  "Trust all and continue", and "Meet GPT-6 Sol" with "Use existing model", moving down the menu
-  to the entry that reads so and taking it. Codex keeps both answers, so the later runs ask
-  neither. Any other screen that holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90)
-  makes the run's rows UNKNOWN, naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
+  "Trust all and continue", and "Meet GPT-6 Sol" with "Use existing model". It moves the menu one
+  entry at a time toward the entry that reads so, each move once the screen shows the last one,
+  and takes it. Codex keeps both answers, so the later runs ask neither. Any other screen that
+  holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90) makes the run's rows UNKNOWN,
+  naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
   `new-model` is a control run that answers "Continue without trusting" or "Try new model" instead:
   with the hooks untrusted no session record, registration or delivery comes, so C1, C4 and C5 do
   not pass; with the new model the session lists no plugin tool, so C2 and C3 do not pass. Each
@@ -336,7 +337,7 @@ name, and the plugin's version, its integrity at the registry and the root Codex
 
 | Row | It passes when |
 | --- | --- |
-| C0 | The release's provenance holds, and Codex installed the attested tarball. At the registry (`OUTSIDE_NPM_REGISTRY`, default npm's), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml`, the ref `refs/heads/main` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names; the tarball the registry serves is the bytes that integrity names, and every file of the tree Codex installed is that tarball's, with none more or fewer; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), another workflow, ref, commit or tarball, an installed tree that differs from the tarball (the row names each differing file), or a commit without the device login reads FAIL. Beside the verdict it records how a build of the commit (`bun scripts/build.ts --codex-out`, after `bun install --frozen-lockfile`) compares with the installed bundles, file by file; that never decides the row, since the release sets the version before it builds. |
+| C0 | The release's provenance holds, and Codex installed the attested tarball. At the registry (`OUTSIDE_NPM_REGISTRY`, default npm's), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml`, the ref `refs/heads/main` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names; the tarball the registry serves is the bytes that integrity names, and every file of the tree Codex installed is that tarball's, with none more or fewer; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), another workflow, ref, commit or tarball, an installed tree that differs from the tarball (the row names each differing file), or a commit without the device login reads FAIL. |
 | C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. |
 | C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` does not name that person and project. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the inside origin answers the same, C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; C3 reads them on the comment the tool writes, and P3 on the same login's token. |
 | C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue, its author an agent of the test person, in the scratch project, as the Codex session, with no scope. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL. |

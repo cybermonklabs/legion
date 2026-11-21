@@ -1,6 +1,6 @@
 /** `bun outside-agent-codex-provenance.ts <command> [arguments]`: the reads of the Codex leg's row C0
  *  (`outside-agent-codex.sh`) that a shell cannot make well: the npm registry's provenance
- *  attestation of the published plugin, its tarball, and byte comparisons of plugin trees. Each
+ *  attestation of the published plugin, its tarball, and a byte comparison of two plugin trees. Each
  *  command prints one line of compact JSON whose values are plain words (no quote, backslash or
  *  control character), so the leg reads it with `json_field`, and exits 0; it prints
  *  `{"unknown": "<what it could not read>"}` and exits 2 when it read nothing. It holds no
@@ -19,9 +19,7 @@
  *    tree <tarball> <installed>
  *                     the sha256 of every file of two plugin trees, by its path in the tree:
  *                     `equal`, how many match, `differ`, `only_tarball` and `only_installed`, the
- *                     paths of the rest, or "" for none.
- *    compare <built> <installed>
- *                     the same for each `dist/*.js` alone, with `only_built` for `only_tarball`. */
+ *                     paths of the rest, or "" for none. */
 
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -89,16 +87,6 @@ export function provenanceOf(
   };
 }
 
-/** The sha256 of each `dist/*.js` of a plugin directory, by name. */
-function bundles(dir: string): Map<string, string> {
-  const hashes = new Map<string, string>();
-  for (const name of readdirSync(join(dir, "dist")).sort()) {
-    if (!name.endsWith(".js")) continue;
-    hashes.set(name, sha256(join(dir, "dist", name)));
-  }
-  return hashes;
-}
-
 function sha256(file: string): string {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
@@ -114,28 +102,18 @@ function files(dir: string): Map<string, string> {
   return hashes;
 }
 
-/** How two maps of file hashes compare: the count that match, and the names of the rest. */
-function compared(a: Map<string, string>, b: Map<string, string>) {
+/** How a release's tarball tree and the tree Codex installed compare, file by file: the count of
+ *  paths whose bytes match, and the paths of the rest. Exported for the leg's tests. */
+export function compareTrees(tarball: string, installed: string): Record<string, string | number> {
+  const a = files(tarball);
+  const b = files(installed);
   const names = (list: string[]) => list.sort().join(" ");
   return {
     equal: [...a.keys()].filter((name) => b.get(name) === a.get(name)).length,
     differ: names([...a.keys()].filter((name) => b.has(name) && b.get(name) !== a.get(name))),
-    only_a: names([...a.keys()].filter((name) => !b.has(name))),
-    only_b: names([...b.keys()].filter((name) => !a.has(name))),
+    only_tarball: names([...a.keys()].filter((name) => !b.has(name))),
+    only_installed: names([...b.keys()].filter((name) => !a.has(name))),
   };
-}
-
-/** How two plugin directories' bundles compare. Exported for the leg's tests. */
-export function compareBundles(built: string, installed: string): Record<string, string | number> {
-  const { only_a, only_b, ...rest } = compared(bundles(built), bundles(installed));
-  return { ...rest, only_built: only_a, only_installed: only_b };
-}
-
-/** How a release's tarball tree and the tree Codex installed compare, file by file. Exported for
- *  the leg's tests. */
-export function compareTrees(tarball: string, installed: string): Record<string, string | number> {
-  const { only_a, only_b, ...rest } = compared(files(tarball), files(installed));
-  return { ...rest, only_tarball: only_a, only_installed: only_b };
 }
 
 async function get(url: string): Promise<{ status: number; body: unknown }> {
@@ -150,9 +128,9 @@ async function get(url: string): Promise<{ status: number; body: unknown }> {
 
 async function main(): Promise<Record<string, unknown>> {
   const [command, first = "", second = "", third = ""] = Bun.argv.slice(2);
-  if (command === "compare" || command === "tree") {
-    if (first === "" || second === "") return { unknown: `${command} needs two directories` };
-    return command === "tree" ? compareTrees(first, second) : compareBundles(first, second);
+  if (command === "tree") {
+    if (first === "" || second === "") return { unknown: "tree needs two directories" };
+    return compareTrees(first, second);
   }
   if (command !== "attestation") return { unknown: `unknown command ${word(command)}` };
   if (first === "" || second === "" || third === "")

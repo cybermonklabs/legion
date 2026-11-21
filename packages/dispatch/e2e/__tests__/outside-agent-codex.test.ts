@@ -18,16 +18,12 @@
  *  and, in the same file, not PASS where one crosses the rule the row reads. */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { findTool, nextTurn, type Plan, whoamiOf } from "../acceptance/outside-agent-codex-model";
-import {
-  compareBundles,
-  compareTrees,
-  provenanceOf,
-} from "../acceptance/outside-agent-codex-provenance";
+import { compareTrees, provenanceOf } from "../acceptance/outside-agent-codex-provenance";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   codexLeg,
@@ -50,6 +46,11 @@ const scratch = temporaryDirectories("outside-agent-codex", {
 const person = "outside-e2e@example.com";
 /** The release the stand-in runs install, and what its stand-in provenance names. */
 const release = "5.0.1";
+/** How long the leg may run on after its last row, in ms. Its cleanup stops its background
+ *  children together and any Codex pane still open, each in 10 s at most, and deletes its scratch
+ *  directory; a run of the leg whose cleanup took minutes (the deletion of a tree of 80 879
+ *  entries) went unseen before this row. */
+const exitAfterRows = 60_000;
 
 interface Whoami {
   readonly exit: number;
@@ -113,6 +114,9 @@ interface CodexScenario {
   readonly codexIntegrity?: "other";
   /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
   readonly startSeconds?: number;
+  /** The first-run menus draw each move late, 2.5 s after the keys, as a slow machine's Codex can:
+   *  a key sent before the last move is drawn is one move more. */
+  readonly slowScreens?: boolean;
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -204,6 +208,8 @@ const keys = () => {
   consumed = all.length;
   return fresh;
 };
+// A slow screen reads the keys sent and draws the move only every 2.5 s.
+const pause = scenario.slowScreens ? 2500 : 25;
 const menu = async (title, options) => {
   let chosen = 0;
   for (;;) {
@@ -213,7 +219,7 @@ const menu = async (title, options) => {
       if (key === "Up") chosen = Math.max(chosen - 1, 0);
       if (key === "Enter") return options[chosen];
     }
-    await Bun.sleep(25);
+    await Bun.sleep(pause);
   }
 };
 const forever = () => new Promise(() => {});
@@ -297,7 +303,9 @@ await forever();
 }
 
 /** The stand-in `tmux`: a pane is a directory beside the socket path, holding the pid of the
- *  command it runs, the screen that command last showed and the keys it was sent. */
+ *  command it runs, the screen that command last showed and the keys it was sent. As tmux does, the
+ *  server makes its socket as it starts and leaves it when `kill-server` stops it; a stopped
+ *  server's pane names no process, so no later command signals a pid the system has reused. */
 function standInTmux(): string {
   return `#!/usr/bin/env bash
 sock=''
@@ -315,6 +323,7 @@ case $command in
     mkdir -p "$pane"
     : >"$pane/keys"
     : >"$pane/screen"
+    bun -e 'require("node:net").createServer().listen(process.argv[1], () => process.exit(0))' "$sock" </dev/null >/dev/null 2>&1
     (cd "$cwd" && STANDIN_PANE="$pane" exec "$@") </dev/null >"$pane/out" 2>&1 &
     echo "$!" >"$pane/pid"
     ;;
@@ -322,7 +331,7 @@ case $command in
   send-keys) shift 2; for key in "$@"; do printf '%s\\n' "$key" >>"$pane/keys"; done ;;
   has-session) kill -0 "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null ;;
   display-message) cat "$pane/pid" 2>/dev/null ;;
-  kill-server) kill "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null; true ;;
+  kill-server) pid=$(cat "$pane/pid" 2>/dev/null); rm -f "$pane/pid"; [ -z "$pid" ] || kill "$pid" 2>/dev/null; true ;;
   *) exit 1 ;;
 esac
 `;
@@ -389,6 +398,8 @@ interface CodexRun extends LegRun {
   readonly inside: string;
   readonly listener: string;
   readonly loginHome: string;
+  /** How long the leg ran on after it wrote its last row (its TSV's last write), in ms. */
+  readonly outlived: number;
 }
 
 /** A git command in `dir`, with an identity and no host configuration of its own. */
@@ -467,11 +478,10 @@ console.log(JSON.stringify({ port: server.port }));
   // commit, unless the scenario says otherwise; the tree comparison is the real helper's.
   await Bun.write(
     join(legDir, "outside-agent-codex-provenance.ts"),
-    `import { compareBundles, compareTrees } from ${JSON.stringify(provenanceHelper)};
+    `import { compareTrees } from ${JSON.stringify(provenanceHelper)};
 const [command, first, second, third] = Bun.argv.slice(2);
 const print = (value) => console.log(JSON.stringify(value));
-if (command === "compare") print(compareBundles(first, second));
-else if (command === "tree") print(compareTrees(first, second));
+if (command === "tree") print(compareTrees(first, second));
 else {
   Bun.spawnSync(["tar", "-czf", third, "-C", ${JSON.stringify(join(state, "release"))}, "package"]);
   print({ status: 200, integrity: "sha512-standin", tarball_matches: ${scenario.tarballMismatch !== true}, provenance: true, repository: "https://github.com/cybermonklabs/legion", workflow: ".github/workflows/release.yaml", ref: "refs/heads/main", commit: ${JSON.stringify(repo.built)}, subject_matches: true, ...${JSON.stringify(scenario.provenance ?? {})} });
@@ -523,9 +533,10 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
   const listener = `http://127.0.0.1:${await closedPort()}`;
   const inside = `http://127.0.0.1:${await closedPort()}`;
   const envoyVersion = scenario.envoyVersion === undefined ? release : scenario.envoyVersion;
+  const rows = join(state, "rows.tsv");
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound: "short",
+    bound: "codexRun",
     cwd: scratch("cwd"),
     env: {
       PATH: bin,
@@ -543,6 +554,7 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
       OUTSIDE_LEGION_CHECKOUT: repo.dir,
       OUTSIDE_CODEX_LIST_SECONDS: "3",
       OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 30),
+      OUTSIDE_CODEX_TSV: rows,
       ...(scenario.firstStart === undefined
         ? {}
         : { OUTSIDE_CODEX_FIRST_START: scenario.firstStart }),
@@ -553,7 +565,9 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
     },
     from: import.meta.url,
   });
-  return { code, stdout, stderr, state, inside, listener, loginHome };
+  // The leg writes each row to its TSV as it prints it, so the file's last write is its last row.
+  const outlived = Date.now() - statSync(rows).mtimeMs;
+  return { code, stdout, stderr, state, inside, listener, loginHome, outlived };
 }
 
 /** The leg's run of `run`, as the stand-in codex recorded it. */
@@ -678,8 +692,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(execOf(run, "edge-refused").env.ENVOY_URL).toBe("http://127.0.0.1:1");
       expect(execOf(run, "inside").env.DISPATCH_URL).toBe(run.inside);
     },
-    // The run, a bounded child under the short bound.
-    rowLimit("short")
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
   );
 
   /** Row `name` of `run`, beside the run's stdout for the failure message. */
@@ -710,8 +724,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(crossed, "C4").row?.got).toContain("a session of another project");
       expect(crossed.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -736,8 +750,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(wrongOwner, "C6")).toMatchObject({ row: { verdict: "UNKNOWN" } });
       for (const run of [dropped, unregistered, wrongOwner]) expect(run.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -756,8 +770,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(outboundDropped, "C5").row?.got).toContain("got no message");
       for (const run of [lostComment, sendFails, outboundDropped]) expect(run.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -776,8 +790,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       });
       expect(rowsOf(scoped.stdout).get("C3")?.got).toContain("2 scopes");
     },
-    // The two runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short"] })
+    // The two runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun"] })
   );
 
   test(
@@ -799,14 +813,10 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       expect(rowOf(noLogin, "C0")).toMatchObject({ row: { verdict: "FAIL" } });
       expect(rowOf(noLogin, "C0").row?.got).toContain("does not hold the device login");
-      for (const run of [byHand, otherCommit, noLogin]) {
-        // The build comparison is recorded beside the verdict and never decides it.
-        expect(rowOf(run, "C0").row?.got).toContain("recorded: ");
-        expect(run.code).toBe(1);
-      }
+      for (const run of [byHand, otherCommit, noLogin]) expect(run.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -838,8 +848,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(refusing, "C2").row?.got).toContain("names no identity this machine can prove");
       for (const run of [noEntry, refusing]) expect(run.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -866,8 +876,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(otherCodex.stdout).toContain("not codex-cli 0.171.0");
       expect(otherBytes.stdout).toContain("the integrity it recorded is not the pinned one");
     },
-    // The five runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+    // The five runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -900,8 +910,38 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(newModel, "C2").row?.got).toContain("main: Meet GPT-6 Sol -> Try new model");
       for (const run of [noTrust, newModel]) expect(run.code).not.toBe(0);
     },
-    // The two runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short"] })
+    // The two runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun"] })
+  );
+
+  test(
+    "a first-run menu that draws each move late is answered with the entry it names, never one past it",
+    async () => {
+      const run = await codexStandInRun({ slowScreens: true });
+      expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+        verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
+      });
+      expect(rowOf(run, "C1").row?.got).toContain(
+        "first-start screens: main: Hooks need review -> Trust all and continue; main: Meet GPT-6 Sol -> Use existing model"
+      );
+      expect(run.code).toBe(0);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
+  );
+
+  test(
+    `the leg exits within ${exitAfterRows / 1000} s of its last row, the new-model control run as every other`,
+    async () => {
+      // A leg still running at the Codex run's bound fails here as well: runBounded throws.
+      const run = await codexStandInRun({ firstStart: "new-model" });
+      expect(
+        run.outlived,
+        `the leg ran on ${run.outlived} ms after its last row: ${run.stderr}`
+      ).toBeLessThan(exitAfterRows);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
   );
 
   test(
@@ -917,8 +957,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       expect(run.code).toBe(2);
     },
-    // The run, a bounded child under the short bound.
-    rowLimit("short")
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
   );
 
   test(
@@ -941,8 +981,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       for (const run of [differs, mismatch, branch]) expect(run.code).toBe(1);
     },
-    // The three runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short"] })
+    // The three runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -1062,27 +1102,6 @@ describe("the Codex leg's provenance reads", () => {
       differ: "skills/x/SKILL.md",
       only_tarball: "only.txt",
       only_installed: "extra.txt",
-    });
-  });
-
-  test("it compares two builds' bundles by name, naming those that differ or are on one side", () => {
-    const built = scratch("built");
-    const installed = scratch("installed");
-    for (const [dir, files] of [
-      [built, { "a.js": "same", "b.js": "one", "c.js": "only here" }],
-      [installed, { "a.js": "same", "b.js": "two", "d.js": "only there" }],
-    ] as const) {
-      mkdirSync(join(dir, "dist"));
-      for (const [name, text] of Object.entries(files))
-        writeFileSync(join(dir, "dist", name), text);
-      // A file that is no bundle, different on each side, which the comparison leaves out.
-      writeFileSync(join(dir, "dist", "THIRD_PARTY_NOTICES"), dir);
-    }
-    expect(compareBundles(built, installed)).toEqual({
-      equal: 1,
-      differ: "b.js",
-      only_built: "c.js",
-      only_installed: "d.js",
     });
   });
 });

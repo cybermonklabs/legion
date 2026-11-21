@@ -56,8 +56,8 @@
 #                             provenance must name, and the merge commit of the device login,
 #                             which that commit must hold. Without either C0 reads UNKNOWN.
 # Optional: OUTSIDE_CODEX_TSV, a file that gets a copy of the TSV; OUTSIDE_LEGION_CHECKOUT, the
-# git checkout C0 reads commits in and builds the release's commit from (default the one this file
-# is in); OUTSIDE_CODEX_ENVOY_SOURCE=checkout, a development run that installs the plugin built
+# git checkout C0 reads commits in (default the one this file is in);
+# OUTSIDE_CODEX_ENVOY_SOURCE=checkout, a development run that installs the plugin built
 # from that checkout instead of the npm release (C0 then reads UNKNOWN, so such a run never passes
 # the gate); OUTSIDE_CODEX_FIRST_START=no-trust or new-model, a control run that answers the first
 # hooks screen "Continue without trusting" or the model screen "Try new model", which no row may
@@ -200,9 +200,7 @@ tmux_sockets=''
 cleanup() {
   local sock
   reap
-  for sock in $tmux_sockets; do
-    tmux -S "$sock" kill-server 2>/dev/null </dev/null
-  done
+  for sock in $tmux_sockets; do stop_tmux "$sock"; done
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT
@@ -503,13 +501,10 @@ fi
 # tarball the registry serves is the bytes its integrity names, and that every file of the tree
 # Codex installed is that tarball's; that npm verifies the attestation (`npm audit signatures`, in
 # a project of its own holding that release alone); and that the commit holds
-# OUTSIDE_DEVICE_LOGIN_COMMIT. It records, and does not judge by, how a build of that commit's
-# bundles compare with the installed ones: the release sets the version before it builds, which a
-# bundle can hold. ---
+# OUTSIDE_DEVICE_LOGIN_COMMIT. ---
 c0_wrong=''
 c0_unread=''
 c0_read=''
-c0_built='not built'
 # commit_problem NAME VALUE: why VALUE, the input NAME, is no whole commit id, or nothing.
 commit_problem() {
   case $2 in
@@ -607,22 +602,6 @@ if [ "$source" = npm ]; then
         1) c0_wrong="${c0_wrong:+$c0_wrong; }$envoy_commit does not hold the device login $login_commit" ;;
         *) c0_unread="${c0_unread:+$c0_unread; }git merge-base could not read whether $envoy_commit holds $login_commit" ;;
       esac
-      # The recorded field: a build of the release's commit, as the release builds it, against
-      # the installed bundles.
-      mkdir -p "$work/release-src"
-      if git -C "$checkout" archive --format=tar "$envoy_commit" 2>/dev/null </dev/null |
-        tar -x -C "$work/release-src" 2>/dev/null &&
-        (cd "$work/release-src" && env -i "PATH=$tools_path" "HOME=$work/npm-home" \
-          "TMPDIR=${TMPDIR:-/tmp}" bun install --frozen-lockfile >"$work/release-install.log" 2>&1 </dev/null) &&
-        (cd "$work/release-src/packages/claude-envoy" && env -i "PATH=$tools_path" \
-          "HOME=$work/npm-home" "TMPDIR=${TMPDIR:-/tmp}" bun scripts/build.ts --codex-out \
-          "$work/release-build" >"$work/release-build.log" 2>&1 </dev/null); then
-        compared=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" bun \
-          "$here/outside-agent-codex-provenance.ts" compare "$work/release-build" "$plugin_root" 2>/dev/null </dev/null)
-        c0_built="a build of $envoy_commit against the installed bundles: $(json_field equal "$compared") equal, differ: $(json_field differ "$compared"), only in the build: $(json_field only_built "$compared"), only installed: $(json_field only_installed "$compared")"
-      else
-        c0_built="no build of $envoy_commit: $(text_of "$work/release-build.log") $(text_of "$work/release-install.log")"
-      fi
     fi
   fi
 fi
@@ -646,15 +625,7 @@ codex_pane() { tmux -S "$work/tmux-$1.sock" capture-pane -p -J -t codex 2>/dev/n
 # codex_alive RUN: whether RUN's Codex still runs.
 codex_alive() { tmux -S "$work/tmux-$1.sock" has-session -t codex 2>/dev/null </dev/null; }
 # codex_stop RUN: stops RUN's tmux server and waits up to 10 s for its Codex to exit.
-codex_stop() {
-  local sock="$work/tmux-$1.sock" pane _
-  pane=$(tmux -S "$sock" display-message -p -t codex '#{pane_pid}' 2>/dev/null </dev/null)
-  tmux -S "$sock" kill-server 2>/dev/null </dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
-    sleep 1
-  done
-}
+codex_stop() { stop_tmux "$work/tmux-$1.sock"; }
 # screen_text TEXT: TEXT's lines that are not blank, joined, at most 300 characters.
 screen_text() {
   local line out=''
@@ -666,25 +637,38 @@ EOF
   out=$(cell "$out")
   printf '%s' "${out:0:300}"
 }
-# choose RUN LABEL: on the menu RUN's pane shows, moves to the entry that reads LABEL and takes it.
-# The entry the menu has chosen is the numbered line holding `›`. False when no entry of LABEL is
-# reached.
+# choose RUN LABEL DEADLINE: on the menu RUN's pane shows, moves to the entry that reads LABEL and
+# takes it. An entry is a line `N. <text>`, and the one the menu has chosen holds `›`. It sends one
+# Down or Up at a time toward LABEL, and the next only once the pane shows the chosen entry moved: a
+# screen that draws late would take the keys sent meanwhile as moves past LABEL. False when the
+# entry is not taken by DEADLINE, because the menu offers none of LABEL or draws no move.
 choose() {
-  local tries=0 line selected
-  while [ "$tries" -lt 10 ]; do
-    tries=$((tries + 1))
-    selected=''
+  local line number chosen target key sent=''
+  while [ "$(now)" -lt "$3" ]; do
+    chosen=''
+    target=''
     while IFS= read -r line; do
-      case $line in *'›'*[0-9].' '*) selected=$line ;; esac
+      case $line in *[0-9]'. '*) ;; *) continue ;; esac
+      number=${line%%. *}
+      number=${number##*[!0-9]}
+      [ -n "$number" ] || continue
+      case $line in *'›'*) chosen=$number ;; esac
+      case $line in *[0-9]". $2"*) target=$number ;; esac
     done <<EOF
 $(codex_pane "$1")
 EOF
-    case $selected in *"$2"*)
-      tmux -S "$work/tmux-$1.sock" send-keys -t codex Enter 2>/dev/null </dev/null
-      return 0
-      ;;
-    esac
-    tmux -S "$work/tmux-$1.sock" send-keys -t codex Down 2>/dev/null </dev/null
+    if [ -n "$chosen" ] && [ -n "$target" ] && [ "$chosen" != "$sent" ]; then
+      if [ "$chosen" -eq "$target" ]; then
+        key=Enter
+      elif [ "$chosen" -lt "$target" ]; then
+        key=Down
+      else
+        key=Up
+      fi
+      tmux -S "$work/tmux-$1.sock" send-keys -t codex "$key" 2>/dev/null </dev/null
+      [ "$key" != Enter ] || return 0
+      sent=$chosen
+    fi
     sleep 1
   done
   return 1
@@ -711,15 +695,21 @@ drive() {
       *'Meet GPT-6 Sol'*) title='Meet GPT-6 Sol' choice=$model_choice ;;
     esac
     if [ -n "$title" ]; then
-      if ! choose "$run" "$choice"; then
-        drive_problem="the screen '$title' offered no '$choice': $(screen_text "$screen")"
+      if ! choose "$run" "$choice" "$deadline"; then
+        drive_problem="the screen '$title' offered no '$choice', or drew no move toward it, within $2 s: $(screen_text "$(codex_pane "$run")")"
         return 1
       fi
       screens="${screens:+$screens; }$run: $title -> $choice"
-      # The screen goes once the choice is taken; it is not answered twice.
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
+      # The screen goes once the choice is taken. It is never answered twice: the leg waits for it
+      # to go, within the start's own bound.
+      while [ "$(now)" -lt "$deadline" ]; do
         case $(codex_pane "$run") in *"$title"*) sleep 1 ;; *) break ;; esac
       done
+      case $(codex_pane "$run") in *"$title"*)
+        drive_problem="the screen '$title' stayed after '$choice' was taken, until $2 s from the start: $(screen_text "$(codex_pane "$run")")"
+        return 1
+        ;;
+      esac
     fi
     sleep 1
   done
@@ -886,15 +876,15 @@ tools_note=''
 [ -z "$tools_line" ] || [ -n "$(json_field dispatch "$tools_line")" ] ||
   tools_note="; Codex listed no dispatch tool to the model"
 
-# C0: the release's provenance; the build comparison is recorded beside it, never judged.
+# C0: the release's provenance and the tree Codex installed.
 if [ "$source" = checkout ]; then
   row C0 "$want0" "the plugin was built from the checkout (OUTSIDE_CODEX_ENVOY_SOURCE=checkout), a development run: no release's provenance is read" UNKNOWN
 elif [ -n "$c0_wrong" ]; then
-  row C0 "$want0" "$c0_wrong${c0_unread:+; $c0_unread}${c0_read:+; read: $c0_read}; recorded: $c0_built" FAIL
+  row C0 "$want0" "$c0_wrong${c0_unread:+; $c0_unread}${c0_read:+; read: $c0_read}" FAIL
 elif [ -n "$c0_unread" ]; then
-  row C0 "$want0" "$c0_unread${c0_read:+; read: $c0_read}; recorded: $c0_built" UNKNOWN
+  row C0 "$want0" "$c0_unread${c0_read:+; read: $c0_read}" UNKNOWN
 else
-  row C0 "$want0" "$c0_read; recorded: $c0_built" PASS
+  row C0 "$want0" "$c0_read" PASS
 fi
 
 # C1: the session on the edge's session list.
