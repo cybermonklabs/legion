@@ -1,5 +1,6 @@
 name: CI job envoy-smoke
 
+# Probe line for cybermonklabs/legion#4915 only: it selects envoy-smoke by paths. Never merged.
 # The steps of ci.yaml's `envoy-smoke` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
