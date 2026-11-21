@@ -109,7 +109,7 @@ type relayLiveRig struct {
 
 // relayLiveOptions changes what newRelayLiveRig starts.
 type relayLiveOptions struct {
-	// stub asks brokertokentest's stand-in about every token in place of the real broker.
+	// stub asks ciphertokentest's stand-in about every token in place of the real broker.
 	stub bool
 	// edgeProjects is ENVOY_EDGE_PROJECTS, relayLiveProject by default, comma-separated.
 	edgeProjects string
@@ -741,8 +741,9 @@ func TestAnOpenSocketClosesAfterAResetRevokesItsLogin(t *testing.T) {
 
 // Row 6: the project-access stand-in stops listing PRIV for S's person. The open socket stays open
 // until its token's expiry, since the token stays live until then, and closes 4401, and the reopen's
-// trade is refused naming the project. Control, in the same row: the other person, kept on the
-// list, is traded a fresh token and opens the socket again.
+// trade is refused naming the project once the broker's answer about the person ages out
+// (projectaccess.CacheTTL from the removal, the bound the broker gives a removal). Control, in the
+// same row: the other person, kept on the list, is traded a fresh token and opens the socket again.
 func TestAnOpenSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 	t.Parallel()
 	rig := newRelayLiveRig(t, relayLiveOptions{})
@@ -754,6 +755,7 @@ func TestAnOpenSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 	rig.register(t, kept, keptToken.token, "epoch-1")
 
 	rig.access.SetRow(relayLiveProject, projectaccesstest.Row{Visibility: "private", Owner: "owner@example.com", Listed: []string{relayLiveOtherPerson}})
+	removedAt := time.Now()
 	closed := requireClosed(t, removedClient, time.Until(removedToken.expires)+relayLiveCloseBound, relaySocketCloseExpired, relaySocketReasonExpired,
 		relayLivePerson+"'s token, after the person left "+relayLiveProject)
 	if early := removedToken.expires.Sub(closed); early > time.Second {
@@ -761,14 +763,19 @@ func TestAnOpenSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 	}
 	requireClosed(t, keptClient, time.Until(keptToken.expires)+relayLiveCloseBound, relaySocketCloseExpired, relaySocketReasonExpired, relayLiveOtherPerson+"'s token")
 
-	if refused := rig.trade(t, removed); refused.status != http.StatusBadRequest || !strings.Contains(refused.description, relayLiveProject) {
-		t.Fatalf("the reopen's trade for %s was answered %d %q, want 400 naming %s", relayLivePerson, refused.status, refused.description, relayLiveProject)
+	refused := rig.trade(t, removed)
+	for deadline := removedAt.Add(projectaccess.CacheTTL + 5*time.Second); refused.status != http.StatusBadRequest || !strings.Contains(refused.description, relayLiveProject); refused = rig.trade(t, removed) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reopen's trade for %s was answered %d %q %s after the removal, want 400 naming %s within %s", relayLivePerson, refused.status, refused.description, time.Since(removedAt).Round(time.Second), relayLiveProject, projectaccess.CacheTTL)
+		}
+		time.Sleep(time.Second)
 	}
+	t.Logf("the reopen's trade was refused %s after the removal", time.Since(removedAt).Round(time.Millisecond))
 	rig.open(t, kept, rig.mustTrade(t, kept).token)
 	rig.requireNoViolation(t)
 }
 
-// Row 7, on brokertokentest's stand-in: the broker answers S's token first with [PRIV], then with
+// Row 7, on ciphertokentest's stand-in: the broker answers S's token first with [PRIV], then with
 // [INFRA PRIV], and a second token first with [PRIV], then with [INFRA]; each change closes the
 // socket 4403 within relayLiveCloseBound. The replicas serve INFRA and PRIV both, so every answer
 // passes the edge's admission and only the comparison with the caller the socket was opened as
