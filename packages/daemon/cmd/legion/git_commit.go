@@ -78,7 +78,7 @@ func gitTrailers(env map[string]string) []gitTrailer {
 // gitCommit is the argument list that `legion git` hands git for a commit, and the stash, if any,
 // that it hands git in place of a message or template git could no longer read (commitStash).
 // keep is a stash whose own descriptor that list names: it must stay open until the exec
-// (execGit). stdin is a stash that is to be git's standard input: it goes onto descriptor 0 before
+// (execWrapped). stdin is a stash that is to be git's standard input: it goes onto descriptor 0 before
 // the exec (asStandardInput). At most one of the two is set.
 type gitCommit struct {
 	args  []string

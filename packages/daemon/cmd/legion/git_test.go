@@ -69,15 +69,22 @@ func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args
 	return trailerRunInput(t, dir, env, strings.NewReader(stdin), name, args...)
 }
 
-// trailerRunInput runs name with args in dir, with env, and with stdin as its standard input: a
-// pipe for any reader but an *os.File, which the command gets as its descriptor 0. It answers the
-// exit status and what the command printed. A command that cannot start, or that runs for a
-// minute, fails the test. The command runs in a process group of its own, and the minute kills the
-// whole group, so a chain of gits that run one another without end stops there too and holds no
-// output pipe open.
+// trailerRunInput runs name with args in dir, with env, and with stdin as its standard input,
+// for at most trailerRunLimit (trailerRunWithin).
 func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, name string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), trailerRunLimit)
+	return trailerRunWithin(t, trailerRunLimit, dir, env, stdin, name, args...)
+}
+
+// trailerRunWithin runs name with args in dir, with env, and with stdin as its standard input: a
+// pipe for any reader but an *os.File, which the command gets as its descriptor 0. It answers the
+// exit status and what the command printed. A command that cannot start, or that runs for limit,
+// fails the test. The command runs in a process group of its own, and limit kills the whole
+// group, so a chain of gits that run one another without end stops there too and holds no output
+// pipe open.
+func trailerRunWithin(t *testing.T, limit time.Duration, dir string, env []string, stdin io.Reader, name string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, stdin
@@ -88,7 +95,7 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("%s %q ran for %s: %s", name, args, trailerRunLimit, errb.String())
+		t.Fatalf("%s %q ran for %s: %s", name, args, limit, errb.String())
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {

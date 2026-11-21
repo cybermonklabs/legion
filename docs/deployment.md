@@ -106,8 +106,8 @@ See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rota
 ## What a pane's `gh`, `git` and `jj` are
 
 A tmux pane's `PATH` is the daemon's own with the state directory's `bin/` put first: its `legion`
-launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that runs `legion git`
-(below). The `jj` a pane runs is the first `jj` on the daemon's `PATH`. The daemon resolves at boot a
+launcher, its `gh`, a script that runs `legion gh`, its `git`, a script that runs `legion git`, and
+its `jj`, a script that runs `legion jj` (below). The daemon resolves at boot a
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
@@ -343,6 +343,103 @@ A release older than the first one that writes `bin/git` leaves `<state_dir>/bin
 and that file names a `legion` that has no `git` command, so every `git` command in a pane fails.
 So before you start the older daemon, remove `<state_dir>/bin/git`. Before you run an older
 `legion controller start`, remove the `bin/git` of its state directory too.
+
+The `jj` in `bin/` runs `legion jj --after <state_dir>/bin` (`packages/daemon/cmd/legion/jj.go`).
+The daemon writes it at boot, unless the first `jj` on the daemon's own `PATH` is the worker
+image's wrapper, `/opt/legion/bin/jj`, which hands each `jj git push` to `legion jj` itself. In
+that case the daemon writes no `jj` and removes one that an earlier boot wrote.
+`legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included, and it
+runs every command but a `jj git push` through that `jj` unchanged.
+Before a `jj git push`, it runs the push step, and every jj command of the step runs with
+`--ignore-working-copy`.
+The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 209).
+The step reads what the push sends from a dry run of the same push, and reads the author and the
+first `Legion-Role` trailer of each of those commits.
+Where a commit's author is not the identity that the table gives the trailer's role, the step
+runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
+It prints one line for each commit it rewrote,
+`legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
+own arguments, but for a revision argument whose meaning the rewrite changed.
+Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
+`--revisions` to the whole set of commits it names, and reads which of its mutable commits that no
+remote bookmark holds are hidden and which is the working-copy commit; a hidden commit whose change
+has one visible commit stands for that commit, and for `@` where that commit is the working-copy
+commit.
+The set the push must send is that set with each commit the step rewrote or rebased, and each
+hidden one that stands for another, replaced by the commit that stands for it.
+Where the step rewrote nothing, every argument reaches the push as written, but for one that names
+a hidden commit standing for another, which gets that set as below.
+Where it rewrote something, every argument is held to its set, whether or not its own commits
+moved: one reaches the push as written only where jj, resolving it again after the rewrite,
+resolves it to that set, such as `@`, a bookmark or a change id of a rewritten commit.
+Any other argument can name other commits once the step has rewritten some, as a change offset
+`<change>/<n>`, `latest(...)`, `mine()` or `author(...)` can, even through another argument's
+rewrite, so the push gets the set as ids joined by ` | `, `@` for the working-copy commit, so that
+the push's own snapshot still resolves it, while that word is under 100,000 bytes.
+Where it would not be, the push gets the primary form, `(<the argument as written>) [~ (<the old
+ids>)] [~ (<the ids it now names and must not>)] [| <the new ids>] [| <the ids it must send and no
+longer names>]`, with each empty part left out, where that word is under 100,000 bytes and jj,
+resolving it once more, finds that it names the set.
+Else a `--change` or `--revisions` argument becomes as many words of that same option as keep each
+under 100,000 bytes, each with a part of the ids, since `jj git push` pushes the union of a
+repeated option; `--named` names one commit.
+Each argument that gets the ids, in one word or several, gets one `legion jj:` line that says so.
+No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
+already, so none passes Linux's 131,072-byte limit on one argument.
+Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
+environment together, with each revision argument counted at the larger of its own word and the
+ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
+author that a dry run refused, to set no other author:
+it prints one `legion jj: could not set the author:` line that names the argument, the count and
+the limit, and the push runs as written, but where that fill ran, after which each revision
+argument is held to its set as above.
+The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
+naming its commits by the ids the step followed them to after the part before it.
+Each of the step's reads of a list of commit or change ids runs once for each part of the list
+under 100,000 bytes, so a push of thousands of commits still runs.
+It changes no commit that a remote bookmark holds and no immutable commit.
+It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
+the table.
+jj rebases such a commit when it sits above a commit that the step rewrote, which gives it a new
+commit id and the step's identity as committer, and it keeps its author.
+A commit with an empty author whose trailer names a role of the table gets that role's author
+too, and `jj git push` still refuses one with no such trailer.
+The step adds no refusal.
+Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
+metaedit of the step ran first, such as the fill of an empty author, after which each revision
+argument is held to its set as above.
+A push that names a commit that no jj command has imported yet, such as one that a `git commit`
+made, has a dry run that the step cannot read: the step's commands import nothing from git, so the
+dry run cannot find the commit, and the push imports it and sends it as it is.
+jj prints a commit id short, as its first 12 hex digits, and the step never has jj resolve such an
+id over the whole repository, hidden commits included: it matches the id against the commits of
+the repository's bookmarks and tags and of the push's revision arguments, or, for jj's refusal of
+a commit with no author, against the mutable commits that no remote holds.
+Two commits of that set whose ids start the same, another issue's under tmux included, make a dry
+run that the step cannot read.
+A commit's timestamps are whole seconds, so a rewrite in the same second as an earlier rewrite of
+the same commit asks jj for a commit that exists already, which jj refuses.
+In a retry of a refused push that names a hidden commit of a divergent change, which the first
+push's rewrite replaced, the step takes the commit that the rewrite made, and the push sends it.
+In any other case, such as a retry after a `jj undo`, the step prints one line, and the push runs
+as after a dry run that the step cannot read.
+A process with no table runs no step, such as a controller or a pane of an earlier release.
+Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
+above to choose the `jj` it runs, and the same push, back with the same words, runs no second step.
+A push that a jj command starts, such as `jj util exec -- jj git push`, is a push of its own and
+runs the step.
+Every `jj` command of a pane starts one `legion` process first.
+Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
+took 95 to 161 ms.
+`legion controller start` writes the same `jj` into the `bin/` of its own state directory, by the
+same rule, for the operator's controller.
+
+A release older than the first one that writes `bin/jj` leaves `<state_dir>/bin/jj` in place,
+and that file runs a `legion jj` command that the older `legion` does not have, so every `jj`
+command in a pane fails until the operator deletes it.
+So before you start the older daemon, remove `<state_dir>/bin/jj`. Before you run an older
+`legion controller start`, remove the `bin/jj` of its state directory too.
 
 No leak guard runs in a pane's `git` or `jj`.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
@@ -587,8 +684,10 @@ provider_keys:
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
   resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
   session it resumes), the git
-  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the identities of the issue's roles that
+  every workflow launch sets for the push step (`LEGION_ROLE_IDENTITIES`), the pointers to the
+  secrets every launch gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the
+  variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,

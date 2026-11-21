@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Legion daemon API contract moves to 209: every workflow role''s pane and pod carries `LEGION_ROLE_IDENTITIES`, one JSON object from each role to the `name` and `email` its App commits as. No schema moves.'
+time: 2026-11-20T05:55:44.071997604Z
+custom:
+    Issue: pr4580

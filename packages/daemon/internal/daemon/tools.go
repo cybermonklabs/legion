@@ -19,12 +19,14 @@ import (
 // daemonTools are the binaries Legion itself runs on the host, or hands a pane: the git and jj of
 // workspace provisioning and removal (internal/workspace), and the real gh every pane's `legion gh`
 // runs, which a pane is told as LEGION_GH_PATH. Boot resolves each once, so no Legion-owned child is
-// a PATH lookup that whatever wrapper heads the operator's PATH could answer. A pane's jj is the
-// first jj on its PATH, the daemon's. Its gh is the launcher directory's `legion gh`, and its git
-// is the launcher directory's `legion git --after` wrapper where workerbin.Install writes one. A
-// daemon started from a pane's shell can resolve that git wrapper here, and workspace jj then runs
-// it as its git.executable-path. That does no harm: the wrapper reaches a real git one exec later,
-// and provisioning makes no commit.
+// a PATH lookup that whatever wrapper heads the operator's PATH could answer. A pane's gh is the
+// launcher directory's `legion gh`, and its git and its jj are the launcher directory's
+// `legion git --after` and `legion jj --after` wrappers where workerbin.Install writes each. A
+// daemon started from a pane's shell can resolve either wrapper here. Workspace jj then runs the
+// git wrapper as its git.executable-path, which does no harm: the wrapper reaches a real git one
+// exec later, and provisioning makes no commit. The jj wrapper does no harm either: `legion jj`
+// runs every command but a push on the next jj unchanged, checkJJVersion reads `jj --version`
+// through it, and provisioning runs no push.
 var daemonTools = []string{"git", "jj", "gh"}
 
 // toolEnv is the daemon's own override for a tool at boot, LEGION_<TOOL>_PATH. A pane is told

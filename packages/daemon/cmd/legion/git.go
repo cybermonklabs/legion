@@ -2,18 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"runtime"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
-
-	"github.com/sjawhar/legion/daemon/internal/lookpath"
 )
 
 // gitUsage is the help of `legion git`, which reads its own arguments (passThrough), --help among
@@ -47,40 +40,16 @@ const wrappedGitAt = "WRAPPED_GIT_AT"
 
 // runGit is `legion git`. Both of Legion's git wrappers run it: the pod's /opt/legion/bin/git
 // hands it a commit with --real /usr/bin/git, and the git first on a tmux pane's PATH hands it
-// every command with --after and its own directory. It finds the subcommand as the pod's wrapper
-// does (gitSubcommand), chooses the git to run (gitAfter for --after), and replaces itself with
-// that git (execGit). It changes the arguments of a commit only (commitWithTrailers). For every
-// other command it prints nothing and starts no other process.
-//
-// main's signal.NotifyContext catches SIGINT and SIGTERM for the whole process. A caught signal
-// would not stop a read that waits (`-F -` from a pipe that stays open, a FIFO with no writer),
-// and a cancelled commit would still be made. So runGit puts back the actions those two had at
-// the process start (signal.Reset): the Go runtime's own, which ends the process as the signal's
-// default action does, or for SIGINT an ignore that the caller set. So an interrupt or a terminate
-// ends a read that waits. A signal that came before that ends runGit with the status a shell reads
-// a death by that signal as (endedBySignal), before it reads anything or runs git.
-//
-// This has a limit. The Go runtime puts its own handler over an ignore that the caller set for
-// each signal it handles, except SIGHUP and SIGINT (sigInstallGoHandler, runtime/signal_unix.go).
-// It does not handle SIGTSTP, SIGTTIN or SIGTTOU (_SigDefault, runtime/sigtab_linux_generic.go).
-// The exec sets each handled signal back to its default action. So where the caller ignores a
-// signal that the runtime handles, such as SIGTERM, SIGPIPE or SIGQUIT, git alone lives through
-// that signal, but legion git and the git it runs die of it. An ignored SIGHUP, SIGINT, SIGTSTP,
-// SIGTTIN or SIGTTOU stays ignored.
+// every command with --after and its own directory. It reads its arguments and puts back the
+// signals' actions (startWrapper), finds the subcommand as the pod's wrapper does
+// (gitSubcommand), chooses the git to run (pickAfter for --after), and replaces itself with that
+// git (execWrapped). It changes the arguments of a commit only (commitWithTrailers). For every
+// other command it prints nothing and starts no other process. An interrupt or a terminate ends
+// a read of the commit's that waits (`-F -` from a pipe that stays open, a FIFO with no writer),
+// so a cancelled commit is never made.
 func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
-	if len(args) > 0 && helpRequested(args[0]) {
-		fmt.Fprint(stderr, gitUsage)
-		return 0
-	}
-	if len(args) < 3 || (args[0] != "--real" && args[0] != "--after") || args[1] == "" || args[2] != "--" {
-		fmt.Fprint(stderr, "legion git: give --real <git> or --after <directory>, then --, then the git arguments\n"+gitUsage)
-		return 2
-	}
-	signal.Reset(os.Interrupt, syscall.SIGTERM)
-	if cause := context.Cause(ctx); cause != nil {
-		if status, ok := endedBySignal(cause); ok {
-			return status
-		}
+	if status, runs := startWrapper(ctx, "git", gitUsage, args, stderr); !runs {
+		return status
 	}
 	gitArgs := args[3:]
 	sub := gitSubcommand(gitArgs)
@@ -88,26 +57,26 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	env := os.Environ()
 	if args[0] == "--real" {
 		if !commit {
-			return execGit(args[1], gitArgs, env, nil, stderr)
+			return execWrapped("legion git", args[1], gitArgs, env, nil, stderr)
 		}
 		route := stashThroughDescriptor
-		if isGitScript(args[1]) {
+		if isScript(args[1]) {
 			route = stashNone
 		}
 		return runCommit(args[1], route, gitReader{path: args[1], globals: gitArgs[:sub]}, gitArgs[sub+1:], env, stderr)
 	}
-	pick, err := gitAfter(args[1], os.Getenv("PATH"), os.Getenv(wrappedGitAt))
+	pick, err := pickAfter("git", args[1], os.Getenv("PATH"), os.Getenv(wrappedGitAt))
 	if err != nil {
 		fmt.Fprintf(stderr, "legion git: %v\n", err)
 		return 127
 	}
-	env = withWrappedGitAt(env, pick.chain)
+	env = withVariable(env, wrappedGitAt, pick.chain.String())
 	if !commit || pick.reentry {
-		return execGit(pick.run, gitArgs, env, nil, stderr)
+		return execWrapped("legion git", pick.run, gitArgs, env, nil, stderr)
 	}
 	helper := pick.helper()
 	if helper == "" {
-		return execGit(pick.run, gitArgs, env, nil, stderr)
+		return execWrapped("legion git", pick.run, gitArgs, env, nil, stderr)
 	}
 	// The helper answers the commit's reads with the chain as it would run it, so a helper that
 	// is a host's compiled wrapper comes back as a re-entry and reaches the git after it.
@@ -115,7 +84,7 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if helper != pick.run {
 		readChain.ran = append(slices.Clone(readChain.ran), helper)
 	}
-	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withWrappedGitAt(os.Environ(), readChain)}
+	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withVariable(os.Environ(), wrappedGitAt, readChain.String())}
 	return runCommit(pick.run, stashOnStandardInput, reader, gitArgs[sub+1:], env, stderr)
 }
 
@@ -132,129 +101,7 @@ func runCommit(path string, route stashRoute, reader gitReader, args, env []stri
 		fmt.Fprintf(stderr, "legion git: %v\n", err)
 		return 1
 	}
-	return execGit(path, commit.args, env, commit.keep, stderr)
-}
-
-// gitChain is the loop guard's value (wrappedGitAt): reentries, the number of runs in the chain
-// that came back, and ran, the path of each git the chain ran, in order.
-type gitChain struct {
-	reentries int
-	ran       []string
-}
-
-// String is the chain as the variable holds it: `<reentries>:<path>:<path>…`.
-func (c gitChain) String() string {
-	return strconv.Itoa(c.reentries) + ":" + strings.Join(c.ran, ":")
-}
-
-// parseGitChain reads the loop guard's value, and answers what os.Stat says of each listed path
-// that is there. A value of another form is no chain.
-func parseGitChain(value string) (chain gitChain, listed []os.FileInfo) {
-	count, rest, ok := strings.Cut(value, ":")
-	n, err := strconv.ParseUint(count, 10, 31)
-	if !ok || err != nil {
-		return gitChain{}, nil
-	}
-	chain.reentries = int(n)
-	for _, path := range strings.Split(rest, ":") {
-		if path == "" {
-			continue
-		}
-		chain.ran = append(chain.ran, path)
-		if info, err := os.Stat(path); err == nil {
-			listed = append(listed, info)
-		}
-	}
-	return chain, listed
-}
-
-// withWrappedGitAt is env, a copy of the process's environment, with the loop guard's variable
-// set to chain, in place of any value it held.
-func withWrappedGitAt(env []string, chain gitChain) []string {
-	env = slices.DeleteFunc(env, func(entry string) bool {
-		return strings.HasPrefix(entry, wrappedGitAt+"=")
-	})
-	return append(env, wrappedGitAt+"="+chain.String())
-}
-
-// gitPick is the git that `legion git --after` runs, and what it knows of the gits on PATH.
-type gitPick struct {
-	// run is the git it replaces itself with, and chain the loop guard's value run gets.
-	run   string
-	chain gitChain
-	// reentry is whether this run came back through a host's wrapper that an earlier run of the
-	// chain chose. Such a run adds nothing: the first run added the trailers.
-	reentry bool
-	// after is each git on PATH after the first entry that is the wrapper's own directory, in
-	// PATH order: the gits it may run, and the ones the helper is chosen from.
-	after []gitCandidate
-}
-
-// gitCandidate is a git that gitAfter found on PATH, and script, whether it is a script
-// (isGitScript), which gitAfter reads once.
-type gitCandidate struct {
-	lookpath.Found
-	script bool
-}
-
-// gitAfter chooses the git for `legion git --after own`, from path (PATH), marker (the loop
-// guard's variable) and the kind of each candidate after own, which it reads once (isGitScript),
-// and nothing else. A candidate is each git on path outside own (lookpath.Others). It runs the
-// first candidate after the first entry that is own, or the first candidate when own is on no
-// entry. A script is a candidate too, so a host's own git wrapper still runs.
-//
-// A marker that lists the same file as a candidate is a re-entry, one more than the chain counted.
-// It runs the first candidate after own that the marker does not list, and the helper when the
-// marker lists every one. When the count passes the number of candidates, or the marker lists
-// every candidate and there is no helper, the gits on PATH have run one another and come back:
-// the chain is a loop, and gitAfter refuses it. A marker that lists no candidate is stale: the run
-// starts a new chain. Either way the chain's value for the git it runs lists that git too. The
-// error is the loop, or no git after own on a run that is no re-entry.
-func gitAfter(own, path, marker string) (gitPick, error) {
-	found, ownAt := lookpath.Others(path, "git", own)
-	var pick gitPick
-	for _, f := range found {
-		if f.Index > ownAt {
-			pick.after = append(pick.after, gitCandidate{Found: f, script: isGitScript(f.Path)})
-		}
-	}
-	chain, listed := parseGitChain(marker)
-	isListed := func(f lookpath.Found) bool {
-		return slices.ContainsFunc(listed, func(info os.FileInfo) bool { return os.SameFile(info, f.Info) })
-	}
-	pick.reentry = slices.ContainsFunc(found, isListed)
-	switch {
-	case !pick.reentry:
-		if len(pick.after) == 0 {
-			return gitPick{}, fmt.Errorf("no git on PATH after %s", own)
-		}
-		chain = gitChain{}
-		pick.run = pick.after[0].Path
-	case chain.reentries < len(found):
-		chain.reentries++
-		if i := slices.IndexFunc(pick.after, func(c gitCandidate) bool { return !isListed(c.Found) }); i >= 0 {
-			pick.run = pick.after[i].Path
-		} else {
-			pick.run = pick.helper()
-		}
-	}
-	if pick.run == "" {
-		return gitPick{}, fmt.Errorf("the git programs on PATH after %s run one another in a loop", own)
-	}
-	chain.ran = append(chain.ran, pick.run)
-	pick.chain = chain
-	return pick, nil
-}
-
-// helper is the git that answers a commit's reads: the first git after own that is no script, so
-// a host's script never answers them. It is "" when there is none, and then no trailer is added.
-func (p gitPick) helper() string {
-	for _, c := range p.after {
-		if !c.script {
-			return c.Path
-		}
-	}
-	return ""
+	return execWrapped("legion git", path, commit.args, env, commit.keep, stderr)
 }
 
 // gitSubcommand is the index of git's subcommand in args, or -1 when there is none: the first word
@@ -281,32 +128,4 @@ func gitSubcommand(args []string) int {
 		}
 	}
 	return -1
-}
-
-// isGitScript is whether path is no compiled program (lookpath.Kind): a script with a `#!` line,
-// or a file with neither that line nor a compiled program's magic number, which the kernel refuses
-// and a shell runs with /bin/sh. Either one is a host's wrapper, not the real git. A file this
-// process cannot read counts as a script, since nothing shows that it is a real git.
-func isGitScript(path string) bool {
-	_, compiled, err := lookpath.Kind(path)
-	return err != nil || !compiled
-}
-
-// execGit replaces this process with git at path, argv[0] being path. keep is the file whose
-// descriptor args name in place of a message git could no longer read (commitStash): it stays
-// open across the exec, since its close-on-exec flag is clear. A file the kernel refuses to run
-// (ENOEXEC), a script with no `#!` line, runs as execvp runs it: /bin/sh with argv
-// `/bin/sh <path> <args…>` (glibc's maybe_script_execute). execGit returns only when the exec
-// fails: 127 when path does not exist, as a shell answers, and 126 otherwise.
-func execGit(path string, args, env []string, keep *os.File, stderr io.Writer) int {
-	err := syscall.Exec(path, append([]string{path}, args...), env)
-	if errors.Is(err, syscall.ENOEXEC) {
-		err = syscall.Exec("/bin/sh", append([]string{"/bin/sh", path}, args...), env)
-	}
-	runtime.KeepAlive(keep)
-	fmt.Fprintf(stderr, "legion git: run %s: %v\n", path, err)
-	if errors.Is(err, syscall.ENOENT) {
-		return 127
-	}
-	return 126
 }

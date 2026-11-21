@@ -81,7 +81,8 @@ func resolveLeakCheck(environ []string) (string, error) {
 // rather than at each pane's shim.
 // It also refuses, with runtime.PaneVariableRefusal's reason, every name that function refuses
 // with no value (a variable that places the session a resume reads, one a launcher tells a Claude
-// Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer),
+// Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer,
+// and LEGION_ROLE_IDENTITIES, the identities of the issue's roles that every workflow launch sets),
 // since the shim exports a provider key into the agent's environment, where it acts as the pane
 // variable of that name; the shim of a pane told such a name itself would also refuse to start
 // over the key.
@@ -125,7 +126,8 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // its role (runtime.GitIdentity.Env), a credential-shaped name, since a secret reaches a pane as a
 // file and never as a value on tmux's command line, every variable runtime.PaneVariableRefusal
 // refuses (one that places the session a resume reads, one a Claude Code pane or a resumed Oh My Pi
-// pane is told after the operator's, a launch secret's pointer, a value that is a URL carrying a
+// pane is told after the operator's, a launch secret's pointer, LEGION_ROLE_IDENTITIES, the
+// identities of the issue's roles that every workflow launch sets, a value that is a URL carrying a
 // password), and a provider key or its pointer, which the shim would then refuse to start over or
 // skip (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed
 // names (composed), which the operator may set because the runtime writes this launch's share into

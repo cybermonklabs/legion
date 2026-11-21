@@ -479,6 +479,64 @@ for variant in no-check internal-error; do
 done
 
 echo
+echo "======== jj-push-author-from-trailer: the push step, in a repository of its own"
+# On the head's image the jj wrapper hands each `jj git push` to `legion jj --real`, whose push
+# step sets the author of each commit the push sends from that commit's first Legion-Role trailer:
+# the identity that LEGION_ROLE_IDENTITIES gives that role (packages/daemon/cmd/legion/jj.go). No
+# push above sets that table, so the step runs for none of them. This case sets the table for its
+# one push alone. One identity makes the commit with `jj new`, and the implementer's identity
+# describes it with `jj commit -m`, which leaves the author as it was. On the head's image the step
+# makes the implementer's identity the author before the push. The base's image has no step, so
+# there the remote commit keeps the first identity as its author. The table names the first
+# identity too, as the tester's, so the step must take the identity of the role the trailer names.
+author_id=jj-push-author-from-trailer
+author_dir=$scratch/runs/$author_id
+author_bare=$author_dir/origin.git
+author_work=$author_dir/work
+author_branch=probe-author-from-trailer
+maker_name='Probe Maker'
+maker_email="maker@$clean_domain"
+implementer_name='Probe Implementer'
+implementer_email="implementer@$clean_domain"
+role_identities=$(printf '{"implementer":{"name":"%s","email":"%s"},"tester":{"name":"%s","email":"%s"}}' \
+  "$implementer_name" "$implementer_email" "$maker_name" "$maker_email")
+must mkdir -p "$author_dir"
+must "$real_git" init -q --bare "$author_bare"
+jj_init "$author_work" "$author_bare"
+jj_base "$author_work"
+must env JJ_USER="$maker_name" JJ_EMAIL="$maker_email" jj -R "$author_work" new
+printf '%s\n' 'a line the implementer wrote' >> "$author_work/probe.txt"
+must env JJ_USER="$implementer_name" JJ_EMAIL="$implementer_email" jj -R "$author_work" commit \
+  -m "$(printf 'probe: a commit the implementer described\n\nLegion-Role: implementer')"
+must jj -R "$author_work" bookmark set "$author_branch" -r @-
+
+echo
+echo "---- $author_id (branch $author_branch)"
+# The author the push starts from, read with the real jj so the wrapper is not in the path of its
+# own observation. A commit whose author is not the first identity here proves nothing.
+author_before=$(/usr/local/bin/jj -R "$author_work" --ignore-working-copy log --no-graph -r @- \
+  -T 'author.name() ++ " <" ++ author.email() ++ ">"')
+check "$author_id the author before the push" "$author_before" "$maker_name <$maker_email>"
+author_out=$(env "PUBLIC_LEAK_CHECK=$clears" "LEGION_ROLE_IDENTITIES=$role_identities" \
+  jj -R "$author_work" git push --remote origin --bookmark "$author_branch" 2>&1)
+author_status=$?
+printf '%s\n' "$author_out" | sed 's/^/      push | /'
+echo "      push exited $author_status"
+author_after=$("$real_git" --git-dir "$author_bare" log -1 --format='%an <%ae>' "refs/heads/$author_branch" 2> /dev/null || echo 'no commit')
+echo "      the remote commit's author: $author_after"
+if [ "$author_status" -eq 0 ]; then author_status_word=zero; else author_status_word=non-zero; fi
+if [ "$arm" = head ]; then
+  want_author="$implementer_name <$implementer_email>"
+  want_rewrite=yes
+else
+  want_author="$maker_name <$maker_email>"
+  want_rewrite=no
+fi
+check "$author_id the push" "$author_status_word" zero
+check "$author_id the remote commit's author" "$author_after" "$want_author"
+check "$author_id names the rewrite" "$(says "$author_out" 'legion jj: implementer: ')" "$want_rewrite"
+
+echo
 echo "======== summary"
 echo "arm: $arm"
 echo "checks: $checks"
