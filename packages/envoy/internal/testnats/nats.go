@@ -606,10 +606,10 @@ func (s *Server) launch(t testing.TB) {
 	}
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
-	if !srv.ReadyForConnections(connectTimeout) {
+	if err := awaitReady(t, srv, s.log); err != nil {
 		srv.Shutdown()
 		srv.WaitForShutdown()
-		t.Fatalf("NATS did not accept connections within %s: %s", connectTimeout, s.log.String())
+		t.Fatalf("NATS did not accept connections: %v: %s", err, s.log.String())
 	}
 	// Before s.srv is set the relay refuses every connection, so no client request reaches the
 	// server before its system account's response timers are set past any test (responseThreshold).
@@ -625,6 +625,36 @@ func (s *Server) launch(t testing.TB) {
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
 	}
+}
+
+// startMargin is how long before the test's own deadline (go test's -timeout) awaitReady stops
+// waiting, so a server that never comes up fails its test, with its log, rather than the binary
+// panicking with every goroutine's stack.
+const startMargin = 30 * time.Second
+
+// awaitReady returns once srv, just started, accepts connections: the server's own readiness
+// (ReadyForConnections), asked every retryInterval. A JetStream start on a loaded machine can take
+// longer than any fixed wait allows: at a load near 1,000, cmd/listener's start of a server took
+// past the 30 s this wait once had, its log ending at the JetStream banner, and failed its test
+// before the test began. So it waits for as long as the test may run, until startMargin before
+// t's deadline when t has one, and with none for as long as the binary does. A server that logged
+// a fatal error, a listener it could not open, will never be ready, and fails at once.
+func awaitReady(t testing.TB, srv *natsserver.Server, log *logCapture) error {
+	deadline, bounded := time.Time{}, false
+	if timed, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, bounded = timed.Deadline(); bounded {
+			deadline = deadline.Add(-startMargin)
+		}
+	}
+	for !srv.ReadyForConnections(retryInterval) {
+		if log.fatalLogged() {
+			return errors.New("the server logged a fatal error, so it will never accept connections")
+		}
+		if bounded && time.Now().After(deadline) {
+			return fmt.Errorf("not ready %s before the test's deadline", startMargin)
+		}
+	}
+	return nil
 }
 
 // flagsMu serialises the calls that meet over natsserver.FlagSnapshot: ConfigureOptions sets it and
@@ -688,8 +718,9 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 
 // logCapture is the server's logger: it keeps every line the server logs, for Server.Log.
 type logCapture struct {
-	mu   sync.Mutex
-	text strings.Builder
+	mu    sync.Mutex
+	text  strings.Builder
+	fatal bool
 }
 
 func (c *logCapture) write(level, format string, args ...any) {
@@ -702,14 +733,26 @@ func (c *logCapture) write(level, format string, args ...any) {
 func (c *logCapture) Noticef(format string, args ...any) { c.write("INF", format, args...) }
 func (c *logCapture) Warnf(format string, args ...any)   { c.write("WRN", format, args...) }
 func (c *logCapture) Errorf(format string, args ...any)  { c.write("ERR", format, args...) }
-func (c *logCapture) Fatalf(format string, args ...any)  { c.write("FTL", format, args...) }
-func (c *logCapture) Debugf(format string, args ...any)  { c.write("DBG", format, args...) }
-func (c *logCapture) Tracef(format string, args ...any)  { c.write("TRC", format, args...) }
+func (c *logCapture) Fatalf(format string, args ...any) {
+	c.write("FTL", format, args...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = true
+}
+func (c *logCapture) Debugf(format string, args ...any) { c.write("DBG", format, args...) }
+func (c *logCapture) Tracef(format string, args ...any) { c.write("TRC", format, args...) }
 
 func (c *logCapture) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.text.String()
+}
+
+// fatalLogged reports whether the server has logged a fatal error.
+func (c *logCapture) fatalLogged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatal
 }
 
 // Start runs a NATS server with JetStream, shut down when the test ends (even when its start
