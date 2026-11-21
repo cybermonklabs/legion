@@ -2,17 +2,18 @@
 # shellcheck source-path=SCRIPTDIR
 # The tailnet leg of the outside agent's acceptance, and the one command that runs both legs: a
 # developer box on the private network runs it, with its project's key as the one argument. It
-# reads the deployed pins and refuses to start unless the secrets broker's build holds the
-# enrollment refusal and Dispatch's build holds the changes the check rests on; makes the scratch
-# project's issue the public leg's GitHub row reads; starts a scratch agent-secrets-helper whose
-# machine login the test person approves from the public leg's browser; starts our peer session;
-# starts the public leg (outside-agent-public.sh, rows P1-P9) on a runner on the public internet;
-# runs rows T1-T4 against the broker's private origin, the one place its enrollment route is
-# served; reads, with a full member's browser session, the positive controls rows P7 and sweep are
-# held to; reads the public leg's TSV; asks the operator, on this terminal, to remove the test
-# person from the project's access list and reads that the test person's live device login stops
-# (T5); and prints the gate. outside-agent-acceptance.md, beside this file, says what each row
-# reads and what the gate holds.
+# reads the deployed pins and Dispatch's serving build, and refuses to start unless the secrets
+# broker's build holds the enrollment refusal and Dispatch's build holds the changes the check
+# rests on; makes the scratch project's issue the public leg's GitHub row reads; starts a scratch
+# agent-secrets-helper whose machine login the test person approves from the public leg's browser;
+# starts our peer session; starts the public leg (outside-agent-public.sh, rows P1-P10) on a runner
+# on the public internet; runs rows T1-T4 against the broker's private origin, the one place its
+# enrollment route is served; reads, with a full member's browser session, the positive controls
+# rows T3, P7 and sweep are held to; reads the public leg's TSV; asks the operator, on this
+# terminal, to remove the test person from the project's access list and reads that the test
+# person's live device login stops (T5); reads the pins and Dispatch's serving build again; and
+# prints the gate. outside-agent-acceptance.md, beside this file, says what each row reads and what
+# the gate holds.
 #
 # It sources three support files from beside it: outside-agent-lib.sh (what both legs share),
 # outside-agent-peer.sh (the peer of P4 and the session outside the project of P6) and
@@ -23,7 +24,11 @@
 #   OUTSIDE_PINS                 the deployed pins, one `name file key` line each for `broker`,
 #                                `dispatch` and `edge-listener`: the configuration file and the
 #                                key whose value is that deployment's image; `#` starts a
-#                                comment. The files are the deployment repository's, at its main.
+#                                comment. With OUTSIDE_PINS_REPO set, each file is a path in that
+#                                repository, read at its main with `gh api`, at the start and again
+#                                at the end; without it, a local file, and row pins-end reads
+#                                UNKNOWN, since a local file cannot show the main moved.
+#   OUTSIDE_PINS_REPO            owner/name of the deployment repository the pins are read from.
 #   OUTSIDE_ENROLL_REFUSAL_COMMIT  the merge commit of the enrollment refusal (a restricted
 #                                member's machine login enrolls nothing), which the broker's
 #                                build must hold.
@@ -32,8 +37,9 @@
 #                                and the change that refuses a restricted member an issue's
 #                                repository.
 #   OUTSIDE_TAILNET_BROKER_URL   the broker's origin on the private network.
-#   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network, where the full member's
-#                                browser session reads T5's access list and the positive controls.
+#   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network: its /healthz names the
+#                                build it serves, and the full member's browser session reads T5's
+#                                access list and the positive controls there.
 #   OUTSIDE_LISTENER_URL         the edge listener, where the peer session registers.
 #   OUTSIDE_INTERNAL_LISTENER_URL  a listener on the private network, where a session outside the
 #                                project (<peer>-foreign) registers for P6's control.
@@ -44,24 +50,27 @@
 #   OUTSIDE_REPOSITORY           owner/name of the repository the scratch project's issue names.
 #   OUTSIDE_SWEEP_PROJECT, OUTSIDE_SWEEP_FULL_TOKEN_FILE, OUTSIDE_SWEEP_CONVERSATION_FILE,
 #   OUTSIDE_SWEEP_WRITE_ISSUE    the read sweep's full-member half (restricted-sweep.sh, row
-#                                sweep): the project the test person must not see, a file holding a
+#                                sweep): the project the test person must not see, which the leg
+#                                also passes to the workflow as `sweep_project`, a file holding a
 #                                full member's bearer for Dispatch's private origin, the
 #                                conversation file of a session that worked in that project alone,
 #                                and a scratch issue of it the writer comments on every 15 s while
 #                                the public leg runs.
 #   OUTSIDE_FULL_COOKIE_FILE     a file holding a full member's browser session at Dispatch's
 #                                private origin, `<name>=<value>` as the Cookie header carries it.
-#                                The positive controls of P7 and of the sweep's GitHub proxy rows
+#                                The positive controls of T3, P7 and the sweep's GitHub proxy rows
 #                                read with it, and the sweep's fills mode reads the proxy with it
-#                                (as SWEEP_FULL_COOKIE), so rows P7 and sweep need it.
+#                                (as SWEEP_FULL_COOKIE), so rows T3, P7 and sweep need it.
 #   OUTSIDE_WORKFLOW_REPO        owner/name of the repository whose workflow runs the public leg;
 #                                OUTSIDE_WORKFLOW names the workflow (outside-edge-e2e.yaml), and
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
-#                                line. The inputs reach `gh workflow run` as JSON on its stdin, never
-#                                its command line; a workflow input is kept with the run, so none
-#                                may be a secret. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on
-#                                blanks, that runs the public leg here instead, for a local stack;
-#                                it gets OUTSIDE_TAILNET_USER_CODE, OUTSIDE_PEER_SESSION,
+#                                line: `invite_url`, the owner's single-use enrollment link for the
+#                                test person, which the workflow masks before any step prints and
+#                                the run spends. The inputs reach `gh workflow run` as JSON on its
+#                                stdin, never its command line, which any account on the box can
+#                                read. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on blanks,
+#                                that runs the public leg here instead, for a local stack; it gets
+#                                OUTSIDE_TAILNET_USER_CODE, OUTSIDE_PEER_SESSION,
 #                                OUTSIDE_SWEEP_FILLS and OUTSIDE_PUBLIC_RESULTS in its environment
 #                                and writes outside-agent-public.tsv and
 #                                outside-edge-revocations.tsv there.
@@ -82,16 +91,22 @@
 # OUTSIDE_LEGION_CHECKOUT, the git checkout the pins row reads commits in (default this file's
 # own); OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for a local stack.
 #
-# T3, the positive control, and the issue run as this box's own: its `agent-secrets` helper and
-# its `dispatch` command, as the caller's environment has them, T3 against the broker
-# OUTSIDE_TAILNET_BROKER_URL names. The scratch helper of T1, T2 and T4, and the one of P7's
-# control, each run with HOME, XDG_RUNTIME_DIR, XDG_STATE_HOME and every AGENT_SECRETS_* path of
-# its own, in one `mktemp -d` directory, so neither shares a key, socket or record with the box's.
+# What each service says of the build it serves: Dispatch's /healthz names `commit`, the legion
+# commit its binary was built from, and `fleet_commit`, the commit every live server process
+# serves (each null when unknown); the broker's and the edge listener's /healthz name a status
+# alone. So Dispatch's serving build is read and held to its pin, and the broker's and the edge
+# listener's builds are their pins'.
+#
+# The issue runs as this box's own `dispatch` command. The scratch helper of T1, T2 and T4, and the
+# full member's helper of T3 and P7's control, each run with HOME, XDG_RUNTIME_DIR, XDG_STATE_HOME
+# and every AGENT_SECRETS_* path of its own, in one `mktemp -d` directory, with
+# OUTSIDE_TAILNET_BROKER_URL as its broker, so neither shares a key, socket or record with the box's
+# and both enroll at the one broker.
 #
 # Output: on stdout a TSV, the header `row want got verdict`, the rows pins, issue, T1-T5, the
-# public leg's P1-P9 as its TSV has them, public (the public leg's own verdict, revocations and
-# end), sweep, and the gate. Progress goes to stderr. A row it could not run reads UNKNOWN naming
-# what it could not read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
+# public leg's P1-P10 as its TSV has them, public (the public leg's own verdict, revocations and
+# end), sweep, pins-end and the gate. Progress goes to stderr. A row it could not run reads UNKNOWN
+# naming what it could not read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
 # otherwise. It prints no secret value: T2 and T3 read the canary's length alone, and the full
 # member's cookie reaches curl in a header file alone.
 #
@@ -168,7 +183,7 @@ mark_word() {
   printf '%s' "${rest%%[ ;]*}"
 }
 
-public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9'
+public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9 P10'
 project=${1:-}
 person=${OUTSIDE_PERSON:-}
 canary=${OUTSIDE_CANARY:-}
@@ -199,7 +214,7 @@ tools="$work/tools"
 emit "row${tab}want${tab}got${tab}verdict"
 
 # skip_from REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
-rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows public sweep"
+rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows public sweep pins-end"
 skip_from() {
   local reason=$1 from=$2 name on=''
   for name in $rest_rows; do
@@ -229,12 +244,23 @@ gate() {
   exit 2
 }
 
-# --- pins: the deployed images, and the commit each was built from. The pins are read once, at
-# the start: no deployment serves the commit it runs, so a re-read at the end could read only the
-# same files again. ---
+# --- pins: the deployed images, the commit each was built from, and the build Dispatch serves. The
+# pins are read at the start and again at the end (row pins-end), from the deployment repository's
+# main when OUTSIDE_PINS_REPO names it. ---
+# pin_file FILE OUT: the pin file FILE into OUT: FILE at OUTSIDE_PINS_REPO's main, read with
+# `gh api`, or a local file; false when it could not be read.
+pin_file() {
+  if [ -n "${OUTSIDE_PINS_REPO:-}" ]; then
+    command -v gh >/dev/null 2>&1 || return 1
+    gh api "repos/$OUTSIDE_PINS_REPO/contents/$1?ref=main" --jq .content 2>/dev/null </dev/null |
+      base64 -d >"$2" 2>/dev/null && [ -s "$2" ]
+  else
+    [ -r "$1" ] && cp "$1" "$2"
+  fi
+}
 # read_pins: sets pins_text, the `name image revision` lines, or pins_problem.
 read_pins() {
-  local line name file key value image revision found
+  local line name file key value image revision found copy
   pins_text=''
   pins_problem=''
   for name in broker dispatch edge-listener; do
@@ -248,15 +274,16 @@ read_pins() {
       [ "$#" -eq 3 ] && [ "$1" = "$name" ] || continue
       file=$2 key=$3 found=yes
       image=''
-      if [ -r "$file" ]; then
+      copy="$work/pin-$name"
+      if pin_file "$file" "$copy"; then
         while IFS= read -r value || [ -n "$value" ]; do
           case $value in *"$key:"*) image=${value#*"$key:"} ;; esac
-        done <"$file"
+        done <"$copy"
       fi
       image=${image#"${image%%[! ]*}"}
       image=${image%"${image##*[! ]}"}
       if [ -z "$image" ]; then
-        pins_problem="${pins_problem:+$pins_problem; }$name: $file holds no $key"
+        pins_problem="${pins_problem:+$pins_problem; }$name: $file${OUTSIDE_PINS_REPO:+ at the main of $OUTSIDE_PINS_REPO} holds no $key"
         continue
       fi
       revision=''
@@ -280,10 +307,29 @@ read_pins() {
     [ -n "$found" ] || pins_problem="${pins_problem:+$pins_problem; }$OUTSIDE_PINS has no $name line"
   done
 }
+# read_serving: Dispatch's /healthz at its private origin, the build it serves: sets
+# serving_commit (`commit`, the commit this process was built from) and serving_fleet
+# (`fleet_commit`, the commit every live server process serves), or serving_problem.
+read_serving() {
+  local answer
+  serving_commit=''
+  serving_fleet=''
+  serving_problem=''
+  answer=$(curl -q -sS -g --noproxy '*' --max-time 15 "$OUTSIDE_TAILNET_DISPATCH_URL/healthz" 2>&1 </dev/null | tr -d ' \n')
+  serving_commit=$(json_field commit "$answer")
+  serving_fleet=$(json_field fleet_commit "$answer")
+  case $serving_commit in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+    *)
+      serving_problem="Dispatch's /healthz names no commit it serves: ${answer:0:200}"
+      serving_commit=''
+      ;;
+  esac
+}
 
 dispatch_commits=${OUTSIDE_DISPATCH_COMMITS:-}
-want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Dispatch's pin holds ${dispatch_commits:-<OUTSIDE_DISPATCH_COMMITS>}; the pins printed"
-problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS)
+want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Dispatch serves its pin's build on every process (/healthz commit and fleet_commit), and that build holds ${dispatch_commits:-<OUTSIDE_DISPATCH_COMMITS>}; the pins printed"
+problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$project" ] || problem="${problem:+$problem; }the project key (\$1) is not given"
 [ -n "$work" ] || problem="${problem:+$problem; }mktemp -d made no scratch directory"
 if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
@@ -300,6 +346,9 @@ if [ -n "$pins_problem" ]; then
   skip_from "the pins were not read" issue
   gate
 fi
+pins_start=$pins_text
+read_serving
+serving_start=$serving_commit
 broker_revision=''
 dispatch_revision=''
 while IFS=' ' read -r name image revision; do
@@ -329,36 +378,47 @@ holds() {
 # The broker's build must hold the enrollment refusal (T2), and Dispatch's build each commit
 # OUTSIDE_DISPATCH_COMMITS names: the change that gives no broker token the approve scope, which
 # P7's refusal and its control rest on, and the change that refuses a restricted member an issue's
-# repository, which decides the repositories P5 and the sweep's GitHub proxy rows read.
+# repository, which decides the repositories P5 and the sweep's GitHub proxy rows read. Dispatch's
+# build is the one its /healthz says it serves, which must be its pin's and every process's: a
+# deployment that serves another build than its pin, or is half rolled out, holds the gate.
 lacks=''
-problem=''
+problem=$serving_problem
+dispatch_build=${serving_commit:-$dispatch_revision}
+if [ -n "$serving_commit" ]; then
+  case $serving_commit in
+    "$dispatch_revision"*) ;;
+    *) problem="Dispatch serves $serving_commit, and its pin names $dispatch_revision" ;;
+  esac
+  [ "$serving_fleet" = "$serving_commit" ] ||
+    problem="${problem:+$problem; }not every Dispatch process serves $serving_commit: fleet_commit is $serving_fleet"
+fi
 read -r -a dispatch_shas <<<"$dispatch_commits"
 if ! command -v git >/dev/null 2>&1; then
-  problem='git not on PATH'
+  problem="${problem:+$problem; }git not on PATH"
 else
   held=$(holds "$broker_revision" "$commit")
   case $held in
     yes) ;;
     no) lacks="the broker's build $broker_revision does not hold $commit" ;;
-    *) problem=$held ;;
+    *) problem="${problem:+$problem; }$held" ;;
   esac
   for sha in "${dispatch_shas[@]}"; do
-    held=$(holds "$dispatch_revision" "$sha")
+    held=$(holds "$dispatch_build" "$sha")
     case $held in
       yes) ;;
-      no) lacks="${lacks:+$lacks; }Dispatch's build $dispatch_revision does not hold $sha" ;;
+      no) lacks="${lacks:+$lacks; }Dispatch's build $dispatch_build does not hold $sha" ;;
       *) problem="${problem:+$problem; }$held" ;;
     esac
   done
 fi
-pins_line=$(printf '%s' "$pins_text" | tr '\n' ';')
+pins_line="$(printf '%s' "$pins_text" | tr '\n' ';') Dispatch serves ${serving_commit:-no commit read} (fleet ${serving_fleet:-none})"
 if [ -n "$lacks" ]; then
   row pins "$want_pins" "$lacks${problem:+; $problem}; $pins_line" FAIL
   skip_from "a pin lacks a change the check needs, so the legs do not start" issue
   gate
 elif [ -n "$problem" ]; then
   row pins "$want_pins" "$problem; $pins_line" UNKNOWN
-  skip_from "whether the pins hold the changes the check needs is unread" issue
+  skip_from "the builds the check runs against are not read as it needs: $problem" issue
   gate
 fi
 row pins "$want_pins" "$pins_line" PASS
@@ -454,7 +514,7 @@ start_login() {
       case $line in 'machine login code: '*) login_code=${line#machine login code: } ;; esac
     done <"$1/login.log"
     [ -z "$login_code" ] || break
-    kill -0 "$login_pid" 2>/dev/null || break
+    running_child "$login_pid" || break
     sleep 1
   done
   [ -n "$login_code" ] ||
@@ -564,6 +624,8 @@ else
     public_problem="not started: $problem"
   else
     inputs="{\"checks\":\"all\",\"project\":$(json_string "$project"),\"peer_session\":$(json_string "$peer"),\"tailnet_user_code\":$(json_string "$code")"
+    # The sweep's project goes with its fills: the runner's half of the sweep reads that project.
+    [ -z "${OUTSIDE_SWEEP_PROJECT:-}" ] || inputs="$inputs,\"sweep_project\":$(json_string "$OUTSIDE_SWEEP_PROJECT")"
     [ -z "$sweep_fills" ] || inputs="$inputs,\"sweep_fills\":$(json_string "$sweep_fills")"
     while IFS= read -r pair; do
       case $pair in
@@ -592,14 +654,18 @@ want_t1="the scratch helper's machine login completes: its machine file holds a 
 credential=''
 if [ -n "$helper_problem" ]; then
   row T1 "$want_t1" "$helper_problem" UNKNOWN
+elif [ -n "$public_problem" ]; then
+  # Only the public leg's browser approves the code, so with no public leg nothing will.
+  row T1 "$want_t1" "not run: only the public leg approves code $code, and it did not start: $public_problem" UNKNOWN
 else
   say "T1: waiting for the code $code to be approved (the code waits 15 minutes)"
   deadline=$(($(now) + 960))
-  while kill -0 "$scratch_login_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 2; done
+  while running_child "$scratch_login_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 2; done
   exited=''
-  if ! kill -0 "$scratch_login_pid" 2>/dev/null; then
+  if ! running_child "$scratch_login_pid"; then
     wait "$scratch_login_pid"
     exited=$?
+    forget "$scratch_login_pid"
   fi
   [ ! -f "$scratch/machine.json" ] || credential=$(json_field credential_id "$(tr -d ' \n' <"$scratch/machine.json")")
   listed=$(env -i "${scratch_env[@]}" agent-secrets machine list --json 2>&1 </dev/null)
@@ -611,7 +677,7 @@ else
     # approved it, which is a missing step, not a crossing. A denial, or any other end, is.
     case $(tr '\n' ' ' <"$scratch/login.log") in
       *'machine login: expired'*)
-        row T1 "$want_t1" "code $code was never approved: the login expired${public_problem:+; $public_problem}" UNKNOWN
+        row T1 "$want_t1" "code $code was never approved: the login expired" UNKNOWN
         ;;
       *) row T1 "$want_t1" "machine login exited $exited: $(text_of "$scratch/login.log")" FAIL ;;
     esac
@@ -706,39 +772,23 @@ else
   esac
 fi
 
-# --- T3: the positive control, the box's own helper granted the canary at once, by the broker
-# OUTSIDE_TAILNET_BROKER_URL names: the one T2's refusal came from. ---
-want_t3="a fresh session enrolled through this box's own helper is granted ${canary:-<OUTSIDE_CANARY>} at once by ${OUTSIDE_TAILNET_BROKER_URL:-<OUTSIDE_TAILNET_BROKER_URL>}, a value 64 long"
-problem=$(lacking OUTSIDE_CANARY OUTSIDE_TAILNET_BROKER_URL)
-[ -n "$problem" ] || problem=$(tool_problem agent-secrets)
-if [ -n "$problem" ]; then
-  row T3 "$want_t3" "$problem" UNKNOWN
-else
-  AGENT_SECRETS_URL=$OUTSIDE_TAILNET_BROKER_URL agent-secrets register --session-id "outside-e2e-t3-$nonce" \
-    --wait 30 --exec -- sh "$work/length.sh" "$canary" >"$work/t3.out" 2>"$work/t3.err" </dev/null
-  read_length "$work/t3.out"
-  case $request_exit:$length in
-    0:64) row T3 "$want_t3" "granted at once, a value 64 long" PASS ;;
-    0:*[0-9]*) row T3 "$want_t3" "granted, a value $length long" FAIL ;;
-    75:*) row T3 "$want_t3" "the request waits for a person's approval (exit 75), not granted at once" FAIL ;;
-    77:*) row T3 "$want_t3" "the request was denied (exit 77): $request_said" FAIL ;;
-    *) row T3 "$want_t3" "request exit ${request_exit:-none}, length ${length:-none}: $request_said $(text_of "$work/t3.err")" UNKNOWN ;;
-  esac
-fi
-
-# --- P7's positive control. No broker token approves, the full member's own included, so the 403
-# OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token says something about that token only
-# where a browser session is answered on the same routes. The full member's browser mints a
-# personal agent token (201), revoked again at once, and approves a machine login (200), a scratch
-# helper's whose operator is that member, revoked again at once. Without both answers P7 reads
+# --- The full member's helper, the positive control of T3 and of P7. No broker token approves, the
+# full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token
+# says something about that token only where a browser session is answered on the same routes. The
+# full member's browser mints a personal agent token (201), revoked again at once, and approves a
+# machine login (200) of a scratch helper whose operator is that member and whose broker is
+# OUTSIDE_TAILNET_BROKER_URL, the broker T2's scratch helper enrolls at. T3 enrolls through that
+# helper, and then its login is revoked and the helper stopped. Without both answers P7 reads
 # UNKNOWN. The mint's answer, the one place the token's plaintext is shown, is removed as soon as
 # its id is read. ---
 p7_control=''
 p7_control_problem=$browser_problem
 [ -n "$p7_control_problem" ] || p7_control_problem=$(lacking OUTSIDE_TAILNET_BROKER_URL)
 [ -n "$p7_control_problem" ] || p7_control_problem=$(tool_problem agent-secrets agent-secrets-helper)
+control_ready=''
+control_env=()
 if [ -z "$p7_control_problem" ]; then
-  say "P7's control: the full member's browser mints an agent token and approves a machine login"
+  say "the full member's helper: the browser mints an agent token and approves a machine login"
   printf '{"name":"outside-e2e-control-%s"}\n' "$nonce" >"$work/mint-body.json"
   minted=$(browser POST /api/v1/me/agent-tokens "$work/mint.json" "$work/mint-body.json")
   token_id=$(json_field id "$(tr -d ' \n' <"$work/mint.json" 2>/dev/null)")
@@ -747,9 +797,12 @@ if [ -z "$p7_control_problem" ]; then
   [ -z "$token_id" ] || dropped=$(browser DELETE "/api/v1/me/agent-tokens/$token_id" "$work/mint-revoke.json")
   control="$work/control"
   helper_env "$control" "$full_login"
+  control_env=("${helper_vars[@]}")
   start_login "$control"
+  control_login_pid=$login_pid
+  control_helper_pid=$helper_pid
   approved=''
-  revoked=none
+  control_credential=''
   if [ -n "$login_problem" ]; then
     approved="no code: $login_problem"
   else
@@ -761,22 +814,58 @@ if [ -z "$p7_control_problem" ]; then
     else
       approved=$(browser POST "/api/v1/credential-requests/$record/approve" "$work/approve.json" "$work/code-body.json")
       control_credential=$(json_field credential_id "$(tr -d ' \n' <"$work/approve.json" 2>/dev/null)")
-      if [ -n "$control_credential" ]; then
-        revoked=$(browser POST "/api/v1/machine-logins/$control_credential/revoke" "$work/control-revoke.json")
-      else
-        approved="$approved, with no credential_id: $(text_of "$work/approve.json")"
-      fi
+      [ -n "$control_credential" ] || approved="$approved, with no credential_id: $(text_of "$work/approve.json")"
     fi
   fi
-  [ -z "$login_pid" ] || stop_child "$login_pid"
-  stop_child "$helper_pid"
-  case $revoked in 2??) ;; *) say "P7's control: the control's machine login was not revoked ($revoked)" ;; esac
-  case $dropped in 2??) ;; *) say "P7's control: the control's agent token was not revoked ($dropped)" ;; esac
+  # The approved login completes and writes its machine file; then the helper can enroll.
+  if [ -n "$control_credential" ]; then
+    deadline=$(($(now) + 30))
+    while running_child "$control_login_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+    if ! running_child "$control_login_pid"; then
+      wait "$control_login_pid" && control_ready=yes
+      forget "$control_login_pid"
+    fi
+  fi
   case $minted:$approved in
-    201:2??) p7_control="the full member's browser minted an agent token, 201 (revoked: $dropped), and approved a machine login, $approved (revoked: $revoked)" ;;
+    201:2??) p7_control="the full member's browser minted an agent token, 201 (revoked: $dropped), and approved a machine login, $approved" ;;
     201:*) p7_control_problem="the full member's browser approved no machine login: $approved" ;;
     *) p7_control_problem="the full member's browser mint of an agent token answered $minted; the approve: $approved" ;;
   esac
+fi
+
+# --- T3: the positive control of T2: a fresh session enrolled through the full member's helper,
+# whose broker is OUTSIDE_TAILNET_BROKER_URL, the broker T2's refusal came from, is granted the
+# canary at once. The broker a session enrolls at is its helper's (the helper enrolls under its own
+# AGENT_SECRETS_URL), so the helper is the one this leg started with that URL. ---
+want_t3="a fresh session enrolled through a full member's scratch helper whose broker is ${OUTSIDE_TAILNET_BROKER_URL:-<OUTSIDE_TAILNET_BROKER_URL>} is granted ${canary:-<OUTSIDE_CANARY>} at once, a value 64 long"
+problem=$(lacking OUTSIDE_CANARY)
+[ -n "$problem" ] || problem=$p7_control_problem
+[ -n "$problem" ] || [ -n "$control_ready" ] || problem="the full member's machine login did not complete within 30 s of its approval"
+if [ -n "$problem" ]; then
+  row T3 "$want_t3" "no full member's helper at the broker: $problem" UNKNOWN
+else
+  env -i "${control_env[@]}" agent-secrets register --session-id "outside-e2e-t3-$nonce" \
+    --wait 30 --exec -- sh "$work/length.sh" "$canary" >"$work/t3.out" 2>"$work/t3.err" </dev/null
+  read_length "$work/t3.out"
+  case $request_exit:$length in
+    0:64) row T3 "$want_t3" "granted at once, a value 64 long" PASS ;;
+    0:*[0-9]*) row T3 "$want_t3" "granted, a value $length long" FAIL ;;
+    75:*) row T3 "$want_t3" "the request waits for a person's approval (exit 75), not granted at once" FAIL ;;
+    77:*) row T3 "$want_t3" "the request was denied (exit 77): $request_said" FAIL ;;
+    *) row T3 "$want_t3" "request exit ${request_exit:-none}, length ${length:-none}: $request_said $(text_of "$work/t3.err")" UNKNOWN ;;
+  esac
+fi
+
+# The full member's helper has served its two controls: its login is revoked, and it stops.
+if [ -n "${control_helper_pid:-}" ]; then
+  revoked=none
+  [ -z "${control_credential:-}" ] ||
+    revoked=$(browser POST "/api/v1/machine-logins/$control_credential/revoke" "$work/control-revoke.json")
+  [ -z "${control_login_pid:-}" ] || stop_child "$control_login_pid"
+  stop_child "$control_helper_pid"
+  case $revoked in 2??) ;; *) say "the full member's helper's machine login was not revoked ($revoked)" ;; esac
+  case $dropped in 2??) ;; *) say "the control's agent token was not revoked ($dropped)" ;; esac
+  [ -z "$p7_control" ] || p7_control="$p7_control (revoked: $revoked)"
 fi
 
 # --- T5's removal, during the public run's T5 window: the public leg tells the peer the window is
@@ -816,7 +905,7 @@ public_running() {
     esac
     return 0
   fi
-  [ -n "$public_pid" ] && kill -0 "$public_pid" 2>/dev/null
+  [ -n "$public_pid" ] && running_child "$public_pid"
 }
 removal_from=''
 removal_to=''
@@ -828,8 +917,12 @@ t5_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL)
 if [ -z "$t5_problem" ]; then
   say "T5: waiting for the public leg to open its window"
   opened=''
-  while [ -z "$opened" ] && public_running; do
-    case $(peer_text) in *'outside-e2e t5-open '*) opened=yes ;; *) sleep 5 ;; esac
+  # The window line is read before whether the public leg still runs: a leg that opened its window
+  # and has since ended still opened it.
+  while [ -z "$opened" ]; do
+    case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
+    public_running || break
+    sleep 5
   done
   before=$(listed_now)
   if [ -z "$opened" ]; then
@@ -867,12 +960,13 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
   deadline=$(($(now) + 3600))
-  while kill -0 "$public_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
-  if kill -0 "$public_pid" 2>/dev/null; then
+  while running_child "$public_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
+  if running_child "$public_pid"; then
     public_problem="the public leg's command had not ended within an hour"
   else
     wait "$public_pid"
     public_end=$?
+    forget "$public_pid"
   fi
 fi
 # The public leg has ended, so the sweep's writer has nothing more to show it.
@@ -939,6 +1033,15 @@ else
   lags=''
   wrong=''
   unread=''
+  # A trade answered after the removal's bound fails T5 even where no trade was refused: the
+  # public leg keeps the time of the last answered trade (last_answered_at), and a removal the list
+  # confirms stops every trade within 325 s of its second clock at the latest.
+  agent_got=$(public_part T5-agent)
+  agent_got=${agent_got#*"$tab"}
+  last_answered=$(mark last_answered_at "$agent_got")
+  if [ -n "$last_answered" ] && [ "$after" = false ] && [ $((last_answered - removal_to)) -gt 325 ]; then
+    wrong="T5-agent: a trade was answered $((last_answered - removal_to)) s after the removal, past 325 s"
+  fi
   for part in T5-agent:refused_at:325 T5-agent:socket_closed_at:325 T5-cookie:at:30 T5-passkey:at:325; do
     name=${part%%:*}
     rest=${part#*:}
@@ -978,7 +1081,7 @@ else
   fi
 fi
 
-# --- P1-P9 as the public leg's TSV has them, each held to what this leg saw beside it. ---
+# --- P1-P10 as the public leg's TSV has them, each held to what this leg saw beside it. ---
 for name in $public_rows; do
   line=''
   if [ -z "$public_problem" ]; then
@@ -1095,5 +1198,25 @@ fi
 
 # --- sweep (outside-agent-sweep.sh). ---
 sweep_row
+
+# --- pins-end: the builds the legs ran against did not move between them. The pins are read again
+# from the deployment repository's main, and Dispatch's /healthz again; a pin that moved, or a
+# Dispatch that serves another build than at the start, holds the gate. ---
+want_pins_end="the pins read again at the end, from ${OUTSIDE_PINS_REPO:-<OUTSIDE_PINS_REPO>}'s main, are those read at the start, and Dispatch serves the build it served at the start"
+if [ -z "${OUTSIDE_PINS_REPO:-}" ]; then
+  row pins-end "$want_pins_end" "OUTSIDE_PINS_REPO is unset: the pins are local files, so whether the deployment repository's main moved during the run is not read" UNKNOWN
+else
+  read_pins
+  read_serving
+  if [ -n "$pins_problem" ] || [ -n "$serving_problem" ]; then
+    row pins-end "$want_pins_end" "not read again: $pins_problem${serving_problem:+${pins_problem:+; }$serving_problem}" UNKNOWN
+  elif [ "$pins_text" != "$pins_start" ]; then
+    row pins-end "$want_pins_end" "a pin moved between the legs: at the start $(printf '%s' "$pins_start" | tr '\n' ';'), at the end $(printf '%s' "$pins_text" | tr '\n' ';')" UNKNOWN
+  elif [ "$serving_commit" != "$serving_start" ] || [ "$serving_fleet" != "$serving_commit" ]; then
+    row pins-end "$want_pins_end" "Dispatch served $serving_start at the start and serves $serving_commit (fleet ${serving_fleet:-none}) at the end" UNKNOWN
+  else
+    row pins-end "$want_pins_end" "the same pins at the end; Dispatch still serves $serving_commit on every process" PASS
+  fi
+fi
 
 gate

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
-# The public leg of the outside agent's acceptance, rows P1 to P9: what an outside person's agent
+# The public leg of the outside agent's acceptance, rows P1 to P10: what an outside person's agent
 # does and is refused from the public internet, off the private network, through the three edge
 # origins alone. A workflow on a runner on the public internet runs it after its own browser has
 # signed the test person in. outside-agent-acceptance.md, beside this file, says what each row
@@ -47,7 +47,7 @@
 # (default 900), how long P5 waits for an event; OUTSIDE_T5_SECONDS (default 1200), the longest
 # the T5 window stays open.
 #
-# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P9, the rows
+# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P10, the rows
 # revocations, T5-agent, T5-cookie and T5-passkey, and a last `verdict` line. Progress goes to
 # stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it could not run, its `got` naming what
 # it could not read, never PASS. A row quotes no output of an operator's command, which may print
@@ -239,7 +239,7 @@ else
       case $line in *'and enter the code '*) code=${line##*and enter the code } ;; esac
     done <"$work/p2.log"
     [ -z "$code" ] || break
-    kill -0 "$p2_pid" 2>/dev/null || break
+    running_child "$p2_pid" || break
     sleep 1
   done
   if [ -z "$code" ]; then
@@ -255,11 +255,12 @@ else
     p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
     deadline=$(($(now) + 300))
-    while kill -0 "$p2_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+    while running_child "$p2_pid" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
     exited=''
-    if ! kill -0 "$p2_pid" 2>/dev/null; then
+    if ! running_child "$p2_pid"; then
       wait "$p2_pid"
       exited=$?
+      forget "$p2_pid"
     fi
     mode=''
     # The mode as ls prints it: stat's flags differ between GNU and BSD, and macOS ships BSD's.
@@ -555,6 +556,7 @@ else
   refused publish "notifications.dispatch.issue.$project.$project-1.comment.created" topic_not_published
   say "P5: waiting for the event probe"
   wait "$event_pid" 2>/dev/null
+  forget "$event_pid"
   event=$(cat "$work/p5.event" 2>/dev/null)
   status=$(json_field status "$event")
   delivered=$(json_field event "$event")
@@ -766,6 +768,58 @@ else
   esac
 fi
 
+# --- P10: no live view of the outside session reaches Dispatch. A session's live view is its
+# agentstream frames, which Dispatch reads for its own people's sessions. As the Oh My Pi session's
+# own id at the edge, a publish of agentstream.<session>.frames is refused topic_not_published, an
+# interest in agentstream.> topic_not_in_project, and a relay sub of agentstream.<session>.>
+# subject_not_granted. It runs after P8, since its interest and its relay socket, made as that
+# session, replace the session's registration and socket. ---
+want10="as ${session_id:-<the Oh My Pi session>} at ${listener:-<OUTSIDE_LISTENER_URL>}: publish agentstream.<session>.frames refused topic_not_published; interest agentstream.> refused topic_not_in_project; relay sub agentstream.<session>.> refused subject_not_granted"
+problem=$(lacking OUTSIDE_LISTENER_URL)
+[ -n "$problem" ] || problem=$(probe_problem)
+[ -n "$problem" ] || [ -n "$session_id" ] ||
+  problem="not run: P4 found no Oh My Pi session at the edge, whose live view this row asks for"
+if [ -n "$problem" ]; then
+  row P10 "$want10" "$problem" UNKNOWN
+else
+  wrong=''
+  unread=''
+  # live_refused KIND TOPIC CODE: KIND (publish or interest) of TOPIC as the session is 403 CODE.
+  live_refused() {
+    local answer status
+    answer=$(probe_as=$session_id probe "$1" "$2")
+    status=$(json_field status "$answer")
+    if [ -n "$(unknown_of "$answer")" ] || [ -z "$status" ]; then
+      unread="${unread:+$unread; }$1 $2: ${answer:0:200}"
+    elif [ "${status#5}" != "$status" ]; then
+      unread="${unread:+$unread; }$1 $2 answered $status, so the edge could not decide it"
+    elif [ "$status" != 403 ] || [ "$(json_field code "$answer")" != "$3" ]; then
+      wrong="${wrong:+$wrong; }$1 $2 answered $status $(json_field code "$answer"), not 403 $3"
+    fi
+  }
+  live_refused publish "agentstream.$session_id.frames" topic_not_published
+  live_refused interest 'agentstream.>' topic_not_in_project
+  socket=$(probe_as=$session_id probe relay-sub "agentstream.$session_id.>")
+  granted=$(json_field granted "$socket")
+  if [ -n "$(unknown_of "$socket")" ] || [ -z "$granted" ]; then
+    unread="${unread:+$unread; }the relay sub of agentstream.$session_id.>: ${socket:0:200}"
+  elif [ "$granted" = true ]; then
+    wrong="${wrong:+$wrong; }a relay sub of agentstream.$session_id.> was granted"
+  else
+    case $socket in *subject_not_granted*) ;; *)
+      wrong="${wrong:+$wrong; }the relay sub of agentstream.$session_id.> was refused with $(json_field code "$socket")"
+      ;;
+    esac
+  fi
+  if [ -n "$wrong" ]; then
+    row P10 "$want10" "$wrong${unread:+; $unread}" FAIL
+  elif [ -n "$unread" ]; then
+    row P10 "$want10" "$unread" UNKNOWN
+  else
+    row P10 "$want10" "the publish, the interest and the relay sub each refused by its code" PASS
+  fi
+fi
+
 # --- revocations: before the window, while the person's cookie still reads their own list, the
 # workflow's OUTSIDE_REVOKE_COMMAND (a command line, split on blanks) revokes every device login
 # the run approved but P2's, which it is told as OUTSIDE_EDGE_REVOKE_KEEP. After the owner's removal
@@ -833,20 +887,26 @@ else
   refusal=''
   refusals=0
   answered_after=''
+  unread_after=0
+  last_answered_at=''
   socket_pid=''
   socket_log=''
   sockets=0
   socket_unread=''
   while [ "$(now)" -lt "$deadline" ]; do
     answer=$(probe trade)
-    if [ "$(json_field traded "$answer")" = false ]; then
-      refused_at=$(now)
-      refusal=$answer
-      refusals=1
-      break
-    fi
+    case $(json_field traded "$answer") in
+      false)
+        refused_at=$(now)
+        refusal=$answer
+        refusals=1
+        break
+        ;;
+      # Each answered trade's time: the tailnet leg holds the last one to the removal's bound.
+      true) last_answered_at=$(now) ;;
+    esac
     # A socket that ended is opened again with a fresh token, as the agent's own would be.
-    if [ -z "$socket_unread" ] && { [ -z "$socket_pid" ] || ! kill -0 "$socket_pid" 2>/dev/null; }; then
+    if [ -z "$socket_unread" ] && { [ -z "$socket_pid" ] || ! running_child "$socket_pid"; }; then
       sockets=$((sockets + 1))
       socket_log="$work/t5-socket-$sockets.log"
       probe_as="outside-e2e-t5-$nonce" probe_exec hold "$t5_seconds" >"$socket_log" &
@@ -857,13 +917,15 @@ else
     fi
     sleep 10
   done
-  # The socket open at the refusal, watched until it closes or 325 s pass, the trades going on.
+  # The socket open at the refusal, watched until it closes or 325 s pass, the trades going on. A
+  # later trade that got no readable answer (no status, a malformed line, no broker reached) is
+  # neither a refusal nor an answer, so "no later trade is answered" is not read while one stands.
   socket_open=''
   socket_opened_at=''
   closed_at=''
   close_code=''
   if [ -n "$refused_at" ]; then
-    if [ -z "$socket_unread" ] && [ -n "$socket_pid" ] && kill -0 "$socket_pid" 2>/dev/null; then
+    if [ -z "$socket_unread" ] && [ -n "$socket_pid" ] && running_child "$socket_pid"; then
       socket_open=yes
     fi
     while [ "$(now)" -le $((refused_at + 325)) ]; do
@@ -872,8 +934,9 @@ else
       case $(json_field traded "$answer") in
         false) refusals=$((refusals + 1)) ;;
         true) [ -n "$answered_after" ] || answered_after=$(now) ;;
+        *) unread_after=$((unread_after + 1)) ;;
       esac
-      if [ -z "$socket_open" ] || ! kill -0 "$socket_pid" 2>/dev/null; then break; fi
+      if [ -z "$socket_open" ] || ! running_child "$socket_pid"; then break; fi
     done
     if [ -n "$socket_open" ]; then
       held=$(cat "$socket_log")
@@ -884,11 +947,13 @@ else
       case $closed_at in '' | null) closed_at='' ;; *) closed_at=$((closed_at / 1000)) ;; esac
     fi
   fi
-  marks="opened_at=$opened refused_at=${refused_at:-none} socket_opened_at=${socket_opened_at:-none} socket_closed_at=${closed_at:-none} code=${close_code:-none} sockets=$sockets refusals=$refusals"
+  marks="opened_at=$opened last_answered_at=${last_answered_at:-none} refused_at=${refused_at:-none} socket_opened_at=${socket_opened_at:-none} socket_closed_at=${closed_at:-none} code=${close_code:-none} sockets=$sockets refusals=$refusals unread_after=$unread_after"
   if [ -z "$refused_at" ]; then
-    row T5-agent "$want_t5a" "no trade refused in the ${t5_seconds} s window, so no removal was seen; $marks" UNKNOWN
+    row T5-agent "$want_t5a" "no trade refused in the ${t5_seconds} s window, the last answered at ${last_answered_at:-none}; $marks" UNKNOWN
   elif [ -n "$answered_after" ]; then
     row T5-agent "$want_t5a" "a trade was answered at $answered_after, $((answered_after - refused_at)) s after the first refusal; $marks" FAIL
+  elif [ "$unread_after" -gt 0 ]; then
+    row T5-agent "$want_t5a" "after the first refusal, $unread_after later trade(s) got no readable answer, so whether every later trade was refused is not read; $marks" UNKNOWN
   elif [ -n "$socket_unread" ]; then
     row T5-agent "$want_t5a" "the trades were refused; the socket part was not read: $socket_unread; $marks" UNKNOWN
   elif [ -z "$socket_open" ]; then
@@ -905,11 +970,12 @@ else
     row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
     row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
   else
-    while kill -0 "$t5_driver" 2>/dev/null && [ "$(now)" -le $((deadline + 30)) ]; do sleep 2; done
+    while running_child "$t5_driver" && [ "$(now)" -le $((deadline + 30)) ]; do sleep 2; done
     driver_end='still running'
-    if ! kill -0 "$t5_driver" 2>/dev/null; then
+    if ! running_child "$t5_driver"; then
       wait "$t5_driver"
       driver_end="exit $?"
+      forget "$t5_driver"
     fi
     for name in T5-cookie T5-passkey; do
       line=''

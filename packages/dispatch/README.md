@@ -834,9 +834,10 @@ origins, and the gate both legs make before a real person from outside is named 
 list. The tailnet leg is the one command and runs on a developer box; it starts the public leg
 on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
 them, what each row reads, and the controls. `cd packages/dispatch && bun test
-e2e/__tests__/outside-agent-acceptance.test.ts` checks that each leg prints `UNKNOWN`, never
-`PASS`, for a row whose target is absent, and that the tailnet leg holds T2, P7, the sweep and the
-pins to their controls, against stand-ins of what it drives.
+e2e/__tests__/outside-agent-acceptance.test.ts e2e/__tests__/outside-agent-public.test.ts` checks
+that each leg prints `UNKNOWN`, never `PASS`, for a row whose target is absent, and that each leg
+holds its rows to their controls (the public leg's P6, P7, P10 and T5 part; the tailnet leg's T2,
+T3, T5, P7, the sweep, the workflow's inputs and the pins) against stand-ins of what it drives.
 
 ## Acceptance run against the deployed image
 

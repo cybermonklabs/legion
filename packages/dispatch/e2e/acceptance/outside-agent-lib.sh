@@ -114,43 +114,73 @@ real_tools() {
   done
 }
 
-# stop_child PID: stops one background child of the leg: TERM, up to 10 s for it to end, then
-# KILL, and waits for it, so it writes nothing after the leg goes on.
-#
 # Every background child a leg starts is started so that `$!` is the child itself: a simple command
 # (`env -i … cmd … &`, prefix assignments allowed), or a function whose last word is `exec`, started
 # with `&`. A subshell that runs a command and then does anything else (`( cmd; echo $? >f ) &`)
 # leaves `$!` naming the subshell, and a TERM to it leaves the command running; a child whose exit
-# status a leg reads is waited for with `wait PID` instead.
+# status a leg reads is waited for with `wait PID` and then forgotten.
+#
+# A pid is signalled only while bash still counts it as a running child of this shell (`jobs -rp`):
+# once bash has reaped a child, its pid is free, and on a developer box, which forks thousands of
+# processes a second, another session's process holds it within minutes. A zombie that bash has not
+# reaped yet still holds its pid, so a signal to it reaches nothing else.
+
+# running_child PID: whether PID is a child of this shell that bash still counts as running.
+running_child() {
+  local pid
+  for pid in $(jobs -rp 2>/dev/null); do
+    [ "$pid" != "$1" ] || return 0
+  done
+  return 1
+}
+
+# forget PID: takes PID out of `background`, once it is waited for or stopped.
+forget() {
+  local pid kept=''
+  for pid in ${background:-}; do
+    [ "$pid" = "$1" ] || kept="$kept $pid"
+  done
+  background=$kept
+}
+
+# stop_child PID: stops one background child of the leg, if it still runs: TERM, up to 10 s for it
+# to end, then KILL, and waits for it, so it writes nothing after the leg goes on; and forgets it.
 stop_child() {
   local _
-  kill "$1" 2>/dev/null || return 0
+  forget "$1"
+  running_child "$1" || return 0
+  kill "$1" 2>/dev/null
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 "$1" 2>/dev/null || break
+    running_child "$1" || break
     sleep 1
   done
-  kill -9 "$1" 2>/dev/null
+  running_child "$1" && kill -9 "$1" 2>/dev/null
   wait "$1" 2>/dev/null
   return 0
 }
 
-# reap: stops every child `background` names, as stop_child stops one, all of them at once, and
-# empties the list.
+# reap: stops every child `background` names that still runs, as stop_child stops one, all of them
+# at once, and empties the list. A pid of the list that bash no longer counts as running is left
+# alone.
 reap() {
-  local pid alive _
+  local pid alive live='' _
   [ -n "${background:-}" ] || return 0
-  for pid in $background; do kill "$pid" 2>/dev/null; done
+  for pid in $background; do
+    running_child "$pid" && live="$live $pid"
+  done
+  background=''
+  [ -n "$live" ] || return 0
+  for pid in $live; do kill "$pid" 2>/dev/null; done
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     alive=''
-    for pid in $background; do kill -0 "$pid" 2>/dev/null && alive=yes; done
+    for pid in $live; do running_child "$pid" && alive=yes; done
     [ -n "$alive" ] || break
     sleep 1
   done
-  for pid in $background; do
-    kill -9 "$pid" 2>/dev/null
+  for pid in $live; do
+    running_child "$pid" && kill -9 "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
   done
-  background=''
 }
 
 # stop_tmux SOCKET: stops the tmux server at SOCKET and waits up to 10 s for its pane's process to
