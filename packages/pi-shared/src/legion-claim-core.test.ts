@@ -273,6 +273,74 @@ test("control: a claim the listener refuses with any other status still stops th
   ]);
 });
 
+/** The listener's 409 to a claim whose write the message bus stream refused (a sealed role
+ * bucket), byte for byte as its `writeBusUnavailable` writes it under `streamRefusedPrefix`
+ * (`packages/envoy/cmd/listener/api.go`). The listener answered the same refusal 503 with
+ * `Retry-After` before it told the two apart. */
+function claimAnsweredStreamRefused(): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 409,
+    responseBody: JSON.stringify({
+      error:
+        "envoy: the message bus stream refused the message, and refuses it however often it is sent: nats: invalid operation on sealed stream",
+    }),
+  });
+}
+
+test("a claim whose write the message bus stream refused (409) is claimed again on the 503's growing wait, and the session is not stopped", async () => {
+  let refused = 0;
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (refused < 2) {
+          refused++;
+          throw claimAnsweredStreamRefused();
+        }
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(3);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `claim of Envoy role ${claimToken} was answered 409 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 409 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
+  ]);
+  for (const line of lines) expect(line).toContain("invalid operation on sealed stream");
+});
+
+test("control: a claim the listener answers 409 with any other error still stops the session at once, with no retry", async () => {
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.test/v1/roles/set",
+          status: 409,
+          responseBody: JSON.stringify({ error: "envoy: the role claim conflicts" }),
+        });
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "stop"]);
+  expect(lines).toHaveLength(1);
+});
+
 test("a host that stops while a 503 claim waits to be made again claims no more and stops nothing", async () => {
   const stopping = new AbortController();
   const firstClaim = Promise.withResolvers<void>();

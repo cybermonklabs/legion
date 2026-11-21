@@ -500,15 +500,40 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 	return c.claims.RoleClaim(readCtx, role)
 }
 
+// roleResolution is how the role lane's resolution of a message's holder ended
+// (resolveCoreRoleHolder).
+type roleResolution int
+
+const (
+	// roleHolderLive: the role has a live holder, and the message goes on to its forward.
+	roleHolderLive roleResolution = iota
+	// roleMessageEnded: the resolution ended the message and reported it - kept on the role's kept
+	// lane, or given up under a rule no other attempt changes.
+	roleMessageEnded
+	// roleMessageHeld: a read or a keep failed on NATS, so the listener does not know where the
+	// message stands, and the lane holds it for another attempt (roleForwarder.hold).
+	roleMessageHeld
+)
+
+// keepFailureHolds reports whether a keep that kept nothing (keepRoleLaneMessage) leaves the
+// message held for another attempt: a keep that failed on NATS does, and one that a rule refuses
+// however often it runs does not - a role token no claim can name (errRoleNotKeepable), the keep's
+// own rule, and every rule NATS refuses a publish under (busRefusesForGood), the one list a
+// forward ends on too (roleForwardEnded).
+func keepFailureHolds(err error) bool {
+	return !errors.Is(err, errRoleNotKeepable) && !busRefusesForGood(err)
+}
+
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
-// (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
-// terminal outcome itself and reporting ok=false when there is nobody to deliver to. A resolution
-// that found no live holder keeps the message for the role's next live holder first
-// (keepRoleLaneMessage), in one decision for both give-up branches: roleKeptReason says which
-// states a copy is kept for and under which reason - a role nobody claims, under
-// roleKeptUnclaimed, and a claim whose holder is not live, under roleKeptLapsed with that holder
-// named on the kept line - and a copy that was kept publishes no delivery exception, since the
-// message is not lost.
+// (roles.ResolveHolder, which reads the role's claim record from the role bucket) and says how the
+// resolution ended: roleHolderLive with the holder and its session entry; roleMessageEnded once it
+// has applied the message's end itself; or roleMessageHeld with the error of the NATS step that
+// failed, for the caller to hold the message (deliverRoleMessage). A resolution that found no live
+// holder keeps the message for the role's next live holder first (keepRoleLaneMessage), in one
+// decision for both give-up branches: roleKeptReason says which states a copy is kept for and
+// under which reason - a role nobody claims, under roleKeptUnclaimed, and a claim whose holder is
+// not live, under roleKeptLapsed with that holder named on the kept line - and a copy that was
+// kept publishes no delivery exception, since the message is not lost.
 //
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
@@ -526,14 +551,16 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // reads it drops it with a WARN, with a holder or without one, and sends its sender a dead letter
 // (judgeKeptRoleCopy).
 //
-// Every other case leaves its branch as it was before the kept lane: an unclaimed role whose keep
-// failed is no_holder; a lapsed holder whose keep failed, a holder whose session read failed and a
-// failed claim read whose keep failed are delivery_failed, each under a log line that names which
-// it was. A holder that is not answering keeps its claim through all of them, kept copy or not:
-// the lane takes nothing from it. Role delivery answers no caller, so it resolves under
-// context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
-// the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
-func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
+// A keep that failed on NATS (keepFailureHolds), and a holder's session read that failed, end
+// nothing: the listener knows of no copy of the message, so the message is held. A keep that a
+// rule refuses leaves its branch as it was before the kept lane: an unclaimed role is no_holder,
+// and a lapsed holder and a failed claim read are delivery_failed, each under a log line that
+// names which it was. A holder that is not answering keeps its claim through all of them, kept
+// copy or not: the lane takes nothing from it. Role delivery answers no caller, so it resolves
+// under context.Background(), and each of its two reads is bounded on its own by
+// roleHolderReadTimeout: the claim read by roleLaneClaims and the holder's session read by
+// roleHolderSessions.Holder.
+func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, roleResolution, error) {
 	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
@@ -545,10 +572,16 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	if err == nil {
 		if resolved.State == roles.Live {
-			return sessionID, resolved.Entry, true
+			return sessionID, resolved.Entry, roleHolderLive, nil
 		}
-		if reason, keepable := roleKeptReason(resolved); keepable && keepRoleLaneMessage(cfg, role, item, reason, sessionID) {
-			return "", session.SessionEntry{}, false
+		if reason, keepable := roleKeptReason(resolved); keepable {
+			keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, reason, sessionID)
+			if keepErr == nil {
+				return "", session.SessionEntry{}, roleMessageEnded, nil
+			}
+			if keepFailureHolds(keepErr) {
+				return sessionID, session.SessionEntry{}, roleMessageHeld, keepErr
+			}
 		}
 		if resolved.State == roles.Unclaimed {
 			applyDeliveryOutcome(cfg, item, deliveryOutcome{
@@ -558,7 +591,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 				},
 				exceptionReason: "no_holder",
 			})
-			return "", session.SessionEntry{}, false
+			return "", session.SessionEntry{}, roleMessageEnded, nil
 		}
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
@@ -568,16 +601,20 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 			},
 			exceptionReason: "delivery_failed",
 		})
-		return "", session.SessionEntry{}, false
+		return "", session.SessionEntry{}, roleMessageEnded, nil
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread, "") {
+		keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, roleClaimUnread, "")
+		if keepErr == nil {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
 				slog.String("event_id", item.EventID),
 				slog.String("error", failure.Err.Error()))
-			return "", session.SessionEntry{}, false
+			return "", session.SessionEntry{}, roleMessageEnded, nil
+		}
+		if keepFailureHolds(keepErr) {
+			return "", session.SessionEntry{}, roleMessageHeld, fmt.Errorf("%w; the keep after it: %w", failure.Err, keepErr)
 		}
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			metricStatus: "failed",
@@ -588,72 +625,103 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		})
 	case roles.SessionRead:
 		// The holder's record could not be read, so nothing is known about its state and nothing
-		// is taken from it.
-		applyDeliveryOutcome(cfg, item, deliveryOutcome{
-			sessionID:    sessionID,
-			metricStatus: "failed",
-			log: func(logger *logging.Logger) {
-				logger.Error("listener role holder session lookup failed", slog.String("role", role), slog.String("session_id", sessionID), slog.String("error", failure.Err.Error()))
-			},
-			exceptionReason: "delivery_failed",
-		})
+		// is taken from it; the message waits for a read that answers.
+		return sessionID, session.SessionEntry{}, roleMessageHeld, failure.Err
 	}
-	return "", session.SessionEntry{}, false
+	return "", session.SessionEntry{}, roleMessageEnded, nil
 }
 
-// roleTopicDelivery arbitrates a role-lane envelope to whichever session
-// currently holds the role, forwarding it to the holder's agent subject,
-// where the stream stores it for the holder's session consumer. Before
-// forwarding it judges the message by beforeForward, the rules the publish
-// route applies too, with the dedupe and attempt caches as its record of
-// what the holder already took: an echo of the holder's own message and a
-// duplicate of an envelope already forwarded (or already being forwarded)
-// are disposed of with no forward and no exception, and a holder that does
-// not advertise the envelope's own targeted delivery mode, or whose mode
-// cannot be read unambiguously, is refused like a stale holder. Role
-// forwarding needs that guard of its own because it never goes through
-// /v1/messages/send. Every branch ACKs: role lanes have no durable transit
-// to retry against, so a failed forward is reported via a delivery exception
-// instead of a NAK. The forward itself is handed to the role forwarder
-// (roleForwarder.enqueue) and its outcome reported when it ends
-// (finishRoleForward), so the role lane's handler returns without waiting
-// for the stream.
+// roleTopicDelivery takes a role-lane envelope from the lane's core subscription. An envelope the
+// arbiter, or the publish route, already sent to its holder's agent subject
+// (roleForwardDedupePrefix) is not arbitrated again: the holder has it, and a lane that takes the
+// frame once more - an operator re-publishing it - disposes of it here. Every other envelope is
+// delivered (deliverRoleMessage), dated by the listener's clock as the lane takes it, which is what
+// the bound on holding it counts from (roleHoldBound). Every branch ACKs: role lanes have no
+// durable transit to retry against, so the lane holds a message it could not finish itself
+// (roleForwarder.hold), and reports one a rule refused via a delivery exception instead of a NAK.
 func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
-	// An envelope the arbiter, or the publish route, already sent to its holder's agent subject
-	// (roleForwardDedupePrefix) is not arbitrated again: the holder has it, and a lane that takes
-	// the frame once more - an operator re-publishing it - disposes of it here.
-	if strings.HasPrefix(item.DedupeKey, roleForwardDedupePrefix) {
-		message.finalize(false)
-		return
-	}
-	if forward, ok := resolveRoleForward(cfg, item); ok {
-		cfg.roleForwards.enqueue(forward)
+	if !strings.HasPrefix(item.DedupeKey, roleForwardDedupePrefix) {
+		deliverRoleMessage(cfg, item, roleHeld{since: cfg.now()})
 	}
 	message.finalize(false)
 }
 
-// resolveRoleForward resolves the holder of item's role, judges the forward to it by the lane's
-// rules (resolveCoreRoleHolder, beforeForward) with the dedupe and attempt caches as the record of
-// what the holder already took, reports a refusal with the lane's own lines, and returns the
-// forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
-// to make one. The lane names its role in either form; the claim it resolves is keyed by the bare
-// role name either way (roleOfLaneTopic, store.Registry.ClaimedRole).
-func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
+// deliverRoleMessage arbitrates a role message to whichever session currently holds the role,
+// forwarding it to the holder's agent subject, where the stream stores it for the holder's session
+// consumer. held is the message's place among the messages the lane holds: no attempts for one
+// the lane just took, and the attempts so far for one it held (roleForwarder.hold), whose slot
+// this delivery carries on and frees when the message ends here. Before forwarding it judges the
+// message by beforeForward, the rules the publish route applies too, with the dedupe and attempt
+// caches as its record of what the holder already took: an echo of the holder's own message and a
+// duplicate of an envelope already forwarded (or already being forwarded) are disposed of with no
+// forward and no exception, and a holder that does not advertise the envelope's own targeted
+// delivery mode, or whose mode cannot be read unambiguously, is refused like a stale holder. Role
+// forwarding needs that guard of its own because it never goes through /v1/messages/send. The
+// forward itself is handed to the role forwarder (roleForwarder.enqueue) and its outcome reported
+// when it ends (roleForwarder.finish), so the role lane's handler returns without waiting for the
+// stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold).
+//
+// A held message a forward of which may have been stored (roleHeld.pinned) is that forward once
+// more, to the same holder under the same Nats-Msg-Id, so the stream drops it when the first was
+// stored, whoever holds the role now - while the pinned holder's session still has a record
+// (pinnedHolderStands), whose consumer delivers a copy stored on its subject. A pinned holder whose
+// session has no record has no consumer, so a copy on its subject reaches nobody: the pin is
+// dropped, with an INFO line, and the holder is resolved again, which reaches the role's live
+// holder or keeps the message for the next. A read of that record that did not answer holds the
+// message again, pin and all.
+//
+// Once the listener is stopping (roleForwarder.stopHolding), a message the lane just took is kept
+// on its role's kept lane at once, with no resolution and no slot to wait for
+// (roleForwarder.keepHeld), so the lane's drain takes every message its subscription holds within
+// its window; a held message parks, as every held message does at the stop, and is kept once the
+// lane has drained (roleForwarder.keepWhenTheLaneHasDrained).
+func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, held roleHeld) {
+	if cfg.roleForwards.stopped() {
+		if held.attempts > 0 {
+			cfg.roleForwards.keepWhenTheLaneHasDrained(item, held.pinned, held, nil)
+			return
+		}
+		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil, time.Time{})
+		return
+	}
+	if held.pinned != "" {
+		stands, err := pinnedHolderStands(context.Background(), cfg, held.pinned)
+		if err != nil {
+			cfg.roleForwards.hold(item, held.pinned, held, err)
+			return
+		}
+		if stands {
+			cfg.attemptCache.Record(item.DedupeKey, held.pinned)
+			cfg.roleForwards.enqueue(roleForward{item: item, sessionID: held.pinned, held: held})
+			return
+		}
+		cfg.logger.DeliveryLog(slog.LevelInfo, rolePinDroppedLine, held.pinned, item.Topic, item.EventID, roleHeldDeliveryStatus,
+			slog.Int("attempts", held.attempts))
+		held.pinned = ""
+	}
+	// The lane names its role in either form; the claim it resolves is keyed by the bare role name
+	// either way (roleOfLaneTopic, store.Registry.ClaimedRole).
 	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
-	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
-	if !ok {
-		return roleForward{}, false
+	sessionID, holder, resolution, cause := resolveCoreRoleHolder(cfg, item, role)
+	switch resolution {
+	case roleMessageHeld:
+		cfg.roleForwards.hold(item, sessionID, held, cause)
+		return
+	case roleMessageEnded:
+		cfg.roleForwards.releaseHeld(held)
+		return
 	}
 	verdict := beforeForward(item, sessionID, holder, func(key, recipient string) bool {
 		return cfg.dedupeCache.Seen(key, recipient) || cfg.attemptCache.Seen(key, recipient)
 	})
 	if verdict.kind != forwardAllowed {
 		applyDeliveryOutcome(cfg, item, refusedRoleForwardOutcome(verdict, item, sessionID, roleLaneRefusalLines))
-		return roleForward{}, false
+		cfg.roleForwards.releaseHeld(held)
+		return
 	}
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
-	return roleForward{item: item, sessionID: sessionID, resolvedAt: resolvedAt}, true
+	cfg.roleForwards.enqueue(roleForward{item: item, sessionID: sessionID, resolvedAt: resolvedAt, held: held})
 }
 
 // roleForwardRefusalLines are one forward path's lines for each refusal beforeForward can return.
@@ -704,15 +772,21 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 	return outcome
 }
 
-// finishRoleForward reports a role forward's outcome, err from its publish or its wait, with attrs
-// on its line: the kept lane's drain names the role and the time it kept the copy there, where the
+// finishRoleForward reports a role forward's end, err from its publish or its wait, with attrs on
+// its line: the kept lane's drain names the role and the time it kept the copy there, where the
 // role lane's own forward adds nothing. A forward the stream acknowledged storing inside
 // roleForwardTimeout is delivered, which is the whole of a forward's outcome: no holder answers a
-// receipt (startRoleForward). One the stream did not acknowledge storing
-// (bus.ErrForwardNotStored), or not known to have left this process -- the flush timed out or
-// failed, the publish failed -- is delivery_failed like a stale holder or an
-// unadvertised/unreadable delivery mode; no claim is no_holder. A failure clears the attempt, so
-// a re-send is forwarded again; a delivered forward records the dedupe entry.
+// receipt (startRoleForward). The role lane hands it only a forward that ended: one the stream
+// acknowledged, or one an error ends for good (roleForwardEnded) - NATS's refusal of the publish
+// under a rule every attempt meets (busRefusesForGood: a refused envelope or subject, a denied
+// subject, or the stream's refusal of the message itself), or no acknowledgement, or no
+// responders, for a subject a read of the deployed stream says it does not capture - which is
+// delivery_failed like a stale holder or an unadvertised/unreadable delivery mode; no claim is
+// no_holder. Every other failure leaves the stream's copy unknown - any other answer of the
+// stream, a no-responders answer for a subject it captures, a lost acknowledgement, a spent window
+// - and the lane's forwarder holds the message for another attempt instead (roleForwarder.finish).
+// A failure clears the attempt, so a re-send is forwarded again; a delivered forward records the
+// dedupe entry.
 func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {

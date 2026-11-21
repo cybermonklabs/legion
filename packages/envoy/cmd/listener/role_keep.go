@@ -204,8 +204,8 @@ const roleKeepHolderWindow = 5 * time.Second
 const roleKeptDeliveryStatus = "kept"
 
 // roleKeepReason is why the role lane kept a message (keepRoleLaneMessage), as the lane's kept line
-// names it: one of the three constants below. It is a type of its own rather than a roles.State,
-// because one of the three is no state of a resolution, and rather than a plain string, which takes
+// names it: one of the five constants below. It is a type of its own rather than a roles.State,
+// because three of the five are no state of a resolution, and rather than a plain string, which takes
 // any string a caller has to hand: a value of another string type, a roles.State among them,
 // needs a conversion to become one. A resolution's state becomes one only through roleKeptReason,
 // which names the two states the listener keeps for, so a state it does not keep for is never a
@@ -224,6 +224,14 @@ const (
 	// it is never one of the listener's answers - the lookup's 404 reason or a publish's recorded
 	// outcome - and only the kept line names it.
 	roleClaimUnread roleKeepReason = "claim_unread"
+	// roleKeptAtShutdown is a message the role lane held for another delivery attempt when the
+	// listener stopped (roleForwarder.stopHolding): the keep stores the one copy that outlives the
+	// process. Like roleClaimUnread it is no roles.State, and only the kept line names it.
+	roleKeptAtShutdown roleKeepReason = "held_at_shutdown"
+	// roleKeptPastHoldBound is a held message whose next attempt would have started past
+	// roleHoldBound, the last point at which a forward is still a duplicate of any copy an earlier
+	// attempt stored (roleForwarder.hold). Like roleClaimUnread it is no roles.State.
+	roleKeptPastHoldBound roleKeepReason = "held_past_bound"
 )
 
 // roleKeepFailedLine is logged by both give-up paths - the publish route's and the role lane's -
@@ -477,13 +485,17 @@ type keptRoleCopy struct {
 type keptRolePublish func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error)
 
 // keepRoleMessage stores item on role's kept lane, the copy the role's next live holder is handed
-// (drainKeptRole), within roleKeepPublishWindow, and returns what the lane holds for it, or the
-// keep's failure (storeKeptRoleCopy), which a caller answering a sender reads: a keep whose publish
-// went unacknowledged may have stored the copy (bus.ErrUnacknowledged). A keep that failed is
-// logged here, the one failure line both give-up paths write (the publish route's noHolder and the
-// role lane's keepRoleLaneMessage), so neither carries a copy of it.
-func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
+// (drainKeptRole), within roleKeepPublishWindow and ctx, whichever ends first, and returns what the
+// lane holds for it, or the keep's failure (storeKeptRoleCopy), which a caller answering a sender
+// reads: a keep whose publish went unacknowledged may have stored the copy (bus.ErrUnacknowledged).
+// ctx is the caller's bound on the whole of its own end, the role lane's stop deadline for a
+// message it held (roleForwarder.keepHeld), and context.Background() for every caller with none. A
+// keep that failed is logged here, the one failure line both give-up paths write (the publish
+// route's noHolder and the role lane's keepRoleLaneMessage), so neither carries a copy of it; the
+// error goes back to the caller, which decides from it whether the message is held for another
+// attempt (resolveCoreRoleHolder).
+func keepRoleMessage(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
+	ctx, cancel := context.WithTimeout(ctx, roleKeepPublishWindow)
 	defer cancel()
 	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.keepPublish)
 	if err != nil {
@@ -639,7 +651,7 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 }
 
 // keepForNextHolder keeps item for role's next live holder and hands the lane to whoever holds the
-// role now (runKeptRoleDrain), and returns what it kept and whether it kept anything
+// role now (runKeptRoleDrain), and returns what it kept, or why it kept nothing
 // (keepRoleMessage). It is the one keep both give-up paths take - the publish route's
 // (roleSend.noHolder) and the role lane's (keepRoleLaneMessage) - so no give-up path can store a
 // copy without offering it to the role's current holder: a holder whose claim landed, or who
@@ -650,19 +662,19 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
 // kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set
-// refuses), which both give-up paths must agree on, and Dispatch's outbox with them
-// (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under such a token waits
-// for a claim that cannot be made and expires unread.
+// refuses), answered errRoleNotKeepable, which both give-up paths must agree on, and Dispatch's
+// outbox with them (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under
+// such a token waits for a claim that cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
 // queue - opts out on the publish route's own request field instead (keep false, read by
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
-func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
+func keepForNextHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	if !roles.Valid(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
 	}
-	kept, err := keepRoleMessage(cfg, role, item)
+	kept, err := keepRoleMessage(ctx, cfg, role, item)
 	if err != nil {
 		return keptRoleCopy{}, err
 	}
@@ -671,25 +683,27 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 }
 
 // errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
-// which it keeps nothing for.
+// which it keeps nothing for, and which no retry changes.
 var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
-// whose holder it could not read, and reports whether it was kept. reason is why, as the lane's
+// whose holder it could not read, and returns nil when it kept it. reason is why, as the lane's
 // kept line names it: roleKeptUnclaimed for a role nobody claims, roleKeptLapsed for a claim whose
-// holder is not live, and roleClaimUnread for a claim read that did not answer. holder is the
-// session the claim names, which the kept line names as its session_id: the lapsed holder, and
-// empty for the other two, since an unclaimed role has none and a read that failed found none.
-// Kept, it writes the lane's line, which names the copy the lane holds, its stream sequence and
-// when its hour ends (keptRoleCopy), counts the delivery under roleKeptDeliveryStatus and
+// holder is not live, roleClaimUnread for a claim read that did not answer, roleKeptAtShutdown for
+// a message the lane held for another attempt when the listener stopped, and roleKeptPastHoldBound
+// for one the lane held up to roleHoldBound.
+// holder is the session the claim names, which the kept line names as its session_id: the lapsed
+// holder, and empty for the others, since an unclaimed role has none and a read that failed found
+// none. Kept, it writes the lane's line, which names the copy the lane holds, its stream sequence
+// and when its hour ends (keptRoleCopy), counts the delivery under roleKeptDeliveryStatus and
 // publishes no delivery exception: the message is not lost, and the handover the keep starts
 // forwards it once a resolution finds the role's holder live (keepForNextHolder). A keep that kept
-// nothing is reported false, and the caller's own give-up, its exception, its metric and its line,
-// stands exactly as it was.
-func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason, holder string) bool {
-	kept, err := keepForNextHolder(cfg, role, item)
+// nothing returns why (keepForNextHolder), and its caller decides what the message's end is
+// (resolveCoreRoleHolder). ctx bounds the keep with its own window (keepRoleMessage).
+func keepRoleLaneMessage(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason, holder string) error {
+	kept, err := keepForNextHolder(ctx, cfg, role, item)
 	if err != nil {
-		return false
+		return err
 	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
 		metricStatus: roleKeptDeliveryStatus,
@@ -702,7 +716,7 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 				slog.Int64("kept_until", kept.until))
 		},
 	})
-	return true
+	return nil
 }
 
 // runKeptRoleDrain hands role's kept lane over to whoever holds the role, under a context of its
@@ -1793,7 +1807,7 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 // same, with one Error line and a count, and is not sent again: a refusal known before the publish
 // (deadLetterRefusal) in the one write {kept: the copy's sequence}, since there is nothing to claim
 // the copy for - a plain write, which no claim of this walk's makes worth reading back - and one
-// the publish met (forwardRefused) after the claim it made.
+// the publish met (busRefusesForGood) after the claim it made.
 func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role, item := lane.cfg, lane.role, judged.item
 	letter, msgID := keptRoleDeadLetter(role, stored, item, judged.at, judged.drop)
@@ -1808,7 +1822,7 @@ func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, ke
 		return false, false, err
 	}
 	published := cfg.publishDeadLetter(ctx, letter.Topic, letter, msgID)
-	if published != nil && !forwardRefused(published) {
+	if published != nil && !busRefusesForGood(published) {
 		return false, false, fmt.Errorf("send the dead letter of role %s's kept message %s to %s: %w", role, item.EventID, item.SourceSession, published)
 	}
 	landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})

@@ -180,6 +180,7 @@ attempt:
 | The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
+| The stream refuses the message itself, however often it is sent: a message or headers past the stream's maxima, a message too large for the store, a sealed stream (`bus.StreamRefusesMessage`) | `409 {"error":"envoy: the message bus stream refused the message, and refuses it however often it is sent: <reason>"}` with no `Retry-After`, recorded `stream_refused`. A role send answers it after one forward rather than retrying it to its 504. A role send with no live holder whose keep the stream refuses that way is the no-holder `404` instead, since the keep is that send's own give-up. A refusal of a resend after a send nothing answered is not this answer: the first send may have stored the message, so it is the maybe-stored `503` with `Retry-After`, recorded `bus_unavailable`, for a keep as for a publish |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
@@ -201,13 +202,15 @@ a holder it finds past the live window keeps its claim) runs
 inside the same 3.5 s budget, and one the budget runs out on is that 503 too, naming the call that
 did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
 (`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
-kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
-no claim can ever name; or the keep itself failed, also a keep whose publish went out and was
-never acknowledged, which may have stored the copy, as at main. A role send whose message the
-listener kept answers `202` instead, both for a role nobody claims and for a claim whose holder
-is not live. A
-role topic's send then runs on
-within its own 4 s and answers its 200, 202, 403 `capability` or 504 as "Role delivery and
+kept nothing under a rule: the request sent `keep: false`; the role's token is one `roles.Valid`
+refuses, which no claim can ever name; or the bus refuses the keep however often it is sent. A
+keep that failed on NATS (a full stream, a publish not answered in its window, a connection down)
+is answered the bus-unavailable `503` with `Retry-After: 1`, and the sender sends again; a keep
+whose publish went out and was never acknowledged, which may have stored the copy, is that `503`
+with the maybe-stored code, and the sender's next send under the same dedupe key finds the copy
+if the stream stored it. A role send whose message the listener kept answers `202` instead, both
+for a role nobody claims and for a claim whose holder is not live. A role topic's send then runs
+on within its own 4 s and answers its 200, 202, 403 `capability`, 409 or 504 as "Role delivery and
 exceptions" says.
 
 A publish the server denies under this listener's own grant (`bus.ErrPublishDenied`) is the
@@ -318,10 +321,10 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable`, `stream_full` and `sender_rate_limited`, plus `no_live_session` for send,
-`session_stopped` for a
-`connected_only` send whose target is stopped, `capability_refused` for send and a role send,
-`publish_denied` for send and publish alike, since a publish on either transport can be denied,
+`bus_unavailable`, `stream_full`, `stream_refused` and `sender_rate_limited`, plus
+`no_live_session` for send, `session_stopped` for a `connected_only` send whose target is
+stopped, `capability_refused` for send and a role send, `publish_denied` for send and publish
+alike, since a publish on either transport can be denied,
 and `role_unclaimed`, `role_lapsed`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a
@@ -355,10 +358,15 @@ each for the 10 s JetStream wait: nats.go's KV reads, writes and deletes take no
 bucket call waits through `bus.Bounded` (`internal/bus/kv.go`), which stops waiting when the
 context ends. Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
-(`writeStoreError`, `cmd/listener/api.go`). The store's own answers keep the answers they had: a
-refused key its 413 or 400, a held role its 409, and no key, an undecodable record or a lost
-compare-and-swap the status the route always gave it; an error a claim joins from several is one
-only when every part of it is. A write the budget abandoned may still land
+(`writeStoreError`, `cmd/listener/api.go`). A write the stream refuses for the message itself
+(`bus.StreamRefusesMessage`) is the send table's `409` with no `Retry-After`: envoy-client throws
+it at once, a session's registration meets it again only at its next heartbeat, and a Legion
+session's role claim claims again on it, on the wait it gives a `503`, until an operator changes
+the bucket (`claimRoleAgainOnBusy`, `packages/pi-shared/src/legion-claim-core.ts`). The store's
+own answers keep the answers they had: a refused key its 413 or 400, a held role its 409, and no
+key, an undecodable record or a lost compare-and-swap the status the route always gave it; an
+error a claim joins from several is one only when every part of it is. A write the budget
+abandoned may still land
 after the 503: a put rewrites the record the caller's retry writes again, and a delete or a claim
 is conditional on the revision it read (`store.Registry.UpsertWithin`, `Remove`,
 `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete` say why each is safe).
@@ -422,13 +430,16 @@ holder is not live, which also names that holder, its `holder_state` (`unrespons
 gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publish is not
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
-`holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+`holder_lapsed` when no live session holds the role and a rule kept nothing: the sender asked for
+that with `keep: false`, or the role's token is one no claim can name, or the bus refuses the keep
+however often it is sent. A keep that failed on NATS is the bus-unavailable `503` with
+`Retry-After: 1` instead, and the sender sends again. A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
 with `reason: "capability"` when the holder does not take the
-payload's delivery mode; and `504` with `reason`, `event_id`, `dedupe_key`, `holder` and
+payload's delivery mode; `409` after one forward when the stream refuses the forward for the
+message itself; and `504` with `reason`, `event_id`, `dedupe_key`, `holder` and
 `attempts` once the four seconds passed, which keeps nothing, since keeping is the 202 answer
 above. That reason is always `delivery_failed`, the one 504 reason the route gives: the message
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
@@ -554,7 +565,10 @@ acknowledged. A frame that is no role message costs the decode of its topic and 
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. A held role-lane message pinned
+to the holder an earlier forward of it may have reached is that same forward again and resolves
+nothing; a copy of it stored late on that holder's subject is one a takeover's passes read, for
+the 71 hours a takeover record lives. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -578,14 +592,49 @@ no redelivery, so a kept copy is how the message waits for a read that answers. 
 the keep starts, or else the sweep's, forwards it only to a live holder: a handover that finds
 no live holder forwards nothing, so no exception is published for the copy, and it waits until
 a handover finds a live holder inside its hour. Once its hour ends, the first walk that reads it
-drops it with a WARN, and sends the dead letter above when the copy names a sender session. A
-keep that failed leaves its branch as it was. The lane's outcome is then one of two exception
-reasons:
-`no_holder` when no session claims the role and its keep failed, and `delivery_failed` when the
-holder is not live and its keep failed (an `unresponsive` holder among them, whose claim the
-lane leaves alone), when the holder's session read failed, when a claim read failed and its
-keep failed too, or when the stream did not acknowledge storing the forward. A role claimant
-does not subscribe directly to its role subject.
+drops it with a WARN, and sends the dead letter above when the copy names a sender session.
+A NATS step that fails without the listener knowing that the stream holds a copy - a claim read
+whose keep failed on NATS, a holder's session read, a keep, a forward whose window ran out, whose
+flush failed, or whose acknowledgement did not come for a subject the stream captures, a no
+responders answer, or a stream answer that can change with the stream's state, such as a full
+stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
+and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
+keeps it on the kept lane; the bound is judged where each attempt starts, so a wait that ends
+late, or a forward that queued behind its holder's earlier ones, makes no attempt past it. A held
+message logs one ERROR, `listener role message held for another delivery attempt`, at its first
+hold and DEBUG after it. Held messages count against the lane's 4,096 forward slots
+(`roleForwardWaitLimit`): at that bound the handler waits for a slot, and its role messages wait
+in the lane's subscription. The lane logs one ERROR when its handler first waits, `role lane
+forward slots are all held; the role lane takes no more role messages until one ends`, and one
+once at most half the slots are held again, `role lane forward slots have room again`, with how
+long it was full. The gauge `envoy_role_forwards_outstanding` on the listener's `/metrics` reads
+the slots held, 4,096 while the lane is full; no alert in this repository reads it, so those two
+lines are the lane's report of a full lane. A holder's forwards are published in the order they
+were queued, and a held message's next attempt is queued behind whatever came meanwhile, so under
+a failure one holder's messages can reach it out of the order they arrived in.
+Once a forward of a message may have been stored - it left the
+process, and no answer said the stream did not store it - every later attempt is that forward
+again, to the same holder, so the stream stores the message once even when the role moves
+meanwhile, for as long as that holder's session still has a record, read from the session
+bucket's leader, since a copy that lags could answer a standing record as missing; a holder
+whose record is gone has no consumer to read the copy, so the message is resolved to the role's
+holder again. At shutdown the lane stops its forwarder, drains its connection, and only then
+keeps every message it holds, those still queued behind a holder's worker among them, so the
+handler's keeps of the messages its subscription still holds go over the main connection first.
+Each held message's end runs under one deadline inside the drain's 2 s wait for them, so it ends
+with its own line before the main connection drains and the process exits: a message pinned to
+its holder makes its forward once more in the first half of what is left and its keep in the
+rest, and one the deadline leaves too little time for a forward is kept at once. The lane's
+outcome is one
+of two exception reasons only under a rule: `no_holder` when no session claims the role and a
+rule refused its keep, and `delivery_failed` when the holder is not live and a rule refused its
+keep (an `unresponsive` holder among them, whose claim the lane leaves alone), when a claim read
+failed and a rule refused its keep, when a rule refused the keep of a message the lane stopped
+holding or took after the stop, when NATS refused or denied the forward, when the stream refused
+the message itself (too large, or a sealed stream), or when a read of the deployed stream says it
+does not capture the holder's subject. A keep's rules are the forward's: the stream's refusal of
+the message ends a keep as it ends a forward. A role claimant does not subscribe directly to its
+role subject.
 The forward is stored on the holder's agent subject (one copy per message and holder, by its
 `Nats-Msg-Id`), so a holder on consumer delivery that was away gets it from its session consumer
 when it is back.

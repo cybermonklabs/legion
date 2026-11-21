@@ -133,11 +133,12 @@ describe("envoyToolSpecs", () => {
       );
       expect(description).not.toContain("live only");
     }
-    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
-    // release for a holder that is not live (holder_lapsed).
+    // The ways a role publish ends in an error that tells the model to reach the agent some other
+    // way: the holder's refusal (403), and the window the listener spends waiting for the stream
+    // (504). No live holder is not one of them: the listener keeps the message for the role's next
+    // live holder. A keep that failed on NATS answers 503 with Retry-After, and a keep a rule
+    // refused answers 404, as a listener of an earlier release does for a holder that is not live
+    // (holder_lapsed) and for a keep that failed.
     expect(publish?.description).toContain(
       "the holder refuses the message, or the forward is not stored within four seconds"
     );
@@ -164,10 +165,10 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain(
       "The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again."
     );
-    // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release
-    // whose keep succeeded a holder that is not live never reaches it, and nothing tells the model
-    // that no copy waits for such a holder. A keep that failed, and a listener of an earlier
-    // release, answer such a holder 404 holder_lapsed.
+    // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release a
+    // holder that is not live reaches it only when the bus refuses the keep however often it is
+    // sent, and nothing tells the model that no copy waits for such a holder. A listener of an
+    // earlier release answers 404 holder_lapsed for such a holder, and for a keep that failed.
     expect(publish?.description).toContain("the listener keeps nothing and errs");
     expect(publish?.description).not.toContain("nothing waits for it");
     expect(publish?.description).not.toContain("in the hour that follows");

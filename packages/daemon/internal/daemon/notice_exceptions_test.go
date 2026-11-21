@@ -608,6 +608,36 @@ func TestANoticeTheListenerIsDeniedToForwardFinishesUndelivered(t *testing.T) {
 	}
 }
 
+// A notice the message bus stream refuses is answered 409 under the listener's streamRefusedPrefix
+// (writeBusUnavailable, packages/envoy/cmd/listener/api.go): a sealed stream, or a notice past the
+// stream's maxima, which the stream refuses however often it is sent until an operator changes
+// the stream. So the row finishes undelivered at its first answer, queues no copy, and holds no
+// later notice to the architect behind the fence, as a denied forward does; and it is one ERROR
+// line naming the row, the notice, its architect and the stream's refusal, where the outbox would
+// otherwise log a failed row on every attempt.
+func TestANoticeTheStreamRefusesFinishesUndeliveredWithOneError(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
+	logs := &syncBuffer{}
+	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice: listener returned 409 Conflict: {"error":%q}: %w`,
+		streamRefusal, notify.ErrStreamRefused{Message: streamRefusal})}
+	runner := &outbox{log: jsonLogger(logs), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
+	id := noticeRowID(t, pool)
+
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if published, rows := publisher.publishes(), outboxRows(t, pool); len(published) != 1 || rows != 0 {
+		t.Fatalf("published %d times with %d rows left, want one publish and the row finished with no copy", len(published), rows)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(id), "issue": "LEGION-2", "kind": "pr-blocked",
+		"architect": string(mustClaimToken(t, "LEGION-1", claim.RoleArchitect))})
+}
+
 // A finished tree spends no copies on its architect: the close suspended it, or its claim failed
 // or retired, and re-admission starts it with the tree's record rather than the notices of its
 // close. The stopped session's Envoy registration can outlive its process, so the listener

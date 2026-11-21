@@ -1893,8 +1893,9 @@ type UpdateAskOutcome int
 const (
 	// UpdateAskDelivered is a publish that reached a session: the claim is marked asked.
 	UpdateAskDelivered UpdateAskOutcome = iota + 1
-	// UpdateAskUndelivered is a publish no live session took, the role's topic having no holder
-	// (notify.ErrNoHolder): nothing is marked, so the sweep asks the claim again.
+	// UpdateAskUndelivered is a publish no live session took: the role's topic has no holder
+	// (notify.ErrNoHolder), or the message bus stream refused the ask (notify.ErrStreamRefused).
+	// Nothing is marked, so the sweep asks the claim again.
 	UpdateAskUndelivered
 	// UpdateAskAlreadyDelivered is an ask of a round an earlier ask of which reached a session:
 	// nothing is published.
@@ -1911,7 +1912,8 @@ const (
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
 // claim asked (UpdateTaskedAt) when, and only when, that publish reached a session. publish
 // answers true for a publish a session of the role took, false for a topic no live session holds
-// (notify.ErrNoHolder), and an error for every other failure; it must not call into this machine,
+// (notify.ErrNoHolder) or an ask the stream refused (notify.ErrStreamRefused), and an error for
+// every other failure; it must not call into this machine,
 // whose lock it runs under. The outbox's update-ask row is the one caller (internal/daemon's
 // updateAsk). The sweep only enqueues the row and marks nothing (internal/daemon's askRound): an
 // ask counts once it reached a session, and an ask that reached none is lost, not given, so the

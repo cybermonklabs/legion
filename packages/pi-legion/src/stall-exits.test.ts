@@ -15,10 +15,10 @@ import {
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
 import type { LegionSessionKind } from "./classify";
-import { createStallTeller } from "./stall-evidence";
 // The import below is this file's merge-base check: on the merge base there is no `./stall-exits`,
 // so every test here fails to resolve rather than passing vacuously.
 import { createStallExits, type StallExitsRecord, stallExitsFile } from "./stall-exits";
+import { createStallTeller } from "./stall-teller";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -369,7 +369,9 @@ test("a run whose evidence and owner's notice were not written does not reach th
     appendEntry: () => {
       throw new Error("this session's transcript is closed");
     },
-    log: { debug: () => {}, warn: () => {} },
+    // Nothing is published here, so no re-send ever reads the open calls.
+    openCalls: () => [],
+    log: { debug: () => {}, info: () => {}, warn: () => {} },
   });
   const rig = ladder(exits, {
     tellOverdue: teller.tellOverdue,

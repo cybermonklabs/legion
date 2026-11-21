@@ -1,0 +1,15 @@
+kind: Fixed
+custom:
+  Issue: pr4342
+body: |-
+  The stall notice to a stuck call's owner is sent again after a publish that failed for a reason
+  no rule decides - a 5xx, a 408, a timeout or a failed connection - under the same idempotency
+  key, after a wait from 1 s doubling to 60 s, until the listener stores or keeps it or refuses it
+  with a 4xx, the 409 of a stream that refuses the message among them. A 429
+  `sender_rate_limited` is sent again after the wait it names, as before, and gives the notice up
+  after 4 such refusals; any other 429 is final. A resend that tells the owner records the owner as
+  told. The overdue notice's re-sends stop once its call has returned or its turn has ended, or
+  once the ladder has stopped short, whose own notice supersedes it; the stop's notice is still
+  sent again after its call ends. No attempt starts more than 4 minutes after the first, judged
+  again when each wait ends, so a wait that ends late sends nothing. Before, a failure no rule
+  decides was logged and dropped.

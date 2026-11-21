@@ -56,6 +56,12 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeStreamRefused is a send or publish the stream refuses for the message itself
+	// (bus.StreamRefusesMessage: a message or headers past the stream's maxima, a message too
+	// large for the store, a sealed stream), answered the 409 of streamRefusedPrefix. An operator
+	// reading the record looks at the stream's configuration or at the sender's message size, and
+	// knows no retry of it can land.
+	outcomeStreamRefused requestOutcome = "stream_refused"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a
 	// session, resolved a role, reported a wake or stored anything, so no other record holds the
@@ -131,15 +137,20 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 }
 
 // refuseBusUnavailable answers a bus that did not serve the request and records the outcome the
-// status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
-// will not take however often it is sent, 403 the publish this listener's own grant denies, and
-// anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// status it wrote implies: 409 is the stream's refusal of the message itself, which no retry gets
+// past, 413 the caller's own oversized message, 400 the subject or key NATS will not take however
+// often it is sent, 403 the publish this listener's own grant denies, and anything else the bus not
+// answering. The status is read back from the write rather than classified a second time here, so
+// the pair cannot drift - a refusal that ended a publish an earlier send of which may have stored
+// the message is the maybe-stored 503, and is recorded bus_unavailable as that 503 is - with one
+// exception: a full stream (bus.ErrStreamFull) shares its 503 with the bus not answering, so the
+// error tells it apart.
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
+	case status == http.StatusConflict:
+		outcome = outcomeStreamRefused
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
 	case status == http.StatusRequestEntityTooLarge:

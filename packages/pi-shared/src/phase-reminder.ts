@@ -136,9 +136,11 @@ export const RECORD_READ_BOUND_MS = 5_000;
  * the same idempotency key, until a session holding the role takes it.
  *
  * The notice sends no `keep` field, so a listener keeps it for a role no live session holds and
- * answers 202 kept rather than this (`tellArchitect`). This 404 comes when the listener's keep
- * failed, and from a listener of an earlier release for a holder that is not live, which such a
- * listener keeps nothing for.
+ * answers 202 kept rather than this (`tellArchitect`). This 404 comes when the bus refuses the
+ * listener's keep however often it is sent, and from a listener of an earlier release for a holder
+ * that is not live, which such a listener keeps nothing for. A keep that failed on the bus is a 503
+ * with `Retry-After`, a failed publish like any other, and the next delivered reminder publishes
+ * again too.
  *
  * It stays a debug line rather than a warning because an architect that is away is not this
  * worker's doing, and the retry is already in hand.

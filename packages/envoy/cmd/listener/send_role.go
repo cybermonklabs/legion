@@ -104,7 +104,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, target, holder string, expectsReply json.RawMessage) {
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
-	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)
+	kept, err := keepForNextHolder(context.Background(), *d.delivery, item.Role, *item)
 	if err != nil {
 		charge.published(bus.StoredAck{}, err)
 		record.refuseBusUnavailable(w, fmt.Errorf("the kept lane of role %s did not store the message: %w", item.Role, err))

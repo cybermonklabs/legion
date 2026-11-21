@@ -45,9 +45,10 @@ const (
 	sendDedupe sendOutcome = "dedupe"
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
-	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed - answered 404
-	// (roleSend.noHolder).
+	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing
+	// under a rule - keep: false, a role token no claim can name, or a keep NATS refuses however
+	// often it is sent (busRefusesForGood) - answered 404 (roleSend.noHolder). A keep that failed
+	// on NATS is sendFailed, answered the bus-unavailable 503 its error maps to.
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
 	// sendDeliveryFailed is a recipient the stream stored no forward for: none live to forward to,
@@ -80,9 +81,13 @@ func (o sendOutcome) deliveryStatus() string {
 }
 
 // forwardWindow is one forward's wait for the stream's acknowledgement that it stored it:
-// roleForwardTimeout, or what is left of the send when that is less.
+// roleForwardTimeout, or what is left of ctx when that is less. A ctx with no deadline leaves the
+// forward its whole window.
 func forwardWindow(ctx context.Context) time.Duration {
-	deadline, _ := ctx.Deadline()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return roleForwardTimeout
+	}
 	return min(roleForwardTimeout, time.Until(deadline))
 }
 
@@ -107,12 +112,21 @@ func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item con
 	return wait()
 }
 
-// forwardRefused reports whether a forward failed in a way another attempt repeats: NATS refuses
-// the envelope or subject however often it is sent (bus.ErrRefused), or the listener's grant does
-// not allow the subject (bus.ErrPublishDenied). A role send answers it at once, as
-// requestRecord.refuseBusUnavailable maps it (413 or 400 for a refusal, 403 for a denial).
-func forwardRefused(err error) bool {
-	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied)
+// busRefusesForGood reports whether NATS refused a publish under a rule another attempt repeats:
+// NATS refuses the envelope or subject however often it is sent (bus.ErrRefused), the listener's
+// grant does not allow the subject (bus.ErrPublishDenied), or the stream refuses the message
+// itself and no send of it may have stored it (streamRefusesForGood). It is the one list of those
+// rules: the role lane ends a forward on it (roleForwardEnded) and ends a keep on it
+// (keepFailureHolds), a role send answers a forward it refuses at once, as
+// requestRecord.refuseBusUnavailable maps it (413 or 400 for a refusal, 403 for a denial, 409 for
+// the stream's refusal), and a kept copy's walk takes a dead letter it refuses as sent
+// (endKeptCopyWithDeadLetter). A refusal class added here reaches every one of them. A send that
+// retried such a forward to its window would answer 504, which a sender that re-sends on a 5xx
+// re-sends for as long as the refusal stands. A stream's refusal that ended a publish an earlier
+// send of which went out unanswered is no such rule: that send may have stored the message, so
+// every one of them holds it or answers the maybe-stored 503, as writeBusUnavailable does.
+func busRefusesForGood(err error) bool {
+	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied) || streamRefusesForGood(err)
 }
 
 // confirm records that the stream stored the message under dedupeKey for sessionID through the
@@ -196,16 +210,21 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // a role nobody claims, and a claim whose holder is not live), and while this send's own keep
 // flag asks for it, it keeps the message for the role's next live holder and hands the lane to
 // whoever holds the role now, both in the one keep both give-up paths take (keepForNextHolder),
-// and answers kept's 202. A keep that kept nothing - one this send's keep flag turned off, one
-// under a role token no claim can name, a keep that failed, logged by keepRoleMessage - is
-// answered as a send that kept nothing is, since the sender's own fallback must run when the
-// message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
-// daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
-// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails. A keep whose publish went out and was never acknowledged
-// (bus.ErrUnacknowledged) is answered so too, as at main, although it may have stored the copy:
-// what each role route answers is unchanged here, and a sender that publishes again after the
-// 404 gives the role's next holder the message once more, which at-least-once delivery allows.
+// and answers kept's 202. A keep that failed on NATS (keepFailureHolds: a full stream, a publish
+// not answered in its window, a connection down) kept nothing although nothing says the message
+// cannot be kept, so it is answered the bus-unavailable 503 its error maps to, with no refusal
+// exception, and the sender sends again, as the role lane holds its own message in that case. A
+// keep whose publish went out and was never acknowledged (bus.ErrUnacknowledged) is such a
+// failure whatever answer ended it after - the stream's refusal of a later send among them - and
+// may have stored the copy, so its 503 is the maybe-stored one (writeBusUnavailable); the sender's
+// next send under the same dedupe key finds that copy if the stream stored it (storeKeptRoleCopy),
+// and stores nothing new. A keep that kept nothing under a rule - one this send's keep flag turned
+// off, one under a role token no claim can name, a refused envelope, a denied subject, or a stream
+// that refuses the message itself with no earlier send unanswered, each logged by keepRoleMessage
+// or keepForNextHolder - is answered as a send that kept nothing is, since the sender's own
+// fallback must run when the message was not kept: writeRoleHolderError's 404 (unclaimed or
+// holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded role_unclaimed or
+// role_lapsed, with its refusal exception (publishRefusalException).
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -220,8 +239,15 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
+		kept, err := keepForNextHolder(context.Background(), *s.d.delivery, s.role, s.item)
+		if err == nil {
 			s.kept(result, kept)
+			return
+		}
+		if keepFailureHolds(err) {
+			s.record.holder = result.Holder
+			s.record.refuseBusUnavailable(s.w, err)
+			s.settle(sendFailed)
 			return
 		}
 	}
@@ -296,10 +322,10 @@ func (s *roleSend) unresolved(err error) {
 	s.settle(sendFailed)
 }
 
-// refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
-// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole).
+// refused answers a forward NATS refuses under a rule another attempt repeats (busRefusesForGood),
+// as requestRecord.refuseBusUnavailable maps it. The refused forward stored nothing, so it marks
+// nothing: an earlier forward of the same send that may have stored the message has marked the
+// charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -456,7 +482,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.delivered(sendDelivered)
 				return
 			}
-			if forwardRefused(err) {
+			if busRefusesForGood(err) {
 				send.refused(err)
 				return
 			}

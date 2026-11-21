@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -20,9 +21,10 @@ import (
 
 // The log lines of the merge-forward executor (mergeForwardMessage) these tests read.
 const (
-	mergeForwardDelivered = "outbox merge-forward message delivered"
-	mergeForwardLeftLine  = "outbox merge-forward message finished undelivered: the workflow no longer delivers it"
-	mergeForwardEnded     = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
+	mergeForwardDelivered     = "outbox merge-forward message delivered"
+	mergeForwardLeftLine      = "outbox merge-forward message finished undelivered: the workflow no longer delivers it"
+	mergeForwardEnded         = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
+	mergeForwardStreamRefused = "outbox merge-forward message finished undelivered: the message bus stream refused the message"
 )
 
 // mergeForwardRunner is an outbox runner over an isolated database holding LEGION-208 in testing
@@ -183,4 +185,44 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)
 		}
 	})
+}
+
+// A merge-forward message the message bus stream refuses (409 under the listener's
+// streamRefusedPrefix: a sealed stream, a message past its maxima) is refused however often it is
+// sent, until an operator changes the stream. The row is held for a role nobody holds, but held
+// here it would retry the refusal for ever and tell the role nothing either way, so it ends
+// undelivered with one ERROR line naming it, its issue, its role, its step, the role's topic and
+// the stream's refusal. A holder that did not confirm the message in time is another failure, and
+// keeps the row's retry.
+func TestAMergeForwardMessageTheStreamRefusesEndsTheRow(t *testing.T) {
+	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	publisher := &outboxPublisher{err: fmt.Errorf("publish notice to the implementer's topic: listener returned 409 Conflict: %w",
+		notify.ErrStreamRefused{Message: streamRefusal})}
+	runner, _, pool, logs := mergeForwardRunner(t, publisher, asked)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
+	id := noticeRowID(t, pool)
+
+	drainAt(t, runner, 0, "the row's attempt")
+	if published := publisher.publishes(); len(published) != 1 || published[0].topic != topic {
+		t.Fatalf("publishes = %#v, want the one to %s the stream refused", published, topic)
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the row the stream refused ended", left)
+	}
+	line := streamRefusedLine(t, logs.String(), map[string]any{"row": float64(id), "issue": "LEGION-208",
+		"role": string(claim.RoleImplementer), "step": string(record.MergeForwardAsk), "head": "sha-1", "topic": topic})
+	if line["msg"] != mergeForwardStreamRefused {
+		t.Fatalf("the ERROR line is %q, want %q", line["msg"], mergeForwardStreamRefused)
+	}
+
+	cause := notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"}
+	publisher.err = fmt.Errorf("publish notice to the implementer's topic: %w", cause)
+	row := mustOutboxRow(t, "LEGION-208", ask, time.Now())
+	row.ID = id + 1
+	if err := runner.execute(context.Background(), row); !errors.Is(err, cause) {
+		t.Fatalf("the merge-forward message its implementer did not confirm = %v, want the answer as a failure, retried", err)
+	}
 }

@@ -363,17 +363,22 @@ runs when it moves to another session.
 accept optional `inReplyTo`, `supersedes`, `urgency`, `expectsReply`, and `expiresAt` metadata.
 Successful direct sends return both the envelope and listener-selected recipient, and
 `duplicate` when the listener already held a send under that target and idempotency key.
-A publish returns the envelope and an optional role holder. A role publish has three answers,
-told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
+A publish returns the envelope and an optional role holder. A role publish's answers are told
+apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
 message the listener kept for one hour because no live session holds the role, with `kept`,
 `keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
 `lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
 milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
 none does, the listener drops it and sends the publishing session a dead letter, when the publish
 named that session as its source and the listener did not drop it more than an hour late. A
-listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
-`EnvoyApiError`, and the sender's own fallback must run. A sender that
-keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
+listener of an earlier release sends no `keptUntil`, and answers 404 for a holder that is not live
+and for a keep that failed. 404 is nothing kept under a rule (`keep: false`, a role token no claim
+can name, or a keep the bus refuses however often it is sent), thrown as an `EnvoyApiError`, and
+the sender's own fallback must run. A sender that keeps a queue of its own passes `keep: false` to
+get the 404. A keep that failed on NATS is a 503 with `Retry-After: 1`, and the sender sends again.
+A send, publish or store write the stream refuses for the message itself (past the stream's
+maxima, or a sealed stream) is a 409 with no `Retry-After`, thrown at once as an `EnvoyApiError`:
+it fails again however often it is sent. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later

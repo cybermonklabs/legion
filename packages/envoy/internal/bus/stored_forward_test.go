@@ -67,7 +67,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 // A forward with no Nats-Msg-Id is refused before anything is sent: the stored copy is the whole
 // of the delivery, and an unnamed one is stored again by every attempt, so the name is required
 // rather than optional. The refusal is an ErrRefused, which the listener answers at once instead
-// of retrying it for the rest of the send's window (forwardRefused).
+// of retrying it for the rest of the send's window (cmd/listener's busRefusesForGood).
 func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {

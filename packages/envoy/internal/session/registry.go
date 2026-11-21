@@ -890,14 +890,16 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
 // every error the same way, ctx's end included.
 //
-// It is the read for the caller that cannot afford a stale miss, because a miss makes it take
+// It is the read for the callers that cannot afford a stale miss, because a miss makes them take
 // something away from the session on the strength of the session having no record at all: the
 // listener's delete of a session's JetStream consumer, which re-reads this bucket under the
-// session's lock and deletes only where the session is gone from it (cmd/listener). A copy that
-// has not applied a relaunch's registration would answer that read "not found", and the delete
-// would then remove the consumer of a live relaunch, whose relay stops until it registers again.
-// Every other caller asks Refresh, which costs the server less: a direct get is answered by any
-// copy that is near enough to current, where this read is one more thing for the leader to do.
+// session's lock and deletes only where the session is gone from it, and the role lane's check
+// that the holder a held message is pinned to still stands, where a miss drops the pin and gives
+// the role's next holder a second copy (both in cmd/listener). A copy that has not applied a
+// relaunch's registration would answer such a read "not found", and the delete would then remove
+// the consumer of a live relaunch, whose relay stops until it registers again. Every other caller
+// asks Refresh, which costs the server less: a direct get is answered by any copy that is near
+// enough to current, where this read is one more thing for the leader to do.
 func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
 	got, err := kv.GetFromLeader(ctx, sessionID)

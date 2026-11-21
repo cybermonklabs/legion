@@ -253,9 +253,11 @@ const EnvelopeResponseSchema = EnvelopeSchema.extend({
  * must run, which `request` throws as an `EnvoyApiError`. A 202 is answered for a role nobody
  * claims (`kept_reason: "unclaimed"`) and for a claim whose holder is unresponsive or gone
  * (`"holder_lapsed"`), which also names that `holder`, its `holder_state` and its `last_seen`
- * (read by the schema this one extends). A 404 comes when the listener keeps nothing: the
- * publish sent `keep: false`, the role's token is one no claim can name, or the keep failed. A
- * listener of an earlier release also answers it for a holder that is not live.
+ * (read by the schema this one extends). A 404 comes when the listener keeps nothing under a rule:
+ * the publish sent `keep: false`, the role's token is one no claim can name, or the bus refuses
+ * the keep however often it is sent. A keep that failed on the bus answers 503 with
+ * `Retry-After`, which `request` retries as it retries any 5xx. A listener of an earlier release
+ * also answers 404 for a holder that is not live, and for a keep that failed.
  * 202 is a success answer, so it passes `response.ok` and reaches this schema — load-bearing:
  * without it a kept message would read as a refusal.
  */

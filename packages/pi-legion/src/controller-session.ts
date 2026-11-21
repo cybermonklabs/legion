@@ -368,12 +368,14 @@ export function createControllerSession(deps: {
       startMessageSent = true;
     }
     // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
-    // record a claim writes first did not store - and is made again after a growing wait
-    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
-    // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
-    // down below). The bound follows who started the claim. The daemon-launched controller's own
-    // claim at `session_start` claims again, as the claim boot does, rather than exiting for a
-    // relaunch that would meet the same 503; it is bounded by the daemon's registration deadline
+    // record a claim writes first did not store - and so did one it answered 409 because the
+    // message bus stream refused the claim's write until an operator changes it; either is made
+    // again after a growing wait (claimRoleAgainOnBusy), each wait logged with its attempt and the
+    // listener's answer, and the claim widget shows that the controller holds no Envoy role yet
+    // until the claim lands (taken down below). The bound follows who started the claim. The
+    // daemon-launched controller's own claim at `session_start` claims again, as the claim boot
+    // does, rather than exiting for a relaunch that would meet the same answer; it is bounded by
+    // the daemon's registration deadline
     // (120 s x 3 by default), after which the daemon retires and relaunches a controller that never
     // reported ready, logging the claim, the reason and the launch it counts (supervise's
     // registrationDeadline). A session change there never reaches this claim: the daemon refuses a
@@ -427,9 +429,9 @@ export function createControllerSession(deps: {
         claimWidget.clear();
         claimWidget = undefined;
       }
-      // The listener's 503 thrown here is the bounded role claim giving up after its counted tries,
-      // the one failure a typed claim of the daemon-launched controller is answered on screen for
-      // (`claimOnce`).
+      // The listener's 503 or stream-refused 409 thrown here is the bounded role claim giving up
+      // after its counted tries, the one failure a typed claim of the daemon-launched controller is
+      // answered on screen for (`claimOnce`).
       if (error instanceof Error && listenerAskedToClaimAgain(error)) roleClaimGaveUp.add(error);
       throw error;
     }

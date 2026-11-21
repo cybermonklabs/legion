@@ -1,0 +1,30 @@
+kind: Fixed
+custom:
+  Issue: pr4342
+body: |-
+  At shutdown the listener's role lane keeps the messages it holds, and those still queued behind
+  a holder's worker, only after its own connection has drained, so the handler's keeps of the
+  messages its subscription still holds go first: a listener holding its 4,096-message bound kept
+  those first and lost the buffered ones. Each held message's end at the stop - a pinned message's
+  forward once more, then its keep - runs under one deadline inside the drain's 2 s wait, so it
+  ends with its own line before the process exits; a message the deadline leaves too little time
+  for a forward is kept at once. A role message whose forward's acknowledgement was lost is
+  forwarded again to the same holder under the same id, so the stream stores it once even when the
+  role moves meanwhile; whether that holder's session still stands is read from the session
+  bucket's leader. A held message logs one ERROR, not one line per attempt, and a lane whose 4,096
+  forward slots are all held logs one ERROR when it fills and one when it has room.
+
+  A send, a publish or a store write the stream refuses for the message itself (a message or
+  headers past the stream's maxima, a message too large for the store, or a sealed stream) is
+  answered 409 with no `Retry-After`, recorded `stream_refused`, on `/v1/messages/send`,
+  `/v1/messages/publish`, `/v1/roles/set`, a session's registration, the interest routes and
+  `DELETE /v1/sessions/<id>`. Before, these got a 503 with `Retry-After`, which senders retried,
+  and a role send retried its forward to the 504 that has a sender send it again for as long as
+  the stream's answer stands. A refusal of a resend after a send nothing answered is not that 409:
+  the first send may have stored the message, so it is the maybe-stored 503, recorded
+  `bus_unavailable`, and the role lane holds a keep that met it. A sender now reads the 409 as a
+  refusal: Dispatch's send client reports the listener's reason rather than an unavailable
+  listener, the Legion daemon ends its outbox row, and a Legion session's role claim claims again
+  on it as on the 503. A publish to a role with no live holder whose keep the stream refuses that
+  way still gets the no-holder 404; one whose keep failed on the bus gets the bus-unavailable 503,
+  where it got the 404.

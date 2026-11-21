@@ -150,24 +150,27 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
 		what: "the merge-queue removal of " + row.Issue, message: payload.Message(row.Issue, pr.Repo), attributes: attributes,
-		claimEnded: "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
-		delivered:  "outbox merge-queue removal delivered to the merger"})
+		claimEnded:    "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
+		streamRefused: "outbox merge-queue removal finished undelivered: the message bus stream refused the message",
+		delivered:     "outbox merge-queue removal delivered to the merger"})
 }
 
 // heldMessage is one message a row delivers to a role of its issue and holds until a session of
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
-// published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// published, the attributes of the row's log lines, and the three lines the delivery itself logs:
+// the row's end on a claim that failed or retired, its end on a message the stream refuses, and
+// the delivery.
 type heldMessage struct {
-	issue      record.Issue
-	token      claim.Token
-	role       claim.Role
-	what       string
-	message    string
-	attributes []any
-	claimEnded string
-	delivered  string
+	issue         record.Issue
+	token         claim.Token
+	role          claim.Role
+	what          string
+	message       string
+	attributes    []any
+	claimEnded    string
+	streamRefused string
+	delivered     string
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -186,9 +189,13 @@ type heldMessage struct {
 // role again. While the root's design gate is closed (designGateClosed) a released role is neither
 // woken nor told, and the row waits for the gate to open: a role the gate holds may not know the
 // gate closed, and woken by this message it would work against the gate. A role whose session
-// holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
-// the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a holder that
-// did not confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
+// holds it is told at once, gate or none, and m.delivered is logged. A message the message bus
+// stream refuses (notify.ErrStreamRefused) ends the row undelivered with one ERROR line,
+// m.streamRefused with the topic and the stream's refusal: the stream refuses it however often it
+// is sent, until an operator changes the stream, so holding the row would retry it for ever and
+// tell the role nothing either way. The three other answers of the confirmed publish route keep
+// the ordinary retry, as they do for a hook prompt: a holder that did not confirm in time
+// (notify.ErrNotDelivered), one that does not advertise the delivery mode
 // (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
@@ -218,7 +225,9 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	topic := notify.RoleTopicPrefix + string(m.token)
+	published := r.publish(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
+	var streamRefused notify.ErrStreamRefused
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
@@ -227,6 +236,9 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)
 	case errors.Is(published, notify.ErrHolderUnresponsive):
 		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
+	case errors.As(published, &streamRefused):
+		r.log.Error(m.streamRefused, append(m.attributes, "topic", topic, "refusal", streamRefused.Message)...)
+		return nil
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
 }

@@ -232,36 +232,45 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 // A listener that confirms a role message before it answers says why it did not deliver one:
 // 504 with receipt_timeout or delivery_failed, naming the holder and the envelope it forwarded
 // (listenerwire.RoleSendFailure), 403 with capability when the holder cannot take the payload's
-// delivery mode (listenerwire.CapabilityRefusal), or 403 with no reason when
-// the NATS server denied the forward under the listener's own grant (writeBusUnavailable,
-// packages/envoy/cmd/listener/api.go). Each is told apart from every other failure, and a 504 or
-// 403 whose body is not that JSON — a proxy's gateway timeout, a reason this daemon does not
-// know — stays an ordinary failure.
+// delivery mode (listenerwire.CapabilityRefusal), 403 with no reason when the NATS server denied
+// the forward under the listener's own grant, or 409 when the stream refused the message itself
+// (both writeBusUnavailable, packages/envoy/cmd/listener/api.go). Each is told apart from every
+// other failure, and a 504, 403 or 409 whose body is not that JSON — a proxy's gateway timeout, a
+// reason this daemon does not know — stays an ordinary failure.
 func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
+	// The listener's own 409 for a sealed stream, byte for byte as writeBusUnavailable writes it
+	// (streamRefusedPrefix, then the bus's error).
+	const sealed = `envoy: the message bus stream refused the message, and refuses it however often it is sent: bus: the stream did not acknowledge storing the forward: nats: invalid operation on sealed stream`
 	for _, tc := range []struct {
-		name         string
-		status       int
-		body         string
-		notDelivered *ErrNotDelivered
-		refused      *ErrRefusedByHolder
-		denied       *ErrPublishDenied
+		name          string
+		status        int
+		body          string
+		notDelivered  *ErrNotDelivered
+		refused       *ErrRefusedByHolder
+		denied        *ErrPublishDenied
+		streamRefused *ErrStreamRefused
 	}{
 		{"the holder sent no receipt", http.StatusGatewayTimeout,
 			`{"error":"role legion-demo-architect: event evt-1 was not confirmed by its holder within 4s (receipt_timeout)","reason":"receipt_timeout","event_id":"evt-1","dedupe_key":"legion-outbox:9","holder":"ses_a","attempts":2}`,
-			&ErrNotDelivered{Reason: ReasonReceiptTimeout, Holder: "ses_a", EventID: "evt-1"}, nil, nil},
+			&ErrNotDelivered{Reason: ReasonReceiptTimeout, Holder: "ses_a", EventID: "evt-1"}, nil, nil, nil},
 		{"the forward never reached the server", http.StatusGatewayTimeout,
 			`{"error":"role legion-demo-architect: event evt-2 was not confirmed by its holder within 4s (delivery_failed)","reason":"delivery_failed","event_id":"evt-2","dedupe_key":"legion-outbox:9","holder":"","attempts":0}`,
-			&ErrNotDelivered{Reason: ReasonDeliveryFailed, EventID: "evt-2"}, nil, nil},
+			&ErrNotDelivered{Reason: ReasonDeliveryFailed, EventID: "evt-2"}, nil, nil, nil},
 		{"the holder does not advertise the delivery mode", http.StatusForbidden,
-			`{"error":"session ses_a (architect) does not advertise prompt","reason":"capability","holder":"ses_a"}`, nil, &ErrRefusedByHolder{Holder: "ses_a"}, nil},
+			`{"error":"session ses_a (architect) does not advertise prompt","reason":"capability","holder":"ses_a"}`, nil, &ErrRefusedByHolder{Holder: "ses_a"}, nil, nil},
 		{"the listener's own grant denied the forward", http.StatusForbidden,
 			`{"error":"envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to \"notifications.agent.ses_a\": nats: permissions violation: Permissions Violation for Publish to \"notifications.agent.ses_a\""}`,
-			nil, nil, &ErrPublishDenied{Message: `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_a": nats: permissions violation: Permissions Violation for Publish to "notifications.agent.ses_a"`}},
-		{"a gateway timeout that is not JSON", http.StatusGatewayTimeout, `upstream request timeout`, nil, nil, nil},
-		{"a gateway timeout with no reason", http.StatusGatewayTimeout, `{"error":"gateway timeout"}`, nil, nil, nil},
-		{"a gateway timeout with another reason", http.StatusGatewayTimeout, `{"error":"not confirmed","reason":"not_confirmed"}`, nil, nil, nil},
-		{"a forbidden answer the listener does not write", http.StatusForbidden, `{"error":"forbidden"}`, nil, nil, nil},
-		{"a forbidden answer that is not JSON", http.StatusForbidden, `forbidden`, nil, nil, nil},
+			nil, nil, &ErrPublishDenied{Message: `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_a": nats: permissions violation: Permissions Violation for Publish to "notifications.agent.ses_a"`}, nil},
+		{"the stream refused the message", http.StatusConflict, `{"error":"` + sealed + `"}`, nil, nil, nil, &ErrStreamRefused{Message: sealed}},
+		{"a conflict with another error", http.StatusConflict,
+			`{"error":"role legion-demo-architect is held by another process","holder":"ses_a"}`, nil, nil, nil, nil},
+		{"a conflict that is not JSON", http.StatusConflict, sealed, nil, nil, nil, nil},
+		{"the stream's refusal text under another status", http.StatusServiceUnavailable, `{"error":"` + sealed + `"}`, nil, nil, nil, nil},
+		{"a gateway timeout that is not JSON", http.StatusGatewayTimeout, `upstream request timeout`, nil, nil, nil, nil},
+		{"a gateway timeout with no reason", http.StatusGatewayTimeout, `{"error":"gateway timeout"}`, nil, nil, nil, nil},
+		{"a gateway timeout with another reason", http.StatusGatewayTimeout, `{"error":"not confirmed","reason":"not_confirmed"}`, nil, nil, nil, nil},
+		{"a forbidden answer the listener does not write", http.StatusForbidden, `{"error":"forbidden"}`, nil, nil, nil, nil},
+		{"a forbidden answer that is not JSON", http.StatusForbidden, `forbidden`, nil, nil, nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -286,6 +295,10 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 			var denied ErrPublishDenied
 			if got := errors.As(err, &denied); got != (tc.denied != nil) || got && denied != *tc.denied {
 				t.Fatalf("errors.As(%v, ErrPublishDenied) = %t with %+v, want %+v", err, got, denied, tc.denied)
+			}
+			var streamRefused ErrStreamRefused
+			if got := errors.As(err, &streamRefused); got != (tc.streamRefused != nil) || got && streamRefused != *tc.streamRefused {
+				t.Fatalf("errors.As(%v, ErrStreamRefused) = %t with %+v, want %+v", err, got, streamRefused, tc.streamRefused)
 			}
 			if errors.Is(err, ErrNoHolder) {
 				t.Fatalf("errors.Is(%v, ErrNoHolder) = true, want a holder that exists", err)

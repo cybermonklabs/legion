@@ -25,11 +25,33 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
+// ErrNotSent is wrapped by a publish error that left nothing on the wire: the window was spent
+// before the publish was made, nats.go refused the publish before it wrote it, or, for a forward
+// (StartRequestStoredTo), the connection did not come back or the reply inbox could not be
+// subscribed before the publish. A caller that sends a message again until it is stored reads it
+// to tell a publish that cannot have reached the server, which no later attempt need repeat to the
+// same recipient, from one that may have (cmd/listener's forwardMayBeStored). The error's text is
+// the error it wraps, unchanged (notSent).
+var ErrNotSent = errors.New("bus: the publish was not sent")
+
+// notSent marks err as one that left nothing on the wire (ErrNotSent), keeping its text and every
+// error it wraps.
+func notSent(err error) error {
+	return notSentError{err: err}
+}
+
+type notSentError struct{ err error }
+
+func (e notSentError) Error() string { return e.err.Error() }
+
+func (e notSentError) Unwrap() []error { return []error{e.err, ErrNotSent} }
+
 // publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
 // the server accepted it (confirmPublished). A nil error means the server accepted the publish;
 // otherwise the error is a window already spent (errWindowElapsed), nats.go's refusal before
 // sending (refused), a flush that failed or ran out of the window, ErrPublishDenied, or one
-// wrapping ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller
+// wrapping ErrPublishUnconfirmed. The first two left nothing on the wire and are marked ErrNotSent.
+// publish is conn.PublishMsg, bound to the same conn: every caller
 // reads its connection once and passes it and its PublishMsg, so publish publishes on the
 // connection observe and confirmPublished judge. It is a parameter so a test can make the server's
 // answer arrive before publish returns, which is the case the state read before it exists for.
@@ -50,11 +72,11 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 		err = context.DeadlineExceeded
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+		return notSent(fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err))
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
-		return c.refused(err, len(msg.Data))
+		return notSent(c.refused(err, len(msg.Data)))
 	}
 	return confirmFlushed(conn, msg.Subject, before, deadline)
 }

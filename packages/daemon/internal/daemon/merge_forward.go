@@ -33,7 +33,8 @@ import (
 // row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
 // the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
 // a head that already came. What follows - a claim that failed or retired, the design gate, the
-// wake and the publish - is deliverHeld's, as it is a merge-queue removal's.
+// wake, the publish and a message the stream refuses, which ends the row with one ERROR line - is
+// deliverHeld's, as it is a merge-queue removal's.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -65,7 +66,8 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
 		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, pr.Repo),
-		attributes: attributes,
-		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
-		delivered:  "outbox merge-forward message delivered"})
+		attributes:    attributes,
+		claimEnded:    "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
+		streamRefused: "outbox merge-forward message finished undelivered: the message bus stream refused the message",
+		delivered:     "outbox merge-forward message delivered"})
 }

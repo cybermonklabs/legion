@@ -261,6 +261,27 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// streamRefusedPrefix opens the body of the answer writeBusUnavailable gives a request whose
+// publish, forward or store write the stream refuses for the message itself
+// (bus.StreamRefusesMessage: a message or headers past the stream's maxima, a message too large for
+// the store, a sealed stream): a send, a publish, and the KV writes that go through writeStoreError
+// (POST /v1/roles/set, a session's registration, the interest routes). It is neither the
+// bus-unavailable 503, since the bus answered, nor the full stream's, since no room makes the
+// stream take this message: it is refused however often and whenever it is sent, so the answer is
+// a 409 with no Retry-After. No client of ours retries it in a loop: envoy-client retries only 500
+// and above (packages/envoy-client/src/transport.ts) and its tools show it to the model, the
+// Legion daemon ends the row it published with one ERROR (notify.ErrStreamRefused,
+// packages/daemon/internal/notify), Dispatch's send client reports it as the listener's refusal,
+// and the Legion stall teller takes it as final. Two senders meet it again at their own cadence and
+// no faster: the phase reminder publishes its notice again at its next delivered reminder, and a
+// session's registration is sent again at its next heartbeat, which is the session's liveness and
+// lands once an operator unseals the bucket. 413
+// stays this listener's own payload bound (bus.ErrTooLarge), checked before anything is sent, and a
+// sealed or re-configured stream is not the caller's bytes being wrong. A publish to a role with no
+// live holder whose keep the stream refuses that way is not this answer: the keep is that route's
+// own give-up, and a keep a rule refuses is its no-holder 404 (roleSend.noHolder).
+const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -298,6 +319,12 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
 // it. No Retry-After rides it for the same reason.
 //
+// A message the stream refuses for the message itself, no send of which may have stored it
+// (streamRefusesForGood), is answered ahead of both, with the 409 under streamRefusedPrefix: the
+// bus answered, and no retry and no waiting changes its answer, so it carries no Retry-After. A
+// refusal that ended a publish one of whose sends may have stored the message (mayHaveStored,
+// below) is not that answer: the message may be stored, so it is the maybe-stored 503.
+//
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
@@ -313,6 +340,10 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		return http.StatusForbidden
 	}
 	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
+	if streamRefusesForGood(err) {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("%s: %s", streamRefusedPrefix, err))
+		return http.StatusConflict
+	}
 	prefix := busUnansweredPrefix
 	if full {
 		prefix = streamFullPrefix
@@ -335,11 +366,21 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 // mayHaveStored reports whether a publish that failed with err may still have stored its message:
 // a send of it went out and nothing answered (bus.ErrUnacknowledged), whatever answer ended the
 // publish after it - a full stream, or a refusal of a later send, since the first may have landed.
-// It is the one rule the bus-unavailable answer (writeBusUnavailable), the sender's charge
-// (senderCharge.published), a keep's failure (storeKeptRoleCopy) and a publish past an in-process
-// refusal (publishPastInProcess) read.
+// It is the one rule the bus-unavailable answer (writeBusUnavailable), the stream's final refusal
+// (streamRefusesForGood), the sender's charge (senderCharge.published), a keep's failure
+// (storeKeptRoleCopy) and a publish past an in-process refusal (publishPastInProcess) read.
 func mayHaveStored(err error) bool {
 	return errors.Is(err, bus.ErrUnacknowledged)
+}
+
+// streamRefusesForGood reports whether the stream refused the message itself
+// (bus.StreamRefusesMessage: a message or headers past the stream's maxima, a message too large
+// for the store, a sealed stream) and no send of it may have stored it (mayHaveStored): a
+// refusal of a later send, after a send nothing answered, leaves that first send's copy possible,
+// so it is not final. It is the one rule the 409 (writeBusUnavailable), the request record's
+// stream_refused (which reads that 409 back) and every refusal list (busRefusesForGood) read.
+func streamRefusesForGood(err error) bool {
+	return bus.StreamRefusesMessage(err) && !mayHaveStored(err)
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the

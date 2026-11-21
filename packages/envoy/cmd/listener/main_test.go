@@ -3194,7 +3194,13 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 	}
 }
 
-func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *testing.T) {
+// A forward that fails on the connection leaves the listener not knowing whether the stream holds
+// a copy, so the role lane holds the message and forwards it again (roleForwarder.hold), under the
+// same Nats-Msg-Id, until the stream stores it: two failed forwards and a third that the stream
+// acknowledges deliver the message once, log one held line at ERROR for the message (its later
+// attempts are DEBUG, under the logger's INFO level), and publish no delivery exception. While the
+// message is held it keeps its slot, so envoy_role_forwards_outstanding counts it.
+func TestListenerDeliveryHandler_RoleForwardPublishErrorIsHeldAndForwardedAgain(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "forward-publish-error"
 	if err := harness.sessions.Put("ses_unreachable", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -3203,17 +3209,25 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 	if _, err := harness.registry.SetRole("ses_unreachable", "test-machine", role, false); err != nil {
 		t.Fatalf("claim role: %v", err)
 	}
+	const failures = 2
 	var forwards atomic.Int32
+	var msgIDs sync.Map
+	held := make(chan int, failures+1)
+	var forwarder *roleForwarder
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
-		forwards.Add(1)
-		return errors.New("nats: connection closed")
+	cfg.forwardRole = inlineForward(func(_ string, _ contracts.Envelope, msgID string, _ time.Duration) error {
+		msgIDs.Store(msgID, true)
+		if forwards.Add(1) <= failures {
+			return errors.New("nats: connection closed")
+		}
+		held <- forwarder.outstanding()
+		return nil
 	})
 	cfg = wireTestRoleForwarder(t, cfg)
+	forwarder = cfg.roleForwards
 	handler := coreNATSDeliveryHandler(cfg)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "forward-publish-error")
 	item.Payload = `{"type":"worker-queued"}`
-	data := marshalListenerEnvelope(t, item)
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
 	if err != nil {
 		t.Fatalf("subscribe exception probe: %v", err)
@@ -3223,19 +3237,226 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
-	handler(&natsgo.Msg{Data: data})
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	cfg.roleForwards.settled(t)
-	assertDeliveryException(t, probe, item, "delivery_failed")
-	handler(&natsgo.Msg{Data: data})
-	cfg.roleForwards.settled(t)
-	assertDeliveryException(t, probe, item, "delivery_failed")
 
-	if got := forwards.Load(); got != 2 {
-		t.Fatalf("forward attempts = %d, want 2: a failed forward must clear the attempt cache", got)
+	if got := forwards.Load(); got != failures+1 {
+		t.Fatalf("forward attempts = %d, want %d: each failed forward is tried again until one is stored", got, failures+1)
 	}
-	if logs := harness.logs.String(); !strings.Contains(logs, `"msg":"listener role forward failed"`) {
-		t.Fatalf("a forward publish error must log as a failed forward:\n%s", logs)
+	if outstanding := <-held; outstanding != 1 {
+		t.Fatalf("envoy_role_forwards_outstanding read %d while the held message was forwarded again, want 1", outstanding)
 	}
+	ids := 0
+	msgIDs.Range(func(any, any) bool { ids++; return true })
+	if ids != 1 {
+		t.Fatalf("the forwards went out under %d Nats-Msg-Ids, want one, so the stream keeps one copy", ids)
+	}
+	if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
+		t.Fatalf("a held message published an exception (or the probe failed): %v %v", message, err)
+	}
+	logs := harness.logs.String()
+	heldLines := linesIn(logs, roleHeldLine, nil)
+	if len(heldLines) != 1 || heldLines[0]["level"] != "ERROR" || heldLines[0]["attempt"] != float64(1) {
+		t.Fatalf("held lines %v, want one at ERROR for the first attempt and none for the %d after it:\n%s", heldLines, failures-1, logs)
+	}
+	if strings.Count(logs, `"msg":"listener role forwarded"`) != 1 || strings.Contains(logs, `"msg":"listener role forward failed"`) {
+		t.Fatalf("want one forwarded line and no failed line:\n%s", logs)
+	}
+}
+
+// A message the lane holds when the listener stops is kept once on its role's kept lane, under the
+// reason held_at_shutdown, instead of tried again (roleForwarder.stopHolding), and its slot is
+// freed: the stream then holds the one copy that outlives the process.
+func TestListenerDeliveryHandler_RoleMessageHeldAtShutdownIsKept(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "held-at-shutdown"
+	if err := harness.sessions.Put("ses_held_at_shutdown", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := harness.registry.SetRole("ses_held_at_shutdown", "test-machine", role, false); err != nil {
+		t.Fatalf("claim role: %v", err)
+	}
+	failed := make(chan struct{}, 1)
+	cfg := harness.config
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+		return errors.New("nats: connection closed")
+	})
+	cfg = wireTestRoleForwarder(t, cfg)
+	handler := coreNATSDeliveryHandler(cfg)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "held-at-shutdown")
+	item.Payload = `{"type":"worker-queued"}`
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	select {
+	case <-failed:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the forward was never made")
+	}
+	cfg.roleForwards.stopHolding()
+	cfg.roleForwards.keepHeldNow()
+	cfg.roleForwards.settled(t)
+
+	logs := harness.logs.String()
+	kept := logRecordsNamed(logs, "listener kept role message for the role's next holder", role)
+	if len(kept) != 1 || kept[0]["reason"] != string(roleKeptAtShutdown) {
+		t.Fatalf("the kept lines for role %s are %v, want one naming the reason %s:\n%s", role, kept, roleKeptAtShutdown, logs)
+	}
+	if strings.Contains(logs, roleHeldUnkeptLine) || strings.Contains(logs, `"msg":"listener role forward failed"`) {
+		t.Fatalf("a held message the keep stored must log neither the unkept line nor a failed forward:\n%s", logs)
+	}
+	if stored := storedOnSubjects(t, harness.client, bus.KeptRoleSubject(">"), role); stored != 1 {
+		t.Fatalf("the role's kept lane holds %d copies, want 1", stored)
+	}
+}
+
+// A message the lane has held up to roleHoldBound is not held again: an attempt after the stream's
+// duplicate window could store a second copy of a forward an earlier attempt stored while its
+// answer was lost. Its next hold, whose wait would end past the bound, makes the pinned forward
+// once more, at once and so still inside the bound, and when that forward's outcome is again
+// unknown it keeps the message on its role's kept lane under the reason held_past_bound, with the
+// WARN that a second holder may get a copy, and frees its slot. The lane dates the message by the
+// listener's clock when it takes it; the second forward moves that clock to roleHoldFirst short of
+// the bound before it fails, so the wait the hold after it would set (twice roleHoldFirst) ends
+// past the bound while the forward once more still starts inside it, and the hold after the first
+// is not near the bound, whatever the scheduler does in between. A forward that would start at or
+// past the bound is not made at all (TestAHeldMessageWhoseWaitEndsPastItsBoundMakesNoForward).
+func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "held-to-bound"
+	if err := harness.sessions.Put("ses_held_to_bound", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := harness.registry.SetRole("ses_held_to_bound", "test-machine", role, false); err != nil {
+		t.Fatalf("claim role: %v", err)
+	}
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	var forwards atomic.Int32
+	cfg := harness.config
+	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+		if forwards.Add(1) == 2 {
+			clock.Add(int64(roleHoldBound - roleHoldFirst))
+		}
+		return errors.New("nats: connection closed")
+	})
+	cfg = wireTestRoleForwarder(t, cfg)
+	handler := coreNATSDeliveryHandler(cfg)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "held-to-bound")
+	item.Payload = `{"type":"worker-queued"}`
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	cfg.roleForwards.settled(t)
+
+	logs := harness.logs.String()
+	kept := logRecordsNamed(logs, "listener kept role message for the role's next holder", role)
+	if len(kept) != 1 || kept[0]["reason"] != string(roleKeptPastHoldBound) {
+		t.Fatalf("the kept lines for role %s are %v, want one naming the reason %s:\n%s", role, kept, roleKeptPastHoldBound, logs)
+	}
+	if held := strings.Count(logs, `"msg":"`+roleHeldLine+`"`); held != 1 {
+		t.Fatalf("%d held lines, want 1: the hold past the bound keeps the message instead:\n%s", held, logs)
+	}
+	if got := forwards.Load(); got != 3 {
+		t.Fatalf("the lane forwarded %d times, want 3: two attempts, and the pinned forward once more before the keep", got)
+	}
+	if warned := linesIn(logs, roleKeptAfterUnknownForwardLine, nil); len(warned) != 1 || warned[0]["reason"] != string(roleKeptPastHoldBound) {
+		t.Fatalf("lines %v, want one WARN that the message whose forward may be stored was kept at its bound:\n%s", warned, logs)
+	}
+	if strings.Contains(logs, `"msg":"listener role forward failed"`) || strings.Contains(logs, roleHeldUnkeptLine) {
+		t.Fatalf("a message kept at its bound must log neither a failed forward nor the unkept line:\n%s", logs)
+	}
+	if stored := storedOnSubjects(t, harness.client, bus.KeptRoleSubject(">"), role); stored != 1 {
+		t.Fatalf("the role's kept lane holds %d copies, want 1", stored)
+	}
+}
+
+// The lane holds at most as many role messages as it has slots. With NATS refusing every forward,
+// three slots fill with three held messages, and the handler that takes a fourth waits for a slot
+// instead of queueing it past the bound: in the listener the role messages after it wait in the
+// lane's own subscription. Once forwards are stored again the held ones end, the fourth takes a
+// slot, and the holder gets all four. A listener that stops while the handler waits keeps the
+// messages instead (TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld).
+func TestListenerDeliveryHandler_TheLaneHandlerWaitsForASlotWhileEveryOneIsHeld(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const (
+		role  = "held-to-capacity"
+		limit = 3
+	)
+	if err := harness.sessions.Put("ses_held_to_capacity", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := harness.registry.SetRole("ses_held_to_capacity", "test-machine", role, false); err != nil {
+		t.Fatalf("claim role: %v", err)
+	}
+	var down atomic.Bool
+	down.Store(true)
+	cfg := harness.config
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+		if down.Load() {
+			return errors.New("nats: connection closed")
+		}
+		return nil
+	})
+	forwarder := newRoleForwarderLimited(cfg, limit)
+	cfg.roleForwards = forwarder
+	handler := coreNATSDeliveryHandler(cfg)
+	items := make([]contracts.Envelope, limit+1)
+	for i := range items {
+		items[i] = listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("held-to-capacity-%d", i))
+		items[i].Payload = `{"type":"worker-queued"}`
+	}
+	for _, item := range items[:limit] {
+		handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	}
+	waitFor(t, 20*time.Second, fmt.Sprintf("the %d messages held", limit), func() bool {
+		return strings.Count(harness.logs.String(), `"msg":"`+roleHeldLine+`"`) >= limit
+	})
+	fourth := make(chan struct{})
+	go func() {
+		defer close(fourth)
+		handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, items[limit])})
+	}()
+	waitFor(t, 20*time.Second, "the handler to take the fourth message", func() bool {
+		return countLogged(harness.logs.String(), "listener received", items[limit].EventID) == 1
+	})
+	// Every slot is held while NATS refuses every forward, so the fourth cannot take one.
+	if outstanding := forwarder.outstanding(); outstanding != limit {
+		t.Fatalf("%d role messages outstanding with every forward refused, want the %d the lane holds", outstanding, limit)
+	}
+	select {
+	case <-fourth:
+		t.Fatalf("the handler took a fourth message past the lane's bound of %d", limit)
+	default:
+	}
+
+	down.Store(false)
+	select {
+	case <-fourth:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the fourth message did not take a slot after the held ones ended")
+	}
+	forwarder.settled(t)
+	for _, item := range items {
+		if got := countLogged(harness.logs.String(), "listener role forwarded", item.EventID); got != 1 {
+			t.Fatalf("message %s was forwarded %d times, want once:\n%s", item.EventID, got, harness.logs.String())
+		}
+	}
+}
+
+// countLogged counts the JSON records in logs whose msg is name and whose event_id is eventID.
+func countLogged(logs, name, eventID string) int {
+	count := 0
+	for line := range strings.SplitSeq(logs, "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == name && record["event_id"] == eventID {
+			count++
+		}
+	}
+	return count
 }
 
 // TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode proves the role lane
@@ -3374,22 +3595,56 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 	}
 }
 
-// Every failed forward is delivery_failed, whatever the error: the stream did
-// not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
-// left this process -- a raw nats.ErrTimeout is what the client's flush returns
-// while a reconnecting or stalled connection still buffers it. No forward draws
-// a receipt (startRoleForward), so none is reported receipt_timeout.
-func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
+// A forward error ends the message only under a rule no other attempt changes; every other error
+// leaves the stream's copy unknown, and the lane holds the message and forwards it again
+// (roleForwardEnded). Each case fails the first forward with its error and lets a second one be
+// stored: an ending error is delivery_failed with one forward made, and a holding error is
+// delivered by the second forward with no exception. The stream's answers are wrapped as the bus's
+// PendingForward.Wait wraps them (storedRefusal names a full stream and an id still in process),
+// with nats-server 2.15.1's codes. No responders, and an acknowledgement that did not come, end a
+// forward only when a read of the deployed stream says it does not capture the holder's subject:
+// the rows that take the agent subjects out of the stream are the controls of the rows that keep
+// them, with the same error. No forward draws a receipt (startRoleForward), so none is reported
+// receipt_timeout.
+func TestListenerDeliveryHandler_RoleForwardFailureEndsOnlyUnderARule(t *testing.T) {
+	answered := func(status, code int, description string, names ...error) error {
+		var err error = &natsgo.APIError{Code: status, ErrorCode: natsgo.ErrorCode(code), Description: description}
+		for _, name := range names {
+			err = fmt.Errorf("%w: %w", name, err)
+		}
+		return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, err)
+	}
+	noResponders := fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrNoResponders)
 	cases := []struct {
 		name       string
 		forwardErr error
-		reason     string
-		logMessage string
+		// uncaptured takes the agent subjects out of the stream before the forward, so a read of
+		// the deployed stream says it does not capture the holder's subject.
+		uncaptured bool
+		ends       bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, false, false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), false, false},
+		{"a connection that closed", errors.New("nats: connection closed"), false, false},
+		{"an acknowledgement that did not come for a subject the stream captures", bus.ErrForwardNotStored, false, false},
+		{"an acknowledgement that did not come, wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), false, false},
+		{"an acknowledgement that did not come for a subject the stream does not capture", bus.ErrForwardNotStored, true, true},
+		{"a publish not known to have been accepted", fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrPublishUnconfirmed), false, false},
+		{"no responders for a subject the stream captures, as a leader change answers", noResponders, false, false},
+		{"no responders for a subject the stream does not capture", noResponders, true, true},
+		{"a full stream", answered(503, 10077, "maximum bytes exceeded", bus.ErrStreamFull), false, false},
+		{"an id still in process under an earlier publish", answered(409, 10158, "duplicate message id is in process", bus.ErrDuplicateInProcess), false, false},
+		{"a store failure of a message limit", answered(503, 10077, "maximum messages exceeded"), false, false},
+		{"a closed store", answered(503, 10077, "store is closed"), false, false},
+		{"insufficient resources", answered(503, 10023, "insufficient resources"), false, false},
+		{"an account past its limits", answered(400, 10002, "resource limits exceeded for account"), false, false},
+		{"a clustered stream's sequence mismatch", answered(503, 10063, "expected stream sequence does not match"), false, false},
+		{"a message past the stream's maximum size", answered(400, 10054, "message size exceeds maximum allowed"), false, true},
+		{"headers past 64 KiB", answered(400, 10097, "header size exceeds maximum allowed of 64k"), false, true},
+		{"a message too large for the store", answered(503, 10077, "message too large"), false, true},
+		{"a sealed stream", answered(400, 10109, "invalid operation on sealed stream"), false, true},
+		{"a refused envelope", fmt.Errorf("forward: %w", bus.ErrRefused), false, true},
+		{"a denied subject", fmt.Errorf("forward: %w", bus.ErrPublishDenied), false, true},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3402,8 +3657,27 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 			if _, err := harness.registry.SetRole(sessionID, "test-machine", role, false); err != nil {
 				t.Fatalf("claim role: %v", err)
 			}
+			if tc.uncaptured {
+				info, err := harness.client.JS().StreamInfo(bus.Stream)
+				if err != nil {
+					t.Fatalf("read the stream: %v", err)
+				}
+				config := info.Config
+				config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
+					return strings.HasPrefix(subject, contracts.AgentTopicPrefix)
+				})
+				if _, err := harness.client.JS().UpdateStream(&config); err != nil {
+					t.Fatalf("take the agent subjects out of the stream: %v", err)
+				}
+			}
+			var forwards atomic.Int32
 			cfg := harness.config
-			cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error { return tc.forwardErr })
+			cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+				if forwards.Add(1) == 1 {
+					return tc.forwardErr
+				}
+				return nil
+			})
 			cfg = wireTestRoleForwarder(t, cfg)
 			handler := coreNATSDeliveryHandler(cfg)
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "forward-error-kind-"+role)
@@ -3419,11 +3693,26 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 
 			handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 			cfg.roleForwards.settled(t)
-			assertDeliveryException(t, probe, item, tc.reason)
 
 			logs := harness.logs.String()
-			if !strings.Contains(logs, `"msg":"`+tc.logMessage+`"`) || !strings.Contains(logs, `"delivery_status":"failed"`) {
-				t.Fatalf("log does not carry %q for %s:\n%s", tc.logMessage, tc.reason, logs)
+			if tc.ends {
+				assertDeliveryException(t, probe, item, "delivery_failed")
+				if got := forwards.Load(); got != 1 {
+					t.Fatalf("forward attempts = %d, want 1: an error a rule decides is not tried again", got)
+				}
+				if !strings.Contains(logs, `"msg":"listener role forward failed"`) || !strings.Contains(logs, `"delivery_status":"failed"`) || strings.Contains(logs, roleHeldLine) {
+					t.Fatalf("want one failed line and no held line:\n%s", logs)
+				}
+			} else {
+				if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
+					t.Fatalf("a held message published an exception (or the probe failed): %v %v", message, err)
+				}
+				if got := forwards.Load(); got != 2 {
+					t.Fatalf("forward attempts = %d, want 2: the held message is forwarded again", got)
+				}
+				if strings.Count(logs, `"msg":"`+roleHeldLine+`"`) != 1 || strings.Count(logs, `"msg":"listener role forwarded"`) != 1 || strings.Contains(logs, `"msg":"listener role forward failed"`) {
+					t.Fatalf("want one held line, one forwarded line and no failed line:\n%s", logs)
+				}
 			}
 			if strings.Contains(logs, "receipt") {
 				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)

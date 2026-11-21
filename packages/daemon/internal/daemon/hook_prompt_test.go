@@ -95,6 +95,31 @@ func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
 	}
 }
 
+// A prompt the message bus stream refuses (409 under the listener's streamRefusedPrefix: a sealed
+// stream, a prompt past its maxima) is refused however often it is sent, until an operator changes
+// the stream: the row ends with one ERROR line naming it, its issue, its hook, its role and the
+// stream's refusal. A holder that did not confirm the prompt in time is another failure, and is
+// retried.
+func TestAHookPromptTheStreamRefusesEndsTheRow(t *testing.T) {
+	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	row.ID = 64
+	publisher := &outboxPublisher{err: fmt.Errorf("publish notice to the implementer's topic: listener returned 409 Conflict: %w",
+		notify.ErrStreamRefused{Message: streamRefusal})}
+	logs := &syncBuffer{}
+	runner := &outbox{project: "legion", notices: publisher, log: jsonLogger(logs)}
+
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the hook prompt the stream refused = %v, want the row ended", err)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "hook": firedHook.Hook,
+		"role": string(claim.RoleImplementer), "count": float64(firedHook.Count)})
+	cause := notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"}
+	publisher.err = fmt.Errorf("publish notice to the implementer's topic: %w", cause)
+	if err := runner.execute(context.Background(), row); !errors.Is(err, cause) {
+		t.Fatalf("the hook prompt its holder did not confirm = %v, want the answer as a failure, retried", err)
+	}
+}
+
 // A role whose pod was released holds its session still, and its pod is one wake away: the row
 // wakes the pod and waits on its backoff. The wake is the daemon's own, so the pod comes back
 // whatever the listener does with a publish; the row's first attempt after the resume has

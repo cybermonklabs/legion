@@ -1137,8 +1137,8 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 
 // When the session bucket cannot be read, every path that could take a role from its holder takes
 // nothing, and answers inside its bound (roleHolderReadTimeout, well under the 10 s HTTP write
-// timeout): a lookup and a soft claim answer 503, a role delivery reports delivery_failed, and the
-// reaper keeps the claim.
+// timeout): a lookup and a soft claim answer 503, a role delivery holds the message for another
+// attempt without forwarding it or reporting it failed, and the reaper keeps the claim.
 func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 	const bound = 5 * time.Second
 	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
@@ -1215,14 +1215,28 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		started := time.Now()
 		coreNATSDeliveryHandler(cfg)(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
 		elapsed := time.Since(started)
-		cfg.roleForwards.settled(t)
 		if elapsed > bound || forwards.Load() != 0 {
 			t.Fatalf("role delivery while the session bucket cannot be read took %s and forwarded %d times, want none within %s", elapsed, forwards.Load(), bound)
 		}
-		assertDeliveryException(t, probe, item, "delivery_failed")
+		// The holder's state is unknown, so the lane holds the message: it counts it, logs it held,
+		// and reports nothing to its sender.
+		if outstanding := cfg.roleForwards.outstanding(); outstanding != 1 {
+			t.Fatalf("%d role messages outstanding after a session read that did not answer, want the 1 held", outstanding)
+		}
+		if held := harness.logs.String(); !strings.Contains(held, `"msg":"`+roleHeldLine+`"`) {
+			t.Fatalf("the lane did not log the held message:\n%s", held)
+		}
+		if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("a held role message published an exception (or the probe failed): %v %v", message, err)
+		}
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
 			t.Fatalf("the claim after the delivery is held by %q, want ses_holder", holder)
 		}
+		// The listener stops and its lane drains: the held message is kept instead of tried
+		// again, and frees its slot.
+		cfg.roleForwards.stopHolding()
+		cfg.roleForwards.keepHeldNow()
+		cfg.roleForwards.settled(t)
 	})
 	t.Run("reaper", func(t *testing.T) {
 		claimant, observer := trailingListeners(t)

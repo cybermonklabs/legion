@@ -1749,13 +1749,14 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // will not hold its role again) goes to the controller instead (parkDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
-// denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
-// (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
-// reaches by the same route (rehold). A listener of this release never answers that a session
-// did not confirm a delivery (`receipt_timeout`): no session confirms a forward any more, and
-// every forward its stream did not store is `delivery_failed` (dispatch://INFRA-771), so that
-// answer reaches the policy only from a listener of the deployed, older build, until that
-// rollout finishes.
+// denies, a notice the message bus stream refuses, a holder only unresponsive, a role nobody
+// holds — is the re-hold policy's (noticeAnswered, notice_exceptions.go), which a role-lane
+// exception of an earlier listener reaches by the same route (rehold). A listener of this release
+// never answers that a session did not confirm a delivery (`receipt_timeout`): no session confirms
+// a forward any more, since each session reads its own JetStream consumer and no plain NATS
+// subscription, and every forward its stream did not store is `delivery_failed`, or the stream's
+// 409 where the stream refused the message itself, so that answer reaches the policy only from a
+// listener of the deployed, older build, until that rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
 // publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
@@ -1924,10 +1925,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // the message reports a moment - a head's checks as they settled - that has passed by the time
 // anyone claims the role, and every recipient reads the pull request on GitHub for itself, so
 // waiting would retry forever for a message that is stale when it lands. A holder that refuses
-// the message's delivery mode (notify.ErrRefusedByHolder), and the listener's own NATS grant
-// denying the forward (notify.ErrPublishDenied), end the row the same way, since both refuse
-// every attempt until a session or an operator changes them; a holder that did not confirm in
-// time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
+// the message's delivery mode (notify.ErrRefusedByHolder), the listener's own NATS grant denying
+// the forward (notify.ErrPublishDenied), and the message bus stream refusing the message itself
+// (notify.ErrStreamRefused) end the row the same way, since each refuses every attempt until a
+// session or an operator changes something; the grant's denial and the stream's refusal are each
+// one ERROR line, as an operator has to act on them. A holder that did not confirm in time
+// (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
@@ -2004,6 +2007,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	}
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
+	var streamRefused notify.ErrStreamRefused
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
 		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
@@ -2016,6 +2020,10 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	case errors.As(err, &denied):
 		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
+		return nil
+	case errors.As(err, &streamRefused):
+		r.log.Error("outbox role message finished undelivered: the message bus stream refused the message",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "refusal", streamRefused.Message)
 		return nil
 	}
 	if err != nil {
@@ -2097,7 +2105,9 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 // retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
 // next attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can
 // be replaced by another session on the role, and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied) goes through once an operator changes that grant.
+// (notify.ErrPublishDenied) goes through once an operator changes that grant. A prompt the message
+// bus stream refuses (notify.ErrStreamRefused) ends the row with one ERROR line: the stream
+// refuses it however often it is sent, so a retry would only repeat the refusal for ever.
 func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload record.HookPrompt) error {
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
@@ -2172,12 +2182,14 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
 // claim again (askRound). The round waits for every claim it asks until its bound, and a claim
 // the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
-// is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
-// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
-// keeps the ordinary retry, as hookPrompt's does: a holder that did not confirm in time, one that
-// does not advertise the delivery mode, and a forward the listener's own NATS grant denies can
-// each go through on a later attempt. A mark the store did not take keeps the row too, and the
-// next attempt writes it and publishes nothing.
+// is the ordinary case, and a mark that counted such an ask as given held two issues' rounds for
+// hours on 2026-11-17. An ask the message bus stream refuses (notify.ErrStreamRefused) ends the
+// row the same way, with one ERROR line, since the stream refuses it however often it is sent,
+// and the sweep's next reading of the round asks again. Every other failure of the publish keeps
+// the ordinary retry, as hookPrompt's does: a holder that did not confirm in time, one that does
+// not advertise the delivery mode, and a forward the listener's own NATS grant denies can each go
+// through on a later attempt. A mark the store did not take keeps the row too, and the next
+// attempt writes it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -2198,7 +2210,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
 		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
-			"outbox update ask finished undelivered: no live session holds the role", fields...)
+			"outbox update ask finished undelivered: no live session holds the role",
+			"outbox update ask finished undelivered: the message bus stream refused the ask", fields...)
 	})
 	switch {
 	case errors.Is(err, supervise.ErrMachineBusy):
@@ -2247,13 +2260,20 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // answers the publisher.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
-// fields, and the answer is false with no error. Every other failure is returned as the
+// fields, and the answer is false with no error. A message the message bus stream refuses
+// (notify.ErrStreamRefused) ends the row too: streamRefused is logged at Error with fields and the
+// stream's refusal, and the answer is false with no error. Every other failure is returned as the
 // publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
 // message.
-func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
+func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder, streamRefused string, fields ...any) (bool, error) {
 	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		r.log.Info(noHolder, append(fields, "error", err)...)
+		return false, nil
+	}
+	var refused notify.ErrStreamRefused
+	if errors.As(err, &refused) {
+		r.log.Error(streamRefused, append(fields, "refusal", refused.Message)...)
 		return false, nil
 	}
 	return err == nil, err
@@ -2275,6 +2295,10 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 //     role's claim records a session it does not hold and nothing was published (the gate's
 //     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
 //     "outbox hook prompt finished undelivered: no live session holds the role";
+//   - the message bus stream refused the prompt for a live holder (notify.ErrStreamRefused): the
+//     row ends undelivered, logging "outbox hook prompt finished undelivered: the message bus
+//     stream refused the prompt" at Error with fields and the stream's refusal, since the stream
+//     refuses it however often it is sent, until an operator changes the stream;
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -2291,28 +2315,35 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // dropped once its hour ends.
 //
 // Five other executors publish to a role's topic, each with its own rules for what the publisher
-// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
-// every other failure; deliverNotice, an architect's notice, holds the row for
-// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
-// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
-// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and for the
+// stream's refusal, and retries every other failure; deliverNotice, an architect's notice, holds
+// the row for a topic with no holder while the owning architect can hold its role again
+// (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder the
+// listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that
+// refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant
+// denies (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
 // merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
-// merger's claim has neither failed nor retired, and retries every other failure
-// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
-// the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
+// merger's claim has neither failed nor retired, ends it for the stream's refusal, and retries
+// every other failure (merge_queue_removal.go); and mergeForwardMessage, a message of a merge
+// forward, holds its row the same way while the role's claim has neither failed nor retired and
+// the merge forward still stands at the row's head (merge_forward.go). Each of those five
+// publishes with keep: false: deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their
+// own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
+// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
+// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
+// must read all six executors, not this function alone. All six end the row on the stream's
+// refusal (notify.ErrStreamRefused) with one ERROR line, as controllerNotice does for the
+// controller topic: the stream refuses that message however often it is sent, until an operator
+// changes the stream, so a retry could only repeat the refusal for ever.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
+	var refused notify.ErrStreamRefused
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
 		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
+		return nil
+	case errors.As(err, &refused):
+		r.log.Error("outbox hook prompt finished undelivered: the message bus stream refused the prompt", append(fields, "refusal", refused.Message)...)
 		return nil
 	case err == nil && keeps:
 		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
@@ -2322,18 +2353,28 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// row's own key. A notice the message bus stream refuses (notify.ErrStreamRefused) ends the row
+// with one ERROR line naming the row, its issue, the topic and the stream's refusal: the stream
+// refuses it however often it is sent, until an operator changes the stream. Every other failure
+// keeps the row's retry.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	topic := notify.ControllerTopic(r.project)
+	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
 		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
 		// attempt, and the row runs again on its backoff, so an operator's settle of the
 		// controller claim's name lets the next attempt through.
 		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	}
+	var refused notify.ErrStreamRefused
+	if errors.As(err, &refused) {
+		r.log.Error("outbox controller notice finished undelivered: the message bus stream refused the notice",
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "topic", topic, "refusal", refused.Message)
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)

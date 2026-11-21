@@ -1574,7 +1574,7 @@ func main() {
 	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
 		return int64(roleLaneClient.SlowConsumers())
 	})
-	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
+	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role messages queued behind their holder, waiting for their forward's outcome, or held for another delivery attempt", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
 	roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())
@@ -1943,9 +1943,11 @@ const (
 	stopLaneDrain = 3 * time.Second
 	// stopLaneGrace is the role lane's whole stop, and the invariant is the two waits the drain
 	// makes in order: stopLaneDrain for the lane's own client, then the wait roleLane.drain gives
-	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
-	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
-	stopLaneGrace = stopLaneDrain + roleForwardTimeout
+	// the messages handed over, roleStopWait (role_lane.go), inside which every held message's end
+	// at the stop - a pinned message's forward once more and its keep included - runs under one
+	// deadline (roleForwarder.keepHeldNow). Every pod's grace is rendered from stopBudget, so a
+	// change to either wait moves the rendered grace with it.
+	stopLaneGrace = stopLaneDrain + roleStopWait
 	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
 	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
 	stopClientDrain = 13 * time.Second

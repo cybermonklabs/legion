@@ -149,7 +149,8 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 	}
 }
 
-// Every publish failure but a role with no holder keeps the row's retry: a holder that did not
+// Every publish failure but a role with no holder and a message the stream refuses
+// (TestPodUpdateAskTheStreamRefusesEndsTheRow) keeps the row's retry: a holder that did not
 // confirm the ask in time can take it on the next attempt, a holder that does not advertise the
 // delivery mode can be replaced by another session on the role, and a forward the listener's own
 // NATS grant denies goes through once an operator changes that grant. No published line is
@@ -172,6 +173,26 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	}
 	if published := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`); len(published) != 0 {
 		t.Fatalf("the failed asks logged %v, want no published line", published)
+	}
+}
+
+// An ask the message bus stream refuses (409 under the listener's streamRefusedPrefix: a sealed
+// stream, an ask past its maxima) is refused however often it is sent, until an operator changes
+// the stream, so the row ends with one ERROR line naming it, its issue, its round, its role, its
+// topic and the stream's refusal, and no published line.
+func TestPodUpdateAskTheStreamRefusesEndsTheRow(t *testing.T) {
+	publisher := &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: listener returned 409 Conflict: %w",
+		notify.ErrStreamRefused{Message: streamRefusal})}
+	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
+	row := askRow(t, 78, claim.RoleImplementer)
+
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the ask the stream refused = %v, want the row ended", err)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "round": askedRound,
+		"role": string(claim.RoleImplementer), "topic": notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))})
+	if published := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`); len(published) != 0 {
+		t.Fatalf("the refused ask logged %v, want no published line", published)
 	}
 }
 

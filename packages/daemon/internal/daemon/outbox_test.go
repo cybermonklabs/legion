@@ -1142,6 +1142,29 @@ func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 	}
 }
 
+// A controller notice the message bus stream refuses (409 under the listener's
+// streamRefusedPrefix: a sealed stream, a notice past its maxima) is refused however often it is
+// sent, until an operator changes the stream, so the row ends with one ERROR line naming it, its
+// issue, its kind, the controller topic and the stream's refusal. Any other failure of the
+// publish keeps the row's retry.
+func TestOutboxControllerNoticeTheStreamRefusesEndsTheRow(t *testing.T) {
+	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
+	row.ID = 58
+	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice to notifications.legion.legion.controller: listener returned 409 Conflict: {"error":%q}: %w`,
+		streamRefusal, notify.ErrStreamRefused{Message: streamRefusal})}
+	logs := &syncBuffer{}
+	runner := &outbox{project: "legion", notices: publisher, log: jsonLogger(logs)}
+
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("execute a controller notice the stream refused = %v, want the row ended", err)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "kind": "held", "topic": "notifications.legion.legion.controller"})
+	publisher.err = errors.New("listener unavailable")
+	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "listener unavailable") {
+		t.Fatalf("a controller notice the listener did not take = %v, want the failure, retried", err)
+	}
+}
+
 func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1182,10 +1205,13 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 }
 
 // A role whose holder does not advertise the message's delivery mode (403 capability) refuses
-// every attempt until another session holds the role, and the listener's own NATS grant denies
-// every forward (403 with no reason) until an operator changes it, as a role with no holder does:
-// the row is done either way, since the message reports a moment that has passed by then. A holder
-// that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried.
+// every attempt until another session holds the role, the listener's own NATS grant denies every
+// forward (403 with no reason) until an operator changes it, and the message bus stream refuses
+// the message (409 under streamRefusedPrefix) until an operator changes the stream, as a role with
+// no holder does: the row is done each way, since the message reports a moment that has passed by
+// then, and the stream's refusal is one ERROR line naming the row, its issue, its role and the
+// refusal. A holder that did not confirm the message in time (504 receipt_timeout or
+// delivery_failed) is retried.
 func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
 	row.ID = 59
@@ -1202,6 +1228,15 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	if err := runner.execute(context.Background(), row); err != nil {
 		t.Fatalf("execute a role message the listener was denied: %v", err)
 	}
+	logs := &syncBuffer{}
+	runner.log = jsonLogger(logs)
+	publisher.err = fmt.Errorf(`publish notice to notifications.role.implementer: listener returned 409 Conflict: {"error":%q}: %w`,
+		streamRefusal, notify.ErrStreamRefused{Message: streamRefusal})
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("execute a role message the stream refused: %v", err)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "role": "implementer"})
+	runner.log = quietLogger()
 	for _, reason := range []string{notify.ReasonReceiptTimeout, notify.ReasonDeliveryFailed} {
 		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: "ses_impl"})
 		var notDelivered notify.ErrNotDelivered

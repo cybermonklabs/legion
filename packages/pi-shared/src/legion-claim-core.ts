@@ -214,14 +214,16 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
- * registration takes. A claim the listener answered 503 (`listenerAskedToClaimAgain`) is no
- * refusal: the listener wrote no claim and asks for the claim again (`Retry-After`) - every try
- * of its write met a conflict, or the takeover record a claim writes first, for the holder it
- * takes the role from, did not store - so the claim is made again after a wait that starts at
- * `roleClaimRetryFirstDelayMs` and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log
- * line per wait, until it lands or is refused. The session stays up meanwhile: the role's messages
- * wait for it, with the holder the claim would have replaced or on the role's kept lane. The
- * promise answers when the step has run, either way, and never rejects.
+ * registration takes. A claim the listener asks for again (`listenerAskedToClaimAgain`) is no
+ * refusal: its 503 says that the listener wrote no claim and asks for the claim again
+ * (`Retry-After`) - every try of its write met a conflict, or the takeover record a claim writes
+ * first, for the holder it takes the role from, did not store - and its 409 under the stream's
+ * refusal says that the message bus stream refused the claim's write until an operator changes
+ * it. Either way the claim is made again after a wait that starts at `roleClaimRetryFirstDelayMs`
+ * and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log line per wait, until it lands or
+ * is refused. The session stays up meanwhile: the role's messages wait for it, with the holder the
+ * claim would have replaced or on the role's kept lane. The promise answers when the step has run,
+ * either way, and never rejects.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -253,21 +255,26 @@ function claimRoleAtFirstTurn(
   return done.promise;
 }
 
-/** The first wait before a claim the listener answered 503 is made again, and the longest. */
+/** The first wait before a claim the listener asked for again is made again, and the longest. */
 const ROLE_CLAIM_RETRY_FIRST_DELAY_MS = 1_000;
 const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
- * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
- * conflict, or the takeover record a claim writes first did not store - and asks for the claim
- * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
- * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
- * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
- * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
- * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
- * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
- * person is waiting on to fail where they see it.
+ * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener asks for it
+ * again (`listenerAskedToClaimAgain`): a 503, where the listener wrote no claim - every try of its
+ * write met a conflict, or the takeover record a claim writes first did not store - and asks for
+ * the claim again; or the 409 that says the message bus stream refused the claim's write (a sealed
+ * bucket, a record past its maximum), which no retry gets past until an operator changes the
+ * bucket, and which the listener answered 503 with `Retry-After` before it told the two apart. The
+ * wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up to
+ * `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt, the status the
+ * listener answered it and its answer; the timer is unref'd, so it holds no process open. A
+ * session that stopped on the stream's refusal would only be launched again into the same refusal,
+ * each launch counted against its claim's launch limit, so it stays up and claims again, as it did
+ * on the 503. Any other failure is thrown at once, for the caller to stop on. An aborted `signal` -
+ * the host stopping - ends the waiting with the last answer thrown and claims no more, so no claim
+ * after a stop makes a session the host ended live again. With `maxAttempts`, the answer of the
+ * last attempt is thrown, for a claim a person is waiting on to fail where they see it.
  */
 export async function claimRoleAgainOnBusy(
   claim: () => Promise<void>,
@@ -276,7 +283,7 @@ export async function claimRoleAgainOnBusy(
     readonly log: (line: string) => void;
     readonly firstDelayMs?: number | undefined;
     readonly signal?: AbortSignal | undefined;
-    /** The most claims made, the first included; the 503 of the last is thrown. Unset, no bound. */
+    /** The most claims made, the first included; the answer of the last is thrown. Unset, no bound. */
     readonly maxAttempts?: number | undefined;
   }
 ): Promise<void> {
@@ -286,10 +293,11 @@ export async function claimRoleAgainOnBusy(
       await claim();
       return;
     } catch (error) {
-      if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
+      const status = claimAgainStatus(error);
+      if (status === undefined || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} was answered ${status} at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);
@@ -308,17 +316,53 @@ export async function claimRoleAgainOnBusy(
 }
 
 /**
- * Whether `error` is the listener's 503 to a role claim: an `EnvoyApiError` whose status is 503.
- * It is read by its name and status, not by class, because it crosses plugin bundles: pi-envoy
- * throws it from its own copy of envoy-client, behind the role-claim bridge, and pi-legion runs
- * this boot from another copy.
+ * The opening of the error the listener writes when the message bus stream refuses a write for the
+ * message itself (`streamRefusedPrefix` in `packages/envoy/cmd/listener/api.go`, answered 409 with
+ * no `Retry-After`): for a claim, a sealed role or interest bucket, or a record past its maximum.
+ */
+const STREAM_REFUSED_PREFIX =
+  "envoy: the message bus stream refused the message, and refuses it however often it is sent";
+
+/**
+ * Whether `error` is the listener asking for a role claim again: an `EnvoyApiError` whose status is
+ * 503, or 409 with an error that opens with the stream's refusal (`STREAM_REFUSED_PREFIX`). A 409
+ * that names a holder is a claim not granted, which envoy-client's `setRole` reads itself, and any
+ * other is a refusal. It is read by its name, status and body, not by class, because it crosses
+ * plugin bundles: pi-envoy throws it from its own copy of envoy-client, behind the role-claim
+ * bridge, and pi-legion runs this boot from another copy.
  */
 export function listenerAskedToClaimAgain(error: unknown): boolean {
+  return claimAgainStatus(error) !== undefined;
+}
+
+/** The status of a listener's answer that asks for a role claim again, or undefined for any other
+ * failure (`listenerAskedToClaimAgain`). */
+function claimAgainStatus(error: unknown): 503 | 409 | undefined {
   if (!(error instanceof Error) || error.name !== "EnvoyApiError" || !("details" in error)) {
-    return false;
+    return undefined;
   }
   const { details } = error;
-  return (
-    typeof details === "object" && details !== null && "status" in details && details.status === 503
-  );
+  if (typeof details !== "object" || details === null || !("status" in details)) return undefined;
+  if (details.status === 503) return 503;
+  if (details.status !== 409 || !("responseBody" in details)) return undefined;
+  return typeof details.responseBody === "string" && streamRefused(details.responseBody)
+    ? 409
+    : undefined;
+}
+
+/** Whether `body`, an answer's body as it came, is the listener's error JSON opening with the
+ * stream's refusal. */
+function streamRefused(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string" &&
+      parsed.error.startsWith(STREAM_REFUSED_PREFIX)
+    );
+  } catch {
+    return false;
+  }
 }

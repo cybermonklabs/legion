@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A Legion session whose role claim the Envoy listener answers `409` because the message bus
+    stream refused the claim's write (a sealed role or interest bucket, or a record past its
+    maximum) no longer stops. The listener of this release answers that refusal `409`, where an
+    older one answered it `503` with `Retry-After`; the claim boot claims the role again on the same
+    wait as for the `503`, starting at one second and doubling up to thirty, with one log line per
+    wait naming the attempt, the status and the listener's answer, until an operator changes the
+    bucket and the claim lands. Any other `409` still stops the session.
+time: 2026-11-21T00:27:02Z
+custom:
+    Issue: pr4342
