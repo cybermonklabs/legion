@@ -494,6 +494,7 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 		{"429 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_client") }, http.StatusServiceUnavailable},
 		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, http.StatusServiceUnavailable},
 		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable},
+		{"200 cut off mid-body", func(i *oidctest.Issuer) { i.CutToken(http.StatusOK) }, http.StatusServiceUnavailable},
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusBadGateway},
 		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, http.StatusBadGateway},
 		{"400 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "") }, http.StatusBadGateway},

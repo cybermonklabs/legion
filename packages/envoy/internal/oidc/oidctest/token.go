@@ -55,6 +55,16 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 					_ = conn.Close()
 				}
 			}
+		case failure.cut:
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "200")
+			w.WriteHeader(failure.status)
+			_, _ = w.Write([]byte(`{"access_t`))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			// The server closes the connection without the rest of the body it promised.
+			panic(http.ErrAbortHandler)
 		case failure.code == "":
 			http.Error(w, http.StatusText(failure.status), failure.status)
 		default:

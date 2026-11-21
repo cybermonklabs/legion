@@ -1,9 +1,10 @@
 kind: Fixed
 body: |-
   Dispatch's sign-in, the broker's approval sign-in and its client check now read a token
-  endpoint's answer by its status alone: a 5xx, a 408 or a 429, whatever OAuth error its body
-  names, and no answer at all are the issuer down, and every other answer is the issuer
-  answering, whose OAuth error only names the reason. The broker's check of its sign-in client
+  endpoint's answer by its status alone, once it arrived whole: a 5xx, a 408 or a 429, whatever
+  OAuth error its body names, an answer whose body is cut off before it arrives whole, and no
+  answer at all are the issuer down, and every other answer is the issuer answering, whose OAuth
+  error only names the reason. The broker's check of its sign-in client
   reads `ready` only from `invalid_grant` at a refusal's status (a 4xx that is no 408 or 429), and
   `client_rejected` from every other refusal, whatever OAuth error it names or none: an answer of
   408, 429 or 5xx is now `issuer_unreachable`, and so is a 2xx naming an error or a 3xx. Before,
@@ -13,8 +14,10 @@ body: |-
   unavailable: Dispatch's callback answers it `503 SIGNIN_UNAVAILABLE` where it answered 502, and
   the broker's approval page answers it 503 "Sign-in unavailable" where it said the provider's
   answer did not verify, and writes `issuer_unreachable` as `last_failed_sign_in_reason` where it
-  wrote the error the body named, or nothing. Every other answer, a 4xx with or without an OAuth
-  error, a 2xx naming one or holding no token and a 3xx, is a failed sign-in answered as before:
+  wrote the error the body named, or nothing; a 2xx whose body was cut off, which read as a failed
+  sign-in (502, and the 403 page), now reads as the issuer being unavailable too. Every other
+  answer, a 4xx with or without an OAuth error, a 2xx naming one or holding no token and a 3xx, is
+  a failed sign-in answered as before:
   Dispatch's 502, and the broker's 403 page. The broker writes the error as the reason only when a
   4xx names one of the four it writes; before, it also wrote one a 2xx named. A discovery document
   whose `revocation_endpoint` is `null` now fails discovery, as one whose `revocation_endpoint` is

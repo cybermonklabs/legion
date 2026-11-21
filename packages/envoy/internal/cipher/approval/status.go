@@ -38,8 +38,8 @@ const (
 	codeRedirectURIMismatch = "redirect_uri_mismatch"
 	codeInvalidGrant        = "invalid_grant"
 	// The issuer could not be asked or could not answer: its discovery document could not be read,
-	// or its token endpoint answered the code exchange a 5xx, a 408 or a 429, or not at all
-	// (oauthrefusal.Outage), both oidc.ErrIssuerUnavailable.
+	// or its token endpoint answered the code exchange a 5xx, a 408 or a 429 (oauthrefusal.Outage),
+	// with a body cut off, or not at all, each oidc.ErrIssuerUnavailable.
 	codeIssuerUnreachable = "issuer_unreachable"
 	// From the ID token's own verification (oidc.Reason's classes) and its nonce.
 	codeBadIssuer    = "bad_issuer"

@@ -139,12 +139,15 @@ type codeFlow struct {
 }
 
 // tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken or DropToken set it: status with code as the
-// body's OAuth error, or, with drop, closing the connection unanswered.
+// granting it, when FailToken, DropToken or CutToken set it: status with code
+// as the body's OAuth error; with drop, closing the connection unanswered; or,
+// with cut, answering status and closing the connection part of the way
+// through the body.
 type tokenFailure struct {
 	status int
 	code   string
 	drop   bool
+	cut    bool
 }
 
 // revocation is the state of the revocation endpoint: every token the client
@@ -421,6 +424,16 @@ func (i *Issuer) DropToken() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.codeFlow.token = tokenFailure{drop: true}
+}
+
+// CutToken makes the token endpoint answer every grant with status and a body
+// cut off: it promises 200 bytes, sends 10 and closes the connection, as an
+// issuer does that fails part of the way through its answer. A client reads the
+// status and then fails to read the body. FailToken(0, "") undoes it.
+func (i *Issuer) CutToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: true}
 }
 
 // DelayToken makes the token endpoint wait d before it answers each grant, or until the client

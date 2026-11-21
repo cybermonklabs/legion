@@ -41,6 +41,8 @@ func TestCodeFlowExchangeReadsOnlyAnOutageAsTheIssuerUnavailable(t *testing.T) {
 		{"500 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "invalid_client") }, true},
 		{"429 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_grant") }, true},
 		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, true},
+		{"200 cut off mid-body", func(i *oidctest.Issuer) { i.CutToken(http.StatusOK) }, true},
+		{"400 cut off mid-body", func(i *oidctest.Issuer) { i.CutToken(http.StatusBadRequest) }, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			issuer, flow := newCodeFlowForDomain(t, flowDomain)
