@@ -153,6 +153,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	if _, err := st.OpenTreeLifecycle(ctx, project, root, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", root, err)
 	}
+	openIssue(t, st, project, root, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: root, Role: claim.RoleImplementer, Generation: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl")}); err != nil {
 		t.Fatalf("record the suspended implementer: %v", err)

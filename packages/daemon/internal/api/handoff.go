@@ -351,7 +351,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
 		return
 	}
-	treeGeneration, pass := position.treeGeneration, position.pass
+	pass := position.pass
 	// One phase's completion is identified by where the issue stands — its generation, phase, and
 	// pass through that phase — with the role and what it reported: the handoff record a
 	// file-backed phase names, or the commit every other phase reports, and the verdict. A
@@ -374,19 +374,20 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// report, which would be answered ALREADY_RECORDED and never reach the workflow. With it, that
 	// recorded refusal blocks no later call: its key carries the issue generation this route read,
 	// the one the issue has since left, so a retry is refused here (recording nothing) and the new
-	// run's completion carries the new issue generation and serving run, another key. The tree's
-	// generation is part of it for the same reason: re-admission starts a new generation of the tree
-	// by bumping only the root's, and restarts a child's worker in the phase it stood in, so a
-	// child's completion refused before (while the tree lingered, or while the old gate was closed)
-	// would otherwise take the new generation's key.
+	// run's completion carries the new issue generation and serving run, another key. The phase
+	// entry the route held the completion to is part of it for the same reason: a return to work
+	// raises the entry (R20 of dispatch://INFRA-3320), and a completion the workflow refused at
+	// its commit for that (HANDOFF_STALE_ENTRY) is recorded under the entry it was checked at, so
+	// the completion of the entry the return opened takes a key of its own. Both are the issue's
+	// own (R17): no tree's generation is in it.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, position.entry, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
-	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
+	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.stopped && storetext.Text(reported) != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
 		}
@@ -396,7 +397,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// is: the first completion the workflow took is what stands, so a retry that rates again is
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
-	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Entry: position.entry, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
 	if err != nil {
@@ -954,17 +955,17 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 }
 
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
-// snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, its
+// snapshot: the issue record and whether it is out of Legion's work (record.InLegionsWork), its
 // pass — the implementer's count of returns to an earlier phase, which tells each implementing,
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
 // phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
 // that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record,
-// nil while none is recorded, and its production check, nil while none was ever opened.
+// nil while none is recorded, and its production check, nil while none was ever opened. Every
+// part of it is the issue's own (R17 of dispatch://INFRA-3320): no tree's root is read.
 type completionPosition struct {
 	issue          *record.Issue
-	treeGeneration uint64
-	lingers        bool
+	stopped        bool
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -986,15 +987,6 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil || issue == nil {
 		return completionPosition{}, err
 	}
-	root := issue
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
-			return completionPosition{}, err
-		}
-		if root == nil {
-			return completionPosition{}, fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
-		}
-	}
 	rows, err := s.records.Phases(ctx, tx, key)
 	if err != nil {
 		return completionPosition{}, err
@@ -1010,7 +1002,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
+	return completionPosition{issue: issue, stopped: !record.InLegionsWork(*issue), pass: pass,
 		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

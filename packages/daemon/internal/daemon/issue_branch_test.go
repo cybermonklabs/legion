@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -170,9 +171,12 @@ func newBranchAdmission(t *testing.T, answer func() (int, string)) (*branchAdmis
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 		},
 	}
+	// The event goes through the daemon's handlers in their order, the mirror first, so the copy
+	// holds the root's row before admission reads its chain (R16 of dispatch://INFRA-3320).
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "todo", intake.DispatchIssue{
 		Key: "LEGION-208", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.created", Status: "todo", Title: "Workflow", Rank: "U", HandedOver: true,
-	}, engine, admission); err != nil {
+		Labels: []string{dispatch.LegionLabel},
+	}, blockers.NewMirror(records, "legion"), engine, admission); err != nil {
 		t.Fatalf("admit LEGION-208: %v", err)
 	}
 	clock = time.Now().Add(time.Minute)
@@ -274,31 +278,21 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 	}
 }
 
-// A branch row of a generation the issue has left, or of a tree that lingers, asks GitHub for
-// nothing and finishes: a refused create of a parked tree never retries forever, and the starts it
-// held back meet their own fences.
+// A branch row of a generation the issue has left asks GitHub for nothing and finishes: a refused
+// create of an earlier run never retries forever, and the starts it held back meet their own
+// fences. The branch is the run's (R17 of dispatch://INFRA-3320), so a row of the run the issue
+// stands in is no left run whatever the issue's parent does.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newBranchGitHub(t, nil, branchRefused)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{}, project: "legion",
 		githubAPI: github.url}
-	until := time.Now().Add(time.Hour)
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Admitted,
 		Generation: 2, Status: "in_progress", Rank: "U"})
-	parent := "LEGION-210"
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-210", Title: "Closed", Phase: phase.Done,
-		Generation: 1, Status: "backlog", Rank: "V", LingerUntil: &until})
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-210", Parent: &parent, Title: "Child",
-		Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "W"})
 
-	for _, row := range []record.OutboxRow{
-		mustOutboxRow(t, "LEGION-208", record.IssueBranch{Generation: 1}, time.Now()),
-		mustOutboxRow(t, "LEGION-211", record.IssueBranch{Generation: 1}, time.Now()),
-	} {
-		if err := runner.execute(context.Background(), row); err != nil {
-			t.Fatalf("execute the branch row of %s: %v", row.Issue, err)
-		}
+	if err := runner.execute(context.Background(), mustOutboxRow(t, "LEGION-208", record.IssueBranch{Generation: 1}, time.Now())); err != nil {
+		t.Fatalf("execute the branch row of LEGION-208: %v", err)
 	}
 	if got := github.created(); len(got) != 0 {
 		t.Fatalf("GitHub creates = %+v, want none", got)

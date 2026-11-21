@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -281,7 +282,8 @@ func workingPane(token claim.Token) *runtime.Locator {
 // written and nothing of it has reached the claim. The claim is the live one of the round
 // before — the transition that wrote this row found the role already claimed — which is why it
 // is ready, with a session and a process of its own, while the row it is owed waits for the
-// slot.
+// slot. The member's own lifecycle, which the claim binds (store.Store.AdmitClaim), stands open
+// from the round that started that claim.
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -303,6 +305,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}); err != nil {
 		t.Fatalf("record %s and the start it owes its %s: %v", member.Key, owed.Role, err)
 	}
+	openIssue(t, st, worker.Project, worker.Issue, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, worker); err != nil {
 		t.Fatalf("put %s: %v", worker.Token, err)
 	}

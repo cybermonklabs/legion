@@ -31,7 +31,8 @@
 # and has one now. A window a file gains is one this copy must gain with it.
 
 # packages/contracts/src/legion-api.ts
-pec` step's row, which a reader that asks one question of one gate takes. */
+ved no `gatedSteps` on
+   * an issue any step of which reads one of them. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that

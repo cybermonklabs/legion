@@ -207,7 +207,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	// inserted is the retry state each row of queued is inserted with, at its place in queued.
 	inserted := make([]retryState, len(queued))
 	for i, q := range queued {
-		row, err := record.NewOutboxRow(q.issue, q.payload, q.at)
+		row, err := record.NewOutboxRow(q.issue, record.Fenced(q.payload, record.FirstFence), q.at)
 		if err != nil {
 			t.Fatalf("queue %s: %v", q.name, err)
 		}
@@ -345,7 +345,7 @@ func TestThePlanRatingsWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack(t *tes
 			t.Fatalf("migrate: %v", err)
 		}
 		for _, q := range queued {
-			row, err := record.NewOutboxRow(q.issue, q.payload, at)
+			row, err := record.NewOutboxRow(q.issue, record.Fenced(q.payload, record.FirstFence), at)
 			if err != nil {
 				t.Fatalf("queue a %T of %s: %v", q.payload, q.issue, err)
 			}

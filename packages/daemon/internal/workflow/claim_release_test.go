@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,29 +16,26 @@ import (
 )
 
 // Dispatch releases an issue's claim when the issue closes and at no other departure, so a park —
-// a root's tree lingering for backlog, icebox or triage, a root released for want of a slot, a
-// child parked alone — leaves the claim of the session the daemon just stopped standing on the
-// board. The one claim_release row each park queues is what clears it, and a close queues none:
-// the close released it already. The row carries nothing of the holder, which it reads with the
-// issue's own record when it runs.
+// a root's or a child's move to backlog, icebox or triage, a root released for want of a slot —
+// leaves the claim of the session the daemon just stopped standing on the board. The one
+// claim_release row each park queues is what clears it, and a close queues none: the close
+// released it already. The row carries nothing of the holder, which it reads with the issue's own
+// record when it runs.
 //
-// Each parking row asserts the whole set of rows the departure queued, not the release alone: the
-// park suspends every role of what it parks, and queues the suspension and, for a root, the
-// linger's close. That set is how the test shows the release was added to the park and replaced
-// nothing. No row disarms a pull request, since the daemon changes no merge setting of any
-// (dispatch://INFRA-714 R2).
+// Each row asserts the whole set of rows the departure queued, not the release alone: the leave
+// stops every role of the issue that leaves and queues its suspension, and stops nothing above or
+// below it (R20 of dispatch://INFRA-3320), so no linger and no second member's rows. That set is
+// how the test shows the release was added to the leave and replaced nothing. No row disarms a
+// pull request, since the daemon changes no merge setting of any (dispatch://INFRA-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
-	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
-	// members, and the one row that closes the linger.
-	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
-	// A child's park ends the child alone, and tells the architect above it (here the tree's) which
-	// child left.
+	// A root's leave ends the root alone: six stops and its IssueSuspend.
+	parkedTree := map[string]int{"supervise": 6, "issue_suspend": 1}
+	// A child's leave ends the child alone, and tells the architect above it (here the tree's)
+	// which child left.
 	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string
-		// lingers seeds a root whose tree already lingers, and operator one whose tree the
-		// operator holds.
-		lingers  bool
+		// operator seeds a root whose tree the operator holds.
 		operator bool
 		leave    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, child record.Issue) error
 		// releases is the issue of each claim_release row the departure queued, oldest first.
@@ -103,16 +99,6 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			kinds: parkedChild,
 		},
 		{
-			// The first leave of this tree queued its release; a root that already lingers leaves
-			// no second time and queues nothing at all.
-			name:    "a root whose tree already lingers",
-			lingers: true,
-			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
-				return engine.leave(ctx, tx, root, "backlog")
-			},
-			kinds: map[string]int{},
-		},
-		{
 			// The claims of a tree the operator runs are the operator's to release with the rest
 			// of its cleanup, as its pod and its workspaces are.
 			name:     "a root whose tree the operator holds",
@@ -127,10 +113,6 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			pool := migratedPool(t)
 			root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
-			if tc.lingers {
-				until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
-				root.LingerUntil = &until
-			}
 			parent := root.Key
 			child := record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
@@ -206,7 +188,10 @@ func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx con
 }
 
 // seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does: the workflow records nothing that acts on such a tree's claims.
+// spawn under the root's key does, and the issue lifecycle of each issue recorded in that tree
+// under it too: an operator's hold of a tree is a hold of each issue of it (R22 of
+// dispatch://INFRA-3320), and the workflow records nothing that acts on the claims of an issue the
+// operator holds (record.OperatorHolds). The tree's issues are recorded before it is seeded.
 func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -214,16 +199,33 @@ func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 		if err != nil {
 			return err
 		}
-		_, err = record.NewStore().OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityOperator)
-		return err
+		records := record.NewStore()
+		if _, err := records.OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityOperator); err != nil {
+			return err
+		}
+		rows, err := tx.Query(t.Context(), `select key from issues where tree = $1 order by key`, key)
+		if err != nil {
+			return err
+		}
+		issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if _, err := records.OpenIssueLifecycle(t.Context(), tx, project, issue, treelifecycle.AuthorityOperator); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
 // claimReleases is the issue of each queued claim_release row, oldest first. Each row's payload is
-// read too: it holds nothing of the claim's holder, which the row reads when it runs.
+// read too: it holds nothing of the claim's holder, which the row reads when it runs, and nothing
+// but the run and the phase entry it was queued at (record.Fence).
 func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select issue, payload::text from outbox where kind = 'claim_release' order by id")
+	rows, err := pool.Query(t.Context(), "select issue, (payload - 'generation' - 'entry')::text from outbox where kind = 'claim_release' order by id")
 	if err != nil {
 		t.Fatalf("read claim releases: %v", err)
 	}
@@ -235,7 +237,7 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 			t.Fatalf("scan claim release: %v", err)
 		}
 		if payload != "{}" {
-			t.Fatalf("claim release of %s carries %s, want an empty payload", issue, payload)
+			t.Fatalf("claim release of %s carries %s beside its fence, want nothing more", issue, payload)
 		}
 		issues = append(issues, issue)
 	}

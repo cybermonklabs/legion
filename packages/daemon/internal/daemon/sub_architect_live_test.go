@@ -33,8 +33,8 @@
 // script starts and names in LEGION_E2E_NATS_URL. Dispatch is liveDispatch, the board the
 // package's whole-daemon live proofs share (dispatch_board_test.go), fronted by linkedDispatch,
 // which adds to each read of an issue the blocked_by links the driver gave it, and Envoy's
-// listener is the package's noticeListener. GitHub is child_adoption_live_test.go's
-// childAdoptionGitHub, which knows each repository's default branch and takes each issue branch
+// listener is the package's noticeListener. GitHub is childAdoptionGitHub (below), which knows
+// each repository's default branch and takes each issue branch
 // the workflow creates. No agent runs: every claim is launched by the package's fake runtime
 // (subArchitectRuntime, which refuses the relaunches the failure step names), and the driver plays
 // each claim a step needs over the daemon's own worker stream and HTTP routes
@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +66,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -183,6 +185,7 @@ func (r *subArchitectLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.tree, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.tree, err)
 	}
+	openIssue(t, r.st, r.project, r.tree, treelifecycle.AuthorityWorkflow)
 	architect := r.token(r.tree, claim.RoleArchitect)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: architect, Project: r.project, Tree: r.tree, Issue: r.tree, Role: claim.RoleArchitect,
@@ -1072,4 +1075,36 @@ func (r *subArchitectRuntime) refused(token claim.Token) int {
 		return refusal.refused
 	}
 	return 0
+}
+
+// childAdoptionGitHub is GitHub as this proof's daemon reads it: every repository has default
+// branch main at one commit, each issue branch the workflow creates there is taken, and its GraphQL
+// root knows no pull request, so each disarm finishes with nothing armed. Nothing reaches
+// github.com.
+func childAdoptionGitHub(t *testing.T) string {
+	t.Helper()
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
+		parts := strings.Split(rest, "/")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
+		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
+			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
+		case r.Method == http.MethodGet && isRepository && strings.HasSuffix(rest, "/git/ref/heads/main"):
+			_, _ = io.WriteString(w, `{"ref":"refs/heads/main","object":{"sha":"base-main"}}`)
+		case r.Method == http.MethodPost && isRepository && strings.HasSuffix(rest, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		}
+	}})
+}
+
+// planning says whether issue is in planning with a planner claim.
+func planning(issue api.Issue) bool {
+	_, planner := issue.Workers[claim.RolePlanner]
+	return issue.Phase == phase.Planning && planner
 }

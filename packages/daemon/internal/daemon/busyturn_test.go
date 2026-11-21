@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -178,7 +180,7 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 	decide := func() workflow.IdleDecision {
 		t.Helper()
 		var decision workflow.IdleDecision
-		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion)
 			return store.IdleReleaseMark{}, nil
 		}); err != nil {

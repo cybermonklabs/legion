@@ -53,7 +53,7 @@ func newVolumeRig(t *testing.T) *volumeRig {
 	logged := &bytes.Buffer{}
 	clock := &checkClock{now: volumeAt}
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(),
-		Pods: wakePods(t, pool), Linger: time.Hour, Clock: clock.Now},
+		Pods: wakePods(t, pool), Clock: clock.Now},
 		slog.New(slog.NewTextHandler(logged, nil)))
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7,
@@ -385,7 +385,7 @@ func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
 	// it, and nothing of the first process's memory.
 	restarted := &volumeRig{pool: rig.pool, clock: &checkClock{now: volumeAt.Add(24 * time.Hour)}, logged: &bytes.Buffer{}}
 	restarted.engine = New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(),
-		Pods: wakePods(t, rig.pool), Linger: time.Hour, Clock: restarted.clock.Now},
+		Pods: wakePods(t, rig.pool), Clock: restarted.clock.Now},
 		slog.New(slog.NewTextHandler(restarted.logged, nil)))
 	restarted.apply = applyFacts(t, rig.pool, restarted.engine)
 	restarted.reports = rig.reports + 100

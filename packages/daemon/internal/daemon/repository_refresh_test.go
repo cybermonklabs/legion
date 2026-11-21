@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -108,7 +109,9 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
 		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
-	w.handlers = []intake.Handler{w.engine, w.admission}
+	// The daemon's own handler order (workflow.go): the copy of Dispatch's issues first, so the
+	// engine and admission read the row each fact writes (rigCopy).
+	w.handlers = []intake.Handler{rigCopy(w), w.engine, w.admission}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		for _, anchor := range []record.Issue{anchorOn(anchorWidgets, "acme/widgets"), anchorOn(anchorTools, "zeta/tools")} {
 			if err := records.Store.PutIssue(ctx, tx, anchor); err != nil {
@@ -158,9 +161,18 @@ func prepared(w *workflowRuntime, repo string) bool {
 
 // rigHandlers is the rig's engine and admission (of three slots), wired to the rig's runtime as the
 // boot wires the daemon's before the refresher starts, so w's own applies and recoveries run
-// through both.
+// through both. A test that applies a fact to them applies it through the rig's copy of Dispatch's
+// issues first (rigCopy), as the daemon's handlers do.
 func rigHandlers(w *workflowRuntime) (*workflow.Engine, *admit.Admission) {
 	return w.engine, w.admission
+}
+
+// rigCopy is the copy of Dispatch's issues of w's project (blockers.Mirror), the handler the
+// daemon applies every fact through before its engine and admission (workflow.go): those two read
+// the copy's row of an issue (record.ReadChains) to decide it, so a fact applied without it would
+// be decided on no row at all.
+func rigCopy(w *workflowRuntime) intake.Handler {
+	return blockers.NewMirror(w.records, w.dispatchProject)
 }
 
 // prepareAsDelivered prepares fact as the Dispatch consumer does, delivering it again after a
@@ -235,7 +247,7 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 	}
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "reopen", reopened, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "reopen", reopened, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-300"); got == nil || got.Phase != phase.Admitted || got.Repo != "orbit/gadgets" {
@@ -306,7 +318,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-"+string(rune('0'+seq)), prepared, engine, admission); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-"+string(rune('0'+seq)), prepared, rigCopy(w), engine, admission); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -356,7 +368,7 @@ func TestAnIssueOnARepositoryNoRecordNamesIsAdmittedAsDispatchNowShowsIt(t *test
 			}
 			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, HearRepository: w.hearRecorded, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
-			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, engine, admission); err != nil {
+			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, rigCopy(w), engine, admission); err != nil {
 				t.Fatal(err)
 			}
 			got := recordedIssue(t, w, "LEGION-302")
@@ -410,7 +422,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 			}
 			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
-			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, engine, admission); err != nil {
+			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, rigCopy(w), engine, admission); err != nil {
 				t.Fatal(err)
 			}
 			if got := recordedIssue(t, w, "LEGION-305"); (got != nil) != tc.admitted {
@@ -440,7 +452,7 @@ func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "test", delivery.id, prepared, engine, admission); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "test", delivery.id, prepared, rigCopy(w), engine, admission); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -470,7 +482,7 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			apply := func(id string, fact intake.DispatchIssue) {
 				t.Helper()
-				if _, err := intake.ApplyFact(ctx, w.pool, "test", id, fact, engine, admission); err != nil {
+				if _, err := intake.ApplyFact(ctx, w.pool, "test", id, fact, rigCopy(w), engine, admission); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -583,7 +595,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	if err != nil {
 		t.Fatalf("prepare LEGION-301 on zeta/tools = %v, want it prepared to be applied and acknowledged", err)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-1", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-1", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-301"); got != nil {
@@ -658,7 +670,7 @@ func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
 	if got := installs.reads("review acme/widgets"); got <= reads {
 		t.Fatalf("the preparation made %d reads of the review App's installation, want it read again", got-reads)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-311", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-311", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-311"); got == nil || got.Repo != "acme/widgets" {
@@ -761,7 +773,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- w.consumers.Run(run, engine, admission) }()
+	go func() { done <- w.consumers.Run(run, rigCopy(w), engine, admission) }()
 	polled := make(chan struct{})
 	go func() { w.pollHoldRelease(run); close(polled) }()
 	t.Cleanup(func() { cancel(); <-done; <-polled })
@@ -806,7 +818,7 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "root-todo", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "root-todo", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, root.Key); got == nil {
@@ -869,7 +881,7 @@ func applyTodo(t *testing.T, w *workflowRuntime, engine *workflow.Engine, admiss
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", fmt.Sprintf("%s-todo-%d", key, seq), prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", fmt.Sprintf("%s-todo-%d", key, seq), prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1159,7 +1171,7 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- w.consumers.Run(run, engine, admission) }()
+	go func() { done <- w.consumers.Run(run, rigCopy(w), engine, admission) }()
 	polled := make(chan struct{})
 	go func() { w.pollHoldRelease(run); close(polled) }()
 	t.Cleanup(func() { cancel(); <-done; <-polled })

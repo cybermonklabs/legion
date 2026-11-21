@@ -149,25 +149,19 @@ func owedStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart 
 // seedTreeAndMember records the tree every fixture of this file stands in: root, and the one
 // member of it, key, standing in stands at generation. The root waits in accepting while its
 // member works and this fixture gives it no row of its own, so the member's is the one row of
-// the tree and nothing of the root competes for another. A root that lingers stands in done
-// instead, with its deadline still ahead of it, which is how a parked tree reads.
+// the tree and nothing of the root competes for another.
 //
 // What each caller adds after it is its own: seedSlotRepairRow takes the member's slot and writes
 // the role's phases row, the task its claim holds and the start it already has; seedOwedRepairRow
 // writes the task the claim holds and the start the member is owed; capFiller takes the slot and
 // keeps the cap full with a claim at work. Each of the three writes the member's claim itself,
 // because the state it is in is the one thing its own rows are about.
-func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase, generation uint64, lingers bool) {
+func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase, generation uint64) {
 	t.Helper()
-	tree := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: "the root of " + key, Tree: root, Phase: phase.Accepting,
 		Generation: generation, Status: "needs_review", DispatchStatus: "needs_review", Rank: root,
-		HandedOver: true, LastDispatchSeq: 1}
-	if lingers {
-		until := fixedNow.Add(time.Hour)
-		tree.Phase, tree.Status, tree.DispatchStatus, tree.LingerUntil = phase.Done, "in_progress", "in_progress", &until
-	}
-	putIssue(t, pool, tree)
+		HandedOver: true, LastDispatchSeq: 1})
 	seedLifecycle(t, pool, root)
 	parent := root
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -188,9 +182,6 @@ type slotRepairRow struct {
 	stands phase.Phase
 	// generation is the member's, which the start names and the claim's task is read against.
 	generation uint64
-	// lingers records the root as a park left it: phase done at a status that is not todo, with
-	// a linger deadline ahead, which the project's live read leaves out.
-	lingers bool
 	// state and suspendedBy are the claim's.
 	state       supervise.ClaimState
 	suspendedBy supervise.SuspendSource
@@ -218,7 +209,7 @@ type slotRepairRow struct {
 // row and claim, the task the claim holds and the start it already has.
 func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 	t.Helper()
-	seedTreeAndMember(t, pool, row.root, row.key, row.stands, row.generation, row.lingers)
+	seedTreeAndMember(t, pool, row.root, row.key, row.stands, row.generation)
 	takeSlot(t, pool, row.key)
 	role := phase.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, row.generation, row.state, row.suspendedBy)
@@ -276,7 +267,7 @@ type owedRepairRow struct {
 // the owed row itself.
 func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	t.Helper()
-	seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1, false)
+	seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1)
 	role := phase.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, 1, row.state, row.suspendedBy)
 	if row.holdsTask {
@@ -304,7 +295,7 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 // nothing, is behind none of it (workflow.OwedEntry).
 func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 	t.Helper()
-	seedTreeAndMember(t, pool, root, key, phase.Testing, 1, false)
+	seedTreeAndMember(t, pool, root, key, phase.Testing, 1)
 	takeSlot(t, pool, key)
 	putWorkerClaim(t, pool, root, key, claim.RoleTester, 1, supervise.StateWorking, "")
 }
@@ -369,10 +360,6 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
 				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member stands past its review there, so the release takes its row back (record.KeepsSlot) and the repair reaches it on no row at all; the skip of the role is what answers it"},
-			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
-				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
-				taskGeneration: 1, confirmed: true, slotGivenBack: true,
-				why: "this row changes the root's own record alone, to the one a park left: nothing of a tree that has left the workflow is started again until its re-admission. The pass answers before the repair reads the slots — a member of a lingering tree is at work for nothing — so what this row reads is the pass's whole answer rather than the repair's own skip of the root"},
 			{name: "a role with a start already queued", root: "LEGION-580", key: "LEGION-581", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, queuedStart: true,

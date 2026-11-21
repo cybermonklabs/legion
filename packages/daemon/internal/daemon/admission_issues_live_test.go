@@ -240,6 +240,7 @@ func (r *admissionIssuesLive) seedTrees() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", key, err)
 		}
+		openIssue(t, r.st, r.project, key, treelifecycle.AuthorityWorkflow)
 		architect := r.token(key, claim.RoleArchitect)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: architect, Project: r.project, Tree: key, Issue: key, Role: claim.RoleArchitect,

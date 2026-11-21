@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -134,7 +135,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return engine.StartFirstPhase(ctx, tx, *issue, nil)
+			return engine.StartFirstPhase(ctx, tx, *issue, true, nil)
 		})
 	}
 	openTheGate()

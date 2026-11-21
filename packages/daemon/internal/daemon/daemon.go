@@ -244,6 +244,31 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox answers whether the workflow's outbox leaves row unrun for now (outbox.hold):
+	// the row is put back, due again a moment later, and runs on the first claim the hook lets
+	// through. A test holds the rows of one kind — a gate seed, a pending-basis seed — until it
+	// has done what it needs done before them, and releases them by answering false. nil, in
+	// production, holds nothing.
+	holdOutbox func(record.OutboxRow) bool
+	// statusRowChecked and statusRowRead are the two seams of a Dispatch status row's run
+	// (outbox.statusRowChecked, outbox.statusRowRead): told of the row once its run and phase
+	// entry have passed their check and before it reads Dispatch, and after each read a write of it
+	// is fenced on, with that read's sequence, before it waits for the record to see it. Each runs
+	// on the row's lane, so a test holds the row there by not returning until it has moved the
+	// issue. nil, in production, tells no one.
+	statusRowChecked func(ctx context.Context, row record.OutboxRow)
+	statusRowRead    func(ctx context.Context, row record.OutboxRow, seq int64)
+	// gateRegistrationRead is api.Options.GateRegistrationRead: told of each register_gate call
+	// once its Dispatch reads are made and before its fact is applied, on the route's goroutine,
+	// so a test can act on Dispatch between the two and release the call by returning. nil, in
+	// production, tells no one.
+	gateRegistrationRead func(ctx context.Context, issue string)
+	// dropConsumedEvent answers whether the workflow's handlers skip a fact the intake consumers
+	// delivered (workflowRuntime.consumerHandlers): the event is acknowledged and recorded as
+	// applied (processed_events), as every delivered event is, and nothing of the workflow acts
+	// on it, so a test reads what the daemon does with an event it missed. nil, in production,
+	// drops nothing.
+	dropConsumedEvent func(intake.Fact) bool
 	// supervising hands a whole-daemon test the supervisor run built and a function that applies
 	// one fact with the workflow's own handlers (intake.ApplyFact over the workflow's pool, as the
 	// daemon's consumers, its API and its own passes apply each fact), once run has built both and
@@ -998,6 +1023,13 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox, statusRowChecked, statusRowRead, gateRegistrationRead and dropConsumedEvent are
+	// the overrides of those names; nil holds, tells and drops nothing.
+	holdOutbox           func(record.OutboxRow) bool
+	statusRowChecked     func(ctx context.Context, row record.OutboxRow)
+	statusRowRead        func(ctx context.Context, row record.OutboxRow, seq int64)
+	gateRegistrationRead func(ctx context.Context, issue string)
+	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
@@ -1138,6 +1170,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		holdOutbox: o.holdOutbox, statusRowChecked: o.statusRowChecked, statusRowRead: o.statusRowRead,
+		gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -2863,7 +2897,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		Pause:              pauses,
+		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
+		GateRegistrationRead: p.gateRegistrationRead,
+		Pause:                pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3133,14 +3169,6 @@ func (s projectRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) 
 	return s.own(all), nil
 }
 
-func (s projectRecords) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]record.Issue, error) {
-	all, err := s.Store.QueuedRootsUnder(ctx, tx, key)
-	if err != nil {
-		return nil, err
-	}
-	return s.own(all), nil
-}
-
 // own is every issue of all that the daemon's project owns (owns), in all's order.
 func (s projectRecords) own(all []record.Issue) []record.Issue {
 	issues := make([]record.Issue, 0, len(all))
@@ -3291,15 +3319,6 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue st
 		return nil
 	}
 	return s.Store.ClearGeneration(ctx, tx, issue, now)
-}
-
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
-func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
-		return nil
-	}
-	return s.Store.ClearTreeGeneration(ctx, tx, tree, now)
 }
 
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction

@@ -56,8 +56,8 @@ const (
 // and a holder no claims row accounts for is one the daemon cannot attribute, which it leaves
 // and logs rather than take a claim from a session it knows nothing about.
 //
-// A tree the operator holds is left alone whoever holds the claim, on the predicate a park of
-// such a root reads (record.OperatorHoldsTree): the operator's tree shares the root's key, so its
+// An issue the operator holds is left alone whoever holds the claim, on the predicate a park of
+// such an issue reads (record.OperatorHolds): the operator's lifetime shares the issue's key, so its
 // own session reads as a session of the issue's tree here, and the workflow may record nothing
 // that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here
 // rather than where the row is queued because the operator can open the tree in the hour a row
@@ -98,7 +98,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		if !record.Stopped(*recorded) {
 			return nil
 		}
-		held, err := record.OperatorHoldsTree(ctx, r.records, tx, *recorded)
+		held, err := record.OperatorHolds(ctx, r.records, tx, *recorded)
 		if err != nil || held {
 			return err
 		}
@@ -220,7 +220,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 		if issue == nil || !record.Stopped(*issue) {
 			continue
 		}
-		row, err := record.NewOutboxRow(key, record.ClaimRelease{}, time.Now().UTC())
+		row, err := record.NewFencedRow(ctx, tx, w.records, key, record.ClaimRelease{}, time.Now().UTC())
 		if err != nil {
 			return err
 		}

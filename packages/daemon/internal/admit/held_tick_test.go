@@ -48,6 +48,8 @@ func registerControllerFor(t *testing.T, pool *pgxpool.Pool, project string) {
 // (record.DecodeOutboxPayload, which the executor does before it publishes), so a payload the
 // rules refused would fail here rather than reach the controller; the JSON is read beside it
 // because a field a notice does not carry is absent from the row, which no decoded value shows.
+// The notice is returned without the run and the phase entry its row names (unfenced), which are
+// the row's fence and not what the tick tells.
 func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.ControllerNotice, string) {
 	t.Helper()
 	var row record.OutboxRow
@@ -61,7 +63,7 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 	if err != nil {
 		t.Fatalf("the controller notice of %s does not pass the validator: %v", project, err)
 	}
-	notice, ok := payload.(record.ControllerNotice)
+	notice, ok := unfenced(payload).(record.ControllerNotice)
 	if !ok {
 		t.Fatalf("the controller notice of %s decoded to %T, want a controller notice", project, payload)
 	}
@@ -74,18 +76,18 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // The tick notice carries what the project holds: every issue the daemon's own record holds in
 // the workflow that stands in neither the active set nor the waiting line, each with the one
 // word for why, beside the open capabilities and the blocked rows the notice carries already
-// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate and a
-// member whose tree root the live read leaves out each take a row of their own, and a project holding nothing carries no field at all, as a tick with
-// nothing blocked carries no blocked field.
+// (C3 of dispatch://INFRA-3107). A child under a shut design gate takes a row of its own, and a
+// project holding nothing carries no field at all, as a tick with nothing blocked carries no
+// blocked field. A member under a root a person took out of Legion's work holds no row here: it
+// stands a root of its own on its chain (R15 of dispatch://INFRA-3320), so nothing of its tree
+// holds it (tree_parked answers nothing any more).
 //
 // The word the controller is told and the word `legion state` shows are read here from two
 // reads: the notice from the tick's own fact, the state from internal/projection over the same
 // records. They are one judgement (record.HeldList) over two candidate reads, and the point of
 // the comparison is that the two reads agree, so neither answer is copied from the other.
 func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
-	const parked, parkedMember = "LEGION-PARKED", "LEGION-PARKED-MEMBER"
 	const gated, gatedChild = "LEGION-GATED", "LEGION-GATED-CHILD"
-	const triaged, triagedMember = "LEGION-TRIAGED", "LEGION-TRIAGED-MEMBER"
 	const blockedRoot, blocker = "LEGION-BLOCKED", "LEGION-BLOCKER"
 	const otherProject, otherRoot = "OPS", "OPS-1"
 
@@ -95,40 +97,15 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	admission.ReportCapabilities(func() []string { return []string{"secrets"} })
 	registerController(t, pool)
 
-	member := func(key, tree string, at phase.Phase, status string) record.Issue {
-		parent := tree
-		return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: key, Tree: tree, Parent: &parent, Phase: at, Generation: 1,
-			Status: status, Rank: "M", HandedOver: true}
-	}
-
-	// A tree a person parked: its root is out of the workflow at backlog, and the member the park
-	// left behind is in it, held by the tree rather than by anything of its own.
-	putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: parked, Tree: parked, Phase: phase.Admitted, Generation: 1,
-		Status: "backlog", Rank: "A", HandedOver: true})
-	seedLifecycle(t, pool, parked)
-	putIssue(t, pool, member(parkedMember, parked, phase.Admitted, "todo"))
 	// A tree whose design gate stands shut: its root holds a slot and no step of its gate is
-	// registered, so its child waits for the gate.
+	// registered, so its child waits for the gate. No subject stands for `at_work`, which an
+	// issue past its review reads where it is not held (record.HeldAtWork); this fixture builds
+	// none.
 	seedSlotted(t, pool, gated, "B")
-	putIssue(t, pool, member(gatedChild, gated, phase.Admitted, "todo"))
-	// No subject stands for `at_work`, which an issue past its review reads where it is not held
-	// (record.HeldAtWork); this fixture builds none.
-	approved := 1
-	// A tree whose root a person took out of the workflow at triage, with a person's approval
-	// standing on its design gate. Its root stands at phase done, so the tick's live read leaves
-	// it out (record.Store.LiveIssues) and the member's tree is read from the records that read
-	// leaves behind (record.ReadTreeRoots), while the state's read holds the root itself: the
-	// two readers meet one issue over two reads, and the gates of those roots are read where the
-	// facts are built (record.ReadLineFacts), so both classify over the same gates. Nothing of
-	// the tree is closed, parked or waiting on a person and the gate is open, so no word above
-	// `unclassified` is true of the member, in either reader.
-	putIssue(t, pool, record.Issue{Key: triaged, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: triaged, Tree: triaged, Phase: phase.Done, Generation: 1,
-		Status: "triage", Rank: "E", HandedOver: true})
-	seedGate(t, pool, record.DesignGate{Issue: triaged, ArtifactID: "artifact-triaged", LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
-	putIssue(t, pool, member(triagedMember, triaged, phase.Admitted, "todo"))
+	parent := gated
+	putIssue(t, pool, record.Issue{Key: gatedChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: gatedChild, Tree: gated, Parent: &parent, Phase: phase.Admitted, Generation: 1,
+		Status: "todo", Rank: "M", HandedOver: true})
 	// A root an unfinished Dispatch issue holds, so that the notice carries blocked rows beside
 	// the held ones: it keeps its place in the waiting line, which is where the state shows it
 	// too, so it is a blocked row and no held row. The two lists answer two questions of one
@@ -144,11 +121,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 		Kind:             record.TickNotice,
 		OpenCapabilities: []string{"secrets"},
 		Blocked:          []record.BlockedIssue{{Issue: blockedRoot, BlockedBy: []string{blocker}}},
-		Held: []record.HeldIssue{
-			{Issue: gatedChild, Reason: record.HeldDesignGate, HeldBy: []string{gated}},
-			{Issue: parkedMember, Reason: record.HeldTreeParked, HeldBy: []string{parked}},
-			{Issue: triagedMember, Reason: record.HeldUnclassified},
-		},
+		Held:             []record.HeldIssue{{Issue: gatedChild, Reason: record.HeldDesignGate, HeldBy: []string{gated}}},
 	}
 	if !reflect.DeepEqual(notice, want) {
 		t.Fatalf("the tick notice = %#v, want %#v: one held row for each issue nothing starts, beside the open capabilities and the blocked rows", notice, want)

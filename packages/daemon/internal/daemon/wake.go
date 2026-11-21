@@ -173,11 +173,11 @@ func (w *workflowRuntime) stuckResumeStep(ctx context.Context, resume store.PodR
 	return "the woken role's first turn"
 }
 
-// podResume stamps what a supervisor's durable transition says about a woken role's open resume:
-// a ready claim is the replacement pod up, the first observation the daemon has of it, and a
-// working claim is the woken role's first turn, which ends the resume R5 measures. A wake for a
-// notice or a hook prompt gives the role no delivery to confirm, so the turn itself — not a
-// confirmation — is what says the pod came back and took its work.
+// podResume stamps what a supervisor's durable transition says about a woken role's open resume: a
+// ready claim is the replacement pod up, the first observation the daemon has of it, and a working
+// claim is the woken role's first turn, which ends the resume R5 measures. A wake for a notice, a
+// phase-ended message or a hook prompt gives the role no delivery to confirm, so the turn itself —
+// not a confirmation — is what says the pod came back and took its work.
 //
 // A ready claim also ends a pause's hold of its pod (decision 13 of dispatch://INFRA-3759): a role
 // of the pod runs again, so the pod is in the state a released pod's wake leaves it in
@@ -245,13 +245,13 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 }
 
 // wakeForDelivery brings a released pod back for a delivery the daemon already has for one of its
-// roles and cannot hand over any other way: a notice whose owning architect is released, a hook
-// prompt whose role is, the message that tells a released merger its pull request left the merge
-// queue (mergeQueueRemoval), and a message of a merge forward whose role is released
-// (mergeForwardMessage). Every other delivery is an outbox `start` or a task, which the supervise
-// machine already resumes a suspended claim for (deliverResuming); these four publish to a live
-// session instead, so the row's own retry is what waits for the pod, and this is what makes the
-// pod come back for it to find.
+// roles and cannot hand over any other way: a notice whose owning architect is released, a
+// phase-ended message whose role is (phaseEnded), a hook prompt whose role is, the message that
+// tells a released merger its pull request left the merge queue (mergeQueueRemoval), and a message
+// of a merge forward whose role is released (mergeForwardMessage). Every other delivery is an
+// outbox `start` or a task, which the supervise machine already resumes a suspended claim for
+// (deliverResuming); these five publish to a live session instead, so the row's own retry is what
+// waits for the pod, and this is what makes the pod come back for it to find.
 //
 // It answers whether the row must wait for a launch of the claim, and when that launch runs where
 // the wake pacing holds it. The row waits for a released claim, which it resumes here, and for a
@@ -259,9 +259,9 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // while it waits for its turn. The pacing does not exempt the resume (supervise's exemptWake lets
 // only an operator's requests through), so over a wave it can wait more than an hour, the machine
 // holding the claim launching with no process and its view naming the waiting wake (supervise's
-// parkWake, ClaimView.WakeWaiting). The row waits through that park because a hook prompt
-// published then would be kept for the listener's one hour from that publish, which can end before
-// the pod starts. So a waiting wake that starts a process
+// parkWake, ClaimView.WakeWaiting). The row waits through that park because a phase-ended message
+// or a hook prompt published then would be kept for the listener's one hour from that publish,
+// which can end before the pod starts. So a waiting wake that starts a process
 // (supervise.StartsProcess) over a claim that records no process holds the row until the launch
 // runs, whichever launch it is. A relaunch parked over a process the claim still records holds
 // nothing: the machine keeps that claim's state, and its live session can take the publish now.
@@ -351,19 +351,15 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 }
 
 // wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
-// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
-// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
-// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+// issue is in Legion's work (record.InLegionsWork, its own record and no other issue's). A claim of
+// an issue out of it is a leave's to stop, not a wake's to bring back. An issue the daemon keeps no
+// record of is an error, as outbox.issue says.
 func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return record.Issue{}, false, err
-	}
-	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+	return issue, record.InLegionsWork(issue), nil
 }
 
 // parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that

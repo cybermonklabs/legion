@@ -10,13 +10,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// openBeneath is OpenBeneath over the tree issue belongs to, read here.
+// openBeneath is OpenBeneath over the Dispatch chains of issue's project, read here with issue
+// named (record.ReadChains).
 func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	members, err := e.treeMembers(ctx, tx, issue)
+	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
-	return record.OpenBeneath(issue, members), nil
+	return record.OpenBeneath(chains, issue.Key), nil
 }
 
 // ChildUnderAcceptedParentNotice is what the architect above the child is told when a person

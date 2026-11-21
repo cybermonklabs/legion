@@ -57,6 +57,9 @@ func TestARequestFromASessionWhoseIDHoldsNULIsTheClaimsOwnAfterARestart(t *testi
 	if _, err := st.OpenTreeLifecycle(ctx, project, tree, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", tree, err)
 	}
+	if _, err := st.OpenIssueLifecycle(ctx, project, issue, treelifecycle.AuthorityWorkflow); err != nil {
+		t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
+	}
 	queued, err := st.AdmitClaim(ctx, supervise.Claim{Token: token, Project: project, Tree: tree, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateQueued})
 	if err != nil {
 		t.Fatalf("admit the claim: %v", err)

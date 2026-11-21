@@ -23,8 +23,8 @@ type IssueClose struct {
 
 // IssueSuspension decides whether a workflow close may suspend its issue's Sandbox now, in one
 // short transaction under the shared serializer: false, finishing the close without acting, once
-// the run it closed is over (the root no longer lingers at its generation, and the issue is no
-// child that left the workflow done), a start that will start the issue was written, or the tree's
+// the run it closed is over (the issue is in the workflow again, by its own status and phase, or
+// at another generation), a start that will start the issue was written, or the tree's
 // cleanup is reserved, which deletes the Sandbox this close would; a wait while one of the close's
 // role stops (a suspend, an issue close, or a role stop of an idle release) is unfinished or a
 // stored claim of the issue may still hold a process. The close deletes the issue's Sandbox once
@@ -37,7 +37,7 @@ type IssueClose struct {
 //
 // A start that will start the issue is one a claim has already run (claims.last_start_row) or a
 // queued look of a production check. Every other queued start row is one the outbox's own start
-// fence or its lingering-tree guard will decline, so finishing the suspension on such a row would
+// fence will decline for an issue out of the workflow, so finishing the suspension on such a row would
 // release nothing and leave the Sandbox, the pod and the disk under it standing with no row left
 // to try. The look is the one queued start kept, because it is the one an issue out of the
 // workflow still runs: a merged root's close queues the suspensions and then the first look's
@@ -55,18 +55,17 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		}
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status string
-		var lingering bool
-		err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.generation, root.linger_until is not null
+		err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.generation
 			from issues i join issues root on root.key = i.tree where i.key = $1 and i.tree = $2`,
-			close.Issue, close.Tree).Scan(&issueGeneration, &issuePhase, &status, &rootGeneration, &lingering)
+			close.Issue, close.Tree).Scan(&issueGeneration, &issuePhase, &status, &rootGeneration)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		leftDone := close.Issue != close.Tree && phase.Phase(issuePhase) == phase.Done && outOfWorkflow(status)
-		if uint64(issueGeneration) != close.IssueGeneration || uint64(rootGeneration) != close.TreeGeneration || !(lingering || leftDone) {
+		stopped := phase.Phase(issuePhase) == phase.Done || outOfWorkflow(status)
+		if uint64(issueGeneration) != close.IssueGeneration || uint64(rootGeneration) != close.TreeGeneration || !stopped {
 			return nil
 		}
 		var restarted bool

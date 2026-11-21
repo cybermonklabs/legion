@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,11 +34,10 @@ type architectSweepFixture struct {
 	// stands is the phase the issue is recorded in, and status the Dispatch status with it.
 	stands phase.Phase
 	status string
-	// lingers records the root as a park left it: a linger deadline ahead of it.
-	lingers bool
-	// carried records a hand-over row at generation, which is what says the root stands in the
-	// run a hand-over carried it into, and gateCarried marks that row as one whose hand-over
-	// brought the old root's design gate (record.HandedOverRoot.GateCarried).
+	// carried records the root as one a hand-over of the release before carried in at generation
+	// (record.Issue.CarriedGeneration), which is what says the root stands in the run a hand-over
+	// carried it into, and gateCarried marks that the hand-over brought the old root's design gate
+	// (record.Issue.CarriedGate).
 	carried     bool
 	gateCarried bool
 	// gateOpened registers an approved design gate of the root, which is the root record.AtWork
@@ -71,8 +69,8 @@ func architectSweepRoot(key string) architectSweepFixture {
 		claimed: true, state: supervise.StateIdle, given: seededEntry - 1}
 }
 
-// seedArchitectSweepRoot records one fixture: the issue, its tree lifecycle, its slot, its
-// hand-over row, its design gate, the architect's phases row and the architect's claim.
+// seedArchitectSweepRoot records one fixture: the issue with its own facts, its lifecycle, its
+// slot, its design gate, the architect's phases row and the architect's claim.
 func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFixture) {
 	t.Helper()
 	ctx := context.Background()
@@ -87,9 +85,8 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 		parent := tree
 		root.Parent = &parent
 	}
-	if f.lingers {
-		until := fixedNow.Add(time.Hour)
-		root.LingerUntil = &until
+	if f.carried {
+		root.CarriedGeneration, root.CarriedGate = architectSweepGeneration, f.gateCarried
 	}
 	putIssue(t, pool, root)
 	seedLifecycle(t, pool, tree)
@@ -98,12 +95,6 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if f.carried {
-			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key,
-				Generation: architectSweepGeneration, GateCarried: f.gateCarried}); err != nil {
-				t.Fatalf("record %s as a root a hand-over created: %v", f.key, err)
-			}
-		}
 		if f.gateOpened {
 			version := 1
 			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: f.key, ArtifactID: "artifact-" + f.key,
@@ -230,8 +221,8 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 		why    string
 	}{
 		{
-			name: "a root that lingers", change: func(f *architectSweepFixture) { f.lingers, f.status = true, "done" },
-			why: "nothing of a tree that has left the workflow is started again until its re-admission (workflow.ArchitectHears)",
+			name: "a root a person closed", change: func(f *architectSweepFixture) { f.status = "done" },
+			why: "nothing of an issue out of Legion's work is started again until it returns (workflow.ArchitectHears)",
 		},
 		{
 			name: "a root Dispatch has taken out of the workflow", change: func(f *architectSweepFixture) { f.status = "backlog" },

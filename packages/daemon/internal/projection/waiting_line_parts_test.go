@@ -17,16 +17,19 @@ import (
 // it waits in and why it waits there, in the words the record gives the wire
 // (record.LinePart.String, record.LineKind.String), its place within that part, the length of
 // that part, whether it holds one of the cap's slots, what placed it — the moment its work
-// came back for a member of the returned part, the Dispatch ranks and the tree root's key for a
-// member of the starting part — and the sentence rendered from all of them
-// (waitingLineReason), which is the same fields read as a person reads them. The part's length
-// is counted over the whole line this pass holds, so the two parts of a five-member line answer
-// 3 and 2 and never the length of the line.
+// came back for a member of the returned part, the Dispatch ranks and the top issue's key for a
+// member of the starting part (R19 of dispatch://INFRA-3320) — and the sentence rendered from all
+// of them (waitingLineReason), which is the same fields read as a person reads them. The part's
+// length is counted over the whole line this pass holds, so the two parts of a five-member line
+// answer 3 and 2 and never the length of the line.
 //
 // The fixture is internal/record's TestWaitingLinePartAndKeyOnEveryEntry written for this
 // package, so the projected view and the entries it is read from say the same thing about the
-// same facts: an owed start, an answered root and a tree root's own first phase in the returned
-// part, and a queued root and a child's first phase in the starting one.
+// same facts: an owed start, an answered root and a root's own first phase in the returned part,
+// and a queued root and the first phase of an issue under a parent at work in the starting one.
+// The two issues under a parent stand under LEGION-30, a root at work, and not under LEGION-10,
+// since a root whose first phase is still to come does its own work after its open children's
+// (the children-first wait) and would stand in no line.
 func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 	opened, owedAt, answeredAt := projectedAt.Add(-3*time.Hour), projectedAt.Add(-2*time.Hour), projectedAt.Add(-time.Hour)
 	approved := 1
@@ -35,25 +38,28 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByReply}
 	store := projectionStore{
 		issues: []record.Issue{
-			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
-			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
+			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "P"),
+			lineIssue("LEGION-30", "LEGION-30", "in_progress", phase.Implementing, "M"),
+			lineIssue("LEGION-11", "LEGION-30", "todo", phase.Admitted, "N"),
 			// The member that owes its worker a start stands at testing and not at a phase past
 			// its review, which needs none of the cap's slots and so stands in no line
 			// (record.PhaseKeepsSlot), as internal/record's own fixture has it.
-			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Testing, "O"),
+			lineIssue("LEGION-12", "LEGION-30", "in_progress", phase.Testing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 			answered,
 		},
-		lifecycles: []string{"LEGION-10"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-10": {record.DesignStepSpec: {Issue: "LEGION-10", Step: record.DesignStepSpec, LatestVersion: 1,
 				ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
+			"LEGION-30": {record.DesignStepSpec: {Issue: "LEGION-30", Step: record.DesignStepSpec, LatestVersion: 1,
+				ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 6, At: opened}, EverOpened: true}},
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: owedAt}},
-		// The root whose gate opened and the answered root each kept the row they hold, as
-		// neither waits on another issue (record.KeepsSlot); the other three members hold none.
+		// The root whose gate opened, the root at work and the answered root each kept the row
+		// they hold, as none of them waits on another issue (record.KeepsSlot); the other three
+		// members hold none.
 		slots: []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: opened},
-			{Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}},
+			{Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}, {Issue: "LEGION-30", Index: 2, AdmittedAt: opened}},
 	}
 
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
@@ -84,9 +90,9 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, " +
 				"and 3 issues whose work came back stand ahead of all of them."},
 		"LEGION-11": {Place: 5, Length: 5, Part: "starting", Kind: "first_phase", PartPlace: 2, PartLength: 2,
-			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-10",
+			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-30",
 			Reason: "It has not started. It is 2nd of 2 issues that have not started, " +
-				"by the Dispatch rank of its tree root LEGION-10, and 3 issues whose work came back stand ahead of all of them."},
+				"by the Dispatch rank of its top issue LEGION-30, and 3 issues whose work came back stand ahead of all of them."},
 	}
 	for _, member := range line {
 		view := got.Issues[member].WaitingLine

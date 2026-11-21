@@ -13,19 +13,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// A root waiting for a slot while its tree's cleanup is reserved is not lost and not admitted: the
-// promotion leaves it waiting, writes no start, and a later tick admits it once the cleanup is
-// confirmed, opening the tree's next lifecycle epoch under the normalized project the claims use.
+// A root waiting for a slot while its own cleanup is reserved (the issue's lifecycle, R22 of
+// dispatch://INFRA-3320) is not lost and not admitted: the promotion leaves it waiting, writes no
+// start, and a later tick admits it once the cleanup is confirmed, opening the issue's next
+// lifecycle epoch under the normalized project the claims use.
 func TestPromotionWaitsForAReservedTreeCleanupThenAdmitsTheNextEpoch(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	const tree = "LEGION-W"
 	inTx(t, pool, func(tx pgx.Tx) {
-		if _, err := treelifecycle.Open(ctx, tx, "legion", tree, treelifecycle.AuthorityWorkflow); err != nil {
+		if _, err := treelifecycle.Issues.Open(ctx, tx, "legion", tree, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := treelifecycle.ReserveCleanup(ctx, tx, "legion", tree, treelifecycle.AuthorityWorkflow); err != nil {
+		if _, err := treelifecycle.Issues.ReserveCleanup(ctx, tx, "legion", tree, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -47,7 +48,7 @@ func TestPromotionWaitsForAReservedTreeCleanupThenAdmitsTheNextEpoch(t *testing.
 	}
 
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := treelifecycle.ConfirmCleanup(ctx, tx, "legion", tree, 1); err != nil {
+		if err := treelifecycle.Issues.ConfirmCleanup(ctx, tx, "legion", tree, 1); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -55,7 +56,7 @@ func TestPromotionWaitsForAReservedTreeCleanupThenAdmitsTheNextEpoch(t *testing.
 	assertSlots(t, pool, []record.Slot{{Issue: tree, Index: 0, AdmittedAt: fixedNow}})
 	var epoch int64
 	var started bool
-	if err := pool.QueryRow(ctx, `select epoch, cleanup_started from tree_lifecycles where project = 'legion' and tree = $1`, tree).Scan(&epoch, &started); err != nil {
+	if err := pool.QueryRow(ctx, `select epoch, cleanup_started from issue_lifecycles where project = 'legion' and issue = $1`, tree).Scan(&epoch, &started); err != nil {
 		t.Fatal(err)
 	}
 	if epoch != 2 || started {

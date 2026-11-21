@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -122,6 +124,23 @@ func migrationsAbove(t *testing.T, version int) int {
 		}
 	}
 	return withheld
+}
+
+// putPreEntryIssue records issue as the release before the phase entry's issue writer did, with
+// the columns of the issues table that release named and these cases set, as literal SQL, so the
+// write names no column a migration above that release's newest adds; every other column takes
+// what that writer gave it for an issue with no hold, no wait on a person, no ancestry, no take-back
+// and no tree it was handed over from, its default.
+func putPreEntryIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over,
+		last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
+		issue.Rank, issue.HandedOver, issue.LastDispatchSeq, issue.DispatchStatus, issue.Repo, issue.DefaultBranch, issue.GitHubRepo)
+	if err != nil {
+		return fmt.Errorf("record issue %s with the release before the phase entry's columns: %w", issue.Key, err)
+	}
+	return nil
 }
 
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
@@ -315,15 +334,21 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		tokens[shape.key] = token
 	}
 
+	// The tree is written with that release's own columns as well: this release's issue writer
+	// (record.Store.PutIssue) names columns migrations above that release's newest add —
+	// issues.view_of (20261114064234) and the held start of awaiting_children (20261114232555) —
+	// which the fixture withholds with the phase entry, so the upgrade under test adds them.
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutIssue(ctx, tx, root); err != nil {
+		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		if err := openTreeTx(ctx, tx, upgradeProject, root.Key); err != nil {
+		// That release had no issue lifecycles: the upgrade's own 20261120095128 opens one for each
+		// issue a live claim names, so the tree's lifecycle alone is written here.
+		if _, err := records.OpenTreeLifecycle(ctx, tx, project, root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err
 		}
 		for index, shape := range shapes {
-			if err := records.PutIssue(ctx, tx, issues[shape.key]); err != nil {
+			if err := putPreEntryIssue(ctx, tx, issues[shape.key]); err != nil {
 				return err
 			}
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: shape.key, Index: index, AdmittedAt: time.Now().UTC()}); err != nil {
@@ -424,6 +449,18 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
 	}
+	// The copy of Dispatch's issues the first boot fills from a listing (R16 of
+	// dispatch://INFRA-3320): the root and each issue under it, as Dispatch shows them. Every
+	// decision of the sweep reads its chains from it.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		for _, shape := range shapes {
+			seedCopyRow(t, tx, shape.key, root.Key, issues[shape.key].DispatchStatus, 1)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
+	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had
 	// handed work is at entry 1, the work of that entry is the task of the start row the issue
@@ -517,7 +554,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	for i, shape := range shapes {
 		if shape.wantResume {
-			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key])
+			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key], false)
 			continue
 		}
 		shapes[i].wantTask = shape.owedTask

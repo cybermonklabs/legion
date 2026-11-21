@@ -213,7 +213,7 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 func TestAMergingIssueStartsItsMerger(t *testing.T) {
 	const root, key = "LEGION-820", "LEGION-821"
 	pool := migratedPool(t)
-	seedTreeAndMember(t, pool, root, key, phase.Merging, 1, false)
+	seedTreeAndMember(t, pool, root, key, phase.Merging, 1)
 	// A merger whose session the daemon suspended holds no task it still works, and whose claim
 	// was queued no task of the entry its phases row names, which is the difference this pass
 	// closes.

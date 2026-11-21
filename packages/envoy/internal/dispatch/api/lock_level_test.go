@@ -45,15 +45,22 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 // ownerRowLockSites are the places allowed to lock an owner row, keyed by the file that declares
 // them, each named as a statement's locatedStatement names where it is: a function, or a
 // package-level value. They are the events' lockEventOwner, which takes the row `for no key
-// update` when the transaction appends, under the owner's advisory lock it takes first; and the
+// update` when the transaction appends, under the owner's advisory lock it takes first; the
 // store's three owner lock levels, the package-level variables ownerLockExclusive,
 // ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
 // after its advisory lock, before the read it guards, while its fleet read answers that a process
-// of an earlier build is live (store.lockOwnerRows). Every other declaration and function of
-// ownerlock.go is under the rule.
+// of an earlier build is live (store.lockOwnerRows); and an issue create's `for share` of its
+// parent's row (createIssue). That one runs only with the parent-status rule on, in the create's
+// write phase, after the update of the project's next_number gave the transaction its id, as the
+// statement just before `insert into issues`. It orders the create against a close of that
+// parent: a close whose update ran first makes it wait and read `done`, and a create whose share
+// lock ran first makes the close's update wait, and the close's second read then sees the new
+// child. It takes no lock in the read phase and replaces no advisory lock. Every other
+// declaration and function of ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
-	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
-	"internal/dispatch/store/ownerlock.go": {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
+	"internal/dispatch/api/issue_create.go": {"createIssue"},
+	"internal/dispatch/events/broker.go":    {"lockEventOwner"},
+	"internal/dispatch/store/ownerlock.go":  {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }
 
 var (

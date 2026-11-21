@@ -55,7 +55,9 @@ Answer with `File it for Legion` and the controller files it labelled `legion`.
 
 Do not label child issues: a child runs under its tree once the root is admitted. The children do
 the work first: an issue starts no phase of its own while Dispatch shows an open child under it,
-so a parent's own pull request is built and merged after its children's.
+so a parent's own pull request is built and merged after its children's. A child filed under an
+issue already at work stops that issue's phase. The issue waits, shown `in_progress`, and goes on
+by itself once its children are done ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
 ## Ask Legion in Slack
 

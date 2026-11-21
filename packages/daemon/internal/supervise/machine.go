@@ -171,15 +171,32 @@ const (
 
 // Claim is one role claim as the supervisor holds and persists it.
 type Claim struct {
-	Token      claim.Token
-	Project    string
-	Tree       string
+	Token   claim.Token
+	Project string
+	// Tree is the tree the claim's issue stored when the daemon first recorded it (issues.tree),
+	// or, for an operator's claim on an issue the daemon records nothing of, the tree the operator
+	// named: what claims.tree holds for the release before after a rollback (R22 of
+	// dispatch://INFRA-3320). The store writes it from the issue's record where there is one
+	// (store.Store.AdmitClaim).
+	Tree string
+	// LaunchTree is the issue's gate root at the claim's last launch: what the spawn spec, the
+	// role's LEGION_TREE and the registration's answer name (decision 13 of
+	// dispatch://INFRA-4730). "" for a claim no launch of this release has set it on.
+	LaunchTree string
 	Issue      string
 	Role       claim.Role
 	Generation uint64
-	// TreeEpoch is the durable lifecycle epoch this claim bound to before its first persistence.
-	// A cleanup reservation closes that epoch before a later claim/launch can write or run.
-	TreeEpoch uint64
+	// TreeEpoch is the epoch of the tree lifecycle of Tree the claim was last admitted under,
+	// written for the release before, whose launch checks it (R22); no decision of this release
+	// reads it. IssueEpoch is the durable lifecycle epoch of the claim's own issue it bound to
+	// before its first persistence (store.Store.AdmitClaim): a cleanup reservation of the issue
+	// closes that epoch before a later claim or launch can write or run.
+	TreeEpoch  uint64
+	IssueEpoch uint64
+	// HoldsGate is whether the claim's issue held its own design gate at the claim's last launch
+	// (record.Chains.HoldsOwnGate), set at each launch beside LaunchTree: what the machine reads
+	// an architect of a gate holder by.
+	HoldsGate bool
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string
@@ -817,9 +834,19 @@ type ClaimView struct {
 	WakeWaiting *WakeWaiting
 }
 
-// treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
-// when its tree closes.
-func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
+// treeRoot is whether the claim is the architect of an issue that holds its own design gate (R15
+// of dispatch://INFRA-3320): a root's, or one that ran as a root and keeps its gate under a parent
+// in Legion's work. It is the claim the stop refusal, the exit suspension, the superseding of an
+// unconfirmed task and the root's hearing guard (asksRoot) treat as the gate holder's own, which
+// ends only at its issue's close. supervise holds no store, so it reads the mark the outbox writes
+// on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate),
+// handing claim.IsTreeArchitect the issue as the gate root where the mark says it is one.
+func (c Claim) treeRoot() bool {
+	if !c.HoldsGate {
+		return false
+	}
+	return claim.IsTreeArchitect(c.Role, c.Issue, c.Issue)
+}
 
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,
 // StreamTurnEnd, IssueTurnEnded, StreamPromptResult, StreamClosed, StreamLateRefusal,
@@ -4357,12 +4384,12 @@ func HoldsCapability(state ClaimState) bool {
 // plugin reports ready, so a publish then still reaches the session that held the role before.
 //
 // Since INFRA-1573 the ready comes before the Envoy role as well — the plugin claims the role at
-// its session's first turn, or at a bound if no turn comes — so a claim this answers true for
-// may not answer to its name yet. The listener refuses a keep: false publish to a role no live
-// session holds with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not
-// one rule: noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows
-// they finish, and hookPrompt publishes with keep, which the listener answers by keeping the
-// message for the role's next live holder (internal/daemon).
+// its session's first turn, or at a bound if no turn comes — so a claim this answers true for may
+// not answer to its name yet. The listener refuses a keep: false publish to a role no live session
+// holds with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
+// noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows they
+// finish, and phaseEnded and hookPrompt publish with keep, which the listener answers by keeping
+// the message for the role's next live holder (internal/daemon).
 //
 // The window is bounded at both ends: the name is taken inside the session's first turn — the
 // daemon's own task starts one, on either harness — and at the first-turn bound (30 s by
@@ -4422,8 +4449,6 @@ func claimOf(ev Event) claim.Token {
 	case RequestRuleResume:
 		return ev.Claim
 	case RequestStop:
-		return ev.Claim
-	case RequestTreeClose:
 		return ev.Claim
 	case RequestIssueClose:
 		return ev.Claim

@@ -9,11 +9,10 @@ import type {
   IssueDetails,
   IssueRouteStatus,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import {
   type DispatchClient,
-  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -37,11 +36,19 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  type ClosingNote,
+  closeAccount,
+  dispatchAnswered,
+  refusalWithCode,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
+import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
@@ -239,7 +246,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
-/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
+/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. With an
+ *  option of the status change, it sends that route in place of the PATCH. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
   const issueKey = issue();
@@ -261,6 +269,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
+  // The schema refused an option beside any field but status and reason, include_children beside
+  // unlink_children, and include_children with done.
+  const options = issueStatusOptionsOf(args);
   let before: IssueDetails;
   try {
     before = await client.getIssue(issueKey);
@@ -286,7 +297,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote: { readonly id: string; readonly ref: string } | undefined;
+  const issuesBefore =
+    options.length === 0 ? undefined : await issuesBeforeStatusChange(client, before, options);
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
@@ -309,6 +322,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
       throw withAccount(error, told);
     }
+  }
+  if (issuesBefore !== undefined) {
+    return statusChangeCommand(context, before, options, issuesBefore, closingNote);
   }
   // The server replaces the whole link set. The common call is "link the pull request I just
   // opened", so a non-empty list merges by URL and keeps every existing link (and its kind).
@@ -372,16 +388,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       throw refusalWithCode(error, taken);
     }
     // The reason is on the issue, so a blind retry would post it a second time: the error
-    // says where the first one is, and whether the close may have landed anyway. A gateway's
-    // timeout or rate limit refused nothing there is to fix.
-    const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
-    const fix =
-      error instanceof DispatchGatewayError && error.transient
-        ? ""
-        : "fix what refused the close, then ";
-    const landed = writeMayHaveLanded(error)
-      ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
-      : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
+    // says where the first one is, and whether the close may have landed anyway.
+    const landed = closeAccount(error, closingNote);
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
@@ -562,9 +570,17 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
+/** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
+ *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
+ *  object is no JSON object, and prints its own notes on standard error. */
+export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  return tool === "dispatch_issues" && args["json"] === true;
+}
+
+/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
+ *  with `--json`, as one JSON object. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+  const { args, client, input } = context;
   const project = stringArg(args, "project");
   const status = optionalString(args, "status");
   const parent = optionalString(args, "parent");
@@ -615,6 +631,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     updated_at: row.updated_at,
     progress: row.progress,
   }));
+  const listing = { issues: rows, total, offset, limit };
+  if (printsJson(input.tool, args)) {
+    return { text: JSON.stringify(listing), details: listing };
+  }
   const agents = await liveAgents(
     client,
     rows.some((row) => holdsSession(row.claim))
@@ -649,7 +669,7 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               );
             }),
           ].join("\n"),
-    details: { issues: rows, total, offset, limit },
+    details: listing,
   };
 }
 

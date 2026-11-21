@@ -695,9 +695,6 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 			return fmt.Errorf("projects must configure %s, the daemon's own project", cfg.Project)
 		}
 	}
-	if file.Linger != nil {
-		cfg.Linger = *file.Linger
-	}
 	if file.ProductionCheckBound != nil {
 		cfg.ProductionCheckBound = *file.ProductionCheckBound
 	}

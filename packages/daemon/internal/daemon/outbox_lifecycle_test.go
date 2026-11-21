@@ -190,7 +190,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 		t.Fatalf("start the planning turn: %v", err)
 	}
 	// The linger outlasts the test's clock, so the close's suspends are all the close does here.
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -359,7 +359,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner}); err != nil {
 		t.Fatalf("start the planning turn: %v", err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -666,65 +666,6 @@ func unfinishedSuperviseRows(t *testing.T, pool *store.Pool) int {
 	return rows
 }
 
-// A tree paused while its pull request is open (root to backlog) and resumed (todo) runs its next
-// generation on the same branch and the same open pull request: GitHub allows one open pull
-// request per head branch, and nothing records it again. Re-admission keeps the open pull request
-// (only a merged or closed one belongs to the earlier generation), so the new generation's
-// implementer completion reaches testing on it.
-func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	const key, artifact = "LEGION-208", "0b6f7c1e-4d5a-4f0e-9f59-2b1c3d4e5f60"
-	approved := 1
-	root := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: key, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U", LastDispatchSeq: 5}
-	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()}); err != nil {
-			return err
-		}
-		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, ArtifactID: artifact, LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
-			return err
-		}
-		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "sha-1",
-			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, CheckedHead: "sha-1"})
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
-	for _, step := range []struct {
-		id   string
-		fact intake.Fact
-	}{
-		{"backlog", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: root.Title, Rank: "U"}},
-		{"todo", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: "U", HandedOver: true}},
-		{"gate", intake.GateRegistered{Issue: key, ArtifactID: artifact, Version: 2}},
-		{"approve", intake.DispatchArtifact{Key: key, ArtifactID: artifact, Kind: intake.DispatchArtifactApproved, Version: 2}},
-		{"plan", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Summary: "plan", HandoffRecord: "plan-1", HandoffVersion: 1}},
-		{"implement", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Summary: "impl", Commit: "impl-1", HandoffRecord: "implement-1", HandoffVersion: 1}},
-	} {
-		if _, err := intake.ApplyFact(ctx, pool, "test", step.id, step.fact, engine, admission); err != nil {
-			t.Fatalf("apply %s: %v", step.id, err)
-		}
-	}
-	var current phase.Phase
-	var generation uint64
-	if err := pool.QueryRow(ctx, "select phase, generation from issues where key = $1", key).Scan(&current, &generation); err != nil {
-		t.Fatal(err)
-	}
-	if current != phase.Testing || generation != 2 {
-		t.Fatalf("generation %d is in %s after its implementer completed, want generation 2 in testing on the open pull request #86", generation, current)
-	}
-	var checkedHead string
-	if err := pool.QueryRow(ctx, "select checked_head from pull_requests where issue = $1 and number = 86", key).Scan(&checkedHead); err != nil {
-		t.Fatalf("read the kept pull request: %v", err)
-	}
-	if checkedHead != "" {
-		t.Fatalf("kept pull request checked head = %q, want generation 1's reading cleared", checkedHead)
-	}
-}
-
 // A child a human moves out of the workflow (here backlog, mid-test) leaves the table: its claims
 // are suspended and its phase parked, so its tester's next completion advances nothing and no
 // status write lands over the human's backlog.
@@ -1002,72 +943,6 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 	}
 }
 
-// A root a human moves out of the workflow lingers: only the root is parked in done, and every
-// claim of every tree member is suspended, the root's own worker and its children's. A child keeps
-// its phase, so its running worker is one whose role works the child's phase, and its suspend must
-// act all the same: nothing else stops that worker before the linger's tree close, and a completion
-// from it would still advance the child inside a tree the human closed. The root's worker is
-// suspended with the root in done, a phase no role works. Found by #1347's review, whose test this
-// extends.
-func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Parent: &parent, Title: "Child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
-	putOutboxIssue(t, pool, records, root)
-	putOutboxIssue(t, pool, records, child)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	// ready is a worker of issue running and ready, as it is between two of its turns.
-	ready := func(issue string) *supervise.Machine {
-		t.Helper()
-		token, err := claim.NewToken("legion", issue, claim.RoleImplementer)
-		if err != nil {
-			t.Fatal(err)
-		}
-		machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Tree, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
-			t.Fatal(err)
-		}
-		generation := machine.Claim().Generation
-		for _, ev := range []supervise.Event{
-			supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses-" + issue, SessionFile: "/tmp/" + issue + ".jsonl"},
-			supervise.RequestReady{Claim: token, Generation: generation, Session: "ses-" + issue},
-		} {
-			if err := machine.Handle(ctx, ev); err != nil {
-				t.Fatalf("handle %T: %v", ev, err)
-			}
-		}
-		return machine
-	}
-	rootWorker, childWorker := ready(root.Key), ready(child.Key)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), project: "legion", log: quietLogger(), now: time.Now,
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "backlog"}}, notices: &outboxPublisher{}, handlers: []intake.Handler{engine}}
-
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-backlog", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: root.Title, Rank: "U"}, engine); err != nil {
-		t.Fatalf("backlog: %v", err)
-	}
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if got := childWorker.Claim().State; got != supervise.StateSuspended {
-		t.Errorf("child implementer = %s after its root moved to backlog, want suspended", got)
-	}
-	if got := rootWorker.Claim().State; got != supervise.StateSuspended {
-		t.Errorf("root implementer = %s after its root moved to backlog, want suspended", got)
-	}
-}
-
 // heldImplementer is a claim held after its agent kept dying in a turn of its task: failed, its
 // session kept, and the task it was given still pending, marked interrupted.
 func heldImplementer(t *testing.T, sup *supervisor, issue record.Issue, kept supervise.Delivery) *supervise.Machine {
@@ -1170,58 +1045,5 @@ func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
 				t.Fatalf("start the held claim = %v, want its own task waiting behind the kept one (%v)", err, supervise.ErrDeliveryPending)
 			}
 		})
-	}
-}
-
-// An operator's suspension keeps the claim's queued phase task, and a re-admission can restart
-// the issue in the phase it stood in. The operator's resume then must not send the run that is
-// over's task into the new run: it is dropped (phaseHolds compares the run), and the new run's
-// start gives the worker its own task.
-func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
-	putOutboxIssue(t, pool, records, issue)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
-	tester := launchedClaim(t, sup, issue.Tree, issue.Key, claim.RoleTester)
-	machine, _ := sup.Machine(tester)
-
-	// Generation 1's task is sent and not yet started when the operator suspends the tester.
-	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: tester, Task: "Test generation 1.", ID: "outbox:7", Phase: phase.Testing, Generation: 1}); err != nil {
-		t.Fatalf("deliver generation 1's task: %v", err)
-	}
-	operatorSuspend(t, sup, tester)
-	if pending := machine.Claim().Pending; pending == nil || pending.Generation != 1 {
-		t.Fatalf("after the operator's suspend pending %+v, want generation 1's task kept", pending)
-	}
-
-	// The issue is re-admitted and restarts in testing at generation 2.
-	issue.Generation = 2
-	putOutboxIssue(t, pool, records, issue)
-	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester}); err != nil {
-		t.Fatalf("the operator's resume: %v", err)
-	}
-	if resumes := resumesOf(rt, tester); len(resumes) != 1 {
-		t.Fatalf("the operator's resume relaunched the tester %d times, want once", len(resumes))
-	}
-	readyClaimOf(t, sup, tester, claim.RoleTester)
-	machine.Wait()
-	if pending := machine.Claim().Pending; pending != nil {
-		t.Fatalf("after the resume pending %+v, want generation 1's task dropped", pending)
-	}
-
-	clock := time.Now()
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
-		now: func() time.Time { return clock }}
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 2, Phase: phase.Testing, Task: "Test generation 2."}, clock))
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run generation 2's start: %v", err)
-	}
-	machine.Wait()
-	if pending := machine.Claim().Pending; outboxRows(t, pool) != 0 || pending == nil || pending.Generation != 2 || pending.Task != "Test generation 2." || pending.DeliveredAt.IsZero() {
-		t.Fatalf("after generation 2's start: %d rows, pending %+v; want the start run and its task sent", outboxRows(t, pool), pending)
 	}
 }

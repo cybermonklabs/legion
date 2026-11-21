@@ -31,7 +31,7 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	admission.UseExperiments(append(declaring(config.ExperimentOn), planLength))
 	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	const root = "LEGION-1"
 
 	// A root the daemon holds no record of, handed to Legion in todo: admission records it, and

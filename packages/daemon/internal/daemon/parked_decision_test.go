@@ -31,21 +31,21 @@ import (
 
 // A person's spec decision that nobody inside its tree will hear goes to the controller: one
 // parked-decision notice however often the undelivered row runs (its finish not committing),
-// nothing to the architect, and the decision kept for the root's next admission. The three cases
-// reach both undelivered branches: a stopped tree's suspended architect (the first), and a role
-// publish refused for an architect nobody will hold (the second, a lingering tree; the third, a
-// failed claim on a running tree).
+// nothing to the architect, and the decision kept for the root's next run. Nobody hears it once the
+// architect's claim has ended and its session holds the role no more: the close of its issue
+// retired it (R24 of dispatch://INFRA-3320, the issue_close stop), or it failed on a running tree.
+// An architect whose issue closed and whose close has not run yet has not ended: its notice waits
+// for it while no session holds the role, as TestANoticeWaitsOrEndsByTheClaimsState holds, and is
+// parked once the close retired it, which the first case holds.
 func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 	carried := "a human approved LEGION-9's spec document at version 3, which opens the gate LEGION-1 carried; any READY it refused is released and any child waiting on it starts"
 	for _, tc := range []struct {
-		name    string
-		state   supervise.ClaimState
-		lingers bool
-		absent  bool
+		name   string
+		state  supervise.ClaimState
+		closed bool
 	}{
-		{"the close suspended the architect", supervise.StateSuspended, true, false},
-		{"the tree lingers before its architect's suspend ran", supervise.StateWorking, true, true},
-		{"the architect's claim failed on a running tree", supervise.StateFailed, false, true},
+		{"the close retired the architect", supervise.StateRetired, true},
+		{"the architect's claim failed on a running tree", supervise.StateFailed, false},
 	} {
 		for _, decision := range []record.Notice{
 			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
@@ -56,13 +56,11 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 				ctx := context.Background()
 				pool := isolatedOutboxPool(t)
 				records := record.NewStore()
-				noticeTree(t, pool, records, tc.lingers)
+				noticeTree(t, pool, records, tc.closed)
 				sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 				architectClaim(t, sup, "LEGION-1", tc.state)
 				publisher := &holderPublisher{}
-				if tc.absent {
-					publisher.setAbsent(architectTopic(t, "LEGION-1"))
-				}
+				publisher.setAbsent(architectTopic(t, "LEGION-1"))
 				runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 				row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))
 				for attempt := range 2 {
@@ -87,21 +85,22 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 	}
 }
 
-// A notice of the machinery to an architect that stopped with its finished tree (a child's status,
-// here) stays dropped with its one line: no person decided anything, so the controller is told
+// A notice of the machinery to an architect the close of its issue retired (a refused round,
+// here) ends undelivered with its one line: no person decided anything, so the controller is told
 // nothing and nothing is kept for the root.
-func TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision(t *testing.T) {
+func TestTheMachinerysNoticeToARetiredArchitectWritesNoParkedDecision(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, true)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architectClaim(t, sup, "LEGION-1", supervise.StateRetired)
 	var logged bytes.Buffer
 	publisher := &holderPublisher{}
+	publisher.setAbsent(architectTopic(t, "LEGION-1"))
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
-	notice := record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-2 is backlog"}
-	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", notice, time.Now()))
+	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", notice, time.Now()))
 	if err := runner.notice(ctx, row, notice); err != nil {
 		t.Fatalf("notice: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision(t *testing.T) {
 	if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 0 {
 		t.Fatalf("kept %#v, want nothing kept for the machinery's notice", kept)
 	}
-	if strings.Count(logged.String(), `msg="outbox notice finished undelivered: its architect stopped with its finished tree"`) != 1 ||
+	if strings.Count(logged.String(), `msg="outbox notice finished undelivered: its architect will not hold its role again"`) != 1 ||
 		strings.Contains(logged.String(), "parked decision") {
 		t.Fatalf("log %q; want one finished-undelivered line and no parked decision line", logged.String())
 	}
@@ -135,9 +134,10 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 			records := record.NewStore()
 			noticeTree(t, pool, records, true)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			architectClaim(t, sup, "LEGION-1", supervise.StateRetired)
 			var logged bytes.Buffer
 			publisher := &holderPublisher{}
+			publisher.setAbsent(architectTopic(t, "LEGION-1"))
 			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", tc.notice, time.Now()))
 			if err := runner.notice(ctx, row, tc.notice); err != nil {
@@ -166,15 +166,19 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 // document a person reviewed: the decisions document and the spec are two references, so the
 // newest-per-reference rule the keep follows (record.Store.AddParkedDecision) keeps both rather
 // than letting the second replace the first. The spec step's reference is the one every release
-// before the step list wrote, so a one-step deployment keeps exactly what it kept before.
+// before the step list wrote, so a one-step deployment keeps exactly what it kept before. The root
+// is closed and its architect retired by the close, so nobody hears either; each row is finished
+// once its executor ends it, as the runner finishes it, so the second is not held behind the first.
 func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, true)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
+	architectClaim(t, sup, "LEGION-1", supervise.StateRetired)
+	publisher := &holderPublisher{}
+	publisher.setAbsent(architectTopic(t, "LEGION-1"))
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
 		supervisor: sup, project: "legion", now: time.Now}
 	decisions := record.Notice{Kind: "design-approved", Version: 2, Actor: "user:alice", Ref: "dispatch://LEGION-1/artifact/decisions-md"}
 	spec := record.Notice{Kind: "design-approved", Version: 4, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
@@ -182,6 +186,9 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))
 		if err := runner.notice(ctx, row, decision); err != nil {
 			t.Fatalf("relay the approval of %s: %v", decision.Ref, err)
+		}
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken) }); err != nil {
+			t.Fatalf("finish the relayed approval of %s: %v", decision.Ref, err)
 		}
 	}
 	kept := keptDecisions(t, pool, records, "LEGION-1")
@@ -201,15 +208,17 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 }
 
 // The parked-decision notice goes where every controller notice goes: the outbox's next run
-// publishes it on the project's controller topic, as "parked-decision on <issue>".
+// publishes it on the project's controller topic, as "parked-decision on <issue>", with the run and
+// the phase entry of its issue its row was queued at (record.Fence).
 func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, true)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architectClaim(t, sup, "LEGION-1", supervise.StateRetired)
 	publisher := &holderPublisher{}
+	publisher.setAbsent(architectTopic(t, "LEGION-1"))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 	decision := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))
@@ -219,7 +228,8 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 		}
 	}
 	_, delivered := publisher.snapshot()
-	want := record.Notice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Actor: "user:alice", Version: 3}
+	want := record.Notice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Actor: "user:alice", Version: 3,
+		Generation: record.FirstFence.Generation, Entry: record.FirstFence.Entry}
 	if len(delivered) != 1 || delivered[0].topic != notify.ControllerTopic("legion") || delivered[0].message != "parked-decision on LEGION-1" ||
 		!reflect.DeepEqual(delivered[0].payload, want) {
 		t.Fatalf("delivered %+v, want one %#v on %s as parked-decision on LEGION-1", delivered, want, notify.ControllerTopic("legion"))
@@ -372,8 +382,10 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress"}
-	putOutboxIssue(t, pool, records, root)
+		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", HoldsGate: true}
+	// Its copy row too: the catch-up the release hands the decision to is written on the chain the
+	// copy shows.
+	putChainIssue(t, pool, records, root)
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-1/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
@@ -743,7 +755,11 @@ func parkedDecisions(t *testing.T, pool *store.Pool) []record.ControllerNotice {
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		got = append(got, payload.(record.ControllerNotice))
+		// The run and the phase entry a parked-decision notice names are its row's fence
+		// (record.Fence), not what it tells the controller.
+		notice := payload.(record.ControllerNotice)
+		notice.Generation, notice.Entry = 0, 0
+		got = append(got, notice)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the parked decisions: %v", err)
@@ -764,181 +780,6 @@ func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root st
 		t.Fatalf("read the kept decisions of %s: %v", root, err)
 	}
 	return kept
-}
-
-// A tree closes for good when its linger expires, and a person's decision kept while nobody in it
-// could hear it can still be standing then: kept for the root and unclaimed, kept and claimed by a
-// start or catch-up row that will never reach an architect, or held by the unconfirmed task of the
-// root architect's claim, which the claim's queueing of that task left as the only record of it.
-// Nothing of a closed tree names any of them to an architect again, so the close says each one:
-// one Warn line, with the decision's reference, its root and the issue a person decided on. The
-// controller has each as a parked-decision notice, written when the decision was kept
-// (record.RelayParkedDecision), which is where a person's decision on a tree nobody in it hears
-// goes. The lines are written once the close has committed, so the linger row run again — a lost
-// finish, a daemon that died before it — writes none of them twice.
-func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(-time.Minute)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "Root", Phase: phase.Done, Generation: 3, Status: "done",
-		Rank: "U", LastDispatchSeq: 5, LingerUntil: &until}
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: root.Tree, Parent: &parent, Title: "Child", Phase: phase.Done, Generation: 1,
-		Status: "done", Rank: "B", LastDispatchSeq: 2}
-	putOutboxIssue(t, pool, records, root)
-	putOutboxIssue(t, pool, records, child)
-
-	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	unclaimed, claimed, held := "dispatch://LEGION-208/ask/ask-1", "dispatch://LEGION-209/ask/ask-2", "dispatch://LEGION-208/ask/ask-3"
-	for _, kept := range []record.ParkedDecision{
-		{Ref: unclaimed, Issue: root.Key, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at},
-		{Ref: claimed, Issue: child.Key, Decision: record.DecisionAskResolved, Actor: "user:bob", At: at},
-	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
-			t.Fatalf("keep the decision %s: %v", kept.Ref, err)
-		}
-	}
-	// The start that claimed the decision on the child is still queued: its claim is released by
-	// nothing here, and the close leaves it where it stands.
-	naming := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: claimed, At: at, Issue: child.Key,
-		Decision: record.DecisionAskResolved, Actor: "user:bob"}}}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
-			Generation: root.Generation, Phase: phase.Admitted, Task: "a person decided on the tree", Kept: &naming}, time.Now())
-		if err := records.Enqueue(ctx, tx, row); err != nil {
-			return err
-		}
-		var id int64
-		if err := tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id); err != nil {
-			return err
-		}
-		return records.ClaimKeptDecisions(ctx, tx, root.Key, naming, id)
-	}); err != nil {
-		t.Fatalf("claim the decision on the child for a queued start: %v", err)
-	}
-	// The root architect's claim holds a start task nobody sent and nobody confirmed; the decision
-	// it names went from parked_decisions when the claim took the task.
-	seedHeldArchitectTask(t, pool, root.Key, record.KeptDecisions{Decisions: []record.DecisionMark{
-		{Ref: held, At: at, Issue: root.Key, Decision: record.DecisionAskAnswered, Actor: "user:alice"}}})
-
-	var logged bytes.Buffer
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
-		slog.New(slog.NewJSONHandler(&logged, nil)))
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
-		handlers: []intake.Handler{engine}, now: time.Now}
-	row := mustOutboxRow(t, root.Key, record.LingerClose{Generation: root.Generation}, time.Now())
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("close the tree at its linger's end: %v", err)
-	}
-
-	want := []string{
-		"WARN " + unclaimed + " root=LEGION-208 issue=LEGION-208 where=kept for its issue's tree",
-		"WARN " + held + " root=LEGION-208 issue=LEGION-208 where=held by its architect's unconfirmed task",
-		"WARN " + claimed + " root=LEGION-208 issue=LEGION-209 where=claimed by a start or a catch-up",
-	}
-	if got := owedDecisionsLogged(t, logged.Bytes()); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the close logged %q, want one line per decision the tree still owes: %q", got, want)
-	}
-	// The row runs again, as a lost finish leaves it: the close is already applied, so it says
-	// nothing a second time.
-	logged.Reset()
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("run the linger close again: %v", err)
-	}
-	if got := owedDecisionsLogged(t, logged.Bytes()); len(got) != 0 {
-		t.Fatalf("the linger row run again logged %q, want nothing: the close committed once", got)
-	}
-}
-
-// A tree whose linger expires hands each member it leaves in the workflow to Legion, and that
-// member takes what a person decided on it into the tree of its own with nothing to move: the row
-// stands under its own issue, and a claim or a hold of the tree it left counts for nothing there.
-// Such a decision is not one the close leaves behind, so the close must not warn that it still
-// owes it: the member's own architect is told it at its start. The close says so in one Info line
-// each, and its Warn lines name only what really stands where it is — what was decided on the
-// root itself, and on a member the close hands to nobody, below a handed child or not.
-func TestAClosingTreeDoesNotWarnAboutTheDecisionsItHandsToAChild(t *testing.T) {
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(-time.Minute)
-	root := record.Issue{Key: "LEGION-218", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-218", Title: "Root", Phase: phase.Done, Generation: 3, Status: "done",
-		Rank: "U", LastDispatchSeq: 5, LingerUntil: &until}
-	rootKey, childKey := root.Key, "LEGION-219"
-	// The child is still working when the linger ends, so the close hands it to Legion with its
-	// run. The grandchild below it has finished, so the close hands it to nobody: it stays a
-	// member of the closing tree, and what was decided on it is that tree's to answer, as is what
-	// was decided on the parked member under the root.
-	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: root.Tree, Parent: &rootKey, Title: "Child", Phase: phase.Planning, Generation: 1,
-		Status: "in_progress", Rank: "B", LastDispatchSeq: 2}
-	grandchild := record.Issue{Key: "LEGION-220", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: root.Tree, Parent: &childKey, Title: "Grandchild", Phase: phase.Done,
-		Generation: 1, Status: "done", Rank: "C", LastDispatchSeq: 2}
-	parked := record.Issue{Key: "LEGION-221", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: root.Tree, Parent: &rootKey, Title: "Parked", Phase: phase.Done, Generation: 1,
-		Status: "backlog", Rank: "D", LastDispatchSeq: 2}
-	for _, issue := range []record.Issue{root, child, grandchild, parked} {
-		putOutboxIssue(t, pool, records, issue)
-	}
-
-	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	onTheRoot, onTheChild := "dispatch://LEGION-218/ask/ask-1", "dispatch://LEGION-219/ask/ask-2"
-	onTheGrandchild, onTheParked := "dispatch://LEGION-220/ask/ask-3", "dispatch://LEGION-221/ask/ask-4"
-	for _, kept := range []record.ParkedDecision{
-		{Ref: onTheRoot, Issue: rootKey, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at},
-		{Ref: onTheChild, Issue: childKey, Decision: record.DecisionAskResolved, Actor: "user:bob", At: at},
-		{Ref: onTheGrandchild, Issue: grandchild.Key, Decision: record.DecisionAskAnswered, Actor: "user:bob", At: at},
-		{Ref: onTheParked, Issue: parked.Key, Decision: record.DecisionAskResolved, Actor: "user:alice", At: at},
-	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
-			t.Fatalf("keep the decision %s: %v", kept.Ref, err)
-		}
-	}
-	// The root architect's claim holds a start task nobody sent and nobody confirmed, naming one
-	// decision of the root and one of the child: those rows stand held by that delivery, and the
-	// child's goes with the child, whose own tree the hold counts for nothing in.
-	heldOnTheRoot, heldOnTheChild := "dispatch://LEGION-218/ask/ask-5", "dispatch://LEGION-219/ask/ask-6"
-	seedHeldArchitectTask(t, pool, rootKey, record.KeptDecisions{Decisions: []record.DecisionMark{
-		{Ref: heldOnTheRoot, At: at, Issue: rootKey, Decision: record.DecisionAskAnswered, Actor: "user:alice"},
-		{Ref: heldOnTheChild, At: at, Issue: childKey, Decision: record.DecisionAskResolved, Actor: "user:bob"}}})
-
-	var logged bytes.Buffer
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
-		slog.New(slog.NewJSONHandler(&logged, nil)))
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
-		handlers: []intake.Handler{engine}, now: time.Now}
-	row := mustOutboxRow(t, rootKey, record.LingerClose{Generation: root.Generation}, time.Now())
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("close the tree at its linger's end: %v", err)
-	}
-
-	want := []string{
-		"WARN " + onTheRoot + " root=LEGION-218 issue=LEGION-218 where=kept for its issue's tree",
-		"WARN " + heldOnTheRoot + " root=LEGION-218 issue=LEGION-218 where=held by its architect's unconfirmed task",
-		"WARN " + onTheGrandchild + " root=LEGION-218 issue=LEGION-220 where=kept for its issue's tree",
-		"WARN " + onTheParked + " root=LEGION-218 issue=LEGION-221 where=kept for its issue's tree",
-	}
-	if got := owedDecisionsLogged(t, logged.Bytes()); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the close warned about %q, want only what it leaves standing: %q", got, want)
-	}
-	wantHanded := []string{
-		"INFO " + onTheChild + " root=LEGION-218 issue=LEGION-219 where=kept for its issue's tree",
-		"INFO " + heldOnTheChild + " root=LEGION-218 issue=LEGION-219 where=held by its architect's unconfirmed task",
-	}
-	if got := handedDecisionsLogged(t, logged.Bytes()); !reflect.DeepEqual(got, wantHanded) {
-		t.Fatalf("the close logged %q as handed over, want %q", got, wantHanded)
-	}
-	// The close really did hand the child over: its status write is queued, which is what
-	// re-admits it into a tree of its own and tells its architect what this close did not warn
-	// about.
-	if handed := handOverRows(t, pool); !reflect.DeepEqual(handed, []string{childKey}) {
-		t.Fatalf("the close queued hand-overs for %q, want the one child still in the workflow", handed)
-	}
 }
 
 // handedDecisionsLogged is every line the close wrote for a decision that goes with a child it

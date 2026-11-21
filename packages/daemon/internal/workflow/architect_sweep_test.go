@@ -17,8 +17,8 @@ import (
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
 // opened is still a root whose own architect is the only role at work on the root itself — and it
 // is no wider than the work the rule has to send: a root past admitted under its own power has a
-// phase role that owns its work, the hand-over row of this generation is what says a root stands
-// in the run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a
+// phase role that owns its work, the issue's own carried generation is what says a root stands
+// in the run a hand-over carried it into (record.Issue.CarriedGeneration), and the one entry such a
 // root's architect is owed past admitted is a resume's its claim was not given, which the
 // admission pass that resumed the root can have promoted past admitted.
 //
@@ -120,16 +120,13 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seedIssue(t, pool, tc.issue)
+			issue := tc.issue
+			issue.CarriedGeneration = tc.handedOver
+			seedIssue(t, pool, issue)
 			if tc.gateOpen {
 				version := 1
 				seedGate(t, pool, record.DesignGate{Issue: tc.issue.Key, ArtifactID: "artifact-" + tc.issue.Key,
 					LatestVersion: 1, ApprovedVersion: &version, EverOpened: true})
-			}
-			if tc.handedOver != 0 {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return store.PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: tc.issue.Key, Generation: tc.handedOver})
-				})
 			}
 			var run record.RoleRun
 			if tc.claimed {
@@ -138,7 +135,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			var reaches bool
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
-				reaches, err = ArchitectAtWork(t.Context(), tx, store, tc.issue, tc.entry, run)
+				reaches, err = ArchitectAtWork(t.Context(), tx, store, issue, tc.entry, run)
 				return err
 			})
 			if reaches != tc.reaches {
@@ -318,7 +315,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 				return engine.SendArchitectStart(t.Context(), tx, root, row)
 			})
 
-			start := architectStartOf(t, pool)
+			start := architectStartOf(t, pool, entryIssue)
 			want := ArchitectStartTask(ArchitectStart{Root: root, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
 			if tc.verbatim {
 				want = tc.stored

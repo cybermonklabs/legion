@@ -72,13 +72,14 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil || !owed {
 		return nil, err
 	}
-	root := issue
-	if issue.Tree != issue.Key {
-		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
-			return nil, err
-		}
+	// The gate the worker works under is its gate root's on the Dispatch chain (gateRootOf), not the
+	// stored tree's.
+	gateRoot, _, err := e.gateRootOf(ctx, tx, *issue)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	root := &gateRoot
+	rows, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +151,14 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
-		return err
+	} else {
+		work, err := e.resumePhaseTask(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.started(ctx, tx, issue, fact.Role, work, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+			return err
+		}
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {

@@ -21,6 +21,14 @@ type Client interface {
 	// (the outbox's status row) go through it, while a route that writes a status on a person's or
 	// an architect's command takes SetStatus, having read nothing to be overtaken.
 	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
+	// ChangeStatus writes a status through Dispatch's status-change route, the one route that
+	// takes the options a PATCH does not: what happens to the open issues under the issue and to
+	// the parents above it, and a dry run (StatusChange). It answers the named issue as the write
+	// left it and an entry for each issue the call changed. A refusal is an *Error carrying the
+	// entries of the steps that committed before it (Error.Changed), and for
+	// PARENT_STATUS_CONFLICT the issues that hold the rule (Error.Issues). A Dispatch older than
+	// the route answers its router's 404 (NoRoute).
+	ChangeStatus(ctx context.Context, key string, change StatusChange) (StatusChangeResult, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
@@ -29,8 +37,9 @@ type Client interface {
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
-	// ArtifactSlugs is the slug of every document and file the issue holds.
-	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
+	// Artifacts is every document and file the issue holds, in the order Dispatch lists them:
+	// what each is on the issue and its latest version.
+	Artifacts(ctx context.Context, key string) ([]Artifact, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
 	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
 	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
@@ -40,6 +49,10 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// Reviews is every review Dispatch keeps of a document, newest first.
+	Reviews(ctx context.Context, artifactID string) ([]Review, error)
+	// DocumentVersion is the markdown one version of a document holds, as Dispatch stored it.
+	DocumentVersion(ctx context.Context, artifactID string, version int) (string, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
@@ -196,8 +209,8 @@ type IssueSummary struct {
 
 // Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
 // every field the listing carries, its labels among them, the claim from its holder
-// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary document, so those
-// are empty.
+// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary, Verification or
+// decisions document, so those are empty.
 func (s IssueSummary) Issue() Issue {
 	var claim *Claim
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
@@ -220,7 +233,12 @@ type Issue struct {
 	Labels            []string
 	HandedOver        bool
 	PrimaryArtifactID string
-	LastSeq           int64
+	// VerificationArtifactID and DecisionsArtifactID are the issue's Verification document and its
+	// decisions document (Approval.Role ArtifactRoleVerification and ArtifactRoleDecisions), each
+	// empty when the issue holds none.
+	VerificationArtifactID string
+	DecisionsArtifactID    string
+	LastSeq                int64
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -242,6 +260,60 @@ func (c *Claim) Holder() string {
 		return ""
 	}
 	return c.Kind + ":" + c.ID
+}
+
+// StatusChange is one call of Dispatch's status-change route, POST
+// /api/v1/issues/{key}/status-change: the status, and the options the issue PATCH does not take,
+// which ride a route of their own because a Dispatch that does not know a member ignores it.
+// ExpectedSequence fences the call on the issue's sequence as the caller read it, as SetStatusAt
+// fences the PATCH: Dispatch refuses a stale one 409 ISSUE_CHANGED before it writes anything, and
+// refuses each later step the same way once another writer's event lands on the issue; 0 sends
+// none, and the call is not fenced. IncludeChildren writes the same status on each open issue
+// under the issue, at any depth, that is not already in that status's group; UnlinkChildren
+// unlinks each open child; IncludeParent moves each ancestor that is not in work to in_progress.
+// DryRun writes nothing and answers what the call would change. IdempotencyKey is the request key
+// the Idempotency-Key header carries, and belongs to one attempt of the write: the same call
+// again under it finishes what a run that stopped left, and another call under it is refused 422
+// KEY_REUSED. Empty sends no header, and Dispatch runs the call unkeyed.
+type StatusChange struct {
+	Status           string
+	ExpectedSequence int64
+	IncludeChildren  bool
+	UnlinkChildren   bool
+	IncludeParent    bool
+	DryRun           bool
+	IdempotencyKey   string
+}
+
+// StatusChangeResult is the status-change route's answer: the named issue as the PATCH answers
+// it, at the sequence of its own step, and one entry for each issue whose status or parent the
+// call changed, the named issue included, in the order its steps ran.
+type StatusChangeResult struct {
+	Issue   Issue
+	Changed []StatusChangeEntry
+}
+
+// StatusChangeEntry is one issue a status-change call changed, read at the call's step that wrote
+// it: its key; the status and the parent the call left it with, Parent nil for an issue it
+// unlinked or that has none; PreviousLastSeq, its sequence just before that step, read under the
+// step's lock; and Issue, the issue as the PATCH answers it at the end of the step. Every event of
+// the issue after PreviousLastSeq up to Issue.LastSeq is the call's own. A later step can add
+// events to the issue, which reach the daemon on the stream, so Issue.LastSeq can be below what a
+// read after the call gives. A dry run's entry is what the call would leave, with the issue's
+// current sequence as PreviousLastSeq and no Issue (nil).
+type StatusChangeEntry struct {
+	Key             string
+	Status          string
+	Parent          *string
+	PreviousLastSeq int64
+	Issue           *Issue
+}
+
+// ConflictIssue is one issue a PARENT_STATUS_CONFLICT refusal names: an issue whose status holds
+// the rule against the write, with that status.
+type ConflictIssue struct {
+	Key    string
+	Status string
 }
 
 // Actor is who Dispatch names as having made a change: Kind `user` is a person, `session` an agent
@@ -343,6 +415,35 @@ func (a Approval) LatestReviewer() Actor {
 	return a.By
 }
 
+// Review is one review Dispatch keeps of a document, pinned to the version it was given on. State
+// is `approved` or `changes_requested`. Actor is who Dispatch names as having given it, At its
+// time (Dispatch's `created_at`), and Reason the reason the reviewer gave, empty for none (an
+// approval given with nothing written beside it).
+type Review struct {
+	Version int
+	State   string
+	Actor   Actor
+	At      time.Time
+	Reason  string
+}
+
+// Artifact is one document or file an issue holds, as Dispatch lists it: its id, the slug Dispatch
+// filed it under, its kind (Document), whether it is the issue's primary document, the part it
+// plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, `plan`, or "" for none) and
+// its latest version, 0 for one with none.
+type Artifact struct {
+	ID            string
+	Slug          string
+	Kind          string
+	Primary       bool
+	Role          string
+	LatestVersion int
+}
+
+// Document says whether the artifact is a markdown document (Dispatch's kind `doc`), the one kind
+// whose version DocumentVersion reads: a version of an image or a file is its bytes.
+func (a Artifact) Document() bool { return a.Kind == "doc" }
+
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its
 // version among that phase's records, and the actor that wrote it. The record's text is not read
@@ -367,11 +468,19 @@ type HandoffAuthor struct {
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body.
+// carry Dispatch's normal error body. Issues and Changed are the members a status write's refusal
+// adds to that body: Issues each issue a PARENT_STATUS_CONFLICT names, with its status, and
+// Changed the entries of the status-change steps that committed before the refusal, empty when
+// none did. Every other refusal carries neither. RetryAfter is the wait the answer's Retry-After
+// header asks for, in whole seconds as Dispatch writes it (a 409 KEY_IN_FLIGHT's), and zero for
+// an answer that names none.
 type Error struct {
-	Status  int
-	Code    string
-	Message string
+	Status     int
+	Code       string
+	Message    string
+	Issues     []ConflictIssue
+	Changed    []StatusChangeEntry
+	RetryAfter time.Duration
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against
@@ -400,6 +509,22 @@ func Contended(err error) bool {
 // (packages/envoy/internal/dispatch/api/issue_parent.go:99, parentContended). No mechanism shares
 // a value between this module and Dispatch's, so the two spellings change together.
 const ParentContended = "PARENT_CONTENDED"
+
+// ParentStatusConflict is whether err is Dispatch's refusal of a write that would leave a parent's
+// status out of line with its children's (409 PARENT_STATUS_CONFLICT): a parent done while a child
+// of it is open, or a child in work under a parent that is not. The refusal names each issue that
+// holds it, with its status (Error.Issues). A status-change call refused at a later step also
+// carries the entries of the steps that committed before it (Error.Changed).
+func ParentStatusConflict(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == parentStatusConflictCode
+}
+
+// parentStatusConflictCode is Dispatch's own spelling of the code of that refusal, which its issue
+// PATCH, its issue create and its status-change route answer once the rule is on
+// (DISPATCH_PARENT_STATUS_RULE). No mechanism shares a value between this module and Dispatch's,
+// so the two spellings change together.
+const parentStatusConflictCode = "PARENT_STATUS_CONFLICT"
 
 // IssueClaimed and ClaimContended are Dispatch's own spellings of the two 409s a claim release
 // meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim
@@ -448,12 +573,15 @@ const (
 //
 // Everything else is an outage a caller rides out: every 5xx, every transport failure, "come back
 // later" (408, 429), a codeless 4xx from whatever sits in front of Dispatch, a credential answer
-// (401, 403), and 409 PARENT_CONTENDED. A revoked or expired token says nothing about the write —
-// an operator restores it and the same body is taken — so reading one as permanent would drop the
-// write for good. PARENT_CONTENDED is an issue PATCH that found its parent moved by a concurrent
-// reparent at every attempt to lock it, so nothing was applied and the same body is taken once the
-// reparents stop. So is the refusal of a field this daemon added (newerFields) by a Dispatch from
-// before #2461: it ends when that Dispatch is upgraded, so the two deploy in either order.
+// (401, 403), 409 PARENT_CONTENDED and 409 PARENT_STATUS_CONFLICT. A revoked or expired token says
+// nothing about the write — an operator restores it and the same body is taken — so reading one
+// as permanent would drop the write for good. PARENT_CONTENDED is an issue PATCH that found its
+// parent moved by a concurrent reparent at every attempt to lock it, so nothing was applied and the
+// same body is taken once the reparents stop. PARENT_STATUS_CONFLICT is a status write that would
+// leave a parent's status out of line with its children's (ParentStatusConflict): the same body is
+// taken once the issues it names move, and its caller decides what the refusal changes rather
+// than drop the write. So is the refusal of a field this daemon added (newerFields) by a Dispatch
+// from before #2461: it ends when that Dispatch is upgraded, so the two deploy in either order.
 func PermanentRefusal(err error) (*Error, bool) {
 	var refusal *Error
 	if !errors.As(err, &refusal) {
@@ -468,6 +596,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
 		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,
+		refusal.Status == http.StatusConflict && refusal.Code == parentStatusConflictCode,
 		refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" && unknownNewerField(refusal.Message):
 		return nil, false
 	}

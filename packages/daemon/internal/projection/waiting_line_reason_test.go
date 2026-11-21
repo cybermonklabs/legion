@@ -9,13 +9,13 @@ import (
 )
 
 // lineEntry is one entry of this test's line: the part it stands in, the kind that put it
-// there, its place within that part, whether it holds a slot and the issue it is of, which is
-// the record every clause that names a key reads (record.LineEntry). The sentence is rendered
-// from the entry and the two part lengths and from nothing else (waitingLineReason), so the
-// entries are built here and no database is read.
-func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool, tree string) record.LineEntry {
-	return record.LineEntry{Issue: record.Issue{Key: "LEGION-1", Tree: tree, Rank: "N"},
-		Kind: kind, Part: part, PartPlace: place, Holds: holds}
+// there, its place within that part, whether it holds a slot and the top issue whose rank placed
+// it (record.LineEntry.RootKey, R19 of dispatch://INFRA-3320). The sentence is rendered from the
+// entry and the two part lengths and from nothing else (waitingLineReason), so the entries are
+// built here and no database is read.
+func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool, top string) record.LineEntry {
+	return record.LineEntry{Issue: record.Issue{Key: "LEGION-1", Tree: top, Rank: "N"},
+		Kind: kind, Part: part, PartPlace: place, Holds: holds, RootKey: top}
 }
 
 // Every member of the waiting line is given the reason for its place in words
@@ -61,7 +61,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 				"It is 3rd of 7 issues whose work came back, and they take the free slots first.",
 		},
 		{
-			name:       "a tree root's own first phase in the returned part",
+			name:       "a root's own first phase in the returned part",
 			entry:      since(lineEntry(record.PartReturned, record.LineFirstPhase, 1, false, "LEGION-10"), cameBack),
 			partLength: 7,
 			otherPart:  18,
@@ -77,12 +77,12 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 				"and 7 issues whose work came back stand ahead of all of them.",
 		},
 		{
-			name:       "a child's first phase in the starting part",
+			name:       "the first phase of an issue under a parent in the starting part",
 			entry:      lineEntry(record.PartStarting, record.LineFirstPhase, 5, false, "LEGION-10"),
 			partLength: 18,
 			otherPart:  7,
 			want: "It has not started. It is 5th of 18 issues that have not started, " +
-				"by the Dispatch rank of its tree root LEGION-10, and 7 issues whose work came back stand ahead of all of them.",
+				"by the Dispatch rank of its top issue LEGION-10, and 7 issues whose work came back stand ahead of all of them.",
 		},
 		// A member that gave its slot back to wait on another issue is passed over while it
 		// waits, so it is told when it takes a slot again rather than that it takes them first.
@@ -223,13 +223,13 @@ func TestWaitingLineReasonCountsNothingBeyondItsOwnEntry(t *testing.T) {
 	returned := record.LineEntry{Issue: record.Issue{Key: "LEGION-12", Tree: "LEGION-10", Rank: "O"},
 		Kind: record.LineReturning, Part: record.PartReturned, PartPlace: 2, Since: cameBack}
 	starting := record.LineEntry{Issue: record.Issue{Key: "LEGION-11", Tree: "LEGION-10", Rank: "N"},
-		Kind: record.LineFirstPhase, Part: record.PartStarting, PartPlace: 1, RootRank: "M"}
+		Kind: record.LineFirstPhase, Part: record.PartStarting, PartPlace: 1, RootRank: "M", RootKey: "LEGION-10"}
 	if got, want := waitingLineReason(returned, 3, 2), "Its work came back at 2026-11-10T15:11:32Z. "+
 		"It is 2nd of 3 issues whose work came back, and they take the free slots first."; got != want {
 		t.Fatalf("the returned member's reason = %q, want %q", got, want)
 	}
 	if got, want := waitingLineReason(starting, 2, 3), "It has not started. It is 1st of 2 issues that have not started, "+
-		"by the Dispatch rank of its tree root LEGION-10, and 3 issues whose work came back stand ahead of all of them."; got != want {
+		"by the Dispatch rank of its top issue LEGION-10, and 3 issues whose work came back stand ahead of all of them."; got != want {
 		t.Fatalf("the starting member's reason = %q, want %q", got, want)
 	}
 	// The same two members with every number moved: the sentence moves with them and with

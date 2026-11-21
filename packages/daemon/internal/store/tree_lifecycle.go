@@ -21,7 +21,7 @@ import (
 // transaction through record.Store.OpenTreeLifecycle instead, and the operator route through
 // OpenOperatorTreeLifecycle, because its open runs the tree's draw.
 func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
-	return s.openTreeLifecycle(ctx, project, tree, authority, runNothing)
+	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, authority, runNothing)
 }
 
 // OpenOperatorTreeLifecycle is the authenticated operator route's open of a root's tree, before
@@ -32,16 +32,16 @@ func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, aut
 // with the transaction.
 func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
-	return s.openTreeLifecycle(ctx, project, tree, treelifecycle.AuthorityOperator, created)
+	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, treelifecycle.AuthorityOperator, created)
 }
 
-// openTreeLifecycle is the open both entry points share: one transaction holding the open and
-// whatever created runs where the open created the tree's row.
-func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority,
+// openLifecycle is the open every entry point of either unit shares: one transaction holding the
+// open of key's lifecycle and whatever created runs where the open created its row.
+func (s *Store) openLifecycle(ctx context.Context, unit treelifecycle.Unit, project, key string, authority treelifecycle.Authority,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		opened, err := treelifecycle.Open(ctx, tx, project, tree, authority)
+		opened, err := unit.Open(ctx, tx, project, key, authority)
 		if err != nil {
 			return err
 		}
@@ -63,23 +63,48 @@ func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, aut
 // those opens, so there is nothing for the transaction to hold.
 func runNothing(context.Context, pgx.Tx) error { return nil }
 
-// AdmitClaim binds a new or reactivated claim to an open lifecycle and writes both in one short
-// globally serialized transaction. The caller receives the epoch it must carry through every later
-// launch; runtime work happens after this transaction commits. The project controller's claim
-// (`controller: daemon`) belongs to no tree, so it binds no lifecycle: it is written at epoch zero.
+// AdmitClaim binds a new or reactivated claim to its issue's open lifecycle and writes both in one
+// short globally serialized transaction. The caller receives the epoch it must carry through every
+// later launch (supervise.Claim.IssueEpoch); runtime work happens after this transaction commits.
+// The project controller's claim (`controller: daemon`) belongs to no issue, so it binds no
+// lifecycle: it is written at epoch zero.
+//
+// It writes the two facts the release before reads of the claim, which no decision of this one
+// reads (R22 of dispatch://INFRA-3320): the claim's tree is the tree its issue's record stores
+// (issues.tree, written when the daemon first recorded the issue), and an operator's claim on an
+// issue this project records nothing of keeps the tree the operator named; and its tree epoch is
+// the epoch that tree's lifecycle stands at, 0 where the tree has none, whatever state its row is
+// in, since only the issue's lifecycle admits or refuses the claim. The record is the project's
+// own (lower(project) = project, the token), as IssueSandboxHome reads it: another project's record
+// of the same key is no record of this one's.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	var queued bool
 	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
-			c.TreeEpoch = 0
+			c.TreeEpoch, c.IssueEpoch = 0, 0
 			queued, err = s.putClaim(ctx, tx, c)
 			return err
 		}
-		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
+		epoch, err := treelifecycle.Issues.BindWork(ctx, tx, c.Project, c.Issue)
 		if err != nil {
 			return err
 		}
-		c.TreeEpoch = epoch
+		c.IssueEpoch = epoch
+		var stored string
+		switch err := tx.QueryRow(ctx, `select tree from issues where key = $1 and lower(project) = $2`, c.Issue, c.Project).Scan(&stored); {
+		case err == nil:
+			c.Tree = stored
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("read the tree %s's record stores: %w", c.Issue, err)
+		}
+		tree, found, err := treelifecycle.Trees.Read(ctx, tx, c.Project, c.Tree)
+		if err != nil {
+			return err
+		}
+		c.TreeEpoch = 0
+		if found {
+			c.TreeEpoch = tree.Epoch
+		}
 		queued, err = s.putClaim(ctx, tx, c)
 		return err
 	})
@@ -91,21 +116,27 @@ func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Cl
 }
 
 // CheckLaunch rejects a delayed claim before it can persist StateLaunching or call a runtime after
-// the tree lifecycle reserved cleanup. The machine returns this named error directly, so outbox
-// retry preserves its claim and launch budget. The project controller's claim, on no tree, has no
-// cleanup to meet.
+// its issue's lifecycle reserved cleanup, or opened another epoch than the one the claim bound.
+// The machine returns this named error directly, so outbox retry preserves its claim and launch
+// budget. The project controller's claim, on no issue, has no cleanup to meet.
 func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return nil
 	}
 	return s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := treelifecycle.CheckWork(ctx, tx, c.Project, c.Tree, c.TreeEpoch); err != nil {
+		if err := treelifecycle.Issues.CheckWork(ctx, tx, c.Project, c.Issue, c.IssueEpoch); err != nil {
 			return fmt.Errorf("launch claim %s: %w", c.Token, err)
 		}
 		return nil
 	})
 }
 
+// ReserveWorkflowTreeCleanup and ReserveOperatorTreeCleanup, CleanupReservedTree and TreeLive are
+// the release before's tree barrier as the outbox's tree close, the operator's close and the
+// orphan sweep still reach it; ReserveIssueCleanup, ReserveOperatorIssueCleanup,
+// CleanupReservedIssue and IssueLive are the issue's, which those callers move to
+// (dispatch://INFRA-4730's t7 and t9), and these go with the last of them.
+//
 // ReserveWorkflowTreeCleanup records the workflow close before any resource snapshot. A retry of an
 // unconfirmed reservation resumes regardless of a subsequent re-admission; a retry after the
 // cleanup confirmed reserves nothing; a fresh reservation first proves the root is still lingering
@@ -131,7 +162,7 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 			return err
 		}
 		if started && !confirmed {
-			lifecycle, err = treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow)
+			lifecycle, err = treelifecycle.Trees.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow)
 			reserved = true
 			return err
 		}
@@ -152,7 +183,7 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 		if uint64(generation) != rootGeneration || !lingering {
 			return nil
 		}
-		lifecycle, err = treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow)
+		lifecycle, err = treelifecycle.Trees.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow)
 		reserved = err == nil
 		return err
 	})
@@ -168,7 +199,7 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 func (s *Store) ReserveOperatorTreeCleanup(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		reserved, err := treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityOperator)
+		reserved, err := treelifecycle.Trees.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityOperator)
 		if err != nil {
 			return err
 		}
@@ -236,7 +267,7 @@ type TreeReleaser interface {
 // pod hold takes before the issue's lock (LockIssueForPause).
 func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser TreeReleaser) error {
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := treelifecycle.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
+		if err := treelifecycle.Trees.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
 		pending, err := pendingTreeClaims(ctx, tx, project, tree)
@@ -255,7 +286,7 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 		return fmt.Errorf("release the resources of tree %s: %w", tree, err)
 	}
 	return s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
+		if err := treelifecycle.Trees.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
 		return endTreePausePodHoldsTx(ctx, tx, project, tree, time.Now().UTC())
@@ -275,32 +306,31 @@ func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error
 }
 
 // IssueSandboxHome is the tree an issue's Sandbox belongs to now, or "" when it belongs to none and
-// is anybody's to delete. It belongs to a tree only while the issue is in that tree or can still be
-// admitted into it:
+// is anybody's to delete. It belongs to one only while the issue's own work can still use it:
 //   - a live hand-over fence (not cancelled, naming the tree the issue's record still names, which
 //     every consumer of a hand-over requires): the issue's own key, the tree the hand-over makes;
-//   - otherwise the tree its record names, while that tree's lifecycle is open or releasing (its
-//     cleanup not confirmed), or, for a tree that has never had a lifecycle, while the issue waits
-//     in admission's line (todo, handed over, its own root: record.Waiting) or lingers after its own
-//     close (linger_until ahead), the point at which a root's own close would release it.
+//   - otherwise the tree its record stores, while the issue's own lifecycle is open or releasing
+//     (its cleanup not confirmed), or, for an issue that has never had a lifecycle, while the issue
+//     waits in admission's line (todo, handed over, its own root: record.Waiting) or lingers after
+//     its own close (linger_until ahead), the point at which a root's own close would release it.
 //
-// So a carried child that leaves the line before admission opens its tree — set to backlog,
-// icebox or done, or its label taken off — keeps its Sandbox for its own linger at most, and a
-// tree whose cleanup confirmed holds none. The orphan sweep keeps a Sandbox whose home is the
-// tree it is labelled with; a tree's cleanup deletes every Sandbox of its own tree, carrying
-// nothing over, since an issue pod's disk goes with its pod and its next launch makes both again.
+// So an issue that leaves the line before admission opens its lifecycle — set to backlog, icebox
+// or done, or its label taken off — keeps its Sandbox for its own linger at most, and an issue
+// whose cleanup confirmed holds none. Another issue's lifecycle, the tree's root's among them,
+// keeps nothing of this issue's (R17 of dispatch://INFRA-3320). The orphan sweep keeps a Sandbox
+// whose home is the tree it is labelled with.
 //
 // The record is the project's own (lower(project) = project, the token, as readIdleView reads
 // it): the issues table holds every project's records, and the Sandbox of the operator's spawn
 // of another project's issue is this project's, labelled with that issue. That project's record
-// of the issue is no record of this one's, so it keeps no such Sandbox past its own tree, whatever
-// it says of that project's line, linger or hand-over.
+// of the issue is no record of this one's, so it keeps no such Sandbox past the spawn's own
+// lifecycle, whatever it says of that project's line, linger or hand-over.
 func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (string, error) {
 	var home string
 	err := s.pool.QueryRow(ctx, `select coalesce((select case
 			when exists (select 1 from handovers h where h.issue = i.key and not h.cancelled and h.tree = i.tree) then i.key
-			when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree) then
-				case when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree and l.cleanup_confirmed_at is null)
+			when exists (select 1 from issue_lifecycles l where l.project = $1 and l.issue = i.key) then
+				case when exists (select 1 from issue_lifecycles l where l.project = $1 and l.issue = i.key and l.cleanup_confirmed_at is null)
 					then i.tree else '' end
 			when (i.status = 'todo' and i.handed_over and i.key = i.tree) or i.linger_until > now() then i.tree
 			else '' end

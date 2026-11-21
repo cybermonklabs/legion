@@ -9,35 +9,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// C2 of dispatch://INFRA-3107 names two kinds of issue that read `unclassified`: the issues at
-// `accepting`, which hold no slot and owe their worker no start, and "an issue whose tree root
-// the record does not hold". The second kind reads `design_gate` instead, with `heldBy` naming
-// the key no record holds, because record.treeRoots names only the issues that are their own
-// tree root, so ReadTreeGates builds no gate for a root the record does not hold and
-// TreeGate.Open() over no rows is false, which is the ladder's design_gate arm
-// (record/held.go). The word is wrong twice over: it tells a reader of admission.held to wait
-// for a person's approval of a document of an issue that does not exist, and it keeps the
-// daemon's own log line for an unclassified issue — the one thing that names a record nothing
-// accounts for — from ever being written.
-//
-// The fix is a guard on the two words that speak of the root's own record,
-// `root_awaiting_person` and `design_gate`, and not a clause that answers `unclassified` for
-// every issue whose tree root the record does not hold: C1's words are an order, and
-// `dispatch_blocker`, `children_first` and `accepted_ancestor` all stand above `unclassified`
-// in it, so an issue with an unrecorded root that a Dispatch link holds reads
-// `dispatch_blocker`. C2's own opening says the same: the reason is `unclassified` "where the
-// record holds an issue in the workflow that no word above is true of". Every reachable case
-// keeps the word it reads today, because a root the pass's own records leave out is read by
-// record.ReadTreeRoots.
-//
-// The architect of dispatch://INFRA-2964 ruled on 2026-11-12T07:23Z that C2 binds, after this
-// round measured the word: "A requirement is read as written; that the state is unreachable
-// today changes what it costs to meet, not whether it is required." It ruled the form of the
-// fix, and these rows, at 07:28Z.
-func TestTheIssueWhoseTreeRootTheRecordDoesNotHoldIsUnclassified(t *testing.T) {
-	// Each issue names no Dispatch parent: the parent chain is read from the store
-	// (record.ReadParents), and these rows are about the tree root alone.
-	unrecorded := lineIssue("LEGION-301", "LEGION-300", "todo", phase.Admitted, "LEGION-301")
+// An issue whose Dispatch parent the copy holds no row of stands on a chain the daemon cannot
+// read to its top, so it is neither a root nor an issue under a parent, and it is held with
+// chain_unknown and the link the chain stopped at (R16 of dispatch://INFRA-3320), whatever else
+// is true of it: chain_unknown is read before every other word, because each later word reads
+// the chain. Today's daemon read such an issue as the member of a tree whose root the record does
+// not hold and gave it unclassified (C2 of dispatch://INFRA-3107); the chain says why nothing of
+// it runs, and that it waits for the daemon to read Dispatch again.
+func TestAnIssueWhoseParentTheCopyDoesNotHoldIsChainUnknown(t *testing.T) {
+	unread := lineIssue("LEGION-301", "LEGION-300", "todo", phase.Admitted, "LEGION-301")
+	unread.Parent = record.ParentOf("LEGION-300")
 	gatedRoot := lineIssue("LEGION-310", "LEGION-310", "todo", phase.Admitted, "LEGION-310")
 	gatedMember := lineIssue("LEGION-311", "LEGION-310", "todo", phase.Admitted, "LEGION-311")
 	gatedMember.Parent = record.ParentOf("LEGION-310")
@@ -49,41 +30,40 @@ func TestTheIssueWhoseTreeRootTheRecordDoesNotHoldIsUnclassified(t *testing.T) {
 		want  api.HeldIssue
 	}{
 		{
-			name:  "an unrecorded tree root and nothing else true of the issue",
-			store: projectionStore{issues: []record.Issue{unrecorded}},
+			name:  "a parent the copy holds no row of and nothing else true of the issue",
+			store: projectionStore{issues: []record.Issue{unread}},
 			issue: "LEGION-301",
-			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldUnclassified},
+			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-300"}},
 		},
 		{
 			// The gate is a row of its own, so the word must not turn on whether one was
-			// written for a tree whose root the record does not hold.
-			name: "an unrecorded tree root with a gate row standing open",
-			store: projectionStore{issues: []record.Issue{unrecorded},
+			// written for the parent the copy does not hold.
+			name: "a parent the copy holds no row of with a gate row standing open",
+			store: projectionStore{issues: []record.Issue{unread},
 				gates: map[string]map[record.DesignStep]record.DesignGate{
 					"LEGION-300": openGate("LEGION-300", projectedAt.Add(-time.Hour))}},
 			issue: "LEGION-301",
-			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldUnclassified},
+			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-300"}},
 		},
 		{
-			// The ladder's order is not jumped: a word above `unclassified` that is true of
-			// the issue itself is still the word, whatever the record holds of its tree root.
-			name: "an unrecorded tree root and an unfinished Dispatch link",
-			store: projectionStore{issues: []record.Issue{unrecorded},
+			// chain_unknown is read before the issue's own link, which a known chain would
+			// read next.
+			name: "a parent the copy holds no row of and an unfinished Dispatch link",
+			store: projectionStore{issues: []record.Issue{unread},
 				mirror: []record.DispatchIssueRow{
-					{Key: "LEGION-301", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}},
+					{Key: "LEGION-301", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: "LEGION-300"},
 					{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
 				}},
 			issue: "LEGION-301",
-			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
+			want:  api.HeldIssue{Issue: "LEGION-301", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-300"}},
 		},
 		{
-			// The reachable case the guard must leave alone: a tree root the record holds,
-			// under a gate a person has not approved at its current version.
-			name: "a recorded tree root under a shut gate",
+			// The control: a known chain under a root the record holds, under a gate a person
+			// has not approved at its current version.
+			name: "a recorded root under a shut gate",
 			store: projectionStore{issues: []record.Issue{gatedRoot, gatedMember},
-				slots:      []record.Slot{{Issue: "LEGION-310", Index: 0, AdmittedAt: projectedAt}},
-				lifecycles: []string{"LEGION-310"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-310": shutGate("LEGION-310")}},
+				slots: []record.Slot{{Issue: "LEGION-310", Index: 0, AdmittedAt: projectedAt}},
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-310": shutGate("LEGION-310")}},
 			issue: "LEGION-311",
 			want:  api.HeldIssue{Issue: "LEGION-311", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-310"}},
 		},

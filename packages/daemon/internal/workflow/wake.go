@@ -87,6 +87,9 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
@@ -373,8 +376,8 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
 // read: the claim is still released, its issue is one this daemon records, and its tree is live —
-// neither the issue nor its root has left the workflow and neither lingers
-// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
+// neither the issue nor its root has left the workflow (pods.InWorkflowWithRoot). A pod in any
+// other state is a close's to stop or an operator's to
 // resume, never a wake's.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
@@ -417,11 +420,13 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil || issue == nil {
 		return false, err
 	}
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil || root == nil {
+	// The run the wake serves is the one its issue's gate root on the Dispatch chain stands in
+	// (gateRootOf), not the stored tree's.
+	root, _, err := e.gateRootOf(ctx, tx, *issue)
+	if err != nil {
 		return false, err
 	}
-	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+	if !pods.InWorkflowWithRoot(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)

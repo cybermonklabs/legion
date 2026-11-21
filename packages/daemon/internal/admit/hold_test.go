@@ -82,7 +82,7 @@ func TestReconcileHoldsARootUntilTheDispatchConsumerReachesTheStreamPosition(t *
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-short", intake.DispatchConsumerPosition{AckFloorStream: 4}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-short: %v", err)
 	}
-	if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated", intake.CheckWakeDue{Issue: "LEGION-UNRELATED"}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact unrelated: %v", err)
 	}
 	assertSlots(t, pool, nil)
@@ -148,8 +148,8 @@ func TestPromotionHoldsADeferredRootAcrossUnrelatedFactsUntilTheStreamPositionCa
 		{
 			name: "a non-Dispatch fact",
 			replay: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated-linger", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{}, admission); err != nil {
-					t.Fatalf("ApplyFact linger: %v", err)
+				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated-wake", intake.CheckWakeDue{Issue: "LEGION-UNRELATED"}, engineStub{}, admission); err != nil {
+					t.Fatalf("ApplyFact wake: %v", err)
 				}
 			},
 		},
@@ -181,7 +181,7 @@ func TestPromotionHoldsADeferredRootAcrossUnrelatedFactsUntilTheStreamPositionCa
 			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3}, engineStub{}, admission); err != nil {
 				t.Fatalf("ApplyFact position-reached: %v", err)
 			}
-			if _, err := intake.ApplyFact(context.Background(), pool, "timer", "another-unrelated", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{}, admission); err != nil {
+			if _, err := intake.ApplyFact(context.Background(), pool, "timer", "another-unrelated", intake.CheckWakeDue{Issue: "LEGION-UNRELATED-2"}, engineStub{}, admission); err != nil {
 				t.Fatalf("ApplyFact another-unrelated: %v", err)
 			}
 			assertWaiting(t, pool, nil)
@@ -491,7 +491,7 @@ func TestAHeldRootKeepsItsPlaceAndNothingBehindItTakesTheSlot(t *testing.T) {
 					t.Fatalf("ApplyFact position-reached: %v", err)
 				}
 			} else {
-				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{}, admission); err != nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated", intake.CheckWakeDue{Issue: "LEGION-UNRELATED"}, engineStub{}, admission); err != nil {
 					t.Fatalf("ApplyFact unrelated: %v", err)
 				}
 			}
@@ -503,7 +503,7 @@ func TestAHeldRootKeepsItsPlaceAndNothingBehindItTakesTheSlot(t *testing.T) {
 				assertWaiting(t, pool, []string{"LEGION-HELD", "LEGION-NEXT"})
 
 				admission.ReleaseCatchUp("LEGION-HELD")
-				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated-after-catch-up", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{}, admission); err != nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated-after-catch-up", intake.CheckWakeDue{Issue: "LEGION-UNRELATED-2"}, engineStub{}, admission); err != nil {
 					t.Fatalf("ApplyFact unrelated-after-catch-up: %v", err)
 				}
 			}

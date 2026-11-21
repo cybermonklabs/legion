@@ -589,10 +589,11 @@ func TestAResumedRootThatRegistersANewClosedVersionKeepsItsRow(t *testing.T) {
 	assertNoArchitectSuspension(t, pool, "LEGION-100")
 }
 
-// An approved gate that answers a root's wait resumes the root and then starts the root and its
-// admitted children at slots of their own, the root first: its first phase is work coming back
-// and stands in the line's first part, and the child follows in the second. Neither starts
-// before a slot is free, which the admitted child below the full cap pins.
+// An approved gate that answers a root's wait resumes the root, and the slot that frees then goes
+// to its admitted child: the child is an open Dispatch child of the root, so the root starts no
+// phase of its own while it stands open (R9 of dispatch://INFRA-3320) and stays at admitted, and
+// the child starts its first phase. Neither starts before a slot is free, which the admitted child
+// below the full cap pins.
 func TestAResumeWithTheGateOpenAdvancesTheAdmittedChildren(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, nil)
@@ -626,8 +627,8 @@ func TestAResumeWithTheGateOpenAdvancesTheAdmittedChildren(t *testing.T) {
 		Key: "LEGION-RUN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.closed", Status: "done",
 		Title: "LEGION-RUN", Rank: "A", HandedOver: true,
 	}, admission.engine)
-	if got := issue(t, pool, "LEGION-100"); got.Phase != phase.Planning {
-		t.Fatalf("root after its resume = %#v, want planning", got)
+	if got := issue(t, pool, "LEGION-100"); got.Phase != phase.Admitted {
+		t.Fatalf("root after its resume = %#v, want it at admitted: its open child holds its first phase", got)
 	}
 	if got := issue(t, pool, "LEGION-CHILD"); got.Phase != phase.Planning {
 		t.Fatalf("child after its root's resume = %#v, want planning", got)
@@ -734,12 +735,6 @@ func TestAHandedBackWaitStartsOnEveryGuardClearingPath(t *testing.T) {
 		{name: "a member leaves the workflow",
 			guard: func(t *testing.T, pool *pgxpool.Pool) { seedChild(t, pool, phase.Implementing) },
 			clear: parkChild},
-		{name: "a member set back to todo re-enters at admitted",
-			guard: func(t *testing.T, pool *pgxpool.Pool) { seedChild(t, pool, phase.Implementing) },
-			clear: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				apply(t, pool, admission, "child-todo", intake.DispatchIssue{Key: "LEGION-CHILD", ResolvedRepo: "acme/widgets", Seq: 30,
-					Type: "issue.updated", Status: "todo", Title: "child", Rank: "C", Parent: "LEGION-100", HandedOver: true}, admission.engine)
-			}},
 		{name: "the legion label is put back",
 			guard: func(t *testing.T, pool *pgxpool.Pool) {
 				root := issue(t, pool, "LEGION-100")

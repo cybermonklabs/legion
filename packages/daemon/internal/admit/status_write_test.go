@@ -25,7 +25,8 @@ import (
 type statusWriteOutcome int
 
 const (
-	// takesTheTreeOut: the tree lingers, and its slot is freed.
+	// takesTheTreeOut: the root leaves Legion's work where it stands, its phase kept (R20 of
+	// dispatch://INFRA-3320), and nothing lingers.
 	takesTheTreeOut statusWriteOutcome = iota
 	// setBack: the tree runs on, and the daemon writes its own status over the write.
 	setBack
@@ -33,15 +34,17 @@ const (
 	setBackAndTold
 )
 
-// Who wrote a lifecycle status on a running root decides whether it takes the tree out of the
-// workflow. A person's move does: a user actor, and the daemon's own write, which decode passes with
-// no session (TestDecodeDispatchIssueNamesASessionActor). A session holding a claim in the tree is an
-// agent, never a human move, since a phase ends only by its completion and an issue only by its
-// merge; here the implementer closes its own issue while it awaits its merge instead of leaving
-// that to the merge. The workflow does not react (no linger, the tree still running, the phase
-// unchanged) and the daemon re-asserts its own status through the outbox. Any other session —
-// another tree's agent, or one outside Legion that took the issue for its own — cannot end or park
-// the tree either: the daemon re-asserts its status, and the tree's architect is told who wrote what.
+// Who wrote a lifecycle status on a running root decides whether it takes the root out of Legion's
+// work. A person's move does: a user actor, and the daemon's own write, which decode passes with
+// no session (TestDecodeDispatchIssueNamesASessionActor); the root then leaves where it stands,
+// keeping its phase. A session holding a claim in the tree is an agent, never a human move, since a
+// phase ends only by its completion and an issue only by its merge; here the implementer closes its
+// own issue while it awaits its merge instead of leaving that to the merge. The workflow does not
+// react (the phase unchanged) and the daemon re-asserts its own status through the outbox. Any
+// other session — another tree's agent, or one outside Legion that took the issue for its own —
+// cannot end or park the root either while the legion label stands on its chain (R26 of
+// dispatch://INFRA-3320): the daemon re-asserts its status, and the root's architect is told who
+// wrote what.
 func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -61,7 +64,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 			seedSlotted(t, pool, "LEGION-1", "A")
 			seedSlotted(t, pool, "LEGION-9", "Z")
 			inTx(t, pool, func(tx pgx.Tx) {
@@ -86,7 +89,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				}
 			})
 
-			apply(t, pool, admission, "written-by-"+tc.name, intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: tc.status, Title: "LEGION-1", Rank: "A", ActorSession: tc.actor}, engine)
+			apply(t, pool, admission, "written-by-"+tc.name, intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: tc.status, Title: "LEGION-1", Rank: "A", HandedOver: true, ActorSession: tc.actor}, engine)
 			got := issue(t, pool, "LEGION-1")
 			var reasserted int
 			var told []record.Notice
@@ -100,8 +103,8 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 			}
 			switch tc.outcome {
 			case takesTheTreeOut:
-				if got.Phase != phase.Done || got.LingerUntil == nil || reasserted != 0 || len(told) != 0 {
-					t.Fatalf("root after %s = %#v with %d re-asserted status writes and notices %+v, want its tree lingering and nothing re-asserted or told", tc.name, got, reasserted, told)
+				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != tc.status || reasserted != 0 || len(told) != 0 {
+					t.Fatalf("root after %s = %#v with %d re-asserted status writes and notices %+v, want it out of Legion's work at %s, still merging, nothing lingering, re-asserted or told", tc.name, got, reasserted, told, tc.status)
 				}
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 			case setBack, setBackAndTold:
@@ -129,12 +132,11 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 }
 
 // Where no tree runs — on a child of a running tree, a root still waiting for its slot, or a
-// lingering root — a session with no claim there writes a status as a person does: the child parks
-// and its architect is told, the waiting root leaves the line, the lingering root is re-admitted.
-// Each case compares the outside session's write with a person's on the same record: the issue, its
-// root, the slots and every queued effect must come out the same.
+// closed root — a session with no claim there writes a status as a person does: the child leaves
+// Legion's work where it stands and its architect is told, the waiting root leaves the line, the
+// closed root opens its new run. Each case compares the outside session's write with a person's
+// on the same record: the issue, its root, the slots and every queued effect must come out the same.
 func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
-	until := fixedNow.Add(time.Hour)
 	parent := "LEGION-1"
 	for _, tc := range []struct {
 		name   string
@@ -152,7 +154,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			},
 			slots: []string{"LEGION-1"},
 			taken: func(t *testing.T, pool *pgxpool.Pool) {
-				if got := issue(t, pool, "LEGION-2"); got.Phase != phase.Done || got.Status != "backlog" {
+				if got := issue(t, pool, "LEGION-2"); got.Phase != phase.Implementing || got.Status != "backlog" {
 					t.Fatalf("child after a person's backlog = %#v, want it parked", got)
 				}
 			}},
@@ -163,13 +165,13 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			},
 			slots: []string{"LEGION-1"},
 			taken: func(t *testing.T, pool *pgxpool.Pool) { assertWaiting(t, pool, nil) }},
-		{name: "a lingering root set back to todo", key: "LEGION-5", status: "todo",
+		{name: "a closed root set back to todo", key: "LEGION-5", status: "todo",
 			issues: []record.Issue{
-				{Key: "LEGION-5", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-5", Tree: "LEGION-5", Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1},
+				{Key: "LEGION-5", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-5", Tree: "LEGION-5", Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", HandedOver: true, LastDispatchSeq: 1},
 			},
 			taken: func(t *testing.T, pool *pgxpool.Pool) {
-				if got := issue(t, pool, "LEGION-5"); got.Generation != 2 || got.LingerUntil != nil {
-					t.Fatalf("lingering root after a person's todo = %#v, want it re-admitted at generation 2", got)
+				if got := issue(t, pool, "LEGION-5"); got.Generation != 2 || got.Phase != phase.Admitted {
+					t.Fatalf("closed root after a person's todo = %#v, want its new run at generation 2", got)
 				}
 			}},
 	} {
@@ -182,7 +184,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			write := func(actor string) (*pgxpool.Pool, result) {
 				pool := migratedPool(t)
 				admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 				for _, seeded := range tc.issues {
 					putIssue(t, pool, seeded)
 				}
@@ -258,7 +260,7 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 			seedSlotted(t, pool, "LEGION-1", "A")
 			event := func(seq int64, actor, status, title string) {
 				apply(t, pool, admission, "event-"+strconv.FormatInt(seq, 10), intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: status,
@@ -284,7 +286,7 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 					if tc.finished {
 						return
 					}
-					row, err := record.NewOutboxRow("LEGION-1", *tc.queued, fixedNow)
+					row, err := record.NewFencedRow(ctx, tx, records, "LEGION-1", *tc.queued, fixedNow)
 					if err != nil {
 						t.Fatalf("build the queued status write: %v", err)
 					}
@@ -314,8 +316,8 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 				t.Fatalf("queued status writes %+v and %d status-reasserted notices, want %+v and %d", rows, notices, tc.rows, tc.notices)
 			}
 			if tc.ends {
-				if got.Phase != phase.Done || got.LingerUntil == nil {
-					t.Fatalf("root after the person's park = %#v, want its tree lingering", got)
+				if got.Phase != wantPhase || got.LingerUntil != nil || got.Status != "backlog" {
+					t.Fatalf("root after the person's park = %#v, want it out of Legion's work at backlog, its phase %s kept", got, wantPhase)
 				}
 				assertSlots(t, pool, nil)
 				return
@@ -376,14 +378,14 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 	}
 }
 
-// A person parks a tree the daemon has just admitted, while the promotion's in_progress is still on
-// its way to Dispatch, and sets it back to todo: that todo changes Dispatch's status from the backlog
-// before it, so it re-admits the tree, and the promotion's write, queued over the todo Dispatch showed
-// then, does not land over the park.
+// A person parks a root the daemon has just admitted, while the promotion's in_progress is still on
+// its way to Dispatch, and sets it back to todo: the park drops the promotion's write, so it never
+// lands over the park, and the todo brings the root back into Legion's work at the phase it stood
+// in, on its run (R20 of dispatch://INFRA-3320: a todo opens a new run only on a record at done).
 func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	putIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
 	write := func(seq int64, status string) {
 		apply(t, pool, admission, "person-"+strconv.FormatInt(seq, 10), intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: status, Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
@@ -395,8 +397,8 @@ func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testin
 	write(3, "backlog")
 	write(4, "todo")
 	got := issue(t, pool, "LEGION-1")
-	if got.Generation != 2 || got.LingerUntil != nil || got.Phase != phase.Admitted {
-		t.Fatalf("root after the park and todo = %#v, want generation 2 re-admitted and not lingering", got)
+	if got.Generation != 1 || got.LingerUntil != nil || got.Phase != phase.Admitted || !record.InLegionsWork(got) {
+		t.Fatalf("root after the park and todo = %#v, want it back in Legion's work at admitted on generation 1", got)
 	}
 	var writes []record.StatusWrite
 	for _, effect := range effects(t, pool) {
@@ -404,7 +406,9 @@ func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testin
 			writes = append(writes, payload)
 		}
 	}
+	// The park dropped the promotion's write; what is queued is the return's in_progress over the
+	// todo Dispatch shows.
 	if want := []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "todo", "")}; !reflect.DeepEqual(writes, want) {
-		t.Fatalf("queued status writes %+v, want only the new generation's promotion %+v", writes, want)
+		t.Fatalf("queued status writes %+v, want only the return's %+v", writes, want)
 	}
 }

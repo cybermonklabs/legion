@@ -42,8 +42,9 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 			setDispatchStatus(t, baseURL, issue, "in_progress")
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 			tc.close(t, pool, records, engine, issue)
+			seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 			// A person leaves a comment while the row is between its read and its write: the
 			// status is untouched, and Dispatch has moved the issue's sequence on. The merge's
@@ -81,8 +82,9 @@ func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *
 	setDispatchStatus(t, baseURL, issue, "in_progress")
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	mergeClosesTheIssue(t, pool, records, engine, issue)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	reopenTheIssue(t, pool, records, issue)
 
@@ -128,8 +130,9 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	setDispatchStatus(t, baseURL, issue, "in_progress")
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	mergeClosesTheIssue(t, pool, records, engine, issue)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	// The attempt that failed: Dispatch answered 5xx, so the row wrote nothing and waits. The run
 	// itself answers no error — a row whose attempt failed is recorded and backed off, which is
@@ -197,6 +200,8 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
 			return err
 		}
+		// Its row of the copy: the close reads the issue's children on its Dispatch chain (R24).
+		seedCopyRow(t, tx, issue, "", "in_progress", 1)
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue,
 			Repo: "acme/widgets", Number: 42, Branch: claim.IssueBranch(issue), HeadSHA: "head"})
 	}); err != nil {
@@ -215,9 +220,15 @@ func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Admitted, Generation: 1,
-			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
+			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
+			return err
+		}
+		// Its row of the copy: close_root reads who may act on it and its children on its
+		// Dispatch chain (R18, R24).
+		seedCopyRow(t, tx, issue, "", "in_progress", 1)
+		return nil
 	}); err != nil {
 		t.Fatalf("seed the admitted root: %v", err)
 	}

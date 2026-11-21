@@ -44,7 +44,6 @@ type silenceRecord struct {
 	phase      phase.Phase
 	// generation is the issue's, which the fact's own generation is held against.
 	generation uint64
-	lingers    bool
 	// entry is the entry the phase row names (record.PhaseRow.Entry) and entryTask the work it
 	// was raised with; given is the entry the claim was last given work of (claims.given_entry,
 	// record.RoleClaim.GivenEntry). A given equal to entry is a claim level with its row, one
@@ -106,10 +105,6 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: silenceIssue, Project: "LEGION", Title: "a worker that stopped taking turns", Phase: rec.phase,
 		Generation: rec.generation, Status: "in_progress", Rank: "U"}
-	if rec.lingers {
-		until := silenceClock().Add(time.Hour)
-		issue.LingerUntil = &until
-	}
 	if rec.unrecorded {
 		return issue
 	}
@@ -153,7 +148,7 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			return StartOrOwe(t.Context(), tx, record.NewStore(), silenceIssue, record.SuperviseRequest{Op: "start",
 				Tree: silenceIssue, Role: claim.RoleTester, Generation: rec.generation, Phase: rec.phase,
-				Task: ResumePhaseTask(issue), ResumeTask: true}, silenceClock())
+				Task: ResumePhaseTask(issue, false), ResumeTask: true}, silenceClock())
 		})
 	}
 	return issue
@@ -287,7 +282,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 		t.Fatalf("apply the silence: %v", err)
 	}
 
-	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue),
+	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue, false),
 		stands: phase.Testing, entry: 0, resumeTask: true}}
 	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task at no entry, the claim being on the entry its row names already",
@@ -391,11 +386,6 @@ func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 		{name: "the claim is retired", rec: func() silenceRecord {
 			rec := aSilentTester()
 			rec.state = supervise.StateRetired
-			return rec
-		}()},
-		{name: "the tree lingers", rec: func() silenceRecord {
-			rec := aSilentTester()
-			rec.lingers = true
 			return rec
 		}()},
 	} {

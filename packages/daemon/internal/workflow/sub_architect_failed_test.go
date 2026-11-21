@@ -4,7 +4,6 @@ import (
 	"context"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -22,12 +21,12 @@ import (
 // child's phase and the failure the fact carries, whose reason names the child and says its
 // notices come to the reader until the daemon starts the child's architect again. The owner walk
 // sends it above the child (record.OwningArchitect). The controller hears nothing of it, since an
-// architect inside the tree is left to act. A done child, a child that left the workflow and a
-// child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
-// kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
+// architect inside the tree is left to act. A done child and a child that left the workflow tell
+// nobody: a done child's claims were closed (retired, sessions kept), and a parked child's were
+// suspended.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"
-	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
+	root := "LEGION-208"
 	liveRoot := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child",
@@ -97,15 +96,6 @@ func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 				left.Phase, left.Status = phase.Done, "backlog"
 				return left
 			}(),
-		},
-		{
-			name: "a child of a lingering tree",
-			root: func() record.Issue {
-				lingering := liveRoot
-				lingering.Phase, lingering.Status, lingering.LingerUntil = phase.Done, "done", &until
-				return lingering
-			}(),
-			child: child,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

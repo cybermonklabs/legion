@@ -155,9 +155,11 @@ func (r *mainPathRig) waitingRoot() record.Issue {
 		Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 5}
 }
 
+// put records issue with its row of the copy (putChainIssue), so the root stands on a known
+// Dispatch chain and holds its own design gate there (record.Chains.HoldsOwnGate).
 func (r *mainPathRig) put(issue record.Issue) {
 	r.t.Helper()
-	putOutboxIssue(r.t, r.pool, r.records, issue)
+	putChainIssue(r.t, r.pool, r.records, issue)
 }
 
 func (r *mainPathRig) issue() record.Issue {
@@ -207,27 +209,27 @@ func (r *mainPathRig) decide(ask string) string {
 	return ref
 }
 
-// park is a person setting the running root to backlog: the engine takes it out of the workflow,
-// where its tree lingers and every claim of it is queued a suspend.
+// park is a person setting the running root to backlog: the engine stops it where it stands (R20
+// of dispatch://INFRA-3320), and every claim of it is queued a suspend.
 func (r *mainPathRig) park() {
 	r.t.Helper()
 	r.apply("backlog", intake.DispatchIssue{Key: r.key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "A", HandedOver: true})
-	if got := r.issue(); got.Status != "backlog" || !got.Lingers() {
-		r.t.Fatalf("the parked root = %+v, want it out of the workflow with its tree lingering", got)
+	if got := r.issue(); got.Status != "backlog" {
+		r.t.Fatalf("the parked root = %+v, want it out of Legion's work", got)
 	}
 }
 
-// handBack is a person setting the parked root to todo again: admission re-admits it at the next
-// generation and this same pass admits it, which queues its architect's start.
+// handBack is a person setting the parked root to todo again: it returns to Legion's work at the
+// same generation (workflow.Engine.ReturnToWork), and its architect is started again in its own
+// session.
 func (r *mainPathRig) handBack() {
 	r.t.Helper()
 	before := r.issue().Generation
 	r.apply("todo-again", intake.DispatchIssue{Key: r.key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true})
-	got := r.issue()
-	if got.Generation != before+1 || got.Status != "in_progress" || got.Lingers() {
-		r.t.Fatalf("the re-admitted root = %+v, want generation %d running again", got, before+1)
+	if got := r.issue(); got.Generation != before || !record.InLegionsWork(got) {
+		r.t.Fatalf("the returned root = %+v, want generation %d back in Legion's work", got, before)
 	}
 }
 
@@ -394,12 +396,12 @@ type mainPath struct {
 }
 
 // mainPaths are those ways, each driving the real admission: its fresh start for a root that
-// waited in `todo` for its slot, the start of its re-admission after a park, and the resume task an
+// waited in `todo` for its slot, the start of its return after a park, and the resume task an
 // answered root's architect is given — from admission's answered branch and from the reconcile that
 // finds a person already acted.
 var mainPaths = []mainPath{
 	{"a fresh admission's start reaches the architect it launches", freshAdmissionPath},
-	{"a re-admission's start reaches the architect it resumes", readmissionPath},
+	{"a return's start reaches the architect it resumes", returnPath},
 	{"an answered root's resume reaches its live architect", answeredResumePath},
 	{"a person's act already in the record resumes the architect in place", toldInPlacePath},
 }
@@ -423,11 +425,11 @@ func freshAdmissionPath(r *mainPathRig) string {
 	return ref
 }
 
-// readmissionPath: the root ran, a person parked it to backlog and its architect's suspend ran, a
-// person then decided on the parked tree (kept), and a person handed it back to `todo`, which
-// re-admits it at the next generation. That generation's start names the kept decision, resumes
-// the suspended architect, and the resumed agent's ready is what sends the task.
-func readmissionPath(r *mainPathRig) string {
+// returnPath: the root ran, a person parked it to backlog and its architect's suspend ran, a
+// person then decided on the parked root (kept), and a person handed it back to `todo`, which
+// returns it to Legion's work at the same generation. The return's start names the kept decision,
+// resumes the suspended architect, and the resumed agent's ready is what sends the task.
+func returnPath(r *mainPathRig) string {
 	r.put(r.waitingRoot())
 	r.admitPass()
 	r.runStarts()
@@ -441,7 +443,7 @@ func readmissionPath(r *mainPathRig) string {
 	r.handBack()
 	r.runStarts()
 	if pending := r.machine().Claim().Pending; pending == nil || !strings.Contains(pending.Task, ref) {
-		r.t.Fatalf("the resumed architect's pending task = %#v, want the re-admission's task naming %s", pending, ref)
+		r.t.Fatalf("the resumed architect's pending task = %#v, want the return's task naming %s", pending, ref)
 	}
 	r.bringUp()
 	return ref
@@ -568,7 +570,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 	// The same root as the fresh admission, parked again before the architect it launched comes up:
 	// the start's task waits on a ready claim while the root has nobody to hear it. The answer holds
 	// it there — unsent, still pending — for as long as the root is parked.
-	t.Run("a task of a parked root is held, then superseded by the start of the root's next run", func(t *testing.T) {
+	t.Run("a task of a parked root is held, then superseded by the start of the root's return", func(t *testing.T) {
 		rig := newMainPathRig(t, true)
 		rig.put(rig.waitingRoot())
 		ref := rig.decide(mainPathAsk)
@@ -593,25 +595,26 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 			}
 		}
 
-		// A person hands the root back. The re-admission's start carries the root's task of
-		// generation 2 at a newer entry: the first act again, since the architect took nothing of
-		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
+		// A person hands the root back. It returns to Legion's work at the same generation
+		// (workflow.Engine.ReturnToWork), and the start of its return carries the root's task of
+		// generation 1 at a newer entry: the first act again, since the architect took nothing of
+		// it (workflow.ArchitectStartTask's last rule). That task supersedes the held one
 		// (supervise's supersedes), so the start does not send the held task first
 		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
-		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
-		// The decision the held task named is released with it, so no delivery holds it, and the
+		// architect's first prompt is the return's own task (dispatch://INFRA-2614 R3, R4). The
+		// decision the held task named is released with it, so no delivery holds it, and the
 		// catch-up the start writes for the running architect (the outbox's start, workflow's
 		// claimReady) names it and claims it.
 		rig.handBack()
 		rig.runStarts()
 		prompts := rig.prompts()
 		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
-			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
-			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
+			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 1") || strings.Contains(prompts[0].Message, ref) {
+			t.Fatalf("after the return the architect was prompted %+v, want the return's own task alone, not the held task %s",
 				prompts, pending.ID)
 		}
-		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 2 {
-			t.Fatalf("after the re-admission the architect holds %#v, want generation 2's task %s in the held task's place",
+		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 1 {
+			t.Fatalf("after the return the architect holds %#v, want the return's task %s in the held task's place",
 				now, prompts[0].DeliveryID)
 		}
 		if asked := rig.asked.about(pending.ID); len(asked) != len(refused) {

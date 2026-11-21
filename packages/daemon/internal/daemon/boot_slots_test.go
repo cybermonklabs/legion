@@ -143,6 +143,8 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The child started its phase, so admission opened its own lifecycle, which its claim binds.
+	openIssue(t, st, project, child, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: child,
 		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
 		Session: "ses_implementer", SessionFile: "/dev/null"}); err != nil {

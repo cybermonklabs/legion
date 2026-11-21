@@ -54,7 +54,6 @@ func TestTheStatusRepairWritesThePhasesStatusAndNotTheRecords(t *testing.T) {
 // One case per rule the repair skips an issue by. Each of these issues differs from the status of
 // its phase, and each is left alone.
 func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
-	lingerUntil := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
 		seed func(*testing.T, *pgxpool.Pool)
@@ -94,20 +93,31 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Done, "in_progress", "in_progress"))
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
 		}},
-		// The tree is never opened here, so it does not run (record.TreeRuns): a slot row is no
-		// longer what says it does, and the fixture grants neither.
+		// A root a person handed to Legion that waits in the line for its first start runs nothing
+		// yet (record.QueuedRoot, record.TreeRuns): here one a hand-over of the release before
+		// carried in at its generation, standing in the phase it carries.
 		{name: "an issue whose tree the daemon is not running", seed: func(t *testing.T, pool *pgxpool.Pool) {
-			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "todo"))
+			root := repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo")
+			root.CarriedGeneration = root.Generation
+			seedIssue(t, pool, root)
 		}},
-		// The lingering root is seeded as the daemon leaves one: beginLinger sets the root's phase
-		// to done and arms its deadline. The member is the case the rule exists for, since for the
-		// root itself the linger rule and the phase rule agree.
-		{name: "an issue whose tree's root lingers", seed: func(t *testing.T, pool *pgxpool.Pool) {
-			root := repairIssue("LEGION-208", "LEGION-208", phase.Done, "done", "done")
-			root.LingerUntil = &lingerUntil
+		// The member's gate root on the chain waits in the line, so the member is passed over with
+		// it, whatever it stands in.
+		{name: "an issue whose gate root waits for its first start", seed: func(t *testing.T, pool *pgxpool.Pool) {
+			root := repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo")
+			root.CarriedGeneration = root.Generation
 			seedIssue(t, pool, root)
 			seedIssue(t, pool, repairIssue("LEGION-209", "LEGION-208", phase.Implementing, "in_progress", "todo"))
+		}},
+		// A person took the legion label off the root, so no issue on its chain carries it, and its
+		// status is anyone's to write (R26 of dispatch://INFRA-3320).
+		{name: "a root whose legion label a person took off", seed: func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "todo"))
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: "LEGION-208", Project: "LEGION", Seq: 9,
+					Labels: record.Carry([]string{})})
+			})
 		}},
 		{name: "an issue whose status write is already queued", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "todo"))
@@ -164,8 +174,11 @@ func TestTheStatusRepairLogsEachRepairAndEveryRun(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "todo", "todo"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
-	// Its root holds no slot, so it is passed over.
-	seedIssue(t, pool, repairIssue("LEGION-300", "LEGION-300", phase.Implementing, "in_progress", "todo"))
+	// A root carried in that still waits in the line for its first start runs nothing, so it is
+	// passed over.
+	waiting := repairIssue("LEGION-300", "LEGION-300", phase.Implementing, "todo", "todo")
+	waiting.CarriedGeneration = waiting.Generation
+	seedIssue(t, pool, waiting)
 	// Its write is already queued, so it waits for the outbox rather than for the repair.
 	seedIssue(t, pool, repairIssue("LEGION-400", "LEGION-400", phase.Testing, "testing", "in_progress"))
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-400", Index: 1})
@@ -212,7 +225,7 @@ type statusRow struct{ issue, status, observed string }
 // seedStatusWrite queues a Dispatch status write for issue, as a write the outbox has not finished.
 func seedStatusWrite(t *testing.T, pool *pgxpool.Pool, issue string, write record.StatusWrite) {
 	t.Helper()
-	row, err := record.NewOutboxRow(issue, write, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+	row, err := record.NewOutboxRow(issue, record.Fenced(write, record.FirstFence), time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("build the queued status write of %s: %v", issue, err)
 	}

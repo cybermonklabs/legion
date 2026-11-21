@@ -51,7 +51,7 @@ func TestAVolumeReportThroughTheDaemonsGlueReachesTheArchitectEverySweep(t *test
 	clock := func() time.Time { return now }
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(),
-		Pods: pods, Linger: time.Hour, Clock: clock}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+		Pods: pods, Clock: clock}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	tx, err := raw.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the seed: %v", err)

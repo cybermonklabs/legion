@@ -238,7 +238,7 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 		t.Fatalf("the promotion queued %+v, want the one start it writes", starts)
 	}
 	start := starts[0]
-	want := ResumePhaseTask(issue)
+	want := ResumePhaseTask(issue, false)
 	if start.Entry != seededEntry+1 || start.Task != want || !start.ResumeTask {
 		t.Fatalf("the promotion's start = %+v, want entry %d carrying %q, marked as the phase's resume task: the promotion hands the role its work again",
 			start, seededEntry+1, want)
@@ -301,7 +301,7 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
-	recorded := ResumePhaseTask(issue) + " Reason: the review approved."
+	recorded := ResumePhaseTask(issue, false) + " Reason: the review approved."
 	for _, tc := range []struct {
 		name string
 		// held is the work the merger's phases row names, "" for a row that names none.
@@ -309,7 +309,7 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 		want string
 	}{
 		{name: "a row that names the work of its entry", held: recorded, want: recorded},
-		{name: "a row an upgrade or a re-admission left with none", want: ResumePhaseTask(issue)},
+		{name: "a row an upgrade or a re-admission left with none", want: ResumePhaseTask(issue, false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -364,7 +364,7 @@ func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
 		resume bool
 	}{
 		{name: "behind the entry its row names", given: seededEntry - 1, want: seededEntryTask, entry: seededEntry},
-		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue), resume: true},
+		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue, false), resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

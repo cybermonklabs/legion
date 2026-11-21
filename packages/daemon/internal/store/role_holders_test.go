@@ -81,10 +81,10 @@ func publishingStore(t *testing.T) *Store {
 	return s
 }
 
-// openHolderTree opens the lifecycle of holderIssue's tree, which an admission binds to.
+// openHolderTree opens the lifecycle of holderIssue, which an admission of its claim binds to.
 func openHolderTree(t *testing.T, s *Store) {
 	t.Helper()
-	if _, err := s.OpenTreeLifecycle(context.Background(), "legion", holderIssue, treelifecycle.AuthorityWorkflow); err != nil {
+	if _, err := s.OpenIssueLifecycle(context.Background(), "legion", holderIssue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", holderIssue, err)
 	}
 }

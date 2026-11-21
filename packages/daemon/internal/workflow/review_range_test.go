@@ -643,35 +643,16 @@ func reviewedChild(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.Fa
 	return pool, engine, apply
 }
 
-// testsIntoReviewing walks LEGION-208, admitted at a new generation, into its first review round
-// of that generation on the tester's pass at handoff version 9. The phases before it are seeded:
-// what is under test is the reviewer's start, which reads the rows the generation's clear left.
-func testsIntoReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result) {
-	t.Helper()
-	issue := issueRecord(t, pool, "LEGION-208")
-	if issue.Generation != 2 || issue.Phase != phase.Admitted {
-		t.Fatalf("LEGION-208 is at generation %d in %s, want admitted at generation 2", issue.Generation, issue.Phase)
-	}
-	issue.Phase, issue.Status = phase.Testing, "testing"
-	seedIssue(t, pool, *issue)
-	apply("generation-2-tester", intake.HandoffComplete{Generation: 2, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", HandoffRecord: "test-9", HandoffVersion: 9})
-	if got := issuePhase(t, pool); got != phase.Reviewing {
-		t.Fatalf("after the tester passed generation 2 the issue is in %s, want reviewing", got)
-	}
-}
-
-// A new generation that clears its rows tells its first reviewer no commit: the re-admission of
-// the root (record.Store.ClearTreeGeneration, whose promotion starts the member it finds
-// mid-phase), the rerun of a child (ReenterChild) and an adoption (moveIntoTree) each clear the
-// reviewer's row with the rest of the generation, so the review of that generation reads the
-// whole change.
+// A new generation that clears its rows tells its first reviewer no commit: the clear of the
+// issue's own generation (record.Store.ClearGeneration, which a new run makes, Engine.NewRun)
+// clears the reviewer's row with the rest of the generation, so the review the start after it hands
+// the reviewer reads the whole change.
 func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
-	t.Run("the re-admission of the root", func(t *testing.T) {
+	t.Run("a promotion's start after the clear", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
+			return record.NewStore().ClearGeneration(ctx, tx, "LEGION-208", time.Now().UTC())
 		})
 		member := issueRecord(t, pool, "LEGION-208")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -681,47 +662,6 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
-		}
-	})
-	t.Run("the rerun of the child", func(t *testing.T) {
-		pool, engine, apply := reviewedChild(t)
-		before := reviewerRow(t, pool)
-		child := issueRecord(t, pool, "LEGION-208")
-		fact := RecordedFact(*child)
-		fact.Status = "todo"
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.ReenterChild(ctx, tx, *child, fact)
-		})
-		testsIntoReviewing(t, pool, apply)
-		after := reviewerRow(t, pool)
-		if after.Entry <= before.Entry {
-			t.Fatalf("the rerun's reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
-		}
-		readsReviewingTask(t, "the rerun's first round", after.EntryTask, 9)
-		if !endsNamingNoCommit(after.EntryTask, after.Entry) {
-			t.Fatalf("the rerun's first review task = %q, want it to end naming no reviewed commit, `none`: the rerun cleared the generation", after.EntryTask)
-		}
-	})
-	t.Run("an adoption into another tree", func(t *testing.T) {
-		pool, engine, apply := reviewedChild(t)
-		before := reviewerRow(t, pool)
-		root := liveRootOf(t, pool, "LEGION-300", 1)
-		member := issueRecord(t, pool, "LEGION-208")
-		member.Status = "todo"
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.AdoptMember(ctx, tx, *member, root, intake.AdoptedChild{Issue: "LEGION-208", Parent: "LEGION-300", Status: "todo"})
-		})
-		if got := issueRecord(t, pool, "LEGION-208").Tree; got != "LEGION-300" {
-			t.Fatalf("the adopted issue stands in tree %s, want LEGION-300", got)
-		}
-		testsIntoReviewing(t, pool, apply)
-		after := reviewerRow(t, pool)
-		if after.Entry <= before.Entry {
-			t.Fatalf("the adopted reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
-		}
-		readsReviewingTask(t, "the adoption's first round", after.EntryTask, 9)
-		if !endsNamingNoCommit(after.EntryTask, after.Entry) {
-			t.Fatalf("the adoption's first review task = %q, want it to end naming no reviewed commit, `none`: the adoption cleared the generation", after.EntryTask)
 		}
 	})
 }

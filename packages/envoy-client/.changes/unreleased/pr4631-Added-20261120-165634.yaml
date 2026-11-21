@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch issue-update` takes `--include-children`, `--unlink-children` and `--include-parent`. Each goes with `--status` alone and sends the status change to `POST /api/v1/issues/{key}/status-change`, and `--include-children` with `--status done` is refused before anything is sent, since only a person signed in at a browser can close the open issues under an issue with it. The command prints one line for each issue the call changed, and a line for the issue it names also when the call left that status as it was. `dispatch issues --json` prints the listing as one JSON object. A `PARENT_STATUS_CONFLICT` refusal prints each issue that holds the rule and the flags that move it.'
+time: 2026-11-20T16:56:34.100566621Z
+custom:
+    Issue: pr4631

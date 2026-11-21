@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -109,18 +110,50 @@ func (p *holderPublisher) keptCopies() []outboxPublish {
 	return append([]outboxPublish(nil), p.kept...)
 }
 
-// noticeTree records a root, its child and the child's child, all of tree LEGION-1.
-func noticeTree(t *testing.T, pool *store.Pool, records record.Store, lingers bool) {
+// noticeTree records a root, its child and the child's child, each with its copy row
+// (putChainIssue), so the Dispatch chain the notices are routed on runs LEGION-3, LEGION-2,
+// LEGION-1. closed stands the root at done, its run closed (R24 of dispatch://INFRA-3320), out of
+// Legion's work.
+func noticeTree(t *testing.T, pool *store.Pool, records record.Store, closed bool) {
 	t.Helper()
 	root, child := "LEGION-1", "LEGION-2"
-	rootIssue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
-	if lingers {
-		until := time.Now().Add(time.Hour)
-		rootIssue.Phase, rootIssue.Status, rootIssue.LingerUntil = phase.Done, "done", &until
+	rootIssue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", HoldsGate: true}
+	if closed {
+		rootIssue.Phase, rootIssue.Status = phase.Done, "done"
 	}
-	putOutboxIssue(t, pool, records, rootIssue)
-	putOutboxIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &root, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &child, Title: "Grandchild", Phase: phase.Testing, Generation: 1, Status: "testing"})
+	putChainIssue(t, pool, records, rootIssue)
+	putChainIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &root, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
+	putChainIssue(t, pool, records, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &child, Title: "Grandchild", Phase: phase.Testing, Generation: 1, Status: "testing"})
+}
+
+// putChainIssue records issue (putOutboxIssue) and writes its row of the daemon's copy of Dispatch
+// as a reading does (putCopyRow): the parent the record names and the status Dispatch last showed
+// it in (DispatchStatus, else Status).
+func putChainIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
+	t.Helper()
+	putOutboxIssue(t, pool, records, issue)
+	var parent string
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
+	putCopyRow(t, pool, issue.Key, parent, cmp.Or(issue.DispatchStatus, issue.Status))
+}
+
+// putCopyRow writes the copy's row of key (dispatch_issues) under parent ("" for none) at status,
+// at a sequence above every value the copy holds of it, so the row reads so whatever was written
+// before (seedCopyRow).
+func putCopyRow(t *testing.T, pool *store.Pool, key, parent, status string) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var seq int64
+		if err := tx.QueryRow(context.Background(), `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`, key).Scan(&seq); err != nil {
+			return err
+		}
+		seedCopyRow(t, tx, key, parent, status, seq+1)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the copy row of %s: %v", key, err)
+	}
 }
 
 func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState) claim.Token {
@@ -166,62 +199,200 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// Every notice but a catch-up goes to the architect that owns its issue, by the TypeScript daemon's
-// rule (record.OwningArchitect): the nearest issue at or above it whose architect claim holds its
-// role (not failed or retired, and not suspended except by the idle release), else the tree root;
-// a child's close or status change, and a worker-died or worker-stalled about a child's
-// architect, start at its parent. A catch-up goes to the architect of its own issue alone
-// (noticeArchitect). The walk stays inside the issue's tree: admission records a Dispatch
-// re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
-// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
-// runs are the outbox's own (holdsRole), over the claim's state alone.
-func TestTheArchitectThatOwnsANotice(t *testing.T) {
-	root, child, unrecorded, elsewhere := "LEGION-1", "LEGION-2", "LEGION-77", "LEGION-50"
-	tree := map[string]record.Issue{
-		root:       {Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root},
-		child:      {Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root},
-		"LEGION-3": {Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &child},
-		"LEGION-4": {Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &unrecorded},
-		"LEGION-5": {Key: "LEGION-5", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &elsewhere},
+// routeClaim is the state of one architect claim in a routing table: the machine's state, and
+// who suspended it where it is suspended.
+type routeClaim struct {
+	state supervise.ClaimState
+	by    supervise.SuspendSource
+}
+
+var (
+	holds            = routeClaim{state: supervise.StateWorking}
+	launching        = routeClaim{state: supervise.StateLaunching}
+	failedHere       = routeClaim{state: supervise.StateFailed}
+	retiredHere      = routeClaim{state: supervise.StateRetired}
+	byOperator       = routeClaim{state: supervise.StateSuspended, by: supervise.SuspendedByOperator}
+	byAStop          = routeClaim{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon}
+	releasedWhenIdle = routeClaim{state: supervise.StateSuspended, by: supervise.SuspendedByReleased}
+)
+
+// routingChains records the issues of a routing fixture with their copy rows, and the copy rows of
+// copied, issues the daemon does not record (key and parent pairs, at in_progress), and reads the
+// route of every one of keys in one read, as the outbox does (readNoticeRoute).
+func routingChains(t *testing.T, issues []record.Issue, copied map[string]string, keys []string) noticeRoute {
+	t.Helper()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, issue := range issues {
+		putChainIssue(t, pool, records, issue)
 	}
+	for key, parent := range copied {
+		putCopyRow(t, pool, key, parent, "in_progress")
+	}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, project: "legion"}
+	var route noticeRoute
+	if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		route, err = runner.readNoticeRoute(context.Background(), tx, "LEGION", keys)
+		return err
+	}); err != nil {
+		t.Fatalf("read the route: %v", err)
+	}
+	return route
+}
+
+// routingIssue is a record of a routing fixture in Legion's work, implementing, stored in tree and
+// under parent ("" for none) in Dispatch; a record whose key is its tree holds its own gate, as
+// the migration marks every root of the release before.
+func routingIssue(key, tree, parent string) record.Issue {
+	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: tree, Title: key,
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", HoldsGate: key == tree}
+	if parent != "" {
+		issue.Parent = &parent
+	}
+	return issue
+}
+
+// routedTo is the key of the issue whose architect route sends notice about key to, the claims
+// running as claims says (holdsRole over each, as the outbox reads its machines), or "waits" for a
+// notice the router holds (errNoticeWaits), or the error.
+func routedTo(t *testing.T, route noticeRoute, key string, notice record.Notice, claims map[string]routeClaim) string {
+	t.Helper()
+	states := map[claim.Token]routeClaim{}
+	for issue, held := range claims {
+		states[mustClaimToken(t, issue, claim.RoleArchitect)] = held
+	}
+	issue, err := route.issue(key)
+	if err != nil {
+		return err.Error()
+	}
+	token, err := noticeArchitect(route, issue, notice, func(token claim.Token) bool {
+		held := states[token]
+		return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: held.state, SuspendedBy: held.by}})
+	})
+	switch {
+	case errors.Is(err, errNoticeWaits):
+		return "waits"
+	case err != nil:
+		return err.Error()
+	}
+	for i := range 100 {
+		if candidate := fmt.Sprintf("LEGION-%d", i); token == mustClaimToken(t, candidate, claim.RoleArchitect) {
+			return candidate
+		}
+	}
+	return string(token)
+}
+
+// The fixture of the routing tables: a root LEGION-1 with LEGION-2, LEGION-3 and LEGION-4 under it
+// three deep; another root LEGION-50 with LEGION-51 under it; LEGION-5, stored in LEGION-1's tree
+// and under LEGION-51 in Dispatch; LEGION-6, stored in LEGION-1's tree and under LEGION-77, which
+// the daemon does not record; LEGION-7 under LEGION-88, whose row the copy lacks; and LEGION-9 at
+// work under LEGION-8, which Dispatch shows on the backlog under LEGION-1.
+func routingFixture(t *testing.T) noticeRoute {
+	t.Helper()
+	backlog := routingIssue("LEGION-8", "LEGION-1", "LEGION-1")
+	backlog.Phase, backlog.Status = phase.Done, "backlog"
+	issues := []record.Issue{
+		routingIssue("LEGION-1", "LEGION-1", ""), routingIssue("LEGION-2", "LEGION-1", "LEGION-1"),
+		routingIssue("LEGION-3", "LEGION-1", "LEGION-2"), routingIssue("LEGION-4", "LEGION-1", "LEGION-3"),
+		routingIssue("LEGION-50", "LEGION-50", ""), routingIssue("LEGION-51", "LEGION-50", "LEGION-50"),
+		routingIssue("LEGION-5", "LEGION-1", "LEGION-51"), routingIssue("LEGION-6", "LEGION-1", "LEGION-77"),
+		routingIssue("LEGION-7", "LEGION-1", "LEGION-88"), backlog, routingIssue("LEGION-9", "LEGION-1", "LEGION-8"),
+	}
+	keys := make([]string, len(issues))
+	for i, issue := range issues {
+		keys[i] = issue.Key
+	}
+	return routingChains(t, issues, map[string]string{"LEGION-77": ""}, keys)
+}
+
+// A notice about an issue goes to its own architect while that claim holds its role, else up the
+// Dispatch chain to the nearest architect in Legion's work whose claim holds its role, else to its
+// gate root's (R18 of dispatch://INFRA-3320, record.OwningIssue): a claim that failed, retired,
+// was never made or was suspended by the operator or by a stop holds no role, and one the idle
+// release suspended or that is launching does. The chain is the copy's, never the stored tree: an
+// issue stored in one tree and standing under another's issue in Dispatch is that issue's
+// architects', one under an issue the daemon does not record is a root of its own, an issue on
+// the backlog between two in work is passed over, and a walk that meets a chain the copy cannot
+// show to its top waits, unless the issue's own architect hears it. A catch-up goes to its own
+// issue's architect alone, and a reparented notice to the architect it names.
+func TestANoticeGoesToTheIssuesOwnArchitectFirst(t *testing.T) {
+	route := routingFixture(t)
+	phaseFinished := record.Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing}
 	for _, tc := range []struct {
-		name         string
-		issue        string
-		kind         record.NoticeKind
-		subArchitect supervise.ClaimState
-		owner        string
+		name   string
+		issue  string
+		notice record.Notice
+		claims map[string]routeClaim
+		owner  string
 	}{
-		{name: "a child's notice with no sub-architect", issue: "LEGION-2", owner: "LEGION-1"},
-		{name: "the root's own notice", issue: "LEGION-1", owner: "LEGION-1"},
-		{name: "a child owned by its sub-architect", issue: "LEGION-2", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
-		{name: "a child whose sub-architect is launching", issue: "LEGION-2", subArchitect: supervise.StateLaunching, owner: "LEGION-2"},
-		{name: "a grandchild under the sub-architect's child", issue: "LEGION-3", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
-		{name: "a child whose sub-architect retired", issue: "LEGION-2", subArchitect: supervise.StateRetired, owner: "LEGION-1"},
-		{name: "a child whose sub-architect failed", issue: "LEGION-2", subArchitect: supervise.StateFailed, owner: "LEGION-1"},
-		{name: "a child whose sub-architect was suspended", issue: "LEGION-2", subArchitect: supervise.StateSuspended, owner: "LEGION-1"},
-		{name: "a child's close under its running sub-architect", issue: "LEGION-2", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
-		{name: "a child's status change under its running sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
-		{name: "a grandchild's close under the sub-architect's child", issue: "LEGION-3", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
-		{name: "the root's own close", issue: "LEGION-1", kind: "child-closed", owner: "LEGION-1"},
-		{name: "a child whose parent is not recorded", issue: "LEGION-4", owner: "LEGION-1"},
-		{name: "a child whose parent is in another tree", issue: "LEGION-5", owner: "LEGION-1"},
-		{name: "the close of a child whose parent is not recorded", issue: "LEGION-4", kind: "child-closed", owner: "LEGION-1"},
-		{name: "the close of a child whose parent is in another tree", issue: "LEGION-5", kind: "child-status", owner: "LEGION-1"},
+		{"its own architect holds its role", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": holds, "LEGION-2": holds, "LEGION-1": holds}, "LEGION-3"},
+		{"its own architect is launching", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": launching, "LEGION-1": holds}, "LEGION-3"},
+		{"its own architect failed, the one above holds", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": failedHere, "LEGION-2": holds, "LEGION-1": holds}, "LEGION-2"},
+		{"its own retired, the one above released for being idle", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": retiredHere, "LEGION-2": releasedWhenIdle, "LEGION-1": holds}, "LEGION-2"},
+		{"its own suspended by the operator", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": byOperator, "LEGION-1": holds}, "LEGION-1"},
+		{"its own suspended by a stop", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-3": byAStop, "LEGION-1": holds}, "LEGION-1"},
+		{"no claim of its own, the one above failed", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-2": failedHere, "LEGION-1": holds}, "LEGION-1"},
+		{"no architect on the chain holds its role", "LEGION-3", phaseFinished, map[string]routeClaim{"LEGION-1": failedHere}, "LEGION-1"},
+		{"three deep, past a stopped architect to an idle one", "LEGION-4", phaseFinished, map[string]routeClaim{"LEGION-3": byAStop, "LEGION-2": releasedWhenIdle, "LEGION-1": holds}, "LEGION-2"},
+		{"stored in one tree, under another tree's issue", "LEGION-5", phaseFinished, map[string]routeClaim{"LEGION-51": holds, "LEGION-1": holds}, "LEGION-51"},
+		{"stored in one tree, under another tree's failed architect", "LEGION-5", phaseFinished, map[string]routeClaim{"LEGION-51": failedHere, "LEGION-50": holds, "LEGION-1": holds}, "LEGION-50"},
+		{"under an issue the daemon does not record", "LEGION-6", phaseFinished, map[string]routeClaim{"LEGION-1": holds}, "LEGION-6"},
+		{"on a chain the copy cannot show to its top", "LEGION-7", phaseFinished, map[string]routeClaim{"LEGION-1": holds}, "waits"},
+		{"on such a chain, its own architect holding its role", "LEGION-7", phaseFinished, map[string]routeClaim{"LEGION-7": holds, "LEGION-1": holds}, "LEGION-7"},
+		{"past a parent on the backlog", "LEGION-9", phaseFinished, map[string]routeClaim{"LEGION-1": holds}, "LEGION-1"},
+		{"a catch-up, its own architect failed", "LEGION-3", record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, CatchUp: &record.CatchUp{}},
+			map[string]routeClaim{"LEGION-3": failedHere, "LEGION-2": holds}, "LEGION-3"},
+		{"a reparented notice", "LEGION-3", record.Notice{Kind: record.ReparentedNotice, To: "LEGION-50", Reason: "moved"},
+			map[string]routeClaim{"LEGION-3": holds, "LEGION-50": holds}, "LEGION-50"},
+		{"an ancestor's resting-root notice under its running sub-architect", "LEGION-2", record.Notice{Kind: "resting-root", Role: claim.RoleArchitect},
+			map[string]routeClaim{"LEGION-2": holds, "LEGION-1": holds}, "LEGION-2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			states := map[claim.Token]supervise.ClaimState{
-				mustClaimToken(t, root, claim.RoleArchitect):  supervise.StateWorking,
-				mustClaimToken(t, child, claim.RoleArchitect): tc.subArchitect,
+			if got := routedTo(t, route, tc.issue, tc.notice, tc.claims); got != tc.owner {
+				t.Fatalf("a %s notice about %s with claims %v goes to %s, want %s", tc.notice.Kind, tc.issue, tc.claims, got, tc.owner)
 			}
-			kind := tc.kind
-			if kind == "" {
-				kind = "phase-finished"
-			}
-			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, ""), func(token claim.Token) bool {
-				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
-			})
-			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
-				t.Fatalf("owner = %s, %v; want %s", got, err, want)
+		})
+	}
+}
+
+// A notice of a child's status or close, and a worker-died or a worker-stalled about an issue's own
+// architect, starts at its parent on the Dispatch chain (R18 of dispatch://INFRA-3320,
+// record.NoticeStartsAtParent): the architect above the issue hears it though the issue's own holds
+// its role, past one above that does not, else the gate root of the issue above; a notice about
+// the issue's phase worker goes to its own architect. An issue with nothing above it in Legion's
+// work, a root or one under an issue the daemon does not record, hears its own. The walk follows
+// the chain, not the stored tree, past a parent on the backlog, and waits on a chain the copy
+// cannot show to its top.
+func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
+	route := routingFixture(t)
+	childStatus := record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: "started"}
+	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "done"}
+	for _, tc := range []struct {
+		name   string
+		issue  string
+		notice record.Notice
+		claims map[string]routeClaim
+		owner  string
+	}{
+		{"a child's status, its own architect holding its role", "LEGION-3", childStatus, map[string]routeClaim{"LEGION-3": holds, "LEGION-2": holds, "LEGION-1": holds}, "LEGION-2"},
+		{"a child's close past a failed architect above it", "LEGION-3", childClosed, map[string]routeClaim{"LEGION-3": holds, "LEGION-2": failedHere, "LEGION-1": holds}, "LEGION-1"},
+		{"a worker-died about its own architect", "LEGION-3", record.Notice{Kind: "worker-died", Role: claim.RoleArchitect},
+			map[string]routeClaim{"LEGION-3": failedHere, "LEGION-2": holds}, "LEGION-2"},
+		{"a worker-stalled about its own architect, nobody above holding its role", "LEGION-3", record.Notice{Kind: "worker-stalled", Role: claim.RoleArchitect},
+			map[string]routeClaim{"LEGION-3": holds}, "LEGION-1"},
+		{"a worker-died about its planner", "LEGION-3", record.Notice{Kind: "worker-died", Role: claim.RolePlanner},
+			map[string]routeClaim{"LEGION-3": holds, "LEGION-2": holds}, "LEGION-3"},
+		{"a root's own status", "LEGION-1", childStatus, map[string]routeClaim{"LEGION-1": holds}, "LEGION-1"},
+		{"an issue under one the daemon does not record", "LEGION-6", childStatus, map[string]routeClaim{"LEGION-6": holds, "LEGION-1": holds}, "LEGION-6"},
+		{"stored in one tree, under another tree's issue", "LEGION-5", childClosed, map[string]routeClaim{"LEGION-5": holds, "LEGION-51": holds, "LEGION-1": holds}, "LEGION-51"},
+		{"past a parent on the backlog", "LEGION-9", childClosed, map[string]routeClaim{"LEGION-9": holds, "LEGION-1": holds}, "LEGION-1"},
+		{"on a chain the copy cannot show to its top", "LEGION-7", childStatus, map[string]routeClaim{"LEGION-7": holds, "LEGION-1": holds}, "waits"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routedTo(t, route, tc.issue, tc.notice, tc.claims); got != tc.owner {
+				t.Fatalf("a %s notice about %s's %s with claims %v goes to %s, want %s", tc.notice.Kind, tc.issue, tc.notice.Role, tc.claims, got, tc.owner)
 			}
 		})
 	}
@@ -478,29 +649,40 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 }
 
 // A notice whose owning architect has ended waits on nobody: a claim that retired or failed comes
-// back only through a new start (an operator's retry, a re-admission, or for a child's architect
-// its child's next phase start), whose ready queues a catch-up of its own, and a lingering tree's
-// architect is suspended until re-admission, which starts it with the tree's record rather than
-// the notices of its close. Such a row finishes without delivery, with one log line naming the
-// notice kind and the issue.
+// back only through a new start (an operator's retry, a return, or for a child's architect its
+// child's next phase start), whose ready queues a catch-up of its own. Such a row finishes without
+// delivery, with one log line naming the notice kind and the issue. A resting-root notice
+// (dispatch://INFRA-3320, R8) is keyed by the ancestor whose approval a root rests on, here
+// LEGION-1, a root: with its architect claim absent, retired or failed, it finishes the same way,
+// and the ancestor's next catch-up names the root instead (workflow's
+// TestRestingRootsHoldTheAncestorSignOff).
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
+	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
+	restingRoot := record.Notice{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-1/spec",
+		Reason: "An ancestor's approval opened the spec step of LEGION-208. A person approved version 3 of the primary document of LEGION-1. " +
+			"LEGION-208 rests on this approval. The checks of LEGION-208 serve these requirements of LEGION-1: dispatch://LEGION-1/spec#b-p2@v3."}
 	for _, tc := range []struct {
-		name    string
-		state   supervise.ClaimState
-		lingers bool
+		name string
+		// state is the state of LEGION-1's architect claim, "" for no claim at all.
+		state  supervise.ClaimState
+		issue  string
+		notice record.Notice
 	}{
-		{name: "the architect's claim retired", state: supervise.StateRetired},
-		{name: "the architect's claim failed", state: supervise.StateFailed},
-		// The linger's suspend of the architect is an outbox row of its own, which may not have run.
-		{name: "the tree lingers before its architect's suspend ran", state: supervise.StateWorking, lingers: true},
+		{name: "the architect's claim retired", state: supervise.StateRetired, issue: "LEGION-2", notice: childClosed},
+		{name: "the architect's claim failed", state: supervise.StateFailed, issue: "LEGION-2", notice: childClosed},
+		{name: "an ancestor's resting-root notice with no architect claim", issue: "LEGION-1", notice: restingRoot},
+		{name: "an ancestor's resting-root notice, its architect's claim retired", state: supervise.StateRetired, issue: "LEGION-1", notice: restingRoot},
+		{name: "an ancestor's resting-root notice, its architect's claim failed", state: supervise.StateFailed, issue: "LEGION-1", notice: restingRoot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			noticeTree(t, pool, records, tc.lingers)
+			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaim(t, sup, "LEGION-1", tc.state)
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
+			if tc.state != "" {
+				architectClaim(t, sup, "LEGION-1", tc.state)
+			}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, tc.issue, tc.notice, time.Now()))
 			var logged bytes.Buffer
 			publisher := &holderPublisher{}
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
@@ -512,9 +694,12 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 			}
 			_, delivered := publisher.snapshot()
 			lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
-			if len(delivered) != 0 || outboxRows(t, pool) != 0 || len(lines) != 1 || !strings.Contains(lines[0], "kind=child-closed") || !strings.Contains(lines[0], "issue=LEGION-2") {
-				t.Fatalf("delivered %+v, %d rows left, log %q; want no delivery, the row finished, one line naming child-closed and LEGION-2", delivered, outboxRows(t, pool), logged.String())
+			kind, issue := "kind="+string(tc.notice.Kind), "issue="+tc.issue
+			if len(delivered) != 0 || outboxRows(t, pool) != 0 || len(lines) != 1 || !strings.Contains(lines[0], kind) || !strings.Contains(lines[0], issue) {
+				t.Fatalf("delivered %+v, %d rows left, log %q; want no delivery, the row finished, one line naming %s and %s", delivered, outboxRows(t, pool),
+					logged.String(), tc.notice.Kind, tc.issue)
 			}
+			t.Logf("finished undelivered: %s", lines[0])
 		})
 	}
 }
@@ -602,63 +787,184 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 	}
 }
 
-// reparent records a Dispatch re-parent of LEGION-2 as admission does: its parent changes and its
-// tree does not.
-func reparent(t *testing.T, pool *store.Pool, records record.Store, parent string) {
-	t.Helper()
-	root := "LEGION-1"
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &parent, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
-}
+// A notice for an architect whose claim is suspended — by the operator, or by a stop of its issue,
+// which keeps its claims suspended until Dispatch shows it in work again (R20 of
+// dispatch://INFRA-3320) — waits for it: the row is kept, and nothing is sent. One for a claim
+// that failed or retired, or that this daemon does not supervise, ends undelivered (R18). A notice
+// whose owner walk meets a chain the copy cannot show to its top waits too, whoever runs above the
+// gap, and is delivered once a reading of Dispatch writes the missing row. A notice starts and
+// resumes no claim a stop suspended: one queued at an entry the return then raises waits through
+// it, and is delivered once the return's start brings the claim back, since a notice's delivery
+// reads its run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320). Its
+// delivery wakes only a claim an idle release suspended, which keeps its phase and task.
+func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
+	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
+	for _, tc := range []struct {
+		name  string
+		claim *routeClaim
+		waits bool
+	}{
+		{name: "suspended by the operator", claim: &byOperator, waits: true},
+		{name: "suspended by a stop of its issue", claim: &byAStop, waits: true},
+		{name: "failed", claim: &failedHere},
+		{name: "retired", claim: &retiredHere},
+		{name: "not supervised"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			if tc.claim != nil {
+				if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), Project: "legion",
+					Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect, State: tc.claim.state, SuspendedBy: tc.claim.by}, ""); err != nil {
+					t.Fatalf("create the architect claim of LEGION-1: %v", err)
+				}
+			}
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", childClosed, time.Now()))
+			publisher := &holderPublisher{}
+			publisher.setAbsent(architectTopic(t, "LEGION-1"))
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+			err := runner.execute(context.Background(), row)
+			if _, delivered := publisher.snapshot(); len(delivered) != 0 {
+				t.Fatalf("delivered %+v, want nothing sent to an architect that holds no role", delivered)
+			}
+			if tc.waits != errors.Is(err, errNoticeWaits) {
+				t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, %s, = %v; waits %t", tc.name, err, tc.waits)
+			}
+			if !tc.waits && err != nil {
+				t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, %s, = %v; want it finished undelivered", tc.name, err)
+			}
+		})
+	}
 
-// A child re-parented under an issue the workflow has not recorded stays in its tree: its notice
-// goes to its own architect while that holds its role, else to the tree's root architect (the
-// child has none here), and neither it nor the tree's other notices wait on the unrecorded parent.
-// The root's own notice and a grandchild's, to the grandchild's running sub-architect, are
-// delivered on the same tick.
-func TestANoticeOfAChildReparentedOutsideTheRecordReachesItsTreesRoot(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	noticeTree(t, pool, records, false)
-	reparent(t, pool, records, "LEGION-99")
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
-	architectClaim(t, sup, "LEGION-3", supervise.StateWorking)
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
-	publisher := &holderPublisher{}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[phase-finished to LEGION-1 design-approved to LEGION-1 phase-finished to LEGION-3]" || outboxRows(t, pool) != 0 {
-		t.Fatalf("delivered %v with %d rows left, want the re-parented child's and the root's notices to the root, the grandchild's to its sub-architect, none left",
-			deliveredKinds(t, delivered), outboxRows(t, pool))
-	}
-}
+	t.Run("on a chain the copy cannot show to its top", func(t *testing.T) {
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		putChainIssue(t, pool, records, routingIssue("LEGION-1", "LEGION-1", ""))
+		// LEGION-3's parent LEGION-2 is recorded, and the copy holds no row of it yet.
+		putOutboxIssue(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
+		putChainIssue(t, pool, records, routingIssue("LEGION-3", "LEGION-1", "LEGION-2"))
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
+		publisher := &holderPublisher{}
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+		if err := runner.execute(context.Background(), row); !errors.Is(err, errNoticeWaits) || !errors.Is(err, record.ErrChainUnknown) {
+			t.Fatalf("executing a notice of LEGION-3 whose parent's row the copy lacks = %v, want a wait on the unknown chain", err)
+		}
+		putCopyRow(t, pool, "LEGION-2", "LEGION-1", "in_progress")
+		if err := runner.execute(context.Background(), row); err != nil {
+			t.Fatalf("executing the notice once the chain is known: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
+			t.Fatalf("delivered %+v once the chain is known, want the notice to LEGION-1's architect", delivered)
+		}
+	})
 
-// A child re-parented under another tree's root stays in its own tree: its notices go to its own
-// architect while that holds its role, else, as its close does, to its own tree's root architect;
-// none goes to the other tree's.
-func TestANoticeOfAChildReparentedUnderAnotherTreeStaysWithItsOwnTree(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	noticeTree(t, pool, records, false)
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-50", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-50", Title: "Other root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	reparent(t, pool, records, "LEGION-50")
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
-	architectClaim(t, sup, "LEGION-50", supervise.StateWorking)
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
-	publisher := &holderPublisher{}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run: %v", err)
+	// stoppedOrReleased is LEGION-1's architect claim suspended by by, with the session a resume
+	// brings back, and the runner that delivers its notices, with the store a wake is taken in.
+	stoppedOrReleased := func(t *testing.T, by supervise.SuspendSource) (*store.Pool, record.Store, *fake.Runtime, *supervise.Machine, *outbox, *holderPublisher) {
+		t.Helper()
+		ctx := context.Background()
+		pool := isolatedOutboxPool(t)
+		st, err := store.Open(ctx, pool.Config().ConnString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+		machine, _, err := sup.Create(ctx, supervise.Claim{Token: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), Project: "legion", Tree: "LEGION-1",
+			Issue: "LEGION-1", Role: claim.RoleArchitect, State: supervise.StateSuspended, SuspendedBy: by, Generation: 1,
+			Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"}, "")
+		if err != nil {
+			t.Fatalf("create the architect claim of LEGION-1: %v", err)
+		}
+		machine.Wait()
+		// The suspended claim's session is gone, so the listener finds no holder of its role.
+		publisher := &holderPublisher{}
+		publisher.setAbsent(architectTopic(t, "LEGION-1"))
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, trees: st,
+			project: "legion", now: time.Now}
+		return pool, records, rt, machine, runner, publisher
 	}
-	if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[phase-finished to LEGION-1 child-closed to LEGION-1]" || outboxRows(t, pool) != 0 {
-		t.Fatalf("delivered %v with %d rows left, want both notices to LEGION-1's architect", deliveredKinds(t, delivered), outboxRows(t, pool))
+	resumes := func(rt *fake.Runtime) int {
+		count := 0
+		for _, call := range rt.Calls() {
+			if call.Method == "Resume" || call.Method == "Spawn" {
+				count++
+			}
+		}
+		return count
 	}
+
+	t.Run("of an earlier entry, for a claim a stop suspended, until the return starts it", func(t *testing.T) {
+		ctx := context.Background()
+		pool, records, rt, machine, runner, publisher := stoppedOrReleased(t, supervise.SuspendedByDaemon)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
+		queued, _ := record.FenceOf(mustDecode(t, row))
+		// The return raises the issue's phase entry (workflow.ReturnToWork) in the run it stands in.
+		architect := rolePhaseRow(t, pool, "LEGION-1", claim.RoleArchitect)
+		architect.Issue, architect.Role = "LEGION-1", claim.RoleArchitect
+		architect.Entry++
+		var now record.Fence
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := records.PutPhase(ctx, tx, architect); err != nil {
+				return err
+			}
+			var err error
+			now, err = record.ReadFence(ctx, tx, records, "LEGION-1", false)
+			return err
+		}); err != nil {
+			t.Fatalf("raise the entry of LEGION-1: %v", err)
+		}
+		if now.Generation != queued.Generation || now.Entry <= queued.Entry {
+			t.Fatalf("LEGION-1 stands at %+v and its notice was queued at %+v, want a later entry of the same run", now, queued)
+		}
+		if err := runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
+			t.Fatalf("executing the notice while the stop holds LEGION-1's architect = %v, want it to wait", err)
+		}
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || resumes(rt) != 0 || machine.Claim().State != supervise.StateSuspended {
+			t.Fatalf("delivered %+v, %d launches, claim %s; want nothing sent and the claim left suspended: a notice starts no claim a stop suspended",
+				delivered, resumes(rt), machine.Claim().State)
+		}
+		// The return's start brings the claim back by rule, as the start executor hands it.
+		if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: machine.Claim().Token, Reason: "the return's start"}); err != nil {
+			t.Fatalf("resume LEGION-1's architect: %v", err)
+		}
+		machine.Wait()
+		// The resumed session holds the role again once its relaunch has claimed it.
+		publisher.setAbsent()
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("executing the notice once the return started LEGION-1's architect: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[design-approved to LEGION-1]" {
+			t.Fatalf("delivered %v once the return started the claim, want the notice of the earlier entry to LEGION-1's architect", deliveredKinds(t, delivered))
+		}
+	})
+
+	t.Run("for a claim an idle release suspended, which its delivery wakes", func(t *testing.T) {
+		ctx := context.Background()
+		pool, records, rt, machine, runner, publisher := stoppedOrReleased(t, supervise.SuspendedByReleased)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
+		if err := runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
+			t.Fatalf("executing the notice for the released architect of LEGION-1 = %v, want it to wait for the woken claim", err)
+		}
+		machine.Wait()
+		// The woken session holds the role again once its relaunch has claimed it.
+		publisher.setAbsent()
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || resumes(rt) != 1 || machine.Claim().State == supervise.StateSuspended {
+			t.Fatalf("delivered %+v, %d launches, claim %s; want nothing sent yet and the released claim woken by the delivery", delivered, resumes(rt), machine.Claim().State)
+		}
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("executing the notice once the claim was woken: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[design-approved to LEGION-1]" {
+			t.Fatalf("delivered %v once the claim was woken, want the notice to LEGION-1's architect", deliveredKinds(t, delivered))
+		}
+	})
 }
 
 // A notice whose architect cannot be resolved from the record (here an issue whose key makes no
@@ -696,44 +1002,18 @@ func TestAnUnroutableNoticeHoldsNothingBackAndFinishesOnItsOwnAttempt(t *testing
 	}
 }
 
-// A child moved under a child of another tree, whose own sub-architect runs, still belongs to its
-// own tree: the tree's issues are read by tree, so the other tree's issues are no parents of it, and
-// its notice goes to its own tree's owner.
-func TestANoticeOfAChildMovedUnderAnotherTreesSubArchitectStaysWithItsOwnTree(t *testing.T) {
+// A notice of an issue the daemon does not record has no architect to go to: it finishes
+// undelivered on its first attempt, with one error line, instead of waiting on a record nothing
+// will write.
+func TestANoticeOfAnIssueTheDaemonDoesNotRecordFinishesUndelivered(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
-	other := "LEGION-50"
-	putOutboxIssue(t, pool, records, record.Issue{Key: other, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: other, Title: "Other root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-51", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: other, Parent: &other, Title: "Other child", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	reparent(t, pool, records, "LEGION-51")
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
-	architectClaim(t, sup, "LEGION-51", supervise.StateWorking)
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
-	publisher := &holderPublisher{}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	want := architectTopic(t, "LEGION-1")
-	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != want || outboxRows(t, pool) != 0 {
-		t.Fatalf("delivered %+v with %d rows left, want the one notice to %s", delivered, outboxRows(t, pool), want)
-	}
-}
-
-// A notice of a tree whose root is not recorded has no architect to go to: it finishes undelivered
-// on its first attempt, with one error line, instead of waiting on a root that cannot be read.
-func TestANoticeOfATreeWhoseRootIsNotRecordedFinishesUndelivered(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	root := "LEGION-1"
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &root, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-40", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
 	var logged bytes.Buffer
 	publisher := &holderPublisher{}
-	publisher.setAbsent(architectTopic(t, root))
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 		project: "legion", now: time.Now}
 	if err := runner.RunOnce(context.Background()); err != nil {

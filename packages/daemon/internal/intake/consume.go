@@ -881,8 +881,20 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	// and the deadline would be the whole of its cost. Every consumer hears more of these than of
 	// anything else — the Dispatch durable takes every project's issue events, and decodeMessage
 	// answers with no fact for another project's key and for every event type the workflow does
-	// not read.
+	// not read. One of the daemon's own issues, a message or a comment on no ask among them, still
+	// moves that issue's cursor (seenEvent), which a queued write to Dispatch waits on: it is
+	// advanced in a transaction of its own, and a failure of that write naks the message, so the
+	// event is delivered again rather than leaving the write waiting for an event already gone.
 	if decoded.Fact == nil {
+		if decoded.Seen != nil {
+			work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
+			err := seeDropped(work, pool, *decoded.Seen)
+			cancel()
+			if err != nil {
+				nakResolve(spec, message, decoded.EventID, "record the issue's newest event seen", "nak the record of the issue's newest event seen", err)
+				return false
+			}
+		}
 		return ackMessage(spec.Logger, message)
 	}
 
@@ -1012,7 +1024,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	}
 	decoded.Fact = fact
 
-	result, err := ApplyFact(withStreamPosition(work, message), pool, decoded.Source, decoded.EventID, decoded.Fact, handlers...)
+	result, err := ApplyFact(withSeenEvent(withStreamPosition(work, message), decoded.Seen), pool, decoded.Source, decoded.EventID, decoded.Fact, handlers...)
 	if err != nil {
 		return nakOutcome("retryable intake processing failure", "nak intake processing failure", err)
 	}

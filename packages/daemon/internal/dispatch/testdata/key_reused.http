@@ -1,0 +1,10 @@
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/json
+Idempotency-Key: capture-key-reused-1
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Fri, 20 Nov 2026 15:47:29 GMT
+Content-Length: 206
+
+{"code":"KEY_REUSED","error":"Idempotency-Key \"capture-key-reused-1\" was already used for PATCH /api/v1/issues/CORE-4 with different content; this request was not run: a changed request needs a new key"}

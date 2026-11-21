@@ -598,6 +598,14 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
 			applied)
 	}
+	// Dispatch shows the issue under the root, as the copy the boot fills holds it (R16 of
+	// dispatch://INFRA-3320), so the sweep reads its chain.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		seedCopyRow(t, tx, key, root.Key, issue.DispatchStatus, 1)
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy row of %s: %v", key, err)
+	}
 	var entry int64
 	var entryTask string
 	if err := pool.QueryRow(ctx, "select entry, entry_task from phases where issue = $1 and role = 'tester'",
@@ -635,7 +643,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the sweep after the roll-forward sent %s %+v, want the one start of entry 1: a role whose task that daemon lost is what the re-arm exists to send again",
 			key, starts)
 	}
-	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue), entry: 1}
+	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue, false), entry: 1}
 	if starts[0] != want {
 		t.Fatalf("the start the sweep sent %s = %+v, want %+v: the record holds no task of that entry, so what is sent is the line the daemon composes for a worker already in its phase",
 			key, starts[0], want)

@@ -267,23 +267,24 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 // for example) is told the architect above it. A specs with no owner reader addresses every claim
 // to its tree's architect. A read that fails fails the launch, as a repository read does.
 func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, error) {
-	if s.owner == nil || claim.IsTreeRoot(c.Issue, c.Tree) {
+	if s.owner == nil {
 		return claim.NewToken(s.project, c.Tree, claim.RoleArchitect)
 	}
 	return s.owner(ctx, s.project, c)
 }
 
-// owningArchitect is specs.owner: the architect that owns c, a claim on an issue that is not its
-// tree's root, as the store records the architect claims of the issue's tree now
-// (record.ReadOwnerWalk). It is where a worker-died about c's role goes, so the architect the
+// owningArchitect is specs.owner: the architect that owns c's issue on the Dispatch chain, as the
+// store records the architect claims on it now (record.ReadOwnerWalk, R18 of
+// dispatch://INFRA-3320). It is where a worker-died about c's role goes, so the architect the
 // daemon tells when this claim fails is the one it answers to. For a phase worker the walk starts
 // at its issue, so it is the issue's own architect while that claim holds its role, else the
-// nearest one above it that does, else the tree root's; for the issue's own architect it starts
-// at the issue's parent (record.NoticeStartsAtParent), which is the architect above it. An issue
-// the workflow does not record, such as an operator's claim, has no tree to walk, so its claim is
-// its tree's architect's. project is the claim project token every token of the launch is spelled
-// in. It reads in a read-only transaction of its own, as the supervisor's predicates read a
-// record.
+// nearest one above it in Legion's work that does, else its gate root's; for the issue's own
+// architect it starts above the issue (record.NoticeStartsAtParent), which is the architect above
+// it, or the issue's own where none is. A walk that meets a chain the copy cannot show to its top
+// names the issue's own architect, where it starts. An issue the workflow does not record, such as
+// an operator's claim, has no chain to walk, so its claim is its tree's architect's. project is the
+// claim project token every token of the launch is spelled in. It reads in a read-only
+// transaction of its own, as the supervisor's predicates read a record.
 func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c supervise.Claim) (claim.Token, error) {
 	owner, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
@@ -294,11 +295,14 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		if err != nil || issue == nil {
 			return err
 		}
-		walk, err := record.ReadOwnerWalk(ctx, w.records, tx, project, issue.Tree)
+		walk, err := record.ReadOwnerWalk(ctx, w.records, tx, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}
-		owner, err = walk.Architect(*issue, c.Role == claim.RoleArchitect)
+		owner, err = walk.Architect(issue.Key, c.Role == claim.RoleArchitect)
+		if errors.Is(err, record.ErrChainUnknown) {
+			owner, err = claim.NewToken(project, issue.Key, claim.RoleArchitect)
+		}
 		return err
 	}); err != nil {
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)

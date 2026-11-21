@@ -74,7 +74,7 @@ func TestAPausedProjectsHeldRowsAreNotClaimable(t *testing.T) {
 	ids := make([]int64, len(pauseQueue))
 	inTx(t, st, func(tx pgx.Tx) {
 		for i, queued := range pauseQueue {
-			row, err := NewOutboxRow(queued.issue, queued.payload, now)
+			row, err := NewFencedRow(ctx, tx, records, queued.issue, queued.payload, now)
 			must(t, err)
 			ids[i], err = records.EnqueueID(ctx, tx, row)
 			must(t, err)

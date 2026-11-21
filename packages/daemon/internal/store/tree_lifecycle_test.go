@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -51,20 +49,27 @@ func (r *countingReleaser) CleanupTree(context.Context, string) error {
 	return nil
 }
 
-// A close reserves the tree barrier before any process of the tree exists. The delayed root claim
-// cannot persist; confirming the empty cleanup lets only a fresh explicit workflow admission open
-// epoch two and write it.
-func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
+// A close reserves the tree barrier of the release before, which no claim of this release binds:
+// a delayed root claim whose own issue's lifecycle is open still persists, recording the epoch its
+// stored tree's row stands at (R22 of dispatch://INFRA-3320), and the issue's lifecycle is what
+// fences it (issue_lifecycle_test.go). Confirming the empty cleanup lets only a fresh explicit
+// workflow admission open the tree's epoch two, which the claim's next admission records.
+func TestATreeCloseFencesNoClaimAndAFreshAdmissionOpensTheTreesNextEpoch(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
+	openIssueLifecycle(t, store, rootIssue)
 	lifecycle, reserved, err := store.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
 	if err != nil || !reserved || lifecycle.Epoch != 1 {
 		t.Fatalf("reserve before any claim = %+v, reserved %t, err %v", lifecycle, reserved, err)
 	}
 	root := supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, State: supervise.StateQueued}
-	if _, err := store.AdmitClaim(ctx, root); !errors.Is(err, treelifecycle.ErrCleanupReserved) || !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("delayed root claim after reservation = %v, want the reservation's wait", err)
+	if bound, err := store.AdmitClaim(ctx, root); err != nil || bound.TreeEpoch != 1 || bound.IssueEpoch != 1 {
+		t.Fatalf("delayed root claim after the tree's reservation = %+v, %v; want it admitted on its issue's epoch 1, recording the tree's epoch 1", bound, err)
+	}
+	root.State = supervise.StateRetired
+	if err := store.PutClaim(ctx, root); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
 		t.Fatal(err)
@@ -73,9 +78,10 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 	if err != nil || opened.Epoch != 2 {
 		t.Fatalf("fresh workflow admission = %+v, err %v, want epoch 2", opened, err)
 	}
+	root.State = supervise.StateQueued
 	bound, err := store.AdmitClaim(ctx, root)
 	if err != nil || bound.TreeEpoch != 2 {
-		t.Fatalf("root claim after confirmed cleanup = %+v, err %v", bound, err)
+		t.Fatalf("root claim after confirmed cleanup = %+v, err %v; want it recording the tree's epoch 2", bound, err)
 	}
 }
 
@@ -91,6 +97,7 @@ func TestACloseOfAGenerationTheRootNeverLingeredAtReservesNothing(t *testing.T) 
 			t.Fatalf("reserve at generation %d = %+v, reserved %t, err %v; want nothing reserved and no error", generation, lifecycle, reserved, err)
 		}
 	}
+	openIssueLifecycle(t, store, rootIssue)
 	c := supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, State: supervise.StateQueued}
 	if bound, err := store.AdmitClaim(ctx, c); err != nil || bound.TreeEpoch != 1 {
 		t.Fatalf("claim after the unrunnable closes = %+v, err %v; want the open epoch 1", bound, err)
@@ -124,48 +131,8 @@ func TestMalformedWorkflowCloseCannotSelectOperatorAuthority(t *testing.T) {
 	}
 }
 
-// A reservation whose transaction commits while a start waits on the shared serializer wins: the
-// start is refused with the named cleanup wait once the reservation commits, and writes nothing.
-func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
-	store := migratedStore(t)
-	ctx := context.Background()
-	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := treelifecycle.ReserveCleanup(ctx, tx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatal(err)
-	}
-	child := supervise.Claim{Token: claim.Token("legion-legion-legion-209-implementer"), Project: "legion", Tree: rootIssue, Issue: childIssue, Role: claim.RoleImplementer, State: supervise.StateQueued}
-	admitted := make(chan error, 1)
-	go func() {
-		_, err := store.AdmitClaim(ctx, child)
-		admitted <- err
-	}()
-	select {
-	case err := <-admitted:
-		t.Fatalf("the start did not wait for the reservation's serializer: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-admitted; !errors.Is(err, treelifecycle.ErrCleanupReserved) || !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("start after the reservation committed = %v, want the reservation's wait", err)
-	}
-	var count int
-	if err := store.Pool().QueryRow(ctx, `select count(*) from claims where token = $1`, string(child.Token)).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("the refused start left %d claim rows (err %v)", count, err)
-	}
-}
-
-// A restart reads the same unconfirmed reservation from Postgres. It still rejects delayed claim
-// persistence, and its retry returns the original epoch rather than losing the cleanup marker in a
-// runtime-local cache.
+// A restart reads the same unconfirmed reservation from Postgres: its retry returns the original
+// epoch rather than losing the cleanup marker in a runtime-local cache.
 func TestRestartRetainsTreeCleanupReservation(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
@@ -179,10 +146,6 @@ func TestRestartRetainsTreeCleanupReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restarted.Close)
-	claim := supervise.Claim{Token: claim.Token("legion-legion-legion-209-implementer"), Project: "legion", Tree: rootIssue, Issue: childIssue, Role: claim.RoleImplementer, State: supervise.StateQueued}
-	if _, err := restarted.AdmitClaim(ctx, claim); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
-		t.Fatalf("delayed child claim after restart = %v, want the reservation's wait", err)
-	}
 	retry, resumed, err := restarted.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
 	if err != nil || !resumed || retry.Epoch != lifecycle.Epoch {
 		t.Fatalf("reservation retry after restart = %+v, resumed %t, err %v", retry, resumed, err)
@@ -190,13 +153,14 @@ func TestRestartRetainsTreeCleanupReservation(t *testing.T) {
 }
 
 // The reserved cleanup waits, releasing nothing, while any stored claim of the tree has not
-// retired; once every claim retired it releases the tree and confirms. A retained claim token is
-// then no authority to launch a later tree lifetime: re-admission writes the same token only after
-// that confirmation, and its persisted TreeEpoch changes with the newly opened lifecycle.
+// retired; once every claim retired it releases the tree and confirms. The claim's next admission
+// after a fresh one of the tree records the tree's new epoch, which is what the release before
+// binds it by (R22 of dispatch://INFRA-3320).
 func TestReservedCleanupWaitsForEveryClaimAndTheNextEpochRebindsIt(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
+	openIssueLifecycle(t, store, rootIssue)
 	c := supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, State: supervise.StateQueued}
 	first, err := store.AdmitClaim(ctx, c)
 	if err != nil || first.TreeEpoch != 1 {
@@ -298,139 +262,6 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("cleanup step after the fact committed: %v", err)
-	}
-}
-
-// IssueSandboxHome is the tree an issue's Sandbox belongs to now, and only while the issue is in that
-// tree or can still be admitted into it: a live hand-over fence names the issue's own key; otherwise
-// the record's tree, while its lifecycle is open or releasing, or, for a tree never opened, while
-// the issue waits in admission's line or lingers after its own close. Every other case is no tree,
-// the Sandbox anybody's to delete: a carried child that left the line (backlog, done, its label
-// taken off), a fence cancelled or naming a tree the record has moved from, a tree whose cleanup
-// confirmed, an issue never recorded.
-func TestIssueSandboxHomeIsATreeTheIssueIsInOrCanStillBeAdmittedInto(t *testing.T) {
-	ctx := context.Background()
-	store := migratedStore(t)
-	const otherTree = "LEGION-300"
-	type fence struct {
-		tree      string
-		cancelled bool
-	}
-	for _, tc := range []struct {
-		name       string
-		tree       string // the child's record's tree
-		status     string
-		handedOver bool
-		lingers    bool
-		fence      *fence
-		lifecycles map[string]string // tree: open, releasing (cleanup started, not confirmed) or confirmed
-		want       string
-	}{
-		{"a child of a live tree", rootIssue, "in_progress", false, false, nil, map[string]string{rootIssue: "open"}, rootIssue},
-		{"a child of a tree whose cleanup is releasing", rootIssue, "in_progress", false, false, nil, map[string]string{rootIssue: "releasing"}, rootIssue},
-		{"a child of a tree whose cleanup confirmed", rootIssue, "in_progress", false, false, nil, map[string]string{rootIssue: "confirmed"}, ""},
-		{"a child whose hand-over is pending", rootIssue, "in_progress", false, false, &fence{tree: rootIssue}, map[string]string{rootIssue: "open"}, childIssue},
-		{"a child whose hand-over was cancelled", rootIssue, "in_progress", false, false, &fence{tree: rootIssue, cancelled: true}, map[string]string{rootIssue: "open"}, rootIssue},
-		{"a fence its child's record moved away from, to a live tree", otherTree, "in_progress", false, false, &fence{tree: rootIssue}, map[string]string{rootIssue: "open", otherTree: "open"}, otherTree},
-		{"a fence its child's record moved away from, to its own tree it left", childIssue, "backlog", true, false, &fence{tree: rootIssue}, map[string]string{rootIssue: "open"}, ""},
-		{"a carried child waiting for admission", childIssue, "todo", true, false, nil, map[string]string{rootIssue: "confirmed"}, childIssue},
-		{"a carried child admitted into its own tree", childIssue, "in_progress", true, false, nil, map[string]string{childIssue: "open"}, childIssue},
-		{"a carried child that left the line for backlog", childIssue, "backlog", true, false, nil, nil, ""},
-		{"a carried child closed as done before admission", childIssue, "done", true, false, nil, nil, ""},
-		{"a carried child whose label was taken off", childIssue, "todo", false, false, nil, nil, ""},
-		{"a carried child that left the line, inside its own linger", childIssue, "done", true, true, nil, nil, childIssue},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := store.Pool().Exec(ctx, `truncate handovers, tree_lifecycles, issues cascade`); err != nil {
-				t.Fatal(err)
-			}
-			var lingerUntil *time.Time
-			if tc.lingers {
-				until := time.Now().Add(time.Hour)
-				lingerUntil = &until
-			}
-			if _, err := store.Pool().Exec(ctx, `insert into issues
-				(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, handed_over, linger_until)
-				values ($1, $2, 'LEGION', 'child', 'implementing', 2, $3, 'B', 1, $4, $5)`,
-				childIssue, tc.tree, tc.status, tc.handedOver, lingerUntil); err != nil {
-				t.Fatal(err)
-			}
-			if tc.fence != nil {
-				if _, err := store.Pool().Exec(ctx, `insert into handovers (issue, tree, linger_generation, cancelled) values ($1, $2, 1, $3)`,
-					childIssue, tc.fence.tree, tc.fence.cancelled); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for tree, state := range tc.lifecycles {
-				if _, err := store.Pool().Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority, cleanup_started, cleanup_confirmed_at)
-					values ('legion', $1, 1, 'workflow', $2, case when $3 then now() end)`, tree, state != "open", state == "confirmed"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			got, err := store.IssueSandboxHome(ctx, "legion", childIssue)
-			if err != nil {
-				t.Fatalf("IssueSandboxHome: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("IssueSandboxHome = %q, want %q", got, tc.want)
-			}
-		})
-	}
-	if got, err := store.IssueSandboxHome(ctx, "legion", "LEGION-999"); err != nil || got != "" {
-		t.Errorf("an issue never recorded: IssueSandboxHome = %q, %v; want no tree", got, err)
-	}
-}
-
-// The operator's spawn of another project's issue runs in a Sandbox of this project's, labelled
-// with that issue and with the spawn's own tree, and the issues table holds the record that
-// project's daemon keeps of the issue. That record is no record of this project's, so this
-// project reads the Sandbox's home as that of an issue it never recorded, no tree, and the orphan
-// sweep deletes the Sandbox once the spawn's own tree is gone, whatever the other project's record
-// says of the issue waiting in its line, lingering or being handed over. The other project's
-// daemon reads its own record as before.
-func TestIssueSandboxHomeReadsNoRecordAnotherProjectKeepsOfTheIssue(t *testing.T) {
-	ctx := context.Background()
-	store := migratedStore(t)
-	const other = "OTHER-7"
-	for _, tc := range []struct {
-		name       string
-		status     string
-		handedOver bool
-		lingers    bool
-		fence      bool
-	}{
-		{name: "the other project's record waits in its line", status: "todo", handedOver: true},
-		{name: "the other project's record lingers after its close", status: "done", lingers: true},
-		{name: "the other project's record is being handed over", status: "in_progress", fence: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := store.Pool().Exec(ctx, `truncate handovers, tree_lifecycles, issues cascade`); err != nil {
-				t.Fatal(err)
-			}
-			var lingerUntil *time.Time
-			if tc.lingers {
-				until := time.Now().Add(time.Hour)
-				lingerUntil = &until
-			}
-			if _, err := store.Pool().Exec(ctx, `insert into issues
-				(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, handed_over, linger_until)
-				values ($1, $1, 'OTHER', 'root', 'implementing', 1, $2, 'B', 1, $3, $4)`,
-				other, tc.status, tc.handedOver, lingerUntil); err != nil {
-				t.Fatal(err)
-			}
-			if tc.fence {
-				if _, err := store.Pool().Exec(ctx, `insert into handovers (issue, tree, linger_generation, cancelled) values ($1, $1, 1, false)`,
-					other); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if got, err := store.IssueSandboxHome(ctx, "legion", other); err != nil || got != "" {
-				t.Errorf("legion's IssueSandboxHome of %s = %q, %v; want no tree: OTHER's record of %s is no record of legion's", other, got, err, other)
-			}
-			if got, err := store.IssueSandboxHome(ctx, "other", other); err != nil || got != other {
-				t.Errorf("OTHER's IssueSandboxHome of %s = %q, %v; want %s from its own record", other, got, err, other)
-			}
-		})
 	}
 }
 

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The `sign_off` and `request_backward_move` descriptions name `WAITING_ON_CHILDREN`, the refusal
+  of an issue that waits in `awaiting_children` while a Dispatch child of it is open. The
+  `sign_off` description says that a parent goes back by itself to the start it held once no child
+  is open, a held test, review or acceptance as `testing`, whose task names the children that
+  merged during the wait, unless its pull request merged during the wait, and that a parent is
+  accepted on a head that need not carry its children's merges, once each check has a pass whose
+  observed line names a base commit carrying every needed child's merge, which every testing task
+  of a parent asks the tester to run on.
+custom:
+    Issue: pr4592

@@ -92,6 +92,9 @@ func (d *gatePublishDispatch) SetStatus(context.Context, string, string) (dispat
 func (d *gatePublishDispatch) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
+func (d *gatePublishDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("gatePublishDispatch takes no status change")
+}
 func (d *gatePublishDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *gatePublishDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("gatePublishDispatch takes no hand-over")
@@ -142,7 +145,7 @@ func newGatePublishRig(t *testing.T, slots int) *gatePublishRig {
 	records := record.NewStore()
 	rig := &gatePublishRig{t: t, ctx: context.Background(), pool: pool, records: records, client: &gatePublishDispatch{}}
 	rig.engine = workflow.New(records, workflow.Config{Project: gatePublishProject, Repositories: testRepositories,
-		Steps: gatePublishSteps, Linger: time.Hour, Clock: rig.clock}, quietLogger())
+		Steps: gatePublishSteps, Clock: rig.clock}, quietLogger())
 	rig.admission = admit.New(records, rig.engine, slots, gatePublishProject, quietLogger())
 	rig.runner = &outbox{pool: pool, records: records, dispatch: rig.client, dispatchProject: gatePublishProject,
 		now: rig.clock, log: quietLogger()}
@@ -163,7 +166,8 @@ func (r *gatePublishRig) inTx(fn func(ctx context.Context, tx pgx.Tx) error) {
 }
 
 // seedRoot records key as a root of its own tree, running under a tree lifecycle the workflow
-// opened: what admission's promotion leaves, and what record.TreeLive reads as a live tree.
+// opened: what admission's promotion leaves, and what record.TreeLive reads as a live tree. Its row
+// of the copy stands it on a known Dispatch chain with no parent.
 func (r *gatePublishRig) seedRoot(key string, at phase.Phase, rank string) {
 	r.t.Helper()
 	token, err := claim.ProjectToken(gatePublishProject)
@@ -176,6 +180,7 @@ func (r *gatePublishRig) seedRoot(key string, at phase.Phase, rank string) {
 			Status: "in_progress", DispatchStatus: "in_progress", Rank: rank, HandedOver: true, LastDispatchSeq: 1}); err != nil {
 			return err
 		}
+		seedCopyRow(r.t, tx, key, "", "in_progress", 1)
 		slots, err := r.records.Slots(ctx, tx)
 		if err != nil {
 			return err
@@ -189,13 +194,18 @@ func (r *gatePublishRig) seedRoot(key string, at phase.Phase, rank string) {
 }
 
 // seedMember records key as an issue of tree under parent, at the phase and status given: the
-// member of a tree whose generation a clear empties.
+// member of a tree whose generation a clear empties. Its row of the copy stands it under parent on
+// the Dispatch chain.
 func (r *gatePublishRig) seedMember(key, tree, parent string, at phase.Phase, status, rank string, seq int64) {
 	r.t.Helper()
 	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
-		return r.records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
+		if err := r.records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Project: gatePublishProject, Title: key, Tree: tree, Parent: record.ParentOf(parent),
-			Phase: at, Generation: 1, Status: status, DispatchStatus: status, Rank: rank, HandedOver: true, LastDispatchSeq: seq})
+			Phase: at, Generation: 1, Status: status, DispatchStatus: status, Rank: rank, HandedOver: true, LastDispatchSeq: seq}); err != nil {
+			return err
+		}
+		seedCopyRow(r.t, tx, key, parent, status, max(seq, 1))
+		return nil
 	})
 }
 
@@ -299,7 +309,7 @@ func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 
 // The document each of an issue's design-gate steps records reaches Dispatch because the write
 // that moved those pairs queued the publication, whichever path made it
-// (record.PublishChangedGates). Three paths are driven here, and each is the real one:
+// (record.PublishChangedGates). Two paths are driven here, and each is the real one:
 //
 //  1. an architect's registration, which is the path that binds a step to a document and so the
 //     one that most often moves the pairs. The publication carries the issue's whole set as the
@@ -308,10 +318,10 @@ func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 //  2. a person's review and a new version of a registered document, which move a version and a
 //     review mark and leave every step on the document it named. Every review and every version
 //     of every gated tree reaches the same helper, and each would otherwise cost Dispatch a write
-//     that says what it already holds, so these publish nothing;
-//  3. the carry of a finished root's gate onto a child admitted as a root of its own (admit's
-//     readmit). It is the one path that gives an issue a gate without its architect registering
-//     anything, so what Dispatch learns of the child's documents, it learns here or nowhere.
+//     that says what it already holds, so these publish nothing.
+//
+// No path carries a gate onto another issue: the gate is the issue's own fact (R17 of
+// dispatch://INFRA-3320), and no issue is handed over as a root of its own.
 func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
 	r := newGatePublishRig(t, 2)
@@ -357,95 +367,34 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 		t.Fatalf("the gates of %s record %+v after a version and a review, want the pairs unmoved at %+v", root, got, both)
 	}
 	r.wantPublished("a person's approval of the registered spec", r.published())
-
-	// 3. A finished root that lingers, gated on both its steps, and a child of it mid-run. The
-	// person hands the child to Legion while the tree is done, so admission admits it as a root of
-	// its own and carries the old root's rows onto it.
-	const old, child, oldCriteria, oldSpec = "LEGION-200", "LEGION-201", "artifact-old-criteria", "artifact-old-spec"
-	until := r.clock().Add(time.Hour)
-	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
-		return r.records.PutIssue(ctx, tx, record.Issue{Key: old, Repo: "acme/widgets", DefaultBranch: "main",
-			GitHubRepo: "acme/widgets", Project: gatePublishProject, Title: old, Tree: old, Phase: phase.Done,
-			Generation: 1, Status: "done", DispatchStatus: "done", Rank: "B", HandedOver: true, LingerUntil: &until,
-			LastDispatchSeq: 1})
-	})
-	carried := []record.DesignGateDocument{
-		{Step: record.DesignStepCriteria, ArtifactID: oldCriteria},
-		{Step: record.DesignStepSpec, ArtifactID: oldSpec},
-	}
-	r.seedGates(old, carried...)
-	r.seedMember(child, old, old, phase.Implementing, "in_progress", "C", 2)
-	r.wantPublished("the seeded records of the finished tree", r.published())
-
-	r.apply("child-handed-over", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3,
-		Type: "issue.updated", Status: "todo", Title: child, Parent: old, Rank: "C", HandedOver: true})
-	admitted := readIssue(t, r.pool, child)
-	if admitted == nil || admitted.Tree != child {
-		t.Fatalf("%s = %+v after its hand-over, want a root of its own: the carry this row is about never happened", child, admitted)
-	}
-	if got := r.gatesOf(child); !reflect.DeepEqual(got, carried) {
-		t.Fatalf("the gates carried to %s = %+v, want the old root's %+v", child, got, carried)
-	}
-	r.wantPublished("the carry of the old root's gate onto its child", r.published(),
-		gatePublished{Issue: child, Gates: wire(carried...)})
 }
 
 // Every path that empties an issue's design gates queues one publication of the empty set for each
 // issue it emptied (record.Postgres.clearGates): those rows recorded a document until the delete,
 // and Dispatch holds the set they recorded until something tells it otherwise. The delete names
-// the issues it emptied rather than the clear naming every issue it covers, so an issue of the
-// tree that held no gate row costs Dispatch no write.
+// the issue it emptied, so an issue that held no gate row costs Dispatch no write.
 //
-// The three deletes are the three the daemon makes, each driven here through the fact that makes
-// it: an adoption, which moves a queued root and its whole tree into a live tree and clears each
-// member's generation (workflow.Engine.Adopt); a re-admission, which starts a new generation of
-// the root's whole tree (record.ClearTreeGeneration); and a child set back to todo under a live
-// tree, which clears its own run alone (workflow.Engine.ReenterChild). Each tree holds more than
-// one member, so a clear that published the issue it was keyed by rather than the issues it
-// emptied would be caught.
+// The delete is a new run's (workflow.Engine.NewRun), which clears the run's facts of its own
+// issue and of no other (R17 of dispatch://INFRA-3320; decision 8 of dispatch://INFRA-4730): it is
+// driven here on a closed root a person sets back to todo and on a child set back to todo under a
+// live tree. Each issue's children or siblings hold gate rows of their own, so a clear that
+// published an issue it did not empty would be caught.
 func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 	empty := []dispatch.DesignGateDocument{}
 	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
 	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
 
-	t.Run("an adoption clears every member of the tree it takes in", func(t *testing.T) {
-		const live, queued, member, ungated = "LEGION-100", "LEGION-200", "LEGION-201", "LEGION-202"
-		r := newGatePublishRig(t, 3)
-		r.seedRoot(live, phase.Implementing, "A")
-		r.seedGates(live, spec)
-		// The queued root never ran, so it is adoptable: its own tree, waiting in the line, with
-		// two members under it and gates on two of the three.
-		r.inTx(func(ctx context.Context, tx pgx.Tx) error {
-			return r.records.PutIssue(ctx, tx, record.Issue{Key: queued, Repo: "acme/widgets", DefaultBranch: "main",
-				GitHubRepo: "acme/widgets", Project: gatePublishProject, Title: queued, Tree: queued,
-				Parent: record.ParentOf(live), Phase: phase.Admitted, Generation: 1, Status: "todo",
-				DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 2})
-		})
-		r.seedGates(queued, criteria, spec)
-		r.seedMember(member, queued, queued, phase.Done, "backlog", "C", 2)
-		r.seedGates(member, spec)
-		r.seedMember(ungated, queued, queued, phase.Done, "backlog", "D", 2)
-		r.wantPublished("the seeded records", r.published())
-
-		r.apply("tick", intake.ControllerTick{})
-		if got := readIssue(t, r.pool, queued); got == nil || got.Tree != live {
-			t.Fatalf("%s = %+v after the tick, want it a member of the tree of %s: the adoption this row is about never happened", queued, got, live)
-		}
-		// The queued root and the member that held a row are published empty, once each; the
-		// member that held none, and the live tree's own root, are not published at all.
-		r.wantPublished("the adoption", r.published(),
-			gatePublished{Issue: queued, Gates: empty}, gatePublished{Issue: member, Gates: empty})
-	})
-
-	t.Run("a re-admission clears every member of the tree that starts again", func(t *testing.T) {
+	t.Run("a closed root's new run clears its own and none of its children's", func(t *testing.T) {
 		const root, member, ungated = "LEGION-300", "LEGION-301", "LEGION-302"
 		r := newGatePublishRig(t, 3)
-		until := r.clock().Add(time.Hour)
 		r.inTx(func(ctx context.Context, tx pgx.Tx) error {
-			return r.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main",
+			if err := r.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main",
 				GitHubRepo: "acme/widgets", Project: gatePublishProject, Title: root, Tree: root, Phase: phase.Done,
-				Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", HandedOver: true,
-				LingerUntil: &until, LastDispatchSeq: 1})
+				Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", HandedOver: true, LastDispatchSeq: 1}); err != nil {
+				return err
+			}
+			seedCopyRow(r.t, tx, root, "", "done", 1)
+			return nil
 		})
 		r.seedGates(root, criteria, spec)
 		r.seedMember(member, root, root, phase.Done, "done", "B", 1)
@@ -456,13 +405,15 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 		r.apply("root-todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 4,
 			Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: true})
 		if got := readIssue(t, r.pool, root); got == nil || got.Generation != 2 {
-			t.Fatalf("%s = %+v after its todo, want generation 2: the re-admission this row is about never happened", root, got)
+			t.Fatalf("%s = %+v after its todo, want generation 2: the new run this row is about never happened", root, got)
 		}
-		r.wantPublished("the re-admission", r.published(),
-			gatePublished{Issue: root, Gates: empty}, gatePublished{Issue: member, Gates: empty})
+		if got := r.gatesOf(member); !reflect.DeepEqual(got, []record.DesignGateDocument{criteria}) {
+			t.Fatalf("the gates of %s after its parent's new run = %+v, want its own %+v kept", member, got, criteria)
+		}
+		r.wantPublished("the new run", r.published(), gatePublished{Issue: root, Gates: empty})
 	})
 
-	t.Run("a child re-entering its phase clears its own", func(t *testing.T) {
+	t.Run("a child's new run clears its own", func(t *testing.T) {
 		const root, child, sibling = "LEGION-400", "LEGION-401", "LEGION-402"
 		r := newGatePublishRig(t, 3)
 		r.seedRoot(root, phase.Implementing, "A")
@@ -477,16 +428,16 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 			Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true})
 		got := readIssue(t, r.pool, child)
 		if got == nil || got.Generation != 2 || got.Tree != root {
-			t.Fatalf("%s = %+v after its todo, want generation 2 in the tree of %s: the re-entry this row is about never happened", child, got, root)
+			t.Fatalf("%s = %+v after its todo, want generation 2 under %s: the new run this row is about never happened", child, got, root)
 		}
 		// Its own run alone: the tree's root and the sibling that stayed parked keep their rows and
 		// are told nothing.
-		r.wantPublished("the child's re-entry", r.published(), gatePublished{Issue: child, Gates: empty})
+		r.wantPublished("the child's new run", r.published(), gatePublished{Issue: child, Gates: empty})
 		if pairs := r.gatesOf(root); len(pairs) != 2 {
-			t.Fatalf("the gates of %s = %+v after its child re-entered, want both rows kept", root, pairs)
+			t.Fatalf("the gates of %s = %+v after its child's new run, want both rows kept", root, pairs)
 		}
 		if pairs := r.gatesOf(sibling); len(pairs) != 1 {
-			t.Fatalf("the gates of %s = %+v after its sibling re-entered, want its row kept", sibling, pairs)
+			t.Fatalf("the gates of %s = %+v after its sibling's new run, want its row kept", sibling, pairs)
 		}
 	})
 }

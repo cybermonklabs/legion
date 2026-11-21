@@ -62,10 +62,17 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 		for _, slot := range taken {
 			base = max(base, slot.Index+1)
 		}
+		// Each issue is recorded with its row of the copy, as a reading of Dispatch leaves it, so
+		// the boot reads each issue's gate root on a known Dispatch chain (record.Chains).
 		for _, issue := range run.issues {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
+			var parent string
+			if issue.Parent != nil {
+				parent = *issue.Parent
+			}
+			seedCopyRow(t, tx, issue.Key, parent, issue.Status, 1)
 		}
 		for i, key := range run.slots {
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: base + i, AdmittedAt: now}); err != nil {
@@ -85,6 +92,7 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 		if _, err := st.OpenTreeLifecycle(ctx, c.Project, c.Tree, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the tree of %s: %v", c.Token, err)
 		}
+		openIssue(t, st, c.Project, c.Issue, treelifecycle.AuthorityWorkflow)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", c.Token, err)
 		}
@@ -194,8 +202,9 @@ func keysOf(state map[string]json.RawMessage) []string {
 // failed phase worker (its issue is held from that phase), a failed tree architect and a retired
 // worker owning its issue's phase (no rule the daemon runs starts a retired claim, and the boot's
 // repair reads only a suspension). It names none of the claims something will still start: a
-// worker whose phase is not its own, and the members of a tree that lingers, which re-admission
-// starts again. One error line names them all,
+// worker whose phase is not its own, and the claims of an issue Dispatch shows out of Legion's
+// work under a closed parent, which the issue's return to work starts again (R20 of
+// dispatch://INFRA-3320). One error line names them all,
 // each under the key of the move that brings it back (api.StrandedClaim.Move): the suspended
 // architects under `resume`, the suspended phase workers under `suspendedWorkers`, the failed
 // architects under `retry` and the failed phase workers and the retired claims under
@@ -209,14 +218,13 @@ func keysOf(state map[string]json.RawMessage) []string {
 func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
-	implementing, reviewing, tested, lingering, lingeringChild, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
+	implementing, reviewing, tested, closed, stopped, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
 	// The tree whose tester a close retired while the tree runs again: its session is kept and
 	// the start executor would retry it, but nothing queues that start.
 	retired := key("7")
-	until := time.Now().Add(time.Hour)
-	parked := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
-	child := runningRoot(lingeringChild, phase.Retro)
-	child.Tree, child.Parent = lingering, &parked.Key
+	parked := record.Issue{Key: closed, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: closed, Project: cfg.Project, Title: closed, Phase: phase.Done, Generation: 1, Status: "done", Rank: "n", HandedOver: true}
+	child := runningRoot(stopped, phase.Retro)
+	child.Tree, child.Parent, child.Status = closed, &parked.Key, "backlog"
 	// The tester's start for its phase is due in an hour: the outbox holds it, but the operator
 	// suspended the tester, so the start waits for the operator's resume and wakes nothing. The
 	// planner's is due then too, so the planning root's slot holds a worker whose start is owed
@@ -238,7 +246,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 			holdingTask(previousClaim(t, cfg, implementing, implementing, claim.RoleImplementer, supervise.StateSuspended), phase.Implementing, "Implement it."),
 			holdingTask(previousClaim(t, cfg, reviewing, reviewing, claim.RoleReviewer, supervise.StateFailed), phase.Reviewing, "Review it."),
 			operatorHeld(previousClaim(t, cfg, tested, tested, claim.RoleTester, supervise.StateSuspended)),
-			previousClaim(t, cfg, lingering, lingeringChild, claim.RoleImplementer, supervise.StateSuspended),
+			previousClaim(t, cfg, closed, stopped, claim.RoleImplementer, supervise.StateSuspended),
 			previousClaim(t, cfg, planning, planning, claim.RoleArchitect, supervise.StateFailed),
 			holdingTask(previousClaim(t, cfg, retired, retired, claim.RoleTester, supervise.StateRetired), phase.Testing, "Test it."),
 		},
@@ -289,24 +297,24 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 }
 
 // A daemon restarted with only claims something will still start — workers suspended once their
-// phase was over or before it began, and the members of a lingering tree, its architect included —
-// reports nothing: no line, and an empty list in the state.
+// phase was over or before it began, and the claims of a closed issue and of an issue Dispatch
+// shows out of Legion's work under it, the closed issue's architect included, which a return to
+// work starts again — reports nothing: no line, and an empty list in the state.
 func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
-	root, lingering, lingeringChild := key("1"), key("2"), key("3")
-	until := time.Now().Add(time.Hour)
-	parked := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
-	child := runningRoot(lingeringChild, phase.Implementing)
-	child.Tree, child.Parent = lingering, &parked.Key
+	root, closed, stopped := key("1"), key("2"), key("3")
+	parked := record.Issue{Key: closed, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: closed, Project: cfg.Project, Title: closed, Phase: phase.Done, Generation: 1, Status: "done", Rank: "n", HandedOver: true}
+	child := runningRoot(stopped, phase.Implementing)
+	child.Tree, child.Parent, child.Status = closed, &parked.Key, "backlog"
 	putPreviousRun(t, cfg, previousRun{
 		issues: []record.Issue{runningRoot(root, phase.Implementing), parked, child},
 		slots:  []string{root},
 		claims: []supervise.Claim{
 			previousClaim(t, cfg, root, root, claim.RolePlanner, supervise.StateSuspended),
 			previousClaim(t, cfg, root, root, claim.RoleTester, supervise.StateSuspended),
-			previousClaim(t, cfg, lingering, lingering, claim.RoleArchitect, supervise.StateSuspended),
-			previousClaim(t, cfg, lingering, lingeringChild, claim.RoleImplementer, supervise.StateSuspended),
+			previousClaim(t, cfg, closed, closed, claim.RoleArchitect, supervise.StateSuspended),
+			previousClaim(t, cfg, closed, stopped, claim.RoleImplementer, supervise.StateSuspended),
 		},
 	})
 	var logs syncBuffer

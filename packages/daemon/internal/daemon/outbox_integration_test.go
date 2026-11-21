@@ -187,13 +187,50 @@ func claimDueOutboxRow(t *testing.T, pool *store.Pool, records record.Store, now
 	return claimed
 }
 
+// mustOutboxRow is payload's row for issue due at now, fenced as every writer of this release
+// fences it (record.NewFencedRow): by the run, phase entry and pod issue stands at in the
+// database the test's isolatedOutboxPool made, as that database holds them when the row is built,
+// and by record.FirstFence, an unrecorded issue's, where the test made none. A part the payload
+// names itself is kept, so a case of an earlier run or entry names it.
 func mustOutboxRow(t *testing.T, issue string, payload record.OutboxPayload, now time.Time) record.OutboxRow {
 	t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, now)
-	if err != nil {
+	pool := outboxTestPool(t)
+	if pool == nil {
+		row, err := record.NewOutboxRow(issue, record.Fenced(payload, record.FirstFence), now)
+		if err != nil {
+			t.Fatalf("new outbox row: %v", err)
+		}
+		return row
+	}
+	var row record.OutboxRow
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		row, err = record.NewFencedRow(context.Background(), tx, record.NewStore(), issue, payload, now)
+		return err
+	}); err != nil {
 		t.Fatalf("new outbox row: %v", err)
 	}
 	return row
+}
+
+// outboxTestPools is the pool each test's isolatedOutboxPool made, by the test's name, which
+// mustOutboxRow reads a row's fence from.
+var outboxTestPools sync.Map
+
+// outboxTestPool is the pool isolatedOutboxPool made for t or for the test t runs under, nil
+// where none did.
+func outboxTestPool(t *testing.T) *store.Pool {
+	for name := t.Name(); name != ""; {
+		if pool, ok := outboxTestPools.Load(name); ok {
+			return pool.(*store.Pool)
+		}
+		slash := strings.LastIndex(name, "/")
+		if slash < 0 {
+			break
+		}
+		name = name[:slash]
+	}
+	return nil
 }
 
 func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) {
@@ -217,7 +254,10 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 // (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
-	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
+	pool := store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
+	outboxTestPools.Store(t.Name(), pool)
+	t.Cleanup(func() { outboxTestPools.CompareAndDelete(t.Name(), pool) })
+	return pool
 }
 
 func outboxSuffix(t *testing.T) string {
@@ -260,6 +300,9 @@ func (d *blockingDispatch) SetStatus(context.Context, string, string) (dispatch.
 }
 func (d *blockingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *blockingDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("blockingDispatch takes no status change")
 }
 func (d *blockingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("blockingDispatch takes no hand-over")
@@ -454,6 +497,9 @@ func (d *refusingDispatch) SetStatus(_ context.Context, _ string, status string)
 func (d *refusingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
+func (d *refusingDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("refusingDispatch takes no status change")
+}
 func (d *refusingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("refusingDispatch takes no hand-over")
 }
@@ -515,6 +561,9 @@ func (d *boardDispatch) SetStatus(_ context.Context, _ string, status string) (d
 }
 func (d *boardDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *boardDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("boardDispatch takes no status change")
 }
 func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("boardDispatch takes no hand-over")
@@ -717,8 +766,7 @@ func TestEveryStatusRowKindHasARule(t *testing.T) {
 // rather than being judged by another kind's rule, which is the mistake this case exists to make
 // loud. The kinds are read from record.StatusRowKinds rather than written out here, so a kind
 // added to that list and left out of the switch is asked here too; and each is asked for real,
-// against a record and a read that stand, so none may answer with that refusal — except a kind
-// whose first attempt finishes its row, which cannot reach a retry at all and says so.
+// against a record and a read that stand, so none may answer with that refusal.
 func TestEveryStatusRowKindHasAStillWantedRule(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -730,13 +778,8 @@ func TestEveryStatusRowKindHasAStillWantedRule(t *testing.T) {
 		record.OrdinaryStatusRow:       record.OrdinaryStatusWrite("testing", "in_progress", ""),
 		record.PersonHandoverStatusRow: record.PersonHandoverStatusWrite("todo", "triage"),
 		record.ReassertStatusRow:       record.ReassertStatusWrite("in_progress", "done"),
-		record.HandOverStatusRow:       record.HandOverStatusWrite("todo", "in_progress", "LEGION-207", 1),
 		record.CloseStatusRow:          record.CloseStatusWrite("done", "in_progress", "merged", 0),
 	}
-	// The hand-over's first attempt makes its own Dispatch write and finishes the row on every
-	// path, so no hand-over reaches the retry: its rule answers that the question cannot arise,
-	// and a kind this table does not name is held to answering for real.
-	retryCannotArise := map[record.StatusRowKind]bool{record.HandOverStatusRow: true}
 	for _, kind := range record.StatusRowKinds {
 		payload, named := payloads[kind]
 		if !named {
@@ -750,11 +793,7 @@ func TestEveryStatusRowKindHasAStillWantedRule(t *testing.T) {
 			t.Fatalf("the rule of status row kind %q = %v, want a rule of its own", kind, err)
 		}
 		read := dispatch.Issue{Key: "LEGION-208", Status: payload.ObservedStatus, HandedOver: true}
-		_, err = rule.stillWanted(context.Background(), runner, record.OutboxRow{Issue: "LEGION-208"}, payload, read)
-		switch {
-		case retryCannotArise[kind] && err == nil:
-			t.Fatalf("the rule of status row kind %q answered its retry, want it to say the retry cannot arise", kind)
-		case !retryCannotArise[kind] && err != nil:
+		if _, err := rule.stillWanted(context.Background(), runner, record.OutboxRow{Issue: "LEGION-208"}, payload, read); err != nil {
 			t.Fatalf("the rule of status row kind %q answered %v, want it to answer at all", kind, err)
 		}
 	}
@@ -901,17 +940,13 @@ func TestAMigratedStatusRowRunsUnderItsOwnRule(t *testing.T) {
 		name, issue, payload string
 		want                 record.StatusRowKind
 		// wanted is whether the rule of the migrated row's kind answers that the write is still
-		// owed. The hand-over's retry cannot arise at all (its first attempt finishes the row),
-		// so its rule is asked for its refusal rather than for an answer.
-		wanted      bool
-		cannotArise bool
+		// owed.
+		wanted bool
 	}{
 		{name: "a person's handover", issue: "LEGION-208", want: record.PersonHandoverStatusRow, wanted: true,
 			payload: `{"status":"todo","observedStatus":"triage","personHandover":true}`},
 		{name: "a re-assert", issue: "LEGION-209", want: record.ReassertStatusRow, wanted: true,
 			payload: `{"status":"in_progress","observedStatus":"done","reassert":true}`},
-		{name: "a hand-over", issue: "LEGION-210", want: record.HandOverStatusRow, cannotArise: true,
-			payload: `{"status":"todo","observedStatus":"in_progress","handOver":true,"handOverTree":"LEGION-200","handOverLinger":3}`},
 		{name: "an unmarked write", issue: "LEGION-211", want: record.OrdinaryStatusRow, wanted: true,
 			payload: `{"status":"testing","observedStatus":"in_progress"}`},
 		{name: "an unmarked re-assert, as the release before this one queued one", issue: "LEGION-212",
@@ -960,10 +995,6 @@ func TestAMigratedStatusRowRunsUnderItsOwnRule(t *testing.T) {
 		}
 		wanted, err := rule.stillWanted(ctx, runner, stored, write, read)
 		switch {
-		case row.cannotArise:
-			if err == nil {
-				t.Fatalf("the rule judging %s answered its retry, want it to say the retry cannot arise", row.name)
-			}
 		case err != nil:
 			t.Fatalf("the rule judging %s answered %v, want the rule of its own kind to answer", row.name, err)
 		case wanted != row.wanted:
@@ -1124,89 +1155,6 @@ func (s *flakyOutboxStore) failedFinishes() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.finishesFailed
-}
-
-// An outbox tree_close row (lingerExpired enqueues one for every claim of the tree) is the one
-// supervise request that ends the tree's root claim; the supervisor refuses any other stop of a root.
-func TestOutboxTreeCloseRowEndsTheTreesRootClaim(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	// A tree's close is the expiry of its linger, so the tree lingers when the row runs.
-	until := time.Now().Add(-time.Minute)
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, issue)
-	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
-	token, err := claim.NewToken("legion", issue.Key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("claim token: %v", err)
-	}
-	machine, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleArchitect, State: supervise.StateQueued,
-	}, "")
-	if err != nil {
-		t.Fatalf("create root claim: %v", err)
-	}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir()}
-
-	if err := runner.execute(context.Background(), mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation, Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("stop the root at its tree's close: %v", err)
-	}
-
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("root claim state after the tree's close = %s, want retired", got)
-	}
-	if releases := runtime.CallsOf("Release"); len(releases) != 1 || releases[0].Released.Claim != token {
-		t.Fatalf("releases = %+v, want the root released once", releases)
-	}
-}
-
-// The daemon wires treeClosable into every claim's machine whenever a workflow is configured, and
-// the workflow closes a tree whose linger expired while it still holds that tree's issue record —
-// the very record treeClosable refuses on. So the two must not meet: a workflow tree_close is the
-// workflow's own decision and is never put to treeClosable, while the operator's close of the same
-// tree is refused. Without this wiring in the test, a predicate that refused both looked green.
-func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(-time.Minute)
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, issue)
-	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.TreeClosable = (&workflowRuntime{pool: pool, records: records}).treeClosable // exactly what daemon.go wires in production
-	token, err := claim.NewToken("legion", issue.Key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("claim token: %v", err)
-	}
-	machine, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleArchitect, State: supervise.StateQueued,
-	}, "")
-	if err != nil {
-		t.Fatalf("create root claim: %v", err)
-	}
-
-	// The operator's close of a tree a workflow issue backs is refused, and changes nothing.
-	operatorClose := machine.Handle(context.Background(), supervise.RequestOperatorClose{Claim: token})
-	var refused *supervise.RefusedError
-	if !errors.As(operatorClose, &refused) || !strings.Contains(refused.Error(), "closes when its linger expires") {
-		t.Fatalf("operator close = %v, want the workflow-tree refusal", operatorClose)
-	}
-	if got := machine.Claim().State; got == supervise.StateRetired {
-		t.Fatal("a refused operator close retired the root claim")
-	}
-
-	// The workflow's own close of that same tree goes through and releases the root.
-	runner := &outbox{pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir()}
-	if err := runner.execute(context.Background(), mustOutboxRow(t, issue.Key, record.SuperviseRequest{
-		Op: "tree_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation, Linger: issue.Generation,
-	}, time.Now())); err != nil {
-		t.Fatalf("the workflow's tree close: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("root claim state after the workflow's tree close = %s, want retired", got)
-	}
-	if releases := runtime.CallsOf("Release"); len(releases) != 1 || releases[0].Released.Claim != token {
-		t.Fatalf("releases = %+v, want the root released once", releases)
-	}
 }
 
 // The daemon wires phaseHolds into every claim's machine, and one path a delivery takes rewrites

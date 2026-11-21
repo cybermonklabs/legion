@@ -37,7 +37,7 @@ func TestAnIssueOnARenamedRepositoryNoRecordNamesIsRecordedOnGitHubsNameForIt(t 
 	if prepared.RepositoryRefusal != "" {
 		t.Fatalf("the prepared event refuses %q, want it recorded: both Apps are installed", prepared.RepositoryRefusal)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-921", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-921", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	got := recordedIssue(t, w, "LEGION-921")

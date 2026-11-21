@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // RelayOutcome is what RelayParkedDecision did with one decision, which is what its caller logs.
@@ -32,29 +30,34 @@ const (
 	// RelayNoPersonWaiting is a decision no person made on a tree whose root waits for its slot:
 	// nothing is kept, since only a person decides, and nobody is told.
 	RelayNoPersonWaiting
-	// RelayNotParked is a decision on a lingering root someone has since moved to a status of the
-	// workflow (admission's releaseUnslotted leaves one at in_progress): it is nobody's parked
-	// tree, so nothing is kept and nobody is told.
+	// RelayNotParked is a decision on a root out of Legion's work that someone has since moved to a
+	// status of the workflow, a root at phase done (admission's releaseUnslotted leaves one at
+	// in_progress): it is nobody's parked tree, so nothing is kept and nobody is told.
 	RelayNotParked
 )
 
-// WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
-// to be opened, with no architect running for it yet: the one queued-root rule (QueuedRoot),
-// read with the root's own design gate, not lingering, and holding no slot of its own. steps
-// are the design-gate steps the deployment gates.
+// WaitsForSlot says whether root is a root a person handed to Legion that waits in the line for
+// its first start, with no architect running for it yet: in Legion's work, a root on Dispatch's
+// chain as the copy shows it now (Chains.IsRoot), the one queued-root rule (QueuedRoot) read with
+// its own design gate, and holding no slot of its own. steps are the design-gate steps the
+// deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a
-// root handed over in accepting carries the row it held in the tree it left (Waiting's
-// queued-root loop states why), so a person's todo on such a root read here as a root with no
-// architect, and every decision a person made on its tree was kept for a start that is never
-// queued instead of reaching the architect that is running (RelayParkedDecision, workflow's
-// CatchUpTheTreesOwed). The slot is still asked, after the rule rather than instead of it: a
-// root at admitted whose gate has never opened is a queued root by its record and holds the
-// slot its architect is writing the design in, and that architect hears a decision itself.
+// root handed over in accepting carries the row it held before (Waiting's queued-root loop states
+// why), so a person's todo on such a root read here as a root with no architect, and every
+// decision a person made on it was kept for a start that is never queued instead of reaching the
+// architect that is running (RelayParkedDecision, workflow's CatchUpTheTreesOwed). The slot is
+// still asked, after the rule rather than instead of it: a root at admitted whose gate has never
+// opened is a queued root by its record and holds the slot its architect is writing the design
+// in, and that architect hears a decision itself.
 func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps []DesignStep) (bool, error) {
-	if root.Lingers() || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if !InLegionsWork(root) {
 		return false, nil
+	}
+	chains, err := ReadChains(ctx, tx, store, root.Project, []string{root.Key})
+	if err != nil || !chains.IsRoot(root.Key) {
+		return false, err
 	}
 	rows, err := store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
@@ -79,8 +82,9 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //
 //   - A root that waits for its slot (WaitsForSlot) keeps a person's decision for the start its
 //     admission will queue, and the controller is told nothing: the tree already runs again.
-//   - A tree that runs hears the decision itself (RelayNone), and a lingering root someone has
-//     moved back into the workflow is nobody's parked tree (RelayNotParked): either keeps nothing.
+//   - A tree that runs hears the decision itself (RelayNone), and a root out of Legion's work that
+//     someone moved back into a status of the workflow is nobody's parked tree (RelayNotParked):
+//     either keeps nothing.
 //   - Only a person decides (PersonActor): a session's write, the daemon's own included, is no
 //     decision to relay (RelayNoPerson).
 //   - What is kept is kept under issue, the issue it was decided on, never under a root: the tree
@@ -107,7 +111,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		if !nobodyHears {
 			return RelayNone, nil
 		}
-		if root.Lingers() && !OutOfWorkflow(root.Status) {
+		if !InLegionsWork(root) && !OutOfWorkflow(root.Status) {
 			return RelayNotParked, nil
 		}
 	}
@@ -124,7 +128,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
+	row, err := NewFencedRow(ctx, tx, store, issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
 		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
 	if err != nil {
 		return RelayNone, err

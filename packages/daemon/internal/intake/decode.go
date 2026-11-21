@@ -40,6 +40,11 @@ type decodedMessage struct {
 	// refused settlement is not poison, since no redelivery reads it otherwise, so the consumer
 	// acknowledges it and logs it once per event id (consumeMessage).
 	Refused *checksRefusal
+	// Seen is the issue and the sequence of a Dispatch event of an issue of the daemon's project,
+	// whether it decodes to a fact or to none: the consumer advances that issue's cursor with it,
+	// in the fact's transaction or, for an event no handler takes, in one of its own (seenEvent).
+	// Nil for every other message.
+	Seen *seenEvent
 }
 
 // settlementRead is what a checks settlement's payload gives of the three fields a settlement is
@@ -127,6 +132,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var err error
 	var legacy bool
 	var refused *checksRefusal
+	var seen *seenEvent
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
@@ -137,7 +143,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
+		fact, unread, seen, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -149,7 +155,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused, Seen: seen}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -272,13 +278,13 @@ func (e dispatchEvent) mark() record.EventMark {
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
 // (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
 // its key in neither form is poison (errIssueNameInNeitherForm).
-func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool, error) {
+func decodeDispatchFact(subject, project, payload string) (Fact, []string, *seenEvent, bool, error) {
 	key, legacy, ok := subjectforms.IssueEventKey(subject)
 	if !ok {
-		return nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
+		return nil, nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
 	}
-	fact, unread, err := decodeDispatchIssueEvent(key, project, payload)
-	return fact, unread, legacy, err
+	fact, unread, seen, err := decodeDispatchIssueEvent(key, project, payload)
+	return fact, unread, seen, legacy, err
 }
 
 // decodeDispatchIssueEvent decodes one Dispatch event of issue key, for project. The stream carries
@@ -286,27 +292,28 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // skipped before its payload is read, so it is never poison here. A field the mirror only records
 // (an issue's claim, an ask's kind) that cannot be read is taken as unknown and named in unread,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
-// does not act on.
-func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
+// does not act on. Every valid event of the project is seen, whether it decodes to a fact or to
+// none (seenEvent).
+func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, *seenEvent, error) {
 	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	var event dispatchEvent
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return nil, nil, fmt.Errorf("decode Dispatch event: %w", err)
+		return nil, nil, nil, fmt.Errorf("decode Dispatch event: %w", err)
 	}
 	if event.ID <= 0 || event.Seq <= 0 || event.Notify == nil || !claim.IsIssueKey(event.IssueKey) || event.Type == "" || !isJSONObject(event.Payload) {
-		return nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
+		return nil, nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
 	}
 	if key != event.IssueKey {
-		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
+		return nil, nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
 	}
 	var unread []string
 	fact, err := decodeDispatchEvent(event, &unread)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return fact, unread, nil
+	return fact, unread, &seenEvent{key: event.IssueKey, seq: event.Seq}, nil
 }
 
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
@@ -315,7 +322,8 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 // becomes the fact its live delivery would have been. It returns the fields it took as unknown,
 // as the live decoder logs them.
 func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, error) {
-	return decodeDispatchIssueEvent(key, project, string(event))
+	fact, unread, _, err := decodeDispatchIssueEvent(key, project, string(event))
+	return fact, unread, err
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
@@ -447,13 +455,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		closed := DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
 			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
-		// A person's decline is the one resolution the daemon acts on: it resumes the root's
-		// architect with Dispatch's own words and the person's note (workflow's resumeTask), so
-		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
-		// other resolution kind, and a close whose payload carries none, is the close alone.
+		// A person's decline is the one resolution the daemon resumes a root with: it resumes the
+		// root's architect with Dispatch's own words and the person's note (workflow's
+		// resumeTask), so both travel as data from Dispatch rather than as a copy of four
+		// sentences here. The withdrawal an issue's close records names that close as what
+		// closed the ask (DispatchAskClosed.Withdrawn). Any other resolution kind, and a close
+		// whose payload carries none, is the close alone.
 		if ask.Resolution != nil && ask.Resolution.Kind == ResolutionDeclined {
 			closed.Decline = &record.AskDecline{Note: ask.Resolution.Reason, Words: ask.Resolution.DispatchWords}
 		}
+		closed.Withdrawn = ask.Resolution != nil && ask.Resolution.Kind == ResolutionWithdrawn
 		return closed, nil
 	case "ask.handed_back":
 		// An approval request its asker returned to the person (Dispatch's handBackApprovalAsk):

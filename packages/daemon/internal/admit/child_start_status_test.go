@@ -12,7 +12,7 @@ import (
 )
 
 // statusWritesOf is every dispatch_status row queued for key, in outbox order, as the executor
-// would take them.
+// would take them, each read without its fence as effects reads every row (unfenced).
 func statusWritesOf(t *testing.T, pool *pgxpool.Pool, key string) []record.StatusWrite {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
@@ -27,7 +27,7 @@ func statusWritesOf(t *testing.T, pool *pgxpool.Pool, key string) []record.Statu
 		if err := rows.Scan(&write); err != nil {
 			t.Fatalf("decode a status write of %s: %v", key, err)
 		}
-		writes = append(writes, write)
+		writes = append(writes, unfenced(write).(record.StatusWrite))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the status writes of %s: %v", key, err)
@@ -64,10 +64,16 @@ func TestAReleasedChildsFirstPhaseTellsDispatchItIsInProgress(t *testing.T) {
 // The same child, released while the cap is full: it waits at admitted and is promoted by a later
 // pass, which is the shape most children of a busy deployment take. The promotion writes the
 // status of the phase it starts, so the board never reads todo for work Legion has begun.
+//
+// The cap's one slot is another tree's. The root reaches planning when its gate opens, and the
+// release of its child moves it to awaiting_children, which keeps no slot (dispatch://INFRA-3320
+// R9, R11), so the root's own slot would go to the child; the cap is full only while another
+// issue holds it.
 func TestAChildPromotedByALaterPassTellsDispatchItIsInProgress(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 1)
 	openGate(t, pool, admission, "gate-approved")
+	seedStarted(t, pool, "LEGION-90", phase.Implementing, nil)
 	seedMirrorChild(t, pool, cfFirst, "todo", cfRoot)
 	releaseChild(t, pool, admission, "release-first", cfFirst, cfRoot, 9)
 

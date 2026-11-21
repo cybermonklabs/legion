@@ -1,0 +1,10 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Idempotency-Key: capture-no-option-on-1795261633
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Sat, 21 Nov 2026 11:47:14 GMT
+Content-Length: 398
+
+{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's. LEGION-34 (in_progress) is a child of LEGION-33 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.","issues":[{"key":"LEGION-34","title":"no option on child","status":"in_progress","relation":"child"}],"changed":[]}

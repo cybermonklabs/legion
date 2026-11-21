@@ -91,8 +91,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 	token := claim.Token("legion-legion-legion-500-implementer")
 	podUID := "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
 	current := supervise.Claim{
-		Token: token, Project: "OTHER", Tree: "LEGION-500", Issue: "LEGION-500", Role: claim.RoleImplementer,
-		Generation: 3, TreeEpoch: 2,
+		Token: token, Project: "OTHER", Tree: "LEGION-500", LaunchTree: "LEGION-400", Issue: "LEGION-500", Role: claim.RoleImplementer,
+		Generation: 3, TreeEpoch: 2, IssueEpoch: 4, HoldsGate: true,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},

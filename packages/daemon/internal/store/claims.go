@@ -38,7 +38,7 @@ var _ supervise.Store = (*Store)(nil)
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
-const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
+const claimSelect = `select c.token, c.project, c.tree, c.launch_tree, c.issue, c.role, c.generation, c.tree_epoch, c.issue_epoch, c.holds_gate, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
@@ -412,6 +412,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	if c.IssueEpoch > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: issue epoch %d does not fit a bigint", c.Token, c.IssueEpoch)
+	}
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -424,13 +427,14 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
-		retired_at_write_mark)
+		retired_at_write_mark, launch_tree, issue_epoch, holds_gate)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59,
-		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $60, $61, $62)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
+		launch_tree = excluded.launch_tree, issue_epoch = excluded.issue_epoch, holds_gate = excluded.holds_gate,
 		session = excluded.session, session_file = excluded.session_file,
 		locator = excluded.locator, state = excluded.state, failure = excluded.failure,
 		pod_end = excluded.pod_end,
@@ -515,6 +519,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -585,20 +590,6 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 		string(token), row).Scan(&may)
 	if err != nil {
 		return false, fmt.Errorf("read stored claim %s: %w", token, err)
-	}
-	return may, nil
-}
-
-// StoredClaimMayRunIn is whether the stored claim of token stands in tree and may still hold a
-// process. Its caller can wait for the supervising machine rather than treating no machine as no
-// process. Unlike StoredClaimMayRun, it has no start-row term: no start of another tree runs
-// against a claim still standing in this tree.
-func (s *Store) StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error) {
-	var may bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and tree = $2 and `+claimMayRun+`)`,
-		string(token), tree).Scan(&may)
-	if err != nil {
-		return false, fmt.Errorf("read stored claim %s in tree %s: %w", token, tree, err)
 	}
 	return may, nil
 }
@@ -840,6 +831,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		cause, pendingCause         string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
+		issueEpoch                  int64
 		agentResumeGeneration       int64
 		locator                     []byte
 		deliveryID, task            *string
@@ -879,7 +871,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
 	)
-	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
+	err := row.Scan(&token, &c.Project, &c.Tree, &c.LaunchTree, &c.Issue, &role, &generation, &treeEpoch, &issueEpoch, &c.HoldsGate, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
@@ -913,7 +905,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
-	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.Generation, c.TreeEpoch, c.IssueEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(issueEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued

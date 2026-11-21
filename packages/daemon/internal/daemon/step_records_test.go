@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -626,7 +627,12 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number))
+		if err := r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number)); err != nil {
+			return err
+		}
+		// The child started its phases, so admission opened its own lifecycle, which each claim of it
+		// binds.
+		return openIssueTx(ctx, tx, r.project, created.Key, treelifecycle.AuthorityWorkflow)
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}

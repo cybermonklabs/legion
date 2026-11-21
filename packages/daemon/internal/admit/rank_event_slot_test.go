@@ -31,7 +31,7 @@ func TestRankOnlyEventTakesTheFreeSlot(t *testing.T) {
 	// Two slots against one running root: one slot is free when the rank event lands, and the
 	// line's first candidate is the one that takes it (promoteHolds).
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	seedSlotted(t, pool, "LEGION-1", "A")
 	seedWaiting(t, pool, "LEGION-2", "B")
 	seedWaiting(t, pool, "LEGION-3", "C")

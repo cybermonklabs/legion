@@ -12,12 +12,11 @@ import (
 // issue of the project that stands in a step whose runs are recorded, whose place has no row in the
 // store — a run the release before this one started — or a row the roll forward of a rollback
 // marked uncounted — a run an earlier release started after the rollback — and whose run is open
-// now (uncountedRunOpen: this release's end rule does not hold it over, its tree is not the
-// operator's, and its generation started a run) gets an open row there
-// (record.Store.OpenUncountedStep), with the agent and the moment its start would have named
-// (upgradedStart). So a member of a lingering or closed tree, and every issue of a tree whose root
-// waits for the promotion that opens it — a root a hand-over carried in, and the members of a tree
-// admitted again — get none. It queues no record: the run reaches Dispatch with its end,
+// now (uncountedRunOpen: this release's end rule does not hold it over, it is not the operator's,
+// and its generation started a run) gets an open row there (record.Store.OpenUncountedStep), with
+// the agent and the moment its start would have named (upgradedStart). So an issue out of Legion's
+// work, and a root that waits for the promotion that starts it, get none. It queues no record: the
+// run reaches Dispatch with its end,
 // as an uncounted run's end does (endStep). From then on it is an open run like any other: the
 // settle ends it (settleRuns), and the record names its agent (record.RunsAStepOn), so a fact that
 // agent's request applies waits for the agent's stream first. A place whose row is open or ended
@@ -43,16 +42,13 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 			counted[runAt{issue: row.Issue, place: row.Place}] = true
 		}
 	}
-	read := func(key string) (*record.Issue, error) { return e.store.Issue(ctx, tx, key) }
-	// No fact runs at the boot, so no linger is closed by one (mergeCanLand).
-	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
 		step, ok := standingStep(issue)
 		if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
 			continue
 		}
-		_, open, err := e.uncountedRunOpen(ctx, tx, booting, issue, read)
+		_, open, err := e.uncountedRunOpen(ctx, tx, issue)
 		if err != nil {
 			return 0, err
 		}

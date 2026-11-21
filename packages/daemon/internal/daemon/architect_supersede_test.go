@@ -75,9 +75,11 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 // names that decision, and its publish tells the architect.
 //
 // The root here is the red test's, with a person's decision on it while it waited for its slot:
-// the generation-1 start names that decision, its task is sent and never confirmed, the root is
-// parked and its architect suspended, and the hand-back re-admits it at generation 2.
-func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.T) {
+// the entry-1 start names that decision, its task is sent and never confirmed, a person takes the
+// root out of Legion's work and its architect is suspended, and the person's todo returns it to
+// work in the same run at a new entry (workflow.Engine.ReturnToWork, R20 of
+// dispatch://INFRA-3320), whose task supersedes entry 1's.
+func TestADecisionASupersededTaskNamedIsToldToTheReturnedArchitect(t *testing.T) {
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	ref := r.decide(mainPathAsk)
@@ -85,8 +87,8 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	r.runStarts()
 	r.bringUp()
 	held := r.machine().Claim().Pending
-	if held == nil || held.Generation != 1 || !strings.Contains(held.Task, ref) || !held.Prompted || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task naming %s, sent and unconfirmed", held, ref)
+	if held == nil || held.Generation != 1 || held.Entry != 1 || !strings.Contains(held.Task, ref) || !held.Prompted || !held.ConfirmedAt.IsZero() {
+		t.Fatalf("the architect's task before the park = %#v, want its entry-1 task naming %s, sent and unconfirmed", held, ref)
 	}
 	if kept := keptDecisions(t, r.pool, r.records, r.key); len(kept) != 1 || kept[0].HeldBy.Delivery != held.ID {
 		t.Fatalf("%s keeps %#v, want %s held by %s", r.key, kept, ref, held.ID)
@@ -98,8 +100,8 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	r.runStarts()
 
 	pending := r.machine().Claim().Pending
-	if pending == nil || pending.Generation != 2 || strings.Contains(pending.Task, ref) {
-		t.Fatalf("the re-admitted architect holds %#v, want generation 2's task, which names nothing %s's first task held", pending, held.ID)
+	if pending == nil || pending.Generation != 1 || pending.Entry <= held.Entry || strings.Contains(pending.Task, ref) {
+		t.Fatalf("the returned architect holds %#v, want a task of a later entry than %d in generation 1, which names nothing %s held", pending, held.Entry, held.ID)
 	}
 	kept := keptDecisions(t, r.pool, r.records, r.key)
 	if len(kept) != 1 || kept[0].Ref != ref || kept[0].HeldBy.Claim != "" || kept[0].ClaimedBy != 0 {
@@ -109,7 +111,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	sent := len(r.prompts())
 	r.bringUp()
 	if prompts := r.prompts()[sent:]; len(prompts) == 0 || prompts[0].DeliveryID != pending.ID {
-		t.Fatalf("the re-admitted architect was prompted %+v, want generation 2's task %s first", prompts, pending.ID)
+		t.Fatalf("the returned architect was prompted %+v, want the return's task %s first", prompts, pending.ID)
 	}
 	ready := r.machine().Claim()
 	w := &workflowRuntime{pool: r.pool, records: r.records, handlers: r.runner.handlers}

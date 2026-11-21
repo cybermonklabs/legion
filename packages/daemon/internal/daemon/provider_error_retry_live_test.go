@@ -313,6 +313,7 @@ func (r *providerErrorLive) seed() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, seeded.key, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", seeded.key, err)
 		}
+		openIssue(t, r.st, r.project, seeded.key, treelifecycle.AuthorityWorkflow)
 		token := r.token(seeded.key, seeded.role)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: seeded.key, Issue: seeded.key, Role: seeded.role,

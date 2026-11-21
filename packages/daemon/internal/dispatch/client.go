@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,33 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 		return Issue{}, err
 	}
 	return response.issue(), nil
+}
+
+// ChangeStatus writes change.Status on the issue key through POST
+// /api/v1/issues/{key}/status-change, the route that takes the options the PATCH does not
+// (StatusChange), as the daemon's own session, the actor every write of this client carries, and
+// under change.IdempotencyKey. Dispatch writes one issue at a time, each step in a transaction of
+// its own, in an order that keeps each parent's status in line with its children's after every
+// commit, and answers the named issue as the PATCH answers it with an entry for each issue the
+// call changed. Every refusal is an *Error that carries the entries of the steps that committed
+// before it (Error.Changed): 409 ISSUE_CHANGED for a stale ExpectedSequence, read as SetStatusAt's
+// is; 409 PARENT_STATUS_CONFLICT with the issues that hold the rule (Error.Issues); and the request
+// key's own answers, 422 KEY_REUSED, 409 KEY_IN_FLIGHT and 409 KEY_COMMITTED. A Dispatch older than
+// the route answers its router's 404 (NoRoute).
+func (c *HTTPClient) ChangeStatus(ctx context.Context, key string, change StatusChange) (StatusChangeResult, error) {
+	var response statusChangeResponse
+	if err := c.requestKeyed(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/status-change", change.IdempotencyKey, statusChangeWrite{
+		Status:           change.Status,
+		ExpectedSequence: change.ExpectedSequence,
+		IncludeChildren:  change.IncludeChildren,
+		UnlinkChildren:   change.UnlinkChildren,
+		IncludeParent:    change.IncludeParent,
+		DryRun:           change.DryRun,
+		Actor:            daemonActor(key),
+	}, &response); err != nil {
+		return StatusChangeResult{}, err
+	}
+	return StatusChangeResult{Issue: response.Issue.issue(), Changed: statusChangeEntries(response.Changed)}, nil
 }
 
 // ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
@@ -273,21 +301,26 @@ func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	}, nil)
 }
 
-// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts and returns the slug of every document
-// and file the issue holds. A caller that names its own document reads it before an upload, so
-// a retry finds the document its first attempt made rather than writing it a second version.
-func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
-	var artifacts []struct {
-		Slug string `json:"slug"`
-	}
-	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &artifacts); err != nil {
+// Artifacts reads GET /api/v1/issues/{key}/artifacts: every document and file the issue holds, in
+// the order Dispatch lists them, each with its id, its slug, its kind, its primary flag, its role
+// and its latest version, the newest of the versions Dispatch lists for it.
+func (c *HTTPClient) Artifacts(ctx context.Context, key string) ([]Artifact, error) {
+	var response []issueArtifactResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &response); err != nil {
 		return nil, err
 	}
-	slugs := make([]string, len(artifacts))
-	for i, artifact := range artifacts {
-		slugs[i] = artifact.Slug
+	artifacts := make([]Artifact, len(response))
+	for i, artifact := range response {
+		latest := 0
+		for _, version := range artifact.Versions {
+			latest = max(latest, version.Number)
+		}
+		artifacts[i] = Artifact{
+			ID: artifact.ID, Slug: artifact.Slug, Kind: artifact.Kind, Primary: artifact.Primary, Role: artifact.Role,
+			LatestVersion: latest,
+		}
 	}
-	return slugs, nil
+	return artifacts, nil
 }
 
 // UploadArtifact writes a markdown document on the issue through POST
@@ -479,6 +512,39 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// Reviews reads GET /api/v1/artifacts/{id}/reviews: every review Dispatch keeps of the document,
+// newest first in the order their events committed, as Dispatch lists them.
+func (c *HTTPClient) Reviews(ctx context.Context, artifactID string) ([]Review, error) {
+	var response []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &response); err != nil {
+		return nil, err
+	}
+	reviews := make([]Review, len(response))
+	for i, review := range response {
+		reviews[i] = Review{Version: review.Version, State: review.State, Actor: Actor(review.Actor), At: review.CreatedAt.UTC(),
+			Reason: deref(review.Reason)}
+	}
+	return reviews, nil
+}
+
+// DocumentVersion reads GET /api/v1/artifacts/{id}/versions/{number} and returns the markdown that
+// version of the document holds, as Dispatch stored it. A version the document does not have is
+// Dispatch's 404 (Missing). It reads a document's version alone (Artifact.Document): Dispatch
+// answers a version of an image or a file with its bytes, which are no answer this reads, so such
+// a read is an error and never an empty document.
+func (c *HTTPClient) DocumentVersion(ctx context.Context, artifactID string, version int) (string, error) {
+	var response struct {
+		Markdown *string `json:"markdown"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/versions/"+strconv.Itoa(version), nil, &response); err != nil {
+		return "", err
+	}
+	if response.Markdown == nil {
+		return "", fmt.Errorf("Dispatch artifact %q version %d answered no markdown: it is no document", artifactID, version)
+	}
+	return *response.Markdown, nil
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -490,6 +556,12 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	return c.requestKeyed(ctx, method, path, "", body, into)
+}
+
+// requestKeyed is request under the request key key, which Dispatch's Idempotency-Key header
+// carries; an empty key sends no header, as every route but the status change does.
+func (c *HTTPClient) requestKeyed(ctx context.Context, method, path, key string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -510,6 +582,9 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if key != "" {
+		request.Header.Set(idempotencyKeyHeader, key)
+	}
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -521,7 +596,11 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		refusal := dispatchError(response.StatusCode, response.Status, payload)
+		if seconds, err := strconv.Atoi(strings.TrimSpace(response.Header.Get("Retry-After"))); err == nil && seconds > 0 {
+			refusal.RetryAfter = time.Duration(seconds) * time.Second
+		}
+		return refusal
 	}
 	if into == nil {
 		return nil
@@ -588,8 +667,28 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	if response.Error == "" {
 		response.Error = statusText
 	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
+	// A status write's refusal names the issues that hold it and the status-change steps that
+	// committed before it. They are read apart from the code and the message, so the refusal of
+	// another route whose body holds a member of either name in another shape keeps both.
+	var members struct {
+		Issues  []conflictIssueResponse     `json:"issues"`
+		Changed []statusChangeEntryResponse `json:"changed"`
+	}
+	if json.Unmarshal(payload, &members) == nil {
+		for _, issue := range members.Issues {
+			refusal.Issues = append(refusal.Issues, ConflictIssue{Key: issue.Key, Status: issue.Status})
+		}
+		refusal.Changed = statusChangeEntries(members.Changed)
+	}
+	return refusal
 }
+
+// idempotencyKeyHeader is the request header a write names its intent with, the same on every
+// retry of that intent: Dispatch's contracts.IdempotencyKeyHeader (packages/envoy/internal/contracts,
+// generated from IDEMPOTENCY_KEY_HEADER in packages/contracts), which this module cannot import,
+// since it is internal to Envoy's. No mechanism shares the value, so the spellings change together.
+const idempotencyKeyHeader = "Idempotency-Key"
 
 type issueSummaryResponse struct {
 	Key          string         `json:"key"`
@@ -605,37 +704,41 @@ type issueSummaryResponse struct {
 }
 
 type issueResponse struct {
-	Key               string         `json:"key"`
-	Project           string         `json:"project"`
-	Title             string         `json:"title"`
-	Status            string         `json:"status"`
-	Parent            *string        `json:"parent"`
-	Rank              string         `json:"rank"`
-	Labels            []string       `json:"labels"`
-	PrimaryArtifactID string         `json:"primary_artifact_id"`
-	LastSeq           int64          `json:"last_seq"`
-	ResolvedRepo      *string        `json:"resolved_repo"`
-	BlockedBy         []string       `json:"blocked_by"`
-	Claim             *claimResponse `json:"claim"`
+	Key                    string         `json:"key"`
+	Project                string         `json:"project"`
+	Title                  string         `json:"title"`
+	Status                 string         `json:"status"`
+	Parent                 *string        `json:"parent"`
+	Rank                   string         `json:"rank"`
+	Labels                 []string       `json:"labels"`
+	PrimaryArtifactID      string         `json:"primary_artifact_id"`
+	VerificationArtifactID string         `json:"verification_artifact_id"`
+	DecisionsArtifactID    string         `json:"decisions_artifact_id"`
+	LastSeq                int64          `json:"last_seq"`
+	ResolvedRepo           *string        `json:"resolved_repo"`
+	BlockedBy              []string       `json:"blocked_by"`
+	Claim                  *claimResponse `json:"claim"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
 func (r issueResponse) issue() Issue {
 	return Issue{
-		Key:               r.Key,
-		Project:           r.Project,
-		Title:             r.Title,
-		Status:            r.Status,
-		Parent:            r.Parent,
-		Rank:              r.Rank,
-		Labels:            r.Labels,
-		HandedOver:        CarriesLegionLabel(r.Labels),
-		PrimaryArtifactID: r.PrimaryArtifactID,
-		LastSeq:           r.LastSeq,
-		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
-		Claim:             r.Claim.claim(),
-		ClaimUnread:       r.Claim.unread(),
+		Key:                    r.Key,
+		Project:                r.Project,
+		Title:                  r.Title,
+		Status:                 r.Status,
+		Parent:                 r.Parent,
+		Rank:                   r.Rank,
+		Labels:                 r.Labels,
+		HandedOver:             CarriesLegionLabel(r.Labels),
+		PrimaryArtifactID:      r.PrimaryArtifactID,
+		VerificationArtifactID: r.VerificationArtifactID,
+		DecisionsArtifactID:    r.DecisionsArtifactID,
+		LastSeq:                r.LastSeq,
+		ResolvedRepo:           deref(r.ResolvedRepo),
+		BlockedBy:              r.BlockedBy,
+		Claim:                  r.Claim.claim(),
+		ClaimUnread:            r.Claim.unread(),
 	}
 }
 
@@ -676,6 +779,29 @@ type artifactResponse struct {
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
+}
+
+// issueArtifactResponse is one entry of an issue's artifact list as Dispatch answers it, with the
+// number of each version it lists and none of the rest of the version.
+type issueArtifactResponse struct {
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Kind     string `json:"kind"`
+	Primary  bool   `json:"primary"`
+	Role     string `json:"role"`
+	Versions []struct {
+		Number int `json:"number"`
+	} `json:"versions"`
+}
+
+// reviewResponse is one review of a document's review list as Dispatch answers it, its kind, the
+// request it answered and its content digests left undecoded.
+type reviewResponse struct {
+	Version   int       `json:"version"`
+	State     string    `json:"state"`
+	Actor     actor     `json:"actor"`
+	Reason    *string   `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type approvalResponse struct {
@@ -728,6 +854,59 @@ type daemonWrite struct {
 	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	Actor            actor    `json:"actor"`
+}
+
+// statusChangeWrite is the body of a status-change call: the status, the expected sequence and the
+// actor as the PATCH's daemonWrite carries them, and the route's own options, each left out when
+// false. It is a type of its own so that no option can ride a PATCH, which a Dispatch ignores.
+type statusChangeWrite struct {
+	Status           string `json:"status"`
+	ExpectedSequence int64  `json:"expected_sequence,omitempty"`
+	IncludeChildren  bool   `json:"include_children,omitempty"`
+	UnlinkChildren   bool   `json:"unlink_children,omitempty"`
+	IncludeParent    bool   `json:"include_parent,omitempty"`
+	DryRun           bool   `json:"dry_run,omitempty"`
+	Actor            actor  `json:"actor"`
+}
+
+// statusChangeResponse is the status-change route's answer: the named issue as the PATCH answers
+// it and an entry for each issue the call changed.
+type statusChangeResponse struct {
+	Issue   issueResponse               `json:"issue"`
+	Changed []statusChangeEntryResponse `json:"changed"`
+}
+
+// statusChangeEntryResponse is one entry of a status-change answer's changed list, its issue null
+// on a dry run.
+type statusChangeEntryResponse struct {
+	Key             string         `json:"key"`
+	Status          string         `json:"status"`
+	Parent          *string        `json:"parent"`
+	PreviousLastSeq int64          `json:"previous_last_seq"`
+	Issue           *issueResponse `json:"issue"`
+}
+
+// statusChangeEntries is a changed list as StatusChangeEntry values, nil for an empty one.
+func statusChangeEntries(responses []statusChangeEntryResponse) []StatusChangeEntry {
+	var entries []StatusChangeEntry
+	for _, response := range responses {
+		entry := StatusChangeEntry{
+			Key: response.Key, Status: response.Status, Parent: response.Parent, PreviousLastSeq: response.PreviousLastSeq,
+		}
+		if response.Issue != nil {
+			issue := response.Issue.issue()
+			entry.Issue = &issue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// conflictIssueResponse is one issue a PARENT_STATUS_CONFLICT refusal names; its title and its
+// relation to the written issue are left undecoded.
+type conflictIssueResponse struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,

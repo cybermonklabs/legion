@@ -99,6 +99,9 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
+		// The rows of the copy, so both stand on a known Dispatch chain, the member under the root.
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		seedCopyRow(t, tx, member.Key, root.Key, member.DispatchStatus, 1)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: member.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
@@ -230,6 +233,8 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		seedCopyRow(t, tx, member.Key, root.Key, member.DispatchStatus, 1)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: member.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
@@ -351,6 +356,8 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		seedCopyRow(t, tx, member.Key, root.Key, member.DispatchStatus, 1)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: member.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}

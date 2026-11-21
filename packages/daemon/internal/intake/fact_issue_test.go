@@ -18,7 +18,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchAskReply":        DispatchAskReply{Key: issue},
 		"DispatchApprovalMoved":   DispatchApprovalMoved{Key: issue},
 		"DispatchClaim":           DispatchClaim{Key: issue},
-		"Handover":                Handover{Issue: issue},
 		"MergeQueueReadDone":      MergeQueueReadDone{Issue: issue},
 		"ConflictConfirmDone":     ConflictConfirmDone{Issue: issue},
 		"PullRequestMissing":      PullRequestMissing{Issue: issue},
@@ -29,6 +28,9 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"SignOff":                 SignOff{Issue: issue},
 		"GateRegistered":          GateRegistered{Issue: issue},
 		"CloseRoot":               CloseRoot{Issue: issue},
+		"CloseChild":              CloseChild{Issue: issue},
+		"CloseRefused":            CloseRefused{Issue: issue},
+		"StatusRefused":           StatusRefused{Issue: issue},
 		"ClaimFailed":             ClaimFailed{Issue: issue},
 		"SessionLost":             SessionLost{Issue: issue},
 		"SessionStoreFault":       SessionStoreFault{Issue: issue},
@@ -38,7 +40,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"TaskConfirmed":           TaskConfirmed{Issue: issue},
 		"GateRequestFound":        GateRequestFound{Issue: issue},
 		"CatchUpApplied":          CatchUpApplied{Issue: issue},
-		"LingerExpired":           LingerExpired{Issue: issue},
 		"CheckReport":             CheckReport{Issue: issue},
 		"CheckWakeDue":            CheckWakeDue{Issue: issue},
 		"CheckLookEnded":          CheckLookEnded{Issue: issue},
@@ -48,7 +49,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"WorkerBackgroundStalled": WorkerBackgroundStalled{Issue: issue},
 	}
 	namesNone := map[string]Fact{
-		"ChildAdoption":            ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},
 		"DispatchConsumerPosition": DispatchConsumerPosition{},
 		"ControllerTick":           ControllerTick{},
 		"EntrySweep":               EntrySweep{},

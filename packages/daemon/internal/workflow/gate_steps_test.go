@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
 // The documents of the steps these tests gate. gateDoc is the root's primary document, which the
@@ -40,7 +40,7 @@ const gatedRoot = "LEGION-208"
 // is what every reader of the step set takes.
 func stepsEngine(steps []record.DesignStep, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, Linger: time.Hour, ReviewAppLogin: testReviewApp,
+		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, ReviewAppLogin: testReviewApp,
 		Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
@@ -118,7 +118,7 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 		if err := json.Unmarshal(payload, &notice); err != nil {
 			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
 		}
-		notices = append(notices, notice)
+		notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
@@ -217,17 +217,14 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	}
 	issues, slots, facts := read()
 	// Every issue that no longer needs its slot gives it back before the line is read, as the
-	// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
-	// architect wrote the design in, and the line offers a slot to no issue already holding one.
+	// real pass does (admit's releaseSlots): an issue out of Legion's work, or past a phase that
+	// keeps a slot, and the line offers a slot to no issue already holding one.
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
-	live := record.LiveRoots(issues, facts)
 	for _, slot := range slots {
-		issue, recorded := byKey[slot.Issue]
-		_, running := live[issue.Tree]
-		if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		if issue, recorded := byKey[slot.Issue]; recorded && record.NeedsSlot(issue) {
 			continue
 		}
 		if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
@@ -243,7 +240,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	// Every started issue that waits on another issue gives its row back, as the real pass does
 	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
 	// state that release leaves.
-	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 	if err != nil {
 		t.Fatalf("judge the line: %v", err)
 	}
@@ -256,7 +253,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		}
 	}
 	issues, slots, facts = read()
-	rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+	rows, facts, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 	if err != nil {
 		t.Fatalf("judge the line again: %v", err)
 	}
@@ -266,10 +263,10 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if held != nil && held(entry.Issue.Key) {
 			break
 		}
-		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, entry.Issue)) > 0 {
+		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
 			continue
 		}
-		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
+		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains.HoldsOwnGate(entry.Issue.Key), rows[entry.Issue.Key].Blockers); err != nil {
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
 	}
@@ -438,61 +435,6 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 		return err
 	})
 	return gates
-}
-
-// A hand-over carries a copy of every step of its old root's gate, and each copy holds the new
-// root's work until it is open. The carry itself is admission's (internal/admit's test of this
-// name drives it); here the new root holds the two copies the carry left, its architect's
-// catch-up says the gate was carried and names both steps, and the approval of the old root's
-// Verification document opens the copy that was closed, which starts the new root's first phase.
-func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
-	pool := migratedPool(t)
-	engine := stepsEngine(twoSteps(), nil)
-	apply := applyFacts(t, pool, engine)
-	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: gatedRoot, Project: "LEGION", Title: "the old root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"})
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-209", Project: "LEGION", Title: "the carried root", Parent: new(gatedRoot), Phase: phase.Admitted, Generation: 2,
-		Status: "in_progress", Rank: "V", HandedOver: true, HandedOverFrom: gatedRoot, LastDispatchSeq: 1})
-	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	seedTreeLifecycle(t, pool, "LEGION-209")
-	// The old root's own rows, and the copies the hand-over left on the new root: the Verification
-	// document took a new version while the old tree lingered, so that step's copy is closed.
-	for _, issue := range []string{gatedRoot, "LEGION-209"} {
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2, ApprovedVersion: new(1)})
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4)})
-	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: "LEGION-209", Generation: 2, GateCarried: true})
-	})
-
-	claimReady(t, pool, engine, "LEGION-209", claim.RoleArchitect, 1)
-	caught := lastCatchUp(t, pool)
-	if !caught.HandedOver || !caught.Carried {
-		t.Fatalf("the catch-up says handed over %t, carried %t; want both of a root whose gate came with it", caught.HandedOver, caught.Carried)
-	}
-	want := []record.CatchUpGate{
-		{Step: record.DesignStepCriteria, Gated: true, Artifact: criteriaDoc, Version: 2, Approved: 1},
-		{Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
-	}
-	if fmt.Sprint(caught.Gates) != fmt.Sprint(want) {
-		t.Fatalf("the catch-up states %#v, want one entry for each carried step: %#v", caught.Gates, want)
-	}
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted {
-		t.Fatalf("the carried root = %s while a carried step is closed, want it admitted", got)
-	}
-
-	apply("approve-the-old-document", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 9}))
-	// The opening starts no phase itself: admission's pass gives the carried root the slot its
-	// first phase needs (record.Waiting's LineFirstPhase).
-	admissionPass(t, pool, engine)
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
-		t.Fatalf("the carried root = %s once every carried step is open, want planning", got)
-	}
-	opened := noticesOfKind(t, pool, "LEGION-209", "carried-gate-opened")
-	if len(opened) != 1 || opened[0].Version != 2 {
-		t.Fatalf("the carried root's notices = %#v, want one carried-gate-opened of version 2", opened)
-	}
 }
 
 // Every design decision a notice carries names the document the person reviewed, because a

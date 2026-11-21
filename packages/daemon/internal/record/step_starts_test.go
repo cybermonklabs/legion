@@ -194,14 +194,13 @@ func TestTheBootOpensAStepNoStartCountedAtTheCount0(t *testing.T) {
 	})
 }
 
-// A re-admission clears a generation's facts (ClearGeneration, ClearTreeGeneration), and the count
-// is none of them: the generation is part of a record's id already, and a count that started again
-// would give a later run of the same generation and place the id of an earlier one. So each clear
-// leaves every row whole — the count, the agent, the moment and the run — of the issue it clears,
-// of each member of the tree it clears, and of an issue of another tree; the tree's clear reaches
-// its root and its child, which the clear's own facts show it did.
+// A new run clears a generation's facts (ClearGeneration), and the count is none of them: the
+// generation is part of a record's id already, and a count that started again would give a later
+// run of the same generation and place the id of an earlier one. So the clear leaves every row
+// whole — the count, the agent, the moment and the run — of the issue it clears and of every other
+// issue; the clear reaches its own issue alone, which the clear's own facts show.
 func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
-	for _, clear := range []string{"the issue's", "the tree's"} {
+	for _, clear := range []string{"the issue's"} {
 		t.Run(clear, func(t *testing.T) {
 			st := migratedStore(t)
 			store := NewStore()
@@ -249,15 +248,8 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 					want[seed.key] = StepStart{Starts: int64(seed.count), Agent: seed.agent, StartedAt: seed.at, Run: seed.run}
 				}
 				cleared := []string{"LEGION-1"}
-				if clear == "the issue's" {
-					if err := store.ClearGeneration(t.Context(), tx, "LEGION-1", at); err != nil {
-						t.Fatalf("ClearGeneration: %v", err)
-					}
-				} else {
-					if err := store.ClearTreeGeneration(t.Context(), tx, "LEGION-1", at); err != nil {
-						t.Fatalf("ClearTreeGeneration: %v", err)
-					}
-					cleared = append(cleared, "LEGION-2")
+				if err := store.ClearGeneration(t.Context(), tx, "LEGION-1", at); err != nil {
+					t.Fatalf("ClearGeneration: %v", err)
 				}
 				var reached []string
 				rows, err := tx.Query(t.Context(), `select issue from phases where role = 'tester' and handoff_commit = '' order by issue`)

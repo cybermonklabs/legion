@@ -215,7 +215,15 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 		if err != nil {
 			return err
 		}
-		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, nil)
+		keys := make([]string, len(issues))
+		for i, issue := range issues {
+			keys[i] = issue.Key
+		}
+		chains, err := record.ReadChains(t.Context(), tx, store, "LEGION", keys)
+		if err != nil {
+			return err
+		}
+		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, record.LineFacts{Chains: chains})
 		return nil
 	})
 	return blocked
@@ -357,51 +365,6 @@ func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 	}
 }
 
-// A child still waiting on an unfinished issue when its tree finishes is handed to Legion as a
-// root of its own, though it never started under its tree's design: its blockers outlive the
-// tree, and leaving it admitted inside a closed tree would park it for good. Its sibling, also
-// admitted but waiting on nothing, goes with it: the expiry decides by the member's own state —
-// in the workflow and never started — and not by what held it there (unfinishedHandOvers),
-// because nothing would start either of them where they stand. The sibling was waiting for a
-// slot its tree will never offer again, which the cap leaves an ordinary member doing because
-// it counts issues; left behind it would stand todo at admitted in a closed tree for good.
-func TestALingerHandsOverTheAdmittedChildThatStillWaits(t *testing.T) {
-	pool := migratedPool(t)
-	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-208", Project: "LEGION", Title: "a finished root", Phase: phase.Done, Generation: 4, Status: "done", Rank: "U", LingerUntil: &until})
-	seedAdmittedChild(t, pool, "LEGION-209")
-	seedAdmittedChild(t, pool, "LEGION-210")
-	seedMirror(t, pool, "LEGION-209", "todo", "LEGION-300")
-	seedMirror(t, pool, "LEGION-210", "todo", "LEGION-301")
-	seedMirror(t, pool, "LEGION-300", "in_progress")
-	seedMirror(t, pool, "LEGION-301", "done")
-
-	if _, err := intake.ApplyFact(context.Background(), pool, "timer", "linger:LEGION-208:4",
-		intake.LingerExpired{Issue: "LEGION-208", Generation: 4}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact the linger's expiry: %v", err)
-	}
-
-	if got := handoverFences(t, pool); len(got) != 2 || got[0] != "LEGION-209" || got[1] != "LEGION-210" {
-		t.Fatalf("hand-over fences = %v, want both admitted children's: neither would ever start where it stands", got)
-	}
-	// Each hand-over's one Dispatch write puts the child todo under the fence of this linger, as
-	// the outbox's drop guard and intake.Handover read it.
-	for _, child := range []string{"LEGION-209", "LEGION-210"} {
-		var writes int
-		if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = 'dispatch_status' and issue = $1
-			and payload->>'status' = 'todo' and payload->>'observedStatus' = 'todo' and payload->>'kind' = 'hand-over'
-			and payload->>'handOverTree' = 'LEGION-208' and payload->>'handOverLinger' = '4'`, child).Scan(&writes); err != nil || writes != 1 {
-			t.Fatalf("%s's hand-over writes = %d, %v; want one fenced on LEGION-208's linger 4", child, writes, err)
-		}
-	}
-	var others int
-	if err := pool.QueryRow(t.Context(),
-		`select count(*) from outbox where kind = 'dispatch_status' and issue not in ('LEGION-209', 'LEGION-210')`).Scan(&others); err != nil || others != 0 {
-		t.Fatalf("status writes for another member = %d, %v; want none: the tree holds nobody else in the workflow", others, err)
-	}
-}
-
 // An issue's run earns its mark (record.Issue.TakenBack) as it moves into a phase of its own, and
 // the mark belongs to that run: a child's re-entry into its next generation in its own tree opens a
 // new run, which starts without it — held there by a blocker, it is checked like any child that
@@ -416,10 +379,6 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		HandedOver: true, LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	seedTreeLifecycle(t, pool, "LEGION-208")
-	seedAdmittedChild(t, pool, "LEGION-209")
-	seedAdmittedChild(t, pool, "LEGION-210")
-	seedMirror(t, pool, "LEGION-210", "todo", "LEGION-300")
-	seedMirror(t, pool, "LEGION-300", "in_progress")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	marked := func(key string) bool {
 		t.Helper()
@@ -429,14 +388,30 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		}
 		return got
 	}
-	for _, key := range []string{"LEGION-208", "LEGION-209", "LEGION-210"} {
+	if marked("LEGION-208") {
+		t.Fatalf("LEGION-208 is marked before any phase of it started")
+	}
+
+	// The gate opens with no Dispatch child under the root, so its own first phase starts (an
+	// open child would hold it first: the children-first wait).
+	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
+		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
+	startUnblockedChildren(t, pool, engine)
+	if got := phaseOf(t, pool, "LEGION-208"); got != phase.Planning || !marked("LEGION-208") {
+		t.Fatalf("LEGION-208 = %s marked %t once the gate opened, want planning marked true", got, marked("LEGION-208"))
+	}
+
+	// The children its architect files after it: one starts its first phase and is marked, and
+	// one an unfinished link holds stays at admitted unmarked.
+	seedAdmittedChild(t, pool, "LEGION-209")
+	seedAdmittedChild(t, pool, "LEGION-210")
+	seedMirror(t, pool, "LEGION-210", "todo", "LEGION-300")
+	seedMirror(t, pool, "LEGION-300", "in_progress")
+	for _, key := range []string{"LEGION-209", "LEGION-210"} {
 		if marked(key) {
 			t.Fatalf("%s is marked before any phase of it started", key)
 		}
 	}
-
-	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
-		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
 	startUnblockedChildren(t, pool, engine)
 	for key, want := range map[string]struct {
 		at     phase.Phase
@@ -445,30 +420,12 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		"LEGION-208": {phase.Planning, true}, "LEGION-209": {phase.Planning, true}, "LEGION-210": {phase.Admitted, false},
 	} {
 		if got := phaseOf(t, pool, key); got != want.at || marked(key) != want.marked {
-			t.Fatalf("%s = %s marked %t once the gate opened, want %s marked %t", key, got, marked(key), want.at, want.marked)
+			t.Fatalf("%s = %s marked %t once its first phase could start, want %s marked %t", key, got, marked(key), want.at, want.marked)
 		}
 	}
 
-	// The child that ran, in_progress as its run's status writes leave it, is set back to todo
-	// while an issue it now waits on is unfinished: its next generation is a new run, held at
-	// admitted and carrying no mark, since that run has stood in no phase.
-	if _, err := pool.Exec(t.Context(), "update issues set status = 'in_progress', dispatch_status = 'in_progress' where key = 'LEGION-209'"); err != nil {
-		t.Fatalf("record the running child in_progress: %v", err)
-	}
-	seedMirror(t, pool, "LEGION-301", "in_progress")
-	applyMirrored(t, pool, engine, "child-set-back", intake.DispatchIssue{
-		Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo",
-		Title: "LEGION-209", Parent: "LEGION-208", Rank: "V", Blockers: []string{"LEGION-301"}})
-	var generation int
-	if err := pool.QueryRow(t.Context(), "select generation from issues where key = 'LEGION-209'").Scan(&generation); err != nil {
-		t.Fatalf("read the re-entered child's generation: %v", err)
-	}
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted || generation != 5 || marked("LEGION-209") {
-		t.Fatalf("the re-entered child = %s at generation %d marked %t, want held at admitted in generation 5 and unmarked: its new run has not run",
-			got, generation, marked("LEGION-209"))
-	}
-
-	// The root leaves the workflow: its tree lingers, its run over, and its record keeps the mark.
+	// The root leaves Legion's work: it stops where it stands, and its record keeps the mark.
+	before := phaseOf(t, pool, "LEGION-208")
 	applyMirrored(t, pool, engine, "root-backlog", intake.DispatchIssue{
 		Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated", Status: "backlog",
 		Title: "root", Rank: "U", HandedOver: true})
@@ -478,41 +435,18 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		root, err = record.NewStore().Issue(t.Context(), tx, "LEGION-208")
 		return err
 	})
-	if root.Phase != phase.Done || !root.Lingers() || !root.TakenBack {
-		t.Fatalf("the root that left = %#v, want it done, lingering and still marked", *root)
+	if root.Phase != before || root.Status != "backlog" || !root.TakenBack {
+		t.Fatalf("the root that left = %#v, want it stopped in %s and still marked", *root, before)
 	}
-	// What re-admission writes of a root taken back — its next generation at admitted, no linger —
-	// leaves the mark as it found it, and the record is exempt by that alone: it carries no run.
+	// A record at admitted carrying the mark is exempt by that alone: it carries no run.
 	taken := *root
-	taken.Phase, taken.Generation, taken.LingerUntil = phase.Admitted, root.Generation+1, nil
+	taken.Phase, taken.Status = phase.Admitted, "todo"
 	if taken.CarriesRun() || !blockers.Exempt(taken) {
 		t.Fatalf("the root taken back = %#v, want it exempt by its mark alone", taken)
 	}
 	if waits := blockers.WaitsOn(map[string]blockers.Row{"LEGION-208": {Status: "todo", Blockers: []string{"LEGION-300"}}}, taken); len(waits) != 0 {
 		t.Fatalf("the root taken back waits on %v, want nothing: it ran", waits)
 	}
-}
-
-// handoverFences is every issue the linger fenced for hand-over, in key order.
-func handoverFences(t *testing.T, pool *pgxpool.Pool) []string {
-	t.Helper()
-	rows, err := pool.Query(t.Context(), "select issue from handovers order by issue")
-	if err != nil {
-		t.Fatalf("read the hand-over fences: %v", err)
-	}
-	defer rows.Close()
-	var issues []string
-	for rows.Next() {
-		var issue string
-		if err := rows.Scan(&issue); err != nil {
-			t.Fatalf("scan a hand-over fence: %v", err)
-		}
-		issues = append(issues, issue)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the hand-over fences: %v", err)
-	}
-	return issues
 }
 
 func phaseOf(t *testing.T, pool *pgxpool.Pool, key string) phase.Phase {

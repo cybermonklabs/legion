@@ -55,6 +55,14 @@ func childTodo(seq int64, resolved string) intake.DispatchIssue {
 	return intake.DispatchIssue{Key: "LEGION-209", Seq: seq, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V", ResolvedRepo: resolved}
 }
 
+// mirrorChildTodo writes the copy's row of the child as its todo event at seq does, before the
+// engine reads it (the daemon's handler order: the copy first), so the engine reads the child's
+// chain to its parent (R16 of dispatch://INFRA-3320).
+func mirrorChildTodo(t *testing.T, pool *pgxpool.Pool, seq int64) {
+	t.Helper()
+	mirrorChild(t, pool, "LEGION-209", "LEGION-208", "todo", seq)
+}
+
 // A child is recorded on the repository its event resolves to, at that repository's default
 // branch, whatever the branch is named.
 func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T) {
@@ -62,6 +70,7 @@ func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T
 	openTree(t, pool)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
+	mirrorChildTodo(t, pool, 1)
 	apply("child-todo", childTodo(1, "acme/tools"))
 	// The release records the child; the waiting line is what starts its first phase.
 	startUnblockedChildren(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -90,6 +99,7 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 			openTree(t, pool)
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
+			mirrorChildTodo(t, pool, 1)
 			apply("child-todo", childTodo(1, tc.resolved))
 			apply("child-edited", childTodo(2, tc.resolved))
 			if child := issueRecord(t, pool, "LEGION-209"); child != nil {

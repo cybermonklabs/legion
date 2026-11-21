@@ -54,11 +54,11 @@ const adoptionProject = "LEGION"
 // The issues the cases drive, one tree each. The production check's look runs under checkRoot's
 // closed root.
 const (
-	adoptionWaitingRoot   = "LEGION-2602"
-	adoptionLingeringRoot = "LEGION-2603"
-	adoptionMember        = "LEGION-2604"
-	adoptionTestingRoot   = "LEGION-2605"
-	adoptionPlanningRoot  = "LEGION-2606"
+	adoptionWaitingRoot  = "LEGION-2602"
+	adoptionParentRoot   = "LEGION-2603"
+	adoptionMember       = "LEGION-2604"
+	adoptionTestingRoot  = "LEGION-2605"
+	adoptionPlanningRoot = "LEGION-2606"
 )
 
 // adoptionRig is one daemon's workflow and supervision over a database of its own: the record
@@ -128,21 +128,23 @@ func (r *adoptionRig) token(issue string, role claim.Role) claim.Token {
 	return mustClaimToken(r.t, issue, role)
 }
 
-// put records each issue as the workflow holds it.
+// put records each issue as the workflow holds it, with its row of the copy (putChainIssue), so
+// each stands on a known Dispatch chain.
 func (r *adoptionRig) put(issues ...record.Issue) {
 	r.t.Helper()
 	for _, issue := range issues {
-		putOutboxIssue(r.t, r.pool, r.records, issue)
+		putChainIssue(r.t, r.pool, r.records, issue)
 	}
 }
 
-// openTree opens root's tree lifecycle as admission opened it when the tree first ran, which a
-// tree keeps through its linger: every claim of it is bound to that lifecycle.
+// openTree opens root's tree lifecycle and the root's own issue lifecycle as admission opened them
+// when the tree first ran, which a tree keeps through its linger.
 func (r *adoptionRig) openTree(root string) {
 	r.t.Helper()
 	if _, err := r.st.OpenTreeLifecycle(r.ctx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 		r.t.Fatalf("open the lifecycle of %s: %v", root, err)
 	}
+	openIssue(r.t, r.st, "legion", root, treelifecycle.AuthorityWorkflow)
 }
 
 // adoptionSession is the session the agent of issue's role registers and the file it keeps it in:
@@ -171,10 +173,12 @@ func (r *adoptionRig) suspended(tree, issue string, role claim.Role) supervise.C
 	return c
 }
 
-// admitClaims writes each claim as the daemon admits one, bound to its tree's lifecycle.
+// admitClaims writes each claim as the daemon admits one, bound to its issue's own lifecycle, which
+// admission opened when it started the issue.
 func (r *adoptionRig) admitClaims(claims ...supervise.Claim) {
 	r.t.Helper()
 	for _, c := range claims {
+		openIssue(r.t, r.st, c.Project, c.Issue, treelifecycle.AuthorityWorkflow)
 		if _, err := r.st.AdmitClaim(r.ctx, c); err != nil {
 			r.t.Fatalf("admit %s: %v", c.Token, err)
 		}
@@ -373,7 +377,7 @@ func TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy(t *testing.T) {
 	}{
 		{"a production check's look reaches its role with no adoption", aLookAdoptsNothing},
 		{"the root architect's start from admission reaches the architect with no adoption", theArchitectsStartAdoptsNothing},
-		{"a mid-phase re-admission adopts for the phase owner alone", aReadmissionAdoptsForThePhaseOwnerAlone},
+		{"a return to work adopts for the phase owner alone", aReturnAdoptsForThePhaseOwnerAlone},
 		{"the resume task of a phase owner that comes back ready is adopted once", aReadyOwnersResumeTaskIsAdoptedOnce},
 		{"a transition's phase start waits out another role's turn and is then adopted once", aPhaseStartWaitsOutATurn},
 	} {
@@ -432,55 +436,53 @@ func theArchitectsStartAdoptsNothing(r *adoptionRig) {
 	r.wantSent(adoptionWaitingRoot, claim.RoleArchitect, start.ID)
 }
 
-// aReadmissionAdoptsForThePhaseOwnerAlone: a person sets a closed root back to `todo` inside its
-// linger, and the promotion that re-admits it brings back every role of its mid-phase child that
-// has run (admit's startMidPhaseMembers). The owner of the child's phase is given the task that
-// carries the phase on, on a start that names the phase, and adopts for it. Every other role comes
-// back on a start that names the phase too, but carries no task, so nothing is sent to it and
-// nothing adopted for it: such a role is brought back so that a person can talk to it, and the
-// commits of the phase are the owner's.
-func aReadmissionAdoptsForThePhaseOwnerAlone(r *adoptionRig) {
+// aReturnAdoptsForThePhaseOwnerAlone: a person sets a child Dispatch showed out of Legion's work
+// back to `todo` while its parent works on, and the return (workflow.Engine.ReturnToWork) brings
+// back every role of it that has run. The owner of the child's phase is given the task of a new
+// entry of that phase, on a start that names the phase, and adopts for it. Every other role comes
+// back on a start that names the phase too, but carries no task (workflow's reviveClaims), so
+// nothing is sent to it and nothing adopted for it: such a role is brought back so that a person
+// can talk to it, and the commits of the phase are the owner's.
+func aReturnAdoptsForThePhaseOwnerAlone(r *adoptionRig) {
 	others := []claim.Role{claim.RolePlanner, claim.RoleTester}
-	until := time.Now().Add(time.Hour)
-	root := record.Issue{Key: adoptionLingeringRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: adoptionProject, Tree: adoptionLingeringRoot, Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done",
-		Rank: "U", LingerUntil: &until, LastDispatchSeq: 5, HandedOver: true}
+	root := record.Issue{Key: adoptionParentRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: adoptionProject, Tree: adoptionParentRoot, Title: "Workflow", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
+		Rank: "U", LastDispatchSeq: 5, HandedOver: true}
 	parent := root.Key
 	r.put(root, record.Issue{Key: adoptionMember, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: adoptionProject, Tree: root.Key, Parent: &parent, Title: "Child", Phase: phase.Implementing, Generation: 1,
-		Status: "in_progress", Rank: "V"})
+		Status: "backlog", DispatchStatus: "backlog", Rank: "V", LastDispatchSeq: 5})
 	r.openTree(root.Key)
-	r.admitClaims(r.suspended(root.Key, root.Key, claim.RoleArchitect), r.suspended(root.Key, adoptionMember, claim.RoleImplementer))
+	r.admitClaims(r.suspended(root.Key, adoptionMember, claim.RoleImplementer))
 	for _, role := range others {
 		r.admitClaims(r.suspended(root.Key, adoptionMember, role))
 	}
 	r.restoreClaims()
 
-	r.apply("todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated",
-		Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true})
-	// The owner's start waits for the child's own admission slot (workflow.StartOrOwe), which the
-	// pass after the one that wrote it grants, as the controller's next tick does.
-	r.apply("tick-after-the-readmission", intake.ControllerTick{})
+	r.apply("todo-again", intake.DispatchIssue{Key: adoptionMember, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated",
+		Status: "todo", Title: "Child", Parent: root.Key, Rank: "V"})
+	// The owner's start waits for the child's own admission slot among the work that came back,
+	// which the pass after the one that wrote it grants, as the controller's next tick does.
+	r.apply("tick-after-the-return", intake.ControllerTick{})
 	r.run()
 	r.boot(adoptionMember, claim.RoleImplementer)
 	for _, role := range others {
 		if resumed := len(resumesOf(r.rt, r.token(adoptionMember, role))); resumed != 1 {
-			r.t.Fatalf("the re-admission resumed the child's %s %d times, want its session brought back once by its own start", role, resumed)
+			r.t.Fatalf("the return resumed the child's %s %d times, want its session brought back once by its own start", role, resumed)
 		}
 		r.boot(adoptionMember, role)
 	}
 
-	member := readIssue(r.t, r.pool, adoptionMember)
 	resume := r.heldTask(adoptionMember, claim.RoleImplementer)
-	if resume.Task != workflow.ResumePhaseTask(*member) {
-		r.t.Fatalf("the child's implementer holds %+v, want its phase's resume task %q", resume, workflow.ResumePhaseTask(*member))
+	if resume.Phase != phase.Implementing || !strings.Contains(resume.Task, "came back into Legion's work after a stop") {
+		r.t.Fatalf("the child's implementer holds %+v, want the task of the return's new entry of implementing", resume)
 	}
 	r.wantSent(adoptionMember, claim.RoleImplementer, resume.ID, "legion-implementer[bot]")
 	for _, role := range others {
 		r.wantNothingSent(adoptionMember, role)
 	}
 	if made := r.rt.CallsOf("AdoptWorkingCopy"); len(made) != 1 {
-		r.t.Errorf("the re-admission adopted the working copy %d times, want once, for the phase owner's task", len(made))
+		r.t.Errorf("the return adopted the working copy %d times, want once, for the phase owner's task", len(made))
 	}
 }
 
@@ -506,7 +508,7 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 		r.t.Fatalf("the tester's death relaunched its session %d times, want once", resumed)
 	}
 	start := theOneStartRow(r.t, r.pool, issue.Key)
-	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue) {
+	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue, false) {
 		r.t.Fatalf("the ready wrote the start %+v, want the tester's testing resume task", start)
 	}
 	r.run()

@@ -14,22 +14,18 @@ import (
 // Mirror writes each reading of Dispatch into the daemon's copy of Dispatch's issues, and decides
 // nothing: it refuses no fact, ever, so the handlers after it see exactly the facts they would
 // have seen without it. It runs before them, inside their transaction, because they read the row
-// it writes. Only a reading of Dispatch reaches the copy: an issue event, the release's read of
-// the children it adopts, and the periodic turn's own re-read of Dispatch, which rides on the
-// controller tick (intake.ControllerTick.Observed) and is written here as an event is, so a
-// blocker whose closing event never arrived is repaired before those handlers judge. A reading
-// writes only the values it carries, and each value keeps the sequence of the reading that wrote
-// it: a reading changes it only at a higher sequence, or where no reading wrote it
-// (record.PutDispatchIssue). Each issue's Dispatch claim is mirrored beside its row, behind a
-// fence of its own (record.PutDispatchClaim): from an issue event or a view that shows it, and
-// from Dispatch's issue.claimed and issue.released events (intake.DispatchClaim), which say
-// nothing else of the issue and are kept even when they arrive before the issue's first row.
-//
-// One path it never sees: an intake.ObservedIssue of an issue already recorded whose event was
-// prepared in place of none applies no handler at all (intake.settleObserved sets handlers to
-// nil), so its view of the issue reaches no mirror write. Nothing depends on that observation —
-// the issue's next event, the periodic turn or the next boot's reconcile writes the row, and until
-// then the row holds the last thing Dispatch said.
+// it writes. Only a reading of Dispatch reaches the copy: an issue event, a view of an issue
+// (intake.ObservedIssue: release_children's read of a child, which reaches this handler alone when
+// the daemon records the child already, intake's settleObserved), and the periodic turn's own
+// re-read of Dispatch, which rides on the controller tick (intake.ControllerTick.Observed) and is
+// written here as an event is, so a blocker whose closing event never arrived is repaired before
+// those handlers judge. A reading writes only the values it carries, and each value keeps the
+// sequence of the reading that wrote it: a reading changes it only at a higher sequence, or where
+// no reading wrote it (record.PutDispatchIssue). Each issue's Dispatch claim is mirrored beside its
+// row, behind a fence of its own (record.PutDispatchClaim): from an issue event or a view that
+// shows it, and from Dispatch's issue.claimed and issue.released events (intake.DispatchClaim),
+// which say nothing else of the issue and are kept even when they arrive before the issue's first
+// row.
 type Mirror struct {
 	store   record.Store
 	project string
@@ -45,10 +41,9 @@ func NewMirror(store record.Store, project string) *Mirror {
 	return &Mirror{store: store, project: project}
 }
 
-// Apply writes the row of a Dispatch issue fact, of every child a release of children adopts, as
-// that release's own read showed it, and of every row the periodic turn's re-read observed, the
-// claim of a claim event, and does nothing for every other kind of fact — a tick that observed
-// nothing, which is almost every turn, included.
+// Apply writes the row of a Dispatch issue fact, an event's or a view's, and of every row the
+// periodic turn's re-read observed, the claim of a claim event, and does nothing for every other
+// kind of fact — a tick that observed nothing, which is almost every turn, included.
 func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	switch fact := fact.(type) {
 	case intake.DispatchIssue:
@@ -60,27 +55,6 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.DispatchClaim:
 		if err := m.store.PutDispatchClaim(ctx, tx, fact.Key, fact.ClaimedBy, fact.Seq); err != nil {
 			return intake.Result{}, err
-		}
-	case intake.ChildAdoption:
-		// An adopted root is recorded already, so no observation of it reaches a handler
-		// (intake's settleObserved) and nothing else would bring the release's read here. Without
-		// it the adoption's own promotion, judging by a row written before the person's edit,
-		// starts a root that edit blocked (dispatch://INFRA-714/spec R3).
-		for _, child := range fact.Children {
-			if child.Seq == 0 {
-				continue
-			}
-			// The release's read carries the child's status, blockers and parent, so its reading
-			// carries those and leaves every other value as the copy holds it. The parent is among
-			// them because the children-first rule (record.ChildWaitsOf) reads the child under the
-			// parent that read showed. The project is this daemon's, since a parent link never
-			// crosses a project and the release adopts the children of a root of its own; a row
-			// written under no project would drop out of every project's read of its children.
-			reading := record.DispatchReading{Key: child.Issue, Project: m.project, Seq: child.Seq,
-				Status: record.Carry(child.Status), Parent: record.Carry(child.Parent), Blockers: record.Carry(child.BlockedBy)}
-			if err := m.put(ctx, tx, reading); err != nil {
-				return intake.Result{}, fmt.Errorf("mirror the release's read of %s: %w", child.Issue, err)
-			}
 		}
 	case intake.ControllerTick:
 		for _, observed := range fact.Observed {

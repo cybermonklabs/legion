@@ -72,7 +72,7 @@ func pauseNoticeRow(kind record.NoticeKind) func(Pause) (PauseRow, error) {
 		if kind == record.ProjectResumedNotice {
 			account = &record.ProjectPause{ID: p.ID, By: record.PauseActor{Kind: string(p.EndedBy.Kind), Session: p.EndedBy.Session}, At: p.EndedAt}
 		}
-		row, err := record.NewOutboxRow(p.Project, record.ControllerNotice{Kind: kind, Pause: account}, p.Since)
+		row, err := record.NewOutboxRow(p.Project, record.Fenced(record.ControllerNotice{Kind: kind, Pause: account}, record.FirstFence), p.Since)
 		if err != nil {
 			return PauseRow{}, err
 		}
@@ -256,11 +256,11 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 		t.Fatalf("lease the tester's stop row: %v", err)
 	}
 	// A notice for the architect is held by the pause; a controller notice is not.
-	held, err := record.NewOutboxRow("LEGION-208", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-210 is done"}, pausedAt)
+	held, err := record.NewOutboxRow("LEGION-208", record.Fenced(record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-210 is done"}, record.FirstFence), pausedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tick, err := record.NewOutboxRow("LEGION", record.ControllerNotice{Kind: record.TickNotice}, pausedAt)
+	tick, err := record.NewOutboxRow("LEGION", record.Fenced(record.ControllerNotice{Kind: record.TickNotice}, record.FirstFence), pausedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

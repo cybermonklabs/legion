@@ -904,13 +904,17 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	}
 	records := record.NewStore()
 	held := runningRoot(issue, phase.Held)
-	held.Hold = &record.Hold{From: phase.Implementing}
-	suspend, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A hold keeps the status of the phase it holds, which keeps the issue in Legion's work (R20 of
+	// dispatch://INFRA-3320): the retry acts on an issue in work alone.
+	held.Hold, held.Status = &record.Hold{From: phase.Implementing}, workflow.PhaseStatus(phase.Implementing)
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
+			return err
+		}
+		// Its row of the copy: the retry reads the root's own chain (R16 of dispatch://INFRA-3320).
+		seedCopyRow(t, tx, issue, "", held.Status, 1)
+		suspend, err := record.NewFencedRow(ctx, tx, records, issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
+		if err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, suspend)
@@ -1493,12 +1497,18 @@ func (s *shim) closed() {
 	}
 }
 
-// prompt answers the negotiation a connection opens with, when the daemon sends one, and returns
-// the prompt frame that follows.
+// prompt answers each negotiation the daemon sends before the prompt, as the real shim answers
+// every one it reads, and returns the prompt frame that follows. A connection can be negotiated
+// more than once: a negotiation that ends unanswered or refused is tried again by the next call
+// (stream.Conn.Negotiate).
 func (s *shim) prompt() shimwire.Prompt {
 	s.t.Helper()
 	frame := s.next()
-	if negotiate, ok := frame.(shimwire.NegotiateProtocol); ok {
+	for {
+		negotiate, ok := frame.(shimwire.NegotiateProtocol)
+		if !ok {
+			break
+		}
 		s.send(shimwire.Response{ID: negotiate.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		frame = s.next()
 	}
@@ -1696,8 +1706,8 @@ func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	kept := storedIssueOf(t, context.Background(), st.Pool(), record.NewStore(), root)
-	if kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
+	kept := readIssue(t, st.Pool(), root)
+	if kept == nil || kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
 		t.Fatalf("%s after the boot = %+v, want it unchanged on acme/gone@main in implementing", root, kept)
 	}
 }

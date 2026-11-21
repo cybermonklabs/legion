@@ -164,6 +164,16 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 	if err != nil {
 		return nil, err
 	}
+	// Each claim's issue stands under its gate root on the Dispatch chain (record.Chains.StateTree),
+	// not the tree its record stores: one read of the chains names every claim's issue.
+	keys := make([]string, 0, len(claims))
+	for _, c := range claims {
+		keys = append(keys, c.Issue)
+	}
+	chains, err := record.ReadChains(ctx, tx, s, project, keys)
+	if err != nil {
+		return nil, err
+	}
 	type candidate struct {
 		claim   supervise.Claim
 		issue   record.Issue
@@ -179,7 +189,8 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		if !ok {
 			continue
 		}
-		root, ok := recorded[issue.Tree]
+		gateRoot := chains.StateTree(issue.Key)
+		root, ok := recorded[gateRoot]
 		if !ok || root.AwaitingPerson() {
 			continue
 		}
@@ -213,7 +224,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// Stranded's comment says.
 		var current phase.Phase
 		switch {
-		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
+		case claim.IsTreeArchitect(c.Role, issue.Key, gateRoot):
 		case c.Role != claim.RoleArchitect && phase.RoleFor(issue.WorkingPhase()) == c.Role:
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue

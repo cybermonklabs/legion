@@ -115,10 +115,10 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 
 // podEndKeep is the live-pod rule at the end of an issue's pod. The hook that runs the pass is the
 // proof that no pod of the issue is live. A close's teardown (SuspendIssue) deletes the issue's
-// Sandbox, and so does a tree's cleanup, which waits until no Sandbox of the tree is left. An idle
-// release's teardown (ReleaseIssue) deletes it too, but under keep_volume it keeps a Sandbox that
-// owns the issue's kept volume, Suspended, with that volume, for the issue's next pod. That pod
-// mounts the volume, and the workspace directory on it is under the name the record holds now
+// Sandbox; no close cleans up a tree's (R17 of dispatch://INFRA-3320). An idle release's teardown
+// (ReleaseIssue) deletes it too, but under keep_volume it keeps a Sandbox that owns the issue's
+// kept volume, Suspended, with that volume, for the issue's next pod. That pod mounts the volume,
+// and the workspace directory on it is under the name the record holds now
 // (workspace.Location): with the new name written, the pod would make a fresh workspace under the
 // new name and leave the work under the old one. So under a runtime that runs a pod per issue
 // (issuePods) the rule keeps an issue on its old name while the runtime keeps its volume for the
@@ -132,8 +132,9 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 // can still hold a Sandbox that the teardown has just deleted, and a keep on that Sandbox would
 // hold the write of an ordinary release, with keep_volume off, until the next boot.
 // IssueKeepsVolume reads the same stored Sandbox, but it is true only for one that owns a kept
-// volume, so such a deleted Sandbox keeps nothing. Under tmux, whose tree cleanup does nothing and
-// which suspends no issue, P2's workspace-directory rule decides (workspaceKeep).
+// volume, so such a deleted Sandbox keeps nothing. Under tmux, which runs no pod and suspends no
+// issue, so that an issue's own close is the end of its run there (outbox.suspendIssue), P2's
+// workspace-directory rule decides (workspaceKeep).
 func podEndKeep(rt runtime.Runtime, stateDir string) renameKeep {
 	pods, ok := rt.(issuePods)
 	if !ok {
@@ -151,7 +152,7 @@ func podEndKeep(rt runtime.Runtime, stateDir string) renameKeep {
 // directory on its own host (INFRA-4401 P2): the directory is named by the repository's owner and
 // name (workspace.Location), so an issue is kept while a workspace directory of it is under any of
 // the names asked, and a directory the daemon cannot read keeps it too. A later boot writes it once
-// the directory is gone (the linger's removal).
+// the directory is gone.
 func workspaceKeep(stateDir string) renameKeep {
 	return func(issue string, names []string) string {
 		for _, name := range names {

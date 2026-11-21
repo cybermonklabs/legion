@@ -1,8 +1,11 @@
 package blockers
 
 import (
+	"context"
 	"reflect"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -96,10 +99,10 @@ func TestRowsIndexesTheProjectByKey(t *testing.T) {
 }
 
 // Blocked is the one list the state shows and the tick notice carries: a waiting root promotion
-// would skip and a child the workflow holds at `admitted`, together and sorted by issue key, each
-// with what it still waits on. A root carrying a run is never judged, a child of a tree that is
-// past `admitted` has already started, and an issue whose blockers are all done is in neither
-// half.
+// would skip and an issue held at `admitted` under an issue in Legion's work, together and sorted
+// by issue key, each with what it still waits on. A root carrying a run is never judged, an issue
+// that is past `admitted` has already started, and an issue whose blockers are all done is in
+// neither half.
 func TestBlockedListsTheWaitingRootsAndTheHeldChildrenByKey(t *testing.T) {
 	rows := map[string]Row{
 		"LEGION-211": {Status: "todo", Blockers: []string{"LEGION-300"}},
@@ -112,20 +115,21 @@ func TestBlockedListsTheWaitingRootsAndTheHeldChildrenByKey(t *testing.T) {
 		"LEGION-303": {Status: "done"},
 	}
 	issues := []record.Issue{
-		// The root of a live tree, admitted and slotted, with a child held behind an unfinished
-		// issue and one whose blockers are all done.
-		{Key: "LEGION-208", Tree: "LEGION-208", Phase: phase.Implementing},
-		{Key: "LEGION-209", Tree: "LEGION-208", Phase: phase.Admitted},
-		{Key: "LEGION-214", Tree: "LEGION-208", Phase: phase.Admitted},
+		// A root at work, with a child held behind an unfinished issue and one whose blockers
+		// are all done.
+		chainIssue("LEGION-208", "", phase.Implementing),
+		chainIssue("LEGION-209", "LEGION-208", phase.Admitted),
+		chainIssue("LEGION-214", "LEGION-208", phase.Admitted),
 		// A child already past `admitted`: its own start read the links once and is done with them.
-		{Key: "LEGION-215", Tree: "LEGION-208", Phase: phase.Planning},
-		// Three roots in the waiting line: one blocked, one carrying a run into a tree of its own,
-		// and one whose blocker Dispatch has not recorded at all.
-		{Key: "LEGION-211", Tree: "LEGION-211", Phase: phase.Admitted},
-		{Key: "LEGION-212", Tree: "LEGION-212", Phase: phase.Testing},
-		{Key: "LEGION-213", Tree: "LEGION-213", Phase: phase.Admitted},
+		chainIssue("LEGION-215", "LEGION-208", phase.Planning),
+		// Three roots in the waiting line: one blocked, one carrying a run, and one whose blocker
+		// Dispatch has not recorded at all.
+		chainIssue("LEGION-211", "", phase.Admitted),
+		chainIssue("LEGION-212", "", phase.Testing),
+		chainIssue("LEGION-213", "", phase.Admitted),
 	}
-	// The line as admission reads it: three roots whose trees have still to be opened.
+	chains := chainsOf(t, issues)
+	// The line as admission reads it: three roots whose first starts have still to come.
 	line := []record.LineEntry{
 		{Issue: issues[4], Kind: record.LineQueuedRoot},
 		{Issue: issues[5], Kind: record.LineQueuedRoot},
@@ -137,7 +141,7 @@ func TestBlockedListsTheWaitingRootsAndTheHeldChildrenByKey(t *testing.T) {
 		{Issue: "LEGION-211", BlockedBy: []string{"LEGION-300"}},
 		{Issue: "LEGION-213", BlockedBy: []string{"LEGION-302"}},
 	}
-	if got := Blocked(rows, issues, line, nil); !reflect.DeepEqual(got, want) {
+	if got := Blocked(rows, issues, line, record.LineFacts{Chains: chains}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Blocked = %#v, want %#v by issue key", got, want)
 	}
 }
@@ -145,10 +149,53 @@ func TestBlockedListsTheWaitingRootsAndTheHeldChildrenByKey(t *testing.T) {
 // Nothing blocked is an empty list, never nil: the state serves it as an array and the notice
 // leaves it out.
 func TestBlockedIsEmptyWhenNothingWaitsOnALink(t *testing.T) {
-	got := Blocked(map[string]Row{}, []record.Issue{{Key: "LEGION-209", Tree: "LEGION-208", Phase: phase.Admitted}}, nil, nil)
+	issues := []record.Issue{chainIssue("LEGION-208", "", phase.Implementing), chainIssue("LEGION-209", "LEGION-208", phase.Admitted)}
+	got := Blocked(map[string]Row{}, issues, nil, record.LineFacts{Chains: chainsOf(t, issues)})
 	if len(got) != 0 || got == nil {
 		t.Fatalf("Blocked = %#v, want an empty list", got)
 	}
+}
+
+// chainIssue is a record of the test project in Legion's work, standing at at, under the
+// Dispatch parent named ("" for a root).
+func chainIssue(key, parent string, at phase.Phase) record.Issue {
+	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key,
+		Project: "LEGION", Title: key, Phase: at, Generation: 1, Status: "in_progress", Rank: key}
+	if parent != "" {
+		issue.Parent = &parent
+	}
+	return issue
+}
+
+// chainsOf records issues and writes each one's row of the copy of Dispatch's issues under the
+// parent its record names, then reads the project's chains as a decision pass does
+// (record.ReadChains): the chain an issue stands on is read from the copy and nowhere else.
+func chainsOf(t *testing.T, issues []record.Issue) *record.Chains {
+	t.Helper()
+	var chains *record.Chains
+	inTx(t, migratedPool(t), func(tx pgx.Tx) {
+		ctx, records := context.Background(), record.NewStore()
+		keys := make([]string, len(issues))
+		for i, issue := range issues {
+			keys[i] = issue.Key
+			parent := ""
+			if issue.Parent != nil {
+				parent = *issue.Parent
+			}
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				t.Fatalf("put %s: %v", issue.Key, err)
+			}
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: issue.Project, Seq: 1,
+				Status: record.Carry(issue.Status), Parent: record.Carry(parent)}); err != nil {
+				t.Fatalf("put the copy's row of %s: %v", issue.Key, err)
+			}
+		}
+		var err error
+		if chains, err = record.ReadChains(ctx, tx, records, "LEGION", keys); err != nil {
+			t.Fatalf("read the chains: %v", err)
+		}
+	})
+	return chains
 }
 
 // What a started issue waits on, for the release of its row, is asked only of an issue whose

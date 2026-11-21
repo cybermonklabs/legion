@@ -62,7 +62,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !view.Found || view.Tree != rootIssue || view.Phase != phase.Implementing || view.Generation != 1 || view.Status != "in_progress" {
 		t.Fatalf("view = %+v, want the running issue", view)
 	}
-	if !view.IsRoot() || view.Root.AwaitingPerson || view.Root.LingerUntil != nil {
+	if !view.IsRoot() || view.Root.AwaitingPerson {
 		t.Fatalf("root = %+v, want the running root", view.Root)
 	}
 	if len(view.Claims) != 1 {
@@ -199,7 +199,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kept, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
+	kept, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{}, nil
 	})
 	if err != nil || kept {
@@ -214,7 +214,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 
 	var seen pods.IdleView
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		seen = view
 		return IdleReleaseMark{Generation: view.Generation, Role: claim.RoleImplementer, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"implementer"}`)},
@@ -262,7 +262,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 
 	// A second release never starts behind the first: the decision is asked, sees the mark, and
 	// nothing more is written.
-	again, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	again, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		if !view.Releasing {
 			t.Error("the second decision was handed a view that does not report the release in progress")
 		}
@@ -298,7 +298,7 @@ func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	const theirs = "OTHERPROJECT-9"
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHERPROJECT-9","generation":1,"treeGeneration":1,"role":"architect"}`)},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHERPROJECT-9","role":"architect","generation":1}`), Boundary: true},
@@ -332,7 +332,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		Payload:  []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`),
 		Boundary: true}
 
-	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, Rows: []IdleReleaseRow{teardown}}, nil
 	})
 	if err == nil || refused {
@@ -346,7 +346,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		t.Fatalf("outbox rows = %d, want none written by a mark the store refused", rows)
 	}
 
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{teardown}}, nil
 	})
 	if err != nil || !marked {

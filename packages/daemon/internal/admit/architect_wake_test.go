@@ -87,24 +87,24 @@ func architectWakeRoot(key string) architectWakeFixture {
 		given: seededEntry, task: true, queuedAt: fixedNow, confirmed: true}
 }
 
-// seedArchitectWakeRoot records one fixture: the issue, its tree lifecycle, its slot, its
-// hand-over row, its design gate, the architect's phases row, and the architect's claim with the
-// task it holds.
+// seedArchitectWakeRoot records one fixture: the issue with its own facts (a root a hand-over of
+// the release before carried in at its generation, record.Issue.CarriedGeneration, where carried),
+// its lifecycle, its slot, its design gate, the architect's phases row, and the architect's claim
+// with the task it holds.
 func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixture) {
 	t.Helper()
 	ctx := context.Background()
-	putIssue(t, pool, record.Issue{Key: f.key, Tree: f.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+	root := record.Issue{Key: f.key, Tree: f.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: "the root " + f.key, Phase: f.stands, Generation: f.generation, Awaiting: f.awaiting,
-		Status: f.status, DispatchStatus: f.status, Rank: f.key, HandedOver: true, LastDispatchSeq: 1})
+		Status: f.status, DispatchStatus: f.status, Rank: f.key, HandedOver: true, LastDispatchSeq: 1}
+	if f.carried {
+		root.CarriedGeneration = f.generation
+	}
+	putIssue(t, pool, root)
 	seedLifecycle(t, pool, f.key)
 	takeSlotAt(t, pool, f.key, f.admittedAt)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if f.carried {
-			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key, Generation: f.generation}); err != nil {
-				t.Fatalf("record %s as a root a hand-over created: %v", f.key, err)
-			}
-		}
 		if f.registered {
 			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: f.key, ArtifactID: "artifact-" + f.key, LatestVersion: 1}); err != nil {
 				t.Fatalf("record the design gate %s registered: %v", f.key, err)

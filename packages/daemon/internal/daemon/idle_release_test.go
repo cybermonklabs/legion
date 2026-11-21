@@ -155,12 +155,29 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigIn(t, phase.Implementing)
+}
+
+// newIdleRigIn is newIdleRig with the issue standing in at: implementing, as every other test of
+// the rig has it, or awaiting_children, where the admission pass stopped the implementer's phase
+// because a Dispatch child of the issue is open. The pass retired the task the implementer held
+// for the phase it stopped (supervise.Machine.RetireStoppedTask), so its claim there holds none,
+// and the rest of the pod is the same pod: one live implementer in its own session, idle, on the
+// daemon's plugin contract and the configured image.
+func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	if at == phase.AwaitingChildren {
+		waited := time.Now().UTC().Add(-time.Hour)
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "implement it",
+			Reason: endedTheImplementersPhase.Reason, Since: waited}
+		issue.ChildrenWaitedAt = &waited
+	}
 	putOutboxIssue(t, pool, records, issue)
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
@@ -191,11 +208,18 @@ func newIdleRig(t *testing.T) *idleRig {
 	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
+	// The claim is bound as admission binds one: to its tree's epoch and to its issue's, both the
+	// epoch one outboxTreeStore opened (store.Store.AdmitClaim).
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: claim.RoleImplementer, TreeEpoch: 1, IssueEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
+	if at == phase.AwaitingChildren {
+		stored.Pending = nil
+		if err := st.PutClaim(ctx, stored); err != nil {
+			t.Fatalf("seed the idle implementer: %v", err)
+		}
+	} else if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
@@ -205,8 +229,8 @@ func newIdleRig(t *testing.T) *idleRig {
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateIdle || got.Pending == nil {
-		t.Fatalf("the restored claim = %+v, want it idle holding its phase's task", got)
+	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != (at == phase.AwaitingChildren) {
+		t.Fatalf("the restored claim = %+v, want it idle, holding its phase's task where its phase runs", got)
 	}
 	// The pod last did something half an hour ago, and its session reported five minutes later
 	// that it runs no background work with no reminder armed.
@@ -234,8 +258,9 @@ func newIdleRig(t *testing.T) *idleRig {
 	// The rig's issue records carry the Dispatch project key and its claims the claim token's
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
-	// reads the claims' (projectID).
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+	// reads the claims' (projectID). A release's rows are fenced by the issue's record
+	// (record.NewFencedRow), read through records.
+	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
@@ -401,15 +426,20 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 // resume a role in between. A teardown that took the first answer and ignored the second
 // recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
 // marks, and left the other roles released in a running pod with nothing to bring them back.
+// Here the store's answer under the lock refuses the pod because the issue left the workflow, so
+// the cancel resumes no role: those claims are the issue's close's to end
+// (store.CancelIssueRelease).
 func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	// Under the pod lock, before the store is asked: a re-admission moved the issue's run on,
-	// which is a close's business and not a release's.
+	// Under the pod lock, before the store is asked: a person moved the issue to the backlog,
+	// which is a close's business and not a release's. The issue's own fence (its run, phase entry
+	// and pod, which a change of those cancels as overtaken first) has not moved, so it is the
+	// store's answer under the lock that refuses the pod.
 	rig.rt.beforeAuthorize = func() {
-		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
-			t.Errorf("move the issue's generation on: %v", err)
+		if _, err := rig.pool.Exec(ctx, `update issues set status = 'backlog' where key = $1`, rig.issue.Key); err != nil {
+			t.Errorf("move the issue to the backlog: %v", err)
 		}
 	}
 
@@ -441,8 +471,8 @@ func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	if rig.bundled(t) {
 		t.Fatal("the cancelled release left its bundle behind")
 	}
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the claim = %s by %s, want the cancelled release to have resumed it into the pod it kept",
+	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {
+		t.Fatalf("the claim = %s by %s, want it left as the release stopped it: an issue out of the workflow is given no resume",
 			got.State, got.SuspendedBy)
 	}
 }
@@ -908,8 +938,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour}, quietLogger())
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	// The cancel names the roles it queued a resume for, which is the one place that set is
 	// read after the fact: a resume the lane has already run leaves no row behind.
 	logs := &syncBuffer{}

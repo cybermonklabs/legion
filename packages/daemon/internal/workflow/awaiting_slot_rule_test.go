@@ -38,7 +38,7 @@ func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
 	opened := record.DesignGate{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: "spec", LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true}
 	rows := map[record.DesignStep]record.DesignGate{record.DesignStepSpec: opened}
 
-	decision := decideAwait(awaitView{Root: root, Slotted: true, Gates: rows})
+	decision := decideAwait(awaitView{Root: root, HoldsGate: true, Slotted: true, Gates: rows})
 	if decision.Act != actStay {
 		t.Fatalf("the decision for a root whose gate has opened = %+v, want it left where it stands: its architect has no work of its own to hand over, and its children are waiting for their rows", decision)
 	}
@@ -48,7 +48,7 @@ func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
 	// not what answers it.
 	writing := opened
 	writing.ApprovedVersion, writing.EverOpened = nil, false
-	if decision := decideAwait(awaitView{Root: root, Slotted: true, Gates: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: writing}}); decision.Why == neverStarted {
+	if decision := decideAwait(awaitView{Root: root, HoldsGate: true, Slotted: true, Gates: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: writing}}); decision.Why == neverStarted {
 		t.Fatalf("a root whose gate has never opened and holds its row is stopped by the row rule: that root is the one the wait is for")
 	}
 }

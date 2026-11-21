@@ -23,18 +23,17 @@ import (
 // admission, reaching that same event, stops at its sequence fence: it writes no `status: todo`
 // over the release, which is the pair — status todo beside phase held — this issue measures.
 //
-// The re-admissions a todo does make stand beside it unchanged, since the release's own test is
-// the complement of readmittable: a lingering root starts a new generation, and a held child
-// comes back into its tree at phase admitted on a generation of its own, which is the non-goal
-// the spec protects. A held root whose record already reads todo, which a hand-over leaves, is
-// reached by no status change at all, so its architect's retry_or_escalate is its release, as
-// today.
+// A todo on a held child releases its hold the same way, since a todo on any held issue in
+// Legion's work is its release (R20 of dispatch://INFRA-3320: each issue acts on its own status),
+// and a todo on a closed root opens its new run (decision 8 of dispatch://INFRA-4730). A held root
+// whose record already reads todo, which a hand-over leaves, is reached by no status change at
+// all, so its architect's retry_or_escalate is its release, as today.
 func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	const root, child = "LEGION-208", "LEGION-209"
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newEngine := func() *workflow.Engine {
 		return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-			Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, quiet)
+			Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, quiet)
 	}
 	todo := func(key, parent, rank string, seq int64, handedOver bool) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",
@@ -71,23 +70,22 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	})
 
-	t.Run("a lingering root keeps its re-admission", func(t *testing.T) {
+	t.Run("a closed root's todo opens its new run", func(t *testing.T) {
 		pool := migratedPool(t)
-		until := fixedNow.Add(time.Hour)
 		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
 			Project: testProject, Title: root, Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A",
-			HandedOver: true, LingerUntil: &until, LastDispatchSeq: 4})
+			HandedOver: true, LastDispatchSeq: 4})
 
 		apply(t, pool, newAdmission(t, 1, quiet), "todo", todo(root, "", "A", 5, handed), newEngine())
 
-		readmitted := issue(t, pool, root)
-		if readmitted.Phase != phase.Admitted || readmitted.Generation != 4 || readmitted.LingerUntil != nil || readmitted.Hold != nil {
-			t.Fatalf("the lingering root after the todo = %#v, want it re-admitted at generation 4 with no linger", readmitted)
+		again := issue(t, pool, root)
+		if again.Phase != phase.Admitted || again.Generation != 4 || again.Hold != nil {
+			t.Fatalf("the closed root after the todo = %#v, want its new run at generation 4, admitted", again)
 		}
 		assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	})
 
-	t.Run("a held child keeps its re-entry", func(t *testing.T) {
+	t.Run("a held child's todo releases its hold", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedSlotted(t, pool, root, "A")
 		parent := root
@@ -97,11 +95,10 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 
 		apply(t, pool, newAdmission(t, 1, quiet), "todo", todo(child, root, "B", 5, false), newEngine())
 
-		reentered := issue(t, pool, child)
-		if reentered.Phase != phase.Admitted || reentered.Generation != 2 || reentered.Hold != nil || reentered.Status != "todo" {
-			t.Fatalf("the held child after the todo = %#v, want it back in its tree at phase admitted on generation 2", reentered)
+		released := issue(t, pool, child)
+		if released.Phase != phase.Implementing || released.Generation != 1 || released.Hold != nil || released.Status != "in_progress" {
+			t.Fatalf("the held child after the todo = %#v, want it back in implementing at its generation, its hold cleared", released)
 		}
-		assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	})
 
 	t.Run("a held root Dispatch already shows todo is its architect's", func(t *testing.T) {

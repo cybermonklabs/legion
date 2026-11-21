@@ -59,6 +59,9 @@ func refusedStart(t *testing.T, h *harness, issue string, refusal error) supervi
 	if _, err := h.store.OpenTreeLifecycle(h.ctx, testProject, issue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", issue, err)
 	}
+	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, issue, treelifecycle.AuthorityWorkflow); err != nil {
+		t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
+	}
 	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
 		Token: token, Project: testProject, Tree: issue, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateQueued,
 	}, "role prompt")

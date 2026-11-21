@@ -10,30 +10,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An issue that leaves the workflow carries no mark of a slot released for a wait.
+// An issue that leaves Legion's work carries no mark of a slot released for a wait.
 //
 // record.Issue.ReleasedForWaitAt is the daemon's answer to "the daemon started this issue and its
 // row is gone because it waits on another issue", and that answer is what puts an issue in the
-// first part of the waiting line, at the moment the mark holds (record.Waiting). Admission clears
-// it from every issue needing no slot (admit's releaseSlots), but that loop reads the project's
-// live issues, and an issue the workflow takes out at phase.Done with a status out of the
-// workflow is in neither half of that read (record.Postgres.LiveIssues): it holds no row, so the
-// loop never sees it and the mark stands for good.
-//
-// record.Store.PutIssue carries the stored mark through, by design, so the leave that writes
-// phase.Done (leave, which does it for every issue of a tree that is not its root) leaves the
-// mark behind. A person who closes a waiting child and later reopens it to todo re-enters it at
-// admitted inside its live tree, where the first loop of record.Waiting reads that stale mark
-// and stands the issue among the issues whose work came back rather than among the issues whose
-// first phase can start, which are ordered by Dispatch rank. Measured on 2026-11-12 over the
-// real admission pass, with a cap of 2 and one row free: a reopened child of rank Y carrying a
-// mark three days old took that row, and the child of rank B beside it, which the line would
-// otherwise have been offered it, did not.
+// first part of the waiting line, at the moment the mark holds (record.Waiting). The leave keeps
+// the issue's phase (R20 of dispatch://INFRA-3320), so its later return resumes that phase at a new
+// entry and waits among the issues whose work came back: a mark left from before the leave would
+// stand it there at the old wait's moment, ahead of returns that came back before it. The leave
+// clears it (leave, whatever the record in hand says).
 func TestAnIssueLeavingTheWorkflowCarriesNoReleasedForWaitMark(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	now := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
+	engine := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: 48 * time.Hour,
 		Clock: func() time.Time { return now }}, nil)
 	root, child := "LEGION-300", "LEGION-301"
 	rootKey := root
@@ -59,10 +49,10 @@ func TestAnIssueLeavingTheWorkflowCarriesNoReleasedForWaitMark(t *testing.T) {
 	if err := pool.QueryRow(ctx, "select phase, released_for_wait_at from issues where key = $1", child).Scan(&left, &mark); err != nil {
 		t.Fatalf("read %s: %v", child, err)
 	}
-	if left != phase.Done {
-		t.Fatalf("%s left the workflow at phase %s, want %s: this test reads the leave that writes it", child, left, phase.Done)
+	if left != phase.Implementing {
+		t.Fatalf("%s left Legion's work at phase %s, want %s kept: this test reads the leave that clears the mark", child, left, phase.Implementing)
 	}
 	if mark != nil {
-		t.Errorf("%s left the workflow still marked released for a wait at %v, want no mark: nothing clears it after this, since admission reads the live issues alone", child, mark)
+		t.Errorf("%s left Legion's work still marked released for a wait at %v, want no mark: its return would wait at that old moment", child, mark)
 	}
 }

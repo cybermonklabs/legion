@@ -161,8 +161,6 @@ type Config struct {
 	Projects          map[string]Project
 	Gates             Gates
 	GitHubApps        GitHubApps
-	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
-	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
 	// close before its last look (`production_check_hours`, 14 days by default): the check's
 	// bound_at is its open plus this, and the look that starts there is the last one, told that
@@ -350,6 +348,7 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
+	"linger_hours":            "no tree lingers: an issue Dispatch shows out of work stops at once, keeping its phase, sessions and pull request until it returns or closes, so no deadline is armed for anything; remove linger_hours from legion.yaml (R20 of dispatch://INFRA-3320)",
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
@@ -404,7 +403,6 @@ type fileConfig struct {
 	Projects               map[string]Project
 	Gates                  *Gates
 	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
 	ProductionCheckBound   *time.Duration
 	PodUpdateGrace         *time.Duration
 	StalledTreeNotice      *time.Duration
@@ -867,7 +865,7 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 	return &read, nil
 }
 
-// readHours is a key in hours (`linger_hours`, `production_check_hours`,
+// readHours is a key in hours (`production_check_hours`,
 // `worker_background_hours`, `stalled_tree_notice_hours`): a positive number of hours, a
 // decimal among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in
 // whole hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never
@@ -997,7 +995,6 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
-		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateGrace:       defaultPodUpdateGrace,
 		StalledTreeNotice:    6 * time.Hour,

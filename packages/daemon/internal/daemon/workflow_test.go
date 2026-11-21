@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,30 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
-
-// linger_hours and production_check_hours reach the workflow engine as the durations they name, a
-// decimal included: the Stage 4b proof lingers 0.3 hours so a tree closes inside one run, and an
-// hour count truncated to zero would reach the engine as no linger at all, closing a finished tree
-// the moment it ends, or as no check bound, which the engine's default would then stand in for.
-func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legion.yaml")
-	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nlinger_hours: 0.3\nproduction_check_hours: 0.1\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadForValidation(path, func(string) string { return "" })
-	if err != nil {
-		t.Fatalf("LoadForValidation: %v", err)
-	}
-
-	engine := engineConfig(cfg, "legion-reviewer[bot]", nil)
-	if engine.Linger != 18*time.Minute {
-		t.Errorf("the engine's linger = %s, want 18m0s", engine.Linger)
-	}
-	if engine.ProductionCheckBound != 6*time.Minute {
-		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
-	}
-}
 
 // loginTokens answers each App role's lease, and its login, with the bot login named for it.
 type loginTokens map[appauth.AppRole]string

@@ -171,56 +171,6 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 	})
 }
 
-// QueuedRootsUnder lists, by key, exactly the labelled todo roots whose Ancestry holds the key,
-// whatever their parent: not a root whose chain holds another key, an unlabelled one, one in
-// another status, nor a child in a tree. A root's Ancestry reads back as it was written.
-func TestQueuedRootsUnderListsTheLabelledTodoRootsWhoseChainHoldsTheKey(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	issue := func(key, tree, status string, handed bool, ancestry ...string) Issue {
-		issue := issueFixture(key)
-		issue.Tree, issue.Status, issue.HandedOver, issue.Ancestry = tree, status, handed, ancestry
-		if len(ancestry) != 0 {
-			issue.Parent = ParentOf(ancestry[0])
-		}
-		return issue
-	}
-	inTx(t, st, func(tx pgx.Tx) {
-		for _, recorded := range []Issue{
-			issue("LEGION-300", "LEGION-300", "in_progress", true),
-			issue("LEGION-302", "LEGION-302", "todo", true, "LEGION-401", "LEGION-400", "LEGION-300"),
-			issue("LEGION-301", "LEGION-301", "todo", true, "LEGION-400", "LEGION-300"),
-			issue("LEGION-303", "LEGION-303", "todo", true, "LEGION-300"),
-			issue("LEGION-304", "LEGION-304", "todo", false, "LEGION-400"),
-			issue("LEGION-305", "LEGION-305", "backlog", true, "LEGION-400"),
-			issue("LEGION-306", "LEGION-300", "todo", true, "LEGION-400"),
-			issue("LEGION-307", "LEGION-307", "todo", true),
-		} {
-			must(t, records.PutIssue(ctx, tx, recorded))
-		}
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		roots, err := records.QueuedRootsUnder(ctx, tx, "LEGION-400")
-		must(t, err)
-		var keys []string
-		for _, root := range roots {
-			keys = append(keys, root.Key)
-		}
-		if !reflect.DeepEqual(keys, []string{"LEGION-301", "LEGION-302"}) {
-			t.Fatalf("QueuedRootsUnder(LEGION-400) = %v, want LEGION-301 and LEGION-302", keys)
-		}
-		if !reflect.DeepEqual(roots[1].Ancestry, []string{"LEGION-401", "LEGION-400", "LEGION-300"}) || roots[1].Status != "todo" {
-			t.Fatalf("QueuedRootsUnder(LEGION-400)[1] = %#v, want the whole record of LEGION-302", roots[1])
-		}
-		none, err := records.Issue(ctx, tx, "LEGION-307")
-		must(t, err)
-		if none.Ancestry != nil {
-			t.Fatalf("LEGION-307 reads back with Ancestry %#v, want nil as written", none.Ancestry)
-		}
-	})
-}
-
 // A record written before the schema carried the issue's repository has none, and the boot fills
 // it (daemon's backfillRepositories): UnfilledIssues lists one project's unfilled records, and
 // FillIssueRepository fills one, once, with GitHub's spelling beside the record's own.
@@ -601,6 +551,125 @@ func TestStoreRoundTripsATreeTakenBack(t *testing.T) {
 	})
 }
 
+// The mark that an issue has held its own gate as a root (Issue.HoldsGate) is what keeps the gate
+// of an issue that ran as a root once it gets a parent in Legion's work (R15 of
+// dispatch://INFRA-3320), so it survives every write: PutIssue stores it and every read behind
+// issueColumns gives it back, and a later write of a copy that carries false — one read before a
+// pass marked the issue — keeps it. MarkHoldsGate marks many issues in one statement; a key with
+// no record writes nothing, and no keys write nothing.
+func TestStoreRoundTripsTheMarkThatAnIssueHoldsItsOwnGate(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	held := issueFixture("LEGION-217")
+	held.HoldsGate = true
+	unmarked := issueFixture("LEGION-218")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, held))
+		must(t, records.PutIssue(ctx, tx, unmarked))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &held) {
+			t.Fatalf("issue holding its own gate = %#v, want %#v", got, held)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{held, unmarked}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{held, unmarked})
+		}
+	})
+
+	stale := held
+	stale.HoldsGate = false
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, stale))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !got.HoldsGate {
+			t.Fatalf("%s after a write of a copy carrying no mark holds its own gate = false, want true: the mark is never cleared", held.Key)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.MarkHoldsGate(ctx, tx, nil))
+		must(t, records.MarkHoldsGate(ctx, tx, []string{unmarked.Key, held.Key, "LEGION-999"}))
+		marked, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key, "LEGION-999"})
+		must(t, err)
+		want := held
+		wantMarked := unmarked
+		wantMarked.HoldsGate = true
+		if !reflect.DeepEqual(writtenAll(t, marked), []Issue{want, wantMarked}) {
+			t.Fatalf("issues after the pass's mark = %#v, want %#v: both marked, and no record made for a key with none", marked, []Issue{want, wantMarked})
+		}
+	})
+}
+
+// Each issue keeps its own facts on its record (R17 of dispatch://INFRA-3320): the retention a
+// converted linger left it, the run and gate a hand-over carried into it, the architect's park, a
+// close Dispatch refused and the newest Dispatch sequence the consumer saw. PutIssue stores each
+// and every read behind issueColumns gives it back, and a record carrying none reads back with
+// none. A later write replaces each of them but two: issues.tree is the insert's alone, so a copy
+// naming another tree keeps the one the issue was first recorded under (R22), and seen_seq only
+// moves forward, so a copy read before the consumer moved it never takes it back. The write that
+// clears the refused close and the retention clears them.
+func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	retained := time.Date(2026, 11, 21, 6, 30, 0, 0, time.UTC)
+	facts := issueFixture("LEGION-219")
+	facts.Tree = "LEGION-200"
+	facts.RetainedUntil = &retained
+	facts.CarriedGeneration, facts.CarriedGate = 4, true
+	facts.ParkedByArchitect = true
+	facts.PendingClose = &PendingClose{Generation: 3, Entry: 7, Kind: "close_root", Reason: "Closed by its architect: every child is done."}
+	facts.SeenSeq = 52
+	bare := issueFixture("LEGION-220")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, facts))
+		must(t, records.PutIssue(ctx, tx, bare))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &facts) {
+			t.Fatalf("issue with its own facts = %#v, want %#v", got, facts)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{facts.Key, bare.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{facts, bare}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{facts, bare})
+		}
+	})
+
+	later := facts
+	later.Tree = "LEGION-300"
+	later.RetainedUntil, later.PendingClose = nil, nil
+	later.CarriedGeneration, later.CarriedGate, later.ParkedByArchitect = 0, false, false
+	later.SeenSeq = 40
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, later))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		want := later
+		want.Tree, want.SeenSeq = facts.Tree, facts.SeenSeq
+		if !reflect.DeepEqual(written(t, got), &want) {
+			t.Fatalf("issue after a later write = %#v, want %#v: the tree it was first recorded under, the newest sequence seen, and every other fact as the later write gave it", got, want)
+		}
+	})
+
+	ahead := later
+	ahead.SeenSeq = 60
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, ahead))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if got.SeenSeq != 60 {
+			t.Fatalf("%s's newest sequence seen after a write carrying 60 = %d, want 60: a sequence ahead of the stored one moves it", facts.Key, got.SeenSeq)
+		}
+	})
+}
+
 // The tree a root left is what keeps it its own tree on every later pass of the admission sweep
 // and every release of children (workflow's RanAsRoot), so PutIssue stores it and every read
 // behind issueColumns gives it back.
@@ -917,16 +986,6 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		if len(open) != 2 || !sameProductionCheck(&open[0], woken) || !sameProductionCheck(&open[1], fresh) {
 			t.Fatalf("open production checks = %+v, want the root's then the child's", open)
 		}
-		ofTree, err := records.OpenProductionChecksOfTree(ctx, tx, root.Key)
-		must(t, err)
-		if len(ofTree) != 2 || ofTree[0].Issue != root.Key || ofTree[1].Issue != child.Key {
-			t.Fatalf("open production checks of %s = %+v, want the root's then the child's", root.Key, ofTree)
-		}
-		ofOther, err := records.OpenProductionChecksOfTree(ctx, tx, other.Key)
-		must(t, err)
-		if len(ofOther) != 0 {
-			t.Fatalf("open production checks of %s = %+v, want none: its one check is closed", other.Key, ofOther)
-		}
 	})
 	refused := done
 	refused.Outcome = "shrug"
@@ -1122,9 +1181,6 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	}{
 		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
 			return NewStore().ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
-		}},
-		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
-			return NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1393,7 +1449,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload, at time.Time) int64 {
-		row, err := NewOutboxRow(issue, payload, at)
+		row, err := unrecordedRow(issue, payload, at)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
@@ -1603,7 +1659,7 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -1654,7 +1710,7 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) int64 {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
@@ -1733,7 +1789,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			WorkspaceRemove{Linger: 1},
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -1824,7 +1880,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			OrdinaryStatusWrite("done", "in_progress", ""),
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -1924,7 +1980,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -1999,7 +2055,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -2080,7 +2136,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -2091,7 +2147,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			Resends: 1, ResendOf: catchUp, CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		copyID, err = records.EnqueueID(ctx, tx, row)
@@ -2157,7 +2213,7 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -2265,20 +2321,21 @@ func TestPendingStatusWritesListsEveryUnfinishedStatusEffect(t *testing.T) {
 	}
 }
 
-// The waiting line's second part is the slotless todo roots and orphans handed to Legion, in
-// rank order: a root in todo without the label waits for nothing, however high it ranks. A
-// root's own record says whether the generation it carries has already run, so each record here
-// carries the phase it stands at, as every record the store reads does.
-func TestWaitingIncludesOnlySlotlessHandedOverTodoRootsAndOrphansInRankOrder(t *testing.T) {
+// The waiting line's second part is the slotless todo roots handed to Legion, in rank order: a
+// root in todo without the label waits for nothing, however high it ranks, and an issue under a
+// root whose gate has not opened waits for that gate. A root's own record says whether the
+// generation it carries has already run, so each record here carries the phase it stands at, as
+// every record the store reads does.
+func TestWaitingIncludesOnlySlotlessHandedOverTodoRootsInRankOrder(t *testing.T) {
 	issues := []Issue{
 		{Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Phase: phase.Done, Status: "done", Rank: "00000", HandedOver: true},
 		{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Phase: phase.Admitted, Status: "backlog", Rank: "00001", HandedOver: true},
 		{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00004", LastDispatchSeq: 1, HandedOver: true},
 		{Key: "LEGION-213", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Phase: phase.Admitted, Status: "todo", Rank: "00003", LastDispatchSeq: 10, HandedOver: true},
-		{Key: "LEGION-214", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00002"},
+		{Key: "LEGION-214", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Parent: ParentOf("LEGION-212"), Phase: phase.Admitted, Status: "todo", Rank: "00002"},
 		{Key: "LEGION-215", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-215", Phase: phase.Admitted, Status: "todo", Rank: "00000"},
 	}
-	line, _ := Waiting(issues, nil, LineFacts{})
+	line, _ := Waiting(issues, nil, LineFacts{Chains: chainsOf(issues, copyOf(issues...))})
 	got := WaitingIssues(line)
 	want := []Issue{issues[3], issues[2]}
 	if !reflect.DeepEqual(got, want) {
@@ -2337,11 +2394,13 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
+			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
+			"holds_gate", "retained_until", "carried_generation", "carried_gate", "parked_by_architect", "pending_close", "seen_seq"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
-		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
+		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
 			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
@@ -2349,7 +2408,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "attempt_key", "attempt_body"},
+		"issue_lifecycles":       {"project", "issue", "epoch", "authority", "cleanup_started", "cleanup_confirmed_at", "updated_at"},
+		"tree_conversions":       {"project", "step", "converted_at"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2665,6 +2726,48 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)
 		}
 	})
+}
+
+// ClaimPhaseTask reads the text of the task a claim holds for one phase of one run at the entry
+// asked alone, as the admission pass's stop of a phase holds the task its worker was given for the
+// entry the phase stands on (workflow's givenTask), and nothing for a task of another phase,
+// another run or another entry, for no entry named, or for a token no claim stands under.
+func TestClaimPhaseTaskReadsTheTaskOfThatPhaseRunAndEntry(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	implementer := claim.Token("legion-legion-legion-208-implementer")
+	held := supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+		Generation: 1, State: supervise.StateWorking, Session: "ses_implementer", SessionFile: "/tmp/implementer.jsonl"}
+	const retry = "Continue LEGION-208. Issue: LEGION-208. Phase: implementing. Reason: the runner is back."
+	if err := st.PutClaimAndDelivery(ctx, held, supervise.Delivery{ID: "outbox:21", Task: retry, Generation: 1, Phase: phase.Implementing,
+		Entry: 3, QueuedAt: time.Now(), ConfirmedAt: time.Now()}); err != nil {
+		t.Fatalf("record the implementer's claim and the retry's task it holds: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		token      claim.Token
+		at         phase.Phase
+		generation uint64
+		entry      int64
+		want       string
+	}{
+		{name: "its own entry", token: implementer, at: phase.Implementing, generation: 1, entry: 3, want: retry},
+		{name: "a later entry", token: implementer, at: phase.Implementing, generation: 1, entry: 4},
+		{name: "no entry named", token: implementer, at: phase.Implementing, generation: 1, entry: 0},
+		{name: "an earlier entry", token: implementer, at: phase.Implementing, generation: 1, entry: 2},
+		{name: "another phase", token: implementer, at: phase.Testing, generation: 1, entry: 3},
+		{name: "another run", token: implementer, at: phase.Implementing, generation: 2, entry: 3},
+		{name: "no claim", token: "legion-legion-legion-208-tester", at: phase.Implementing, generation: 1, entry: 3},
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			got, err := records.ClaimPhaseTask(ctx, tx, tc.token, tc.at, tc.generation, tc.entry)
+			if err != nil || got != tc.want {
+				t.Fatalf("%s: the task %s holds for %s of run %d at entry %d = %q, %v; want %q", tc.name, tc.token, tc.at,
+					tc.generation, tc.entry, got, err, tc.want)
+			}
+		})
+	}
 }
 
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one

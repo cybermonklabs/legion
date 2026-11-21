@@ -57,6 +57,37 @@ func (s *strandedStore) OwedStarts(context.Context, pgx.Tx, string) ([]record.Ow
 	return nil, nil
 }
 
+// ChainRows is the copy's row of every issue this store records, as the daemon's copy holds a row
+// of each: its parent and its status as Dispatch shows them, so Stranded reads each claim's gate
+// root on the Dispatch chain (record.ReadChains). The fixture's chains are one link deep.
+func (s *strandedStore) ChainRows(_ context.Context, _ pgx.Tx, _ string, _ []string) ([]record.ChainRow, error) {
+	rows := make([]record.ChainRow, 0, len(s.issues))
+	for _, issue := range s.issues {
+		row := record.ChainRow{Key: issue.Key, Status: issue.Status, Present: true}
+		if issue.Parent != nil {
+			row.Parent = *issue.Parent
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// DispatchChildren and IssuesByKey answer the rest of the chain read: no child of a key the read
+// started from is asked about here, and a chain's records are the issues this store records.
+func (s *strandedStore) DispatchChildren(context.Context, pgx.Tx, string, []string) (map[string][]record.DispatchIssueRow, error) {
+	return map[string][]record.DispatchIssueRow{}, nil
+}
+
+func (s *strandedStore) IssuesByKey(_ context.Context, _ pgx.Tx, keys []string) ([]record.Issue, error) {
+	var issues []record.Issue
+	for _, issue := range s.issues {
+		if slices.Contains(keys, issue.Key) {
+			issues = append(issues, issue)
+		}
+	}
+	return issues, nil
+}
+
 // slotsOf is one admission slot for each of keys.
 func slotsOf(keys ...string) []record.Slot {
 	slots := make([]record.Slot, len(keys))
@@ -181,19 +212,17 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 // claim, so a queued start of that phase takes it out of the report, and a tree that does not run
 // strands nothing of its own.
 func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
-	until := time.Now().Add(time.Hour)
 	held := strandedIssue("LEGION-3", "LEGION-3", phase.Held)
 	held.Hold = &record.Hold{From: phase.Reviewing}
 	// The hold of a retired worker's issue: its reviewer retired, which held the issue from
 	// reviewing, and workingPhase still gives that phase, the one whose start relaunches it.
 	retiredHeld := strandedIssue("LEGION-14", "LEGION-14", phase.Held)
 	retiredHeld.Hold = &record.Hold{From: phase.Reviewing}
-	lingering := strandedIssue("LEGION-7", "LEGION-7", phase.Done)
-	lingering.LingerUntil = &until
-	// A lingering root re-admitted while every slot is taken: readmit has cleared its linger and
-	// recorded a new generation waiting for a slot, and the architect the linger suspended stays
-	// suspended with no start queued. Admission starts it once a slot frees; resumed now, it would
-	// run outside the cap.
+	// A closed root: it is out of Legion's work, so its tree runs nothing.
+	closed := strandedIssue("LEGION-7", "LEGION-7", phase.Done)
+	// A root re-admitted while every slot is taken: it waits in the line at a new generation, and
+	// the architect suspended at its earlier run stays suspended with no start queued. Admission
+	// starts it once a slot frees; resumed now, it would run outside the cap.
 	waiting := strandedIssue("LEGION-10", "LEGION-10", phase.Admitted)
 	waiting.Generation, waiting.Status, waiting.HandedOver = 3, "todo", true
 	issues := []record.Issue{
@@ -203,8 +232,8 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 		strandedIssue("LEGION-4", "LEGION-4", phase.Testing),
 		strandedIssue("LEGION-5", "LEGION-5", phase.Merging),
 		strandedIssue("LEGION-6", "LEGION-6", phase.Planning),
-		lingering,
-		strandedIssue("LEGION-8", "LEGION-7", phase.Retro),
+		closed,
+		strandedIssue("LEGION-8", "LEGION-10", phase.Retro),
 		strandedIssue("LEGION-9", "LEGION-404", phase.Planning),
 		waiting,
 		strandedIssue("LEGION-11", "LEGION-11", phase.Testing),
@@ -212,7 +241,7 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 		strandedIssue("LEGION-13", "LEGION-13", phase.Testing),
 		retiredHeld,
 		strandedIssue("LEGION-15", "LEGION-15", phase.Implementing),
-		strandedIssue("LEGION-16", "LEGION-7", phase.Retro),
+		strandedIssue("LEGION-16", "LEGION-10", phase.Retro),
 		strandedIssue("LEGION-17", "LEGION-17", phase.Planning),
 	}
 
@@ -270,11 +299,12 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 		retiredHeldWorker,
 		retiredStartQueued,
 		retiredArchitect,
-		// A tree that lingers holds its members, and its re-admission starts them again.
+		// A closed root's architect: its tree runs nothing, so nothing of it is stranded.
 		strandedClaim(t, "LEGION-7", "LEGION-7", claim.RoleArchitect, supervise.StateFailed),
-		strandedClaim(t, "LEGION-7", "LEGION-8", claim.RoleImplementer, supervise.StateSuspended),
-		// A retired member of that lingering tree: a tree that does not run strands nothing.
-		strandedClaim(t, "LEGION-7", "LEGION-16", claim.RoleImplementer, supervise.StateRetired),
+		// A root waiting in the line holds its members, and its promotion starts them again.
+		strandedClaim(t, "LEGION-10", "LEGION-8", claim.RoleImplementer, supervise.StateSuspended),
+		// A retired member of that waiting tree: a tree that does not run strands nothing.
+		strandedClaim(t, "LEGION-10", "LEGION-16", claim.RoleImplementer, supervise.StateRetired),
 		// An issue whose tree root is not recorded, and an issue not recorded at all.
 		strandedClaim(t, "LEGION-404", "LEGION-9", claim.RolePlanner, supervise.StateSuspended),
 		strandedClaim(t, "S2-1", "S2-1", claim.RoleImplementer, supervise.StateSuspended),

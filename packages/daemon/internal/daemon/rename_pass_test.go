@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -608,33 +607,26 @@ func TestABootKeepsEachIssueWhoseWorkspaceTheRuntimeMayStillHold(t *testing.T) {
 }
 
 // Under tmux, which runs no pod, an issue is kept while a workspace directory of it is on the host
-// under the old name, in the spelling its record holds, at every hook: here a workflow tree's
-// close, which writes the new name on each issue of the tree but the child whose workspace is
-// still there, and a later boot, which writes the child once the directory is gone (INFRA-4401
-// P2). Control: with the directory rule taken out (workspaceKeep keeping nothing), the tree's
-// close writes the child under its workspace too; with the tree close's pod end removed
-// (endTreePods), the root stays on the old name.
+// under the old name, in the spelling its record holds, at every hook: here each issue's own close
+// (record.IssueSuspend, which deletes no pod under tmux), the root's writing the new name on the
+// root and the child's keeping the child, whose workspace is still there, and a later boot, which
+// writes the child once the directory is gone (INFRA-4401 P2). No close ends the issues of a tree
+// (R17 of dispatch://INFRA-3320), so each issue's close is its own hook. Control: with the
+// directory rule taken out (workspaceKeep keeping nothing), the child's close writes the child
+// under its workspace too; with the close's pod end under tmux removed (suspendIssue's endPods),
+// the root stays on the old name.
 func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	t.Cleanup(st.Close)
 	records := record.NewStore()
-	until := time.Now().Add(-time.Minute)
 	const spelled = "Sjawhar/Legion"
 	root := record.Issue{Key: "LEGION-208", Repo: renameFrom, DefaultBranch: "main", GitHubRepo: renameFrom, Project: "LEGION", Tree: "LEGION-208",
-		Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
+		Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"}
 	parent := root.Key
 	child := record.Issue{Key: "LEGION-209", Repo: spelled, DefaultBranch: "main", GitHubRepo: spelled, Project: "LEGION", Tree: root.Key,
 		Parent: &parent, Title: "child", Phase: phase.Done, Generation: 1, Status: "done", Rank: "V"}
 	putOutboxIssue(t, pool, records, root)
 	putOutboxIssue(t, pool, records, child)
-	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("admit the tree: %v", err)
-	}
 	stateDir := t.TempDir()
 	located, err := workspace.Location(stateDir, ghrepo.MustParse(spelled), child.Key)
 	if err != nil {
@@ -645,23 +637,23 @@ func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *test
 	}
 
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Store = st
 	var logged syncBuffer
 	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: transferredRepositories(),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
-	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 		project: "legion", stateDir: stateDir}
 	runner.podEnded = w.podEndsOn(rt)
 
-	if err := runner.execute(ctx, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleArchitect,
-		Generation: 1, Linger: 1}, time.Now())); err != nil {
-		t.Fatalf("close the tree: %v", err)
+	for _, closed := range []record.Issue{root, child} {
+		if err := runner.execute(ctx, mustOutboxRow(t, closed.Key, record.IssueSuspend{Tree: closed.Tree, Generation: 1, TreeGeneration: 1}, time.Now())); err != nil {
+			t.Fatalf("close %s: %v", closed.Key, err)
+		}
 	}
 	if names := storedRepositoryNames(t, pool, root.Key); !namedAll(names, renameTo) {
-		t.Fatalf("%s's stored names after its tree's close = %v, want each on %s", root.Key, names, renameTo)
+		t.Fatalf("%s's stored names after its close = %v, want each on %s", root.Key, names, renameTo)
 	}
 	if names := storedRepositoryNames(t, pool, child.Key); !namedAll(names, spelled) {
-		t.Fatalf("%s's stored names after its tree's close = %v, want them left on %s while its workspace is there", child.Key, names, spelled)
+		t.Fatalf("%s's stored names after its close = %v, want them left on %s while its workspace is there", child.Key, names, spelled)
 	}
 	kept := renameLines(t, logged.String(), renameKeptLine)
 	if len(kept) != 1 || kept[0].Issue != child.Key || !strings.Contains(kept[0].Reason, located.Dir) {

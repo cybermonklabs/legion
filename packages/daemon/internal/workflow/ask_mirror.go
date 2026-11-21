@@ -5,7 +5,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -32,13 +31,11 @@ import (
 // nothing is (itemLeft). These decisions read the record beside the row (the gate's document,
 // gateArtifact); the row itself never does.
 
-// recordedRoot is the record of key when it is a tree root, nil otherwise.
-func (e *Engine) recordedRoot(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
-	issue, err := e.store.Issue(ctx, tx, key)
-	if err != nil || issue == nil || !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return nil, err
-	}
-	return issue, nil
+// recordedRoot is the record of key when it holds its own design gate on the Dispatch chain
+// (gateHolder), with the chains that read it, and nil otherwise: the asks of a root's own wait are
+// mirrored, and a session of its tree is one whose issue's gate root it is.
+func (e *Engine) recordedRoot(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, *record.Chains, error) {
+	return e.gateHolder(ctx, tx, key)
 }
 
 // askState is what an event says of whether an ask is open.
@@ -191,13 +188,13 @@ func (e *Engine) answersWait(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // approval request hands back nothing a root waits on here, and a restored ask arrives as
 // DispatchAskRestored instead.
 func (e *Engine) dispatchAskOpened(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskOpened) (intake.Result, error) {
-	root, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
 	byTree := false
 	if fact.AuthorSession != "" {
-		if byTree, err = e.store.SessionClaimsTree(ctx, tx, root.Tree, fact.AuthorSession); err != nil {
+		if byTree, err = e.sessionOfGateTree(ctx, tx, chains, root.Key, fact.AuthorSession); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -215,7 +212,7 @@ func (e *Engine) dispatchAskOpened(ctx context.Context, tx pgx.Tx, fact intake.D
 // person's act and declares nothing; a close that takes an ask of the root's wait away from the
 // person moves the wait (itemLeft).
 func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskRestored) (intake.Result, error) {
-	root, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, _, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
@@ -230,11 +227,17 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 	return intake.Result{}, e.itemLeft(ctx, tx, *root, before, after, record.AnsweredByClosed, "Dispatch's settlement, which restored its earlier answer")
 }
 
-// dispatchAskClosed applies the close to the ask's mirror row and the root's wait (closeAsk), and
-// relays a person's answer or resolution of a question on a tree Legion is not running to the
-// controller (relayParkedDecision): nobody inside such a tree hears it. An approval ask's answer
-// arrives again as the document's review, which the gate relays, so it is not relayed as an ask.
+// dispatchAskClosed ends every step of a root that waits, closed, on the ask as an ancestor's
+// approval request, when the close carries no approval (endPendingOnRequest), whatever issue the
+// ask is on and whether or not the daemon records it; applies the close to the ask's mirror row
+// and the root's wait (closeAsk); and relays a person's answer or resolution of a question on a
+// tree Legion is not running to the controller (relayParkedDecision): nobody inside such a tree
+// hears it. An approval ask's answer arrives again as the document's review, which the gate
+// relays, so it is not relayed as an ask.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
+	if err := e.endPendingOnRequest(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {
 		return intake.Result{}, err
 	}
@@ -257,11 +260,11 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 // Admission's answeredSince reads the row instead, for a decline that falls before the pass that
 // would put the root in the wait.
 func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
-	root, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return err
 	}
-	closer, err := e.closer(ctx, tx, *root, fact.Actor)
+	closer, err := e.closer(ctx, tx, chains, *root, fact.Actor)
 	if err != nil {
 		return err
 	}
@@ -288,15 +291,15 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 }
 
 // closer names who closed an ask of root: a person, Dispatch's settlement, a session of the root's
-// tree, or anyone else.
-func (e *Engine) closer(ctx context.Context, tx pgx.Tx, root record.Issue, actor dispatch.Actor) (string, error) {
+// tree on the Dispatch chain (sessionOfGateTree), or anyone else.
+func (e *Engine) closer(ctx context.Context, tx pgx.Tx, chains *record.Chains, root record.Issue, actor dispatch.Actor) (string, error) {
 	switch {
 	case actor.Person():
 		return record.ClosedByPerson, nil
 	case actor == dispatch.SettlementActor:
 		return record.ClosedBySettlement, nil
 	case actor.Kind == "session":
-		inTree, err := e.store.SessionClaimsTree(ctx, tx, root.Tree, actor.ID)
+		inTree, err := e.sessionOfGateTree(ctx, tx, chains, root.Key, actor.ID)
 		if err != nil || !inTree {
 			return record.ClosedByOther, err
 		}
@@ -338,13 +341,13 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 // person hands it back (declare), unless a newer turn of the ask is already recorded (handsTurn). Any other reply that takes an ask of the root's wait away from the person —
 // a session's progress note handing it to the agent's turn — moves the wait (itemLeft).
 func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskReply) error {
-	root, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return err
 	}
 	inTree := false
 	if fact.Actor.Kind == "session" {
-		if inTree, err = e.store.SessionClaimsTree(ctx, tx, root.Tree, fact.Actor.ID); err != nil {
+		if inTree, err = e.sessionOfGateTree(ctx, tx, chains, root.Key, fact.Actor.ID); err != nil {
 			return err
 		}
 	}
@@ -388,7 +391,7 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 // version's own artifact.version event answers a root waiting on its gate (answerAwaitedGate), and
 // a root at admitted finds the request no longer with the person at the next pass (withHuman).
 func (e *Engine) dispatchApprovalMoved(ctx context.Context, tx pgx.Tx, fact intake.DispatchApprovalMoved) (intake.Result, error) {
-	root, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, _, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}

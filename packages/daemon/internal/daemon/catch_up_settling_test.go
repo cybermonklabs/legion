@@ -127,10 +127,13 @@ func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 	return leased, notice
 }
 
-// catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
+// catchUpRows is every catch-up notice of root the outbox holds, oldest first, read through db: a
+// pool, or a transaction that reads its own writes.
+func catchUpRows(t *testing.T, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, root string) []record.OutboxRow {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
+	rows, err := db.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
 	if err != nil {
 		t.Fatalf("read the catch-ups of %s: %v", root, err)
@@ -370,22 +373,22 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // An earlier listener reports the spent copy's failed forward after the row has finished: its
 // deletion released what it claimed, and no row is left to hand over from (spentKept's claims of
 // 0). What the tree is owed and nothing claims is named by a fresh catch-up while the root has an
-// architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
-// root's next start or ready names it.
+// architect to hear it, and waits KEPT, with nothing written, while it has none — a closed root's
+// next run names it at its start or its ready.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		lingers bool
-		want    int
+		name   string
+		closed bool
+		want   int
 	}{
-		{name: "the root hears", lingers: false, want: 1},
-		{name: "the root lingers", lingers: true, want: 0},
+		{name: "the root hears", closed: false, want: 1},
+		{name: "the root is closed", closed: true, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			noticeTree(t, pool, records, tc.lingers)
+			noticeTree(t, pool, records, tc.closed)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			token := architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 			ask := "dispatch://LEGION-1/ask/ask-2"

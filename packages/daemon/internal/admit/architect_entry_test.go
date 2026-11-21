@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -140,48 +139,25 @@ func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 	}
 }
 
-// A hand-over carries a root into a tree of its own at the phase it ran in elsewhere, and its
-// promotion hands that architect the work of taking that phase up: the entry is raised and the
-// start carries it, for a root standing past admitted exactly as for one standing at it.
-//
-// The hand-over runs as it does in production: the end of the old root's linger fences the child,
-// the daemon's labelled todo re-admits it carrying its run, and the same pass promotes it. So
-// what says the root was carried is what the record holds at that promotion, and the one reader
-// of it, the hand-over row of the root's generation (workflow.ArchitectStartOf), reads the row
-// that re-admission wrote in that pass, while the promotion's own write clears the mark on the
-// issue. The derived task is not marked to be sent as written, so a send of that entry again
-// derives it once more.
+// A root a hand-over of the release before carried in, at the phase it ran in elsewhere, is
+// promoted as its own first start under this release, and that promotion hands its architect the
+// work of taking that phase up: the entry is raised and the start carries it, for a root standing
+// past admitted exactly as for one standing at it. What says the root was carried is its own
+// record (record.Issue.CarriedGeneration at its generation, which the first boot's conversion
+// writes, workflow.ArchitectStartOf). The derived task is not marked to be sent as written, so a
+// send of that entry again derives it once more.
 func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
-	const oldRoot, root = "LEGION-700", "LEGION-301"
-	until := fixedNow.Add(time.Hour)
-	parent := oldRoot
-	putIssue(t, pool, record.Issue{Key: oldRoot, Tree: oldRoot, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "the root whose linger ends", Phase: phase.Done,
-		Generation: 1, Status: "done", LingerUntil: &until})
-	putIssue(t, pool, record.Issue{Key: root, Tree: oldRoot, Parent: &parent, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root to promote", Phase: phase.Accepting,
-		Generation: 1, Status: "needs_review", Rank: "A", LastDispatchSeq: 1})
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutHandover(context.Background(), tx, record.Handover{Issue: root, Tree: oldRoot, Generation: 1}); err != nil {
-			t.Fatalf("fence the hand-over of %s: %v", root, err)
-		}
-	})
+	const root = "LEGION-301"
+	carriedRoot(t, pool, root, phase.Accepting, "A")
 
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "todo", Title: root, Parent: oldRoot, Rank: "A", HandedOver: true, DaemonActor: true}, admission.engine)
+	tick(t, pool, admission, "tick")
 
 	stands := issue(t, pool, root)
-	if stands.Tree != root || stands.Generation != 2 || stands.Phase != phase.Accepting || stands.Status != "in_progress" || stands.HandedOverFrom != "" {
-		t.Fatalf("the carried root after the hand-over = %#v, want a tree of its own at generation 2, promoted in accepting with its mark cleared", stands)
+	if stands.Generation != 2 || stands.Phase != phase.Accepting || stands.Status != "in_progress" || stands.CarriedGeneration != 2 {
+		t.Fatalf("the carried root after its promotion = %#v, want generation 2, promoted in accepting, still marked carried", stands)
 	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		handed, err := record.NewStore().HandedOverRoot(context.Background(), tx, root)
-		if err != nil || handed == nil || handed.Generation != 2 {
-			t.Fatalf("the hand-over row of %s = %#v, %v; want the one the re-admission wrote at generation 2: the case's premise", root, handed, err)
-		}
-	})
 	start := assertArchitectEntry(t, pool, root, 1)
 	if !strings.Contains(start.Task, workflow.ArchitectCarriedPhaseLabel) {
 		t.Fatalf("the carried root's architect task = %q, want the take-the-phase-up instruction the derivation writes for it", start.Task)
@@ -254,55 +230,5 @@ func TestAQueuedRootTheDerivationServesNoTaskRaisesNoArchitectEntry(t *testing.T
 	}
 	if row := architectRow(t, pool, root); row.Entry != 0 || row.EntryTask != "" {
 		t.Fatalf("%s's architect row = entry %d carrying %q, want neither: nothing was handed to it", root, row.Entry, row.EntryTask)
-	}
-}
-
-// A root parked at admitted while a child of its tree stood in planning, whose architect was given
-// its first task and never confirmed it, is a tree that ran at an earlier generation, though its
-// architect's claim served nothing: no run and no entry. A person hands it back, and the
-// re-admission's promotion gives its architect the earlier generation's shape — register the spec
-// again, decompose nothing anew — rather than the fresh tree's, which says nothing in the tree
-// runs, asks for every child of a decomposition and closes on nothing else starting it: the same
-// promotion starts the planner of that child again (startMidPhaseMembers). What tells it is the
-// member that runs (workflow.ArchitectStart.MembersRun, at a generation after the first).
-func TestAReadmittedTreeWhoseMemberRunsGetsTheEarlierGenerationsShapeThoughItsArchitectServedNothing(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, nil)
-	const root, child = "LEGION-841", "LEGION-842"
-	until := fixedNow.Add(72 * time.Hour)
-	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Admitted,
-		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until,
-		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
-	token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
-	if _, err := pool.Exec(context.Background(), `update claims set serving_generation = 0, given_entry = 1, served_entry = 0 where token = $1`,
-		string(token)); err != nil {
-		t.Fatalf("record the architect claim of %s as given its first task and serving nothing: %v", root, err)
-	}
-	putArchitectRow(t, pool, root, 1, fixedNow.Add(-time.Hour))
-	planner := midPhaseChild(t, pool, root, child, phase.Planning, "in_progress")
-
-	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5,
-		Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
-
-	if readmitted := issue(t, pool, root); readmitted.Generation != 2 || readmitted.Phase != phase.Admitted || readmitted.TakenBack {
-		t.Fatalf("the re-admitted %s = generation %d at %s, taken back %t; want generation 2 at admitted, its run never in a phase of its own",
-			root, readmitted.Generation, readmitted.Phase, readmitted.TakenBack)
-	}
-	start := assertArchitectEntry(t, pool, root, 2)
-	if !strings.Contains(start.Task, workflow.ArchitectReadmittedLabel) {
-		t.Fatalf("the re-admission's architect task of %s = %q, want the shape of a tree that ran at an earlier generation, labelled %q",
-			root, start.Task, workflow.ArchitectReadmittedLabel)
-	}
-	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "while nothing in it runs",
-		"Nothing else starts this tree, and no message is coming."} {
-		if strings.Contains(start.Task, untrue) {
-			t.Fatalf("the re-admission's architect task of %s = %q; it holds %q, which is false of a tree whose child in planning "+
-				"this promotion starts again", root, start.Task, untrue)
-		}
-	}
-	starts := startsOf(t, pool, child)
-	if len(starts) != 1 || starts[0].role != claim.RolePlanner || starts[0].task == "" {
-		t.Fatalf("the starts of %s = %+v, want its planner's (claim %s), carrying its resume task: the promotion starts the child "+
-			"that stood in planning again", child, starts, planner)
 	}
 }

@@ -208,8 +208,8 @@ func seedHeld(t *testing.T, st *store.Store) (start, notice int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noticeRow, err := record.NewOutboxRow("LEGION-208", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect,
-		Reason: "LEGION-210 is done"}, pausedAt)
+	noticeRow, err := record.NewOutboxRow("LEGION-208", record.Fenced(record.Notice{Kind: "child-closed", Role: claim.RoleArchitect,
+		Reason: "LEGION-210 is done"}, record.FirstFence), pausedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

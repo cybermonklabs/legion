@@ -29,7 +29,7 @@ func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	cases := []struct {
 		row    rowRuleCase
 		number int

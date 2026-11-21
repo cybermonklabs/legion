@@ -241,7 +241,7 @@ func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, 
 	for _, d := range decisions {
 		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor})
 	}
-	row, err := record.NewOutboxRow(tree, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect,
+	row, err := record.NewFencedRow(r.ctx, tx, store, tree, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect,
 		CatchUp: &record.CatchUp{Generation: 1, Launch: 1, Kept: &kept}}, r.at)
 	if err != nil {
 		return record.KeptDecisions{}, 0, err

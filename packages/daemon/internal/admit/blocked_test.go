@@ -330,138 +330,36 @@ func TestATreeAlreadyRunningIsUntouchedWhenABlockerIsAddedToItsIssue(t *testing.
 	}
 }
 
-// A candidate that carries a run into a tree of its own — a handed-over child, a re-admitted tree
-// — is work already under way, and is admitted whatever its links say: record.Issue.CarriesRun is
-// the whole of blockers.WaitsOn's answer for it. A candidate that carries none is checked like any
-// other root, and its unfinished blocker keeps it in the waiting line. Every door that brings such
-// a candidate to promotion is here with that pair, so the tests say which side of the rule each
-// door is on.
+// A candidate that carries a run into its first start under this release — a root a hand-over of
+// the release before carried in (record.CarriedIn) — is work already under way, and is admitted
+// whatever its links say: record.Issue.CarriesRun is the whole of blockers.WaitsOn's answer for
+// it. A candidate that carries none is checked like any other root, and its unfinished blocker
+// keeps it in the waiting line.
 func TestACandidateThatCarriesARunIsAdmittedWhateverItsLinksSay(t *testing.T) {
-	// The tick's candidate is a root already recorded mid-phase; the other three doors act on the
-	// child of a tree that signed off and lingers, behind the durable hand-over fence. Each is
-	// keyed as Dispatch keys an issue: a carried candidate's own phase role is started with it
-	// (startMidPhaseMembers), which mints a claim token.
-	const recorded, root, child = "LEGION-701", "LEGION-208", "LEGION-209"
-	seedRecorded := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
-		carried := record.Issue{Key: recorded, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: "a carried root", Tree: recorded, Phase: at, Generation: 2,
-			Status: "todo", Rank: "A", HandedOver: true}
-		if at != phase.Admitted {
-			// A root that carries a phase into a tree of its own came out of another tree and
-			// records it (admit's readmit): that is what says the run is the old tree's and
-			// this tree has still to be opened.
-			carried.HandedOverFrom = "LEGION-700"
-		}
-		putIssue(t, pool, carried)
-		seedMirror(t, pool, recorded, "todo", "LEGION-UNKNOWN")
-	}
-	seedHandedOver := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
-		seedLingeringHandovers(t, pool, root, child)
-		carried := issue(t, pool, child)
-		carried.Phase = at
-		putIssue(t, pool, carried)
-		seedMirror(t, pool, child, "todo", "LEGION-UNKNOWN")
-	}
-	// The child's todo as Dispatch delivers it: the hand-over's own event is the daemon's write
-	// (DaemonActor), a person's labelling of the orphan is not. Either way the event names what
-	// Dispatch says the child waits on, and the mirror writes that row before admission reads it.
-	todo := func(daemon bool) intake.DispatchIssue {
-		return intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
-			Title: child, Parent: root, Rank: "B", HandedOver: handed, DaemonActor: daemon, Blockers: []string{"LEGION-UNKNOWN"}}
-	}
-	for _, door := range []struct {
-		name      string
-		candidate string
-		seed      func(*testing.T, *pgxpool.Pool, phase.Phase)
-		arrive    func(*testing.T, *pgxpool.Pool, *Admission)
+	const carried = "LEGION-701"
+	for _, carry := range []struct {
+		name string
+		at   phase.Phase
 	}{
-		{name: "a controller tick promoting a candidate already recorded mid-phase", candidate: recorded, seed: seedRecorded,
-			arrive: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) { tick(t, pool, admission, "tick") }},
-		{name: "a hand-over's own Dispatch event", candidate: child, seed: seedHandedOver,
-			arrive: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				applyMirrored(t, pool, admission, "handover", todo(true), admission.engine)
-			}},
-		{name: "the outbox's direct consumption", candidate: child, seed: seedHandedOver,
-			arrive: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				if _, err := intake.ApplyFact(context.Background(), pool, "outbox", "handover",
-					intake.Handover{Issue: child, Tree: root, Generation: 1}, admission.engine, admission); err != nil {
-					t.Fatalf("consume the hand-over: %v", err)
-				}
-			}},
-		{name: "a person's labelling of an orphan", candidate: child, seed: seedHandedOver,
-			arrive: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				applyMirrored(t, pool, admission, "person-labels", todo(false), admission.engine)
-			}},
+		{name: "carrying a run", at: phase.Implementing},
+		{name: "carrying no run", at: phase.Admitted},
 	} {
-		t.Run(door.name, func(t *testing.T) {
-			for _, carry := range []struct {
-				name string
-				at   phase.Phase
-			}{
-				{name: "carrying a run", at: phase.Implementing},
-				{name: "carrying no run", at: phase.Admitted},
-			} {
-				t.Run(carry.name, func(t *testing.T) {
-					pool := migratedPool(t)
-					admission := quiet(t, 1)
-					door.seed(t, pool, carry.at)
-
-					door.arrive(t, pool, admission)
-
-					if carry.at == phase.Admitted {
-						// Nothing refused it a tree of its own: it is a root in the waiting line,
-						// held there by the blocker Dispatch says is unfinished.
-						assertSlots(t, pool, nil)
-						assertWaiting(t, pool, []string{door.candidate})
-						return
-					}
-					assertSlots(t, pool, []record.Slot{{Issue: door.candidate, Index: 0, AdmittedAt: fixedNow}})
-				})
-			}
-		})
-	}
-}
-
-// A tree Legion takes back after it has finished and lingered starts again whatever its links
-// say. Its root ran, so the workflow marked it as it moved into its first phase
-// (record.Issue.TakenBack); re-admission keeps that mark and the promotion rule exempts a
-// candidate carrying it beside one carrying a run (blockers.Exempt), which such a root does not:
-// re-admitting a root clears its phase to phase.Admitted, its carry being an orphan's alone. So a
-// root set back to todo during its linger takes its slot at once while Dispatch still says it waits
-// on an unfinished issue, and a root whose linger has already expired, left closed at phase done,
-// comes back the same way.
-func TestATreeTakenBackAfterItsLingerStartsAgainWhateverItsLinksSay(t *testing.T) {
-	const root, blocker = "LEGION-LINGER", "LEGION-BLOCKER"
-	for _, tc := range []struct {
-		name    string
-		lingers bool
-	}{
-		{name: "a root still lingering after its sign-off", lingers: true},
-		{name: "a root whose linger has expired", lingers: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(carry.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := quiet(t, 1)
-			finished := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: testProject, Title: "a finished tree", Tree: root, Phase: phase.Done, Generation: 3,
-				Status: "done", Rank: "A", HandedOver: true, TakenBack: true, LastDispatchSeq: 1}
-			if tc.lingers {
-				until := fixedNow.Add(time.Hour)
-				finished.LingerUntil = &until
-			}
-			putIssue(t, pool, finished)
-			seedMirror(t, pool, root, "done", blocker)
-			seedMirror(t, pool, blocker, "in_progress")
+			carriedRoot(t, pool, carried, carry.at, "A")
+			seedMirror(t, pool, carried, "todo", "LEGION-UNKNOWN")
 
-			applyMirrored(t, pool, admission, "set-back", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets",
-				Seq: 2, Type: "issue.updated", Status: "todo", Title: "a finished tree", Rank: "A", HandedOver: handed,
-				Blockers: []string{blocker}}, engineStub{})
+			tick(t, pool, admission, "tick")
 
-			if got := issue(t, pool, root); got.Generation != 4 || got.Phase != phase.Admitted || !got.TakenBack || got.LingerUntil != nil {
-				t.Fatalf("the tree taken back = %#v, want its next generation at admitted, still marked as having run, not lingering", got)
+			if carry.at == phase.Admitted {
+				// A root in the waiting line, held there by the blocker Dispatch says is
+				// unfinished.
+				assertSlots(t, pool, nil)
+				assertWaiting(t, pool, []string{carried})
+				return
 			}
-			assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
-			assertWaiting(t, pool, nil)
+			assertSlots(t, pool, []record.Slot{{Issue: carried, Index: 0, AdmittedAt: fixedNow}})
 		})
 	}
 }
@@ -498,190 +396,12 @@ func TestABlockedRootThatLeftTheQueueAndCameBackIsStillChecked(t *testing.T) {
 	assertWaiting(t, pool, []string{root})
 }
 
-// A child still waiting on blockers when its tree finishes is handed to Legion as a root of its
-// own, carrying no run, and starting no phase, where the blocked-root rule admits it once its
-// blockers are done. It is no tree taken back: it never stood in a phase of its own, so it carries
-// no mark (record.Issue.TakenBack) and the re-admission that gives it a tree of its own invents
-// none (readmit). Nothing exempts it, and the unfinished blocker Dispatch names holds it in the
-// waiting line. The blocker's close is what admits it, exactly as for a root that never ran.
-func TestANeverStartedChildHandedOverFromAFinishedTreeIsStillChecked(t *testing.T) {
-	const root, child, blocker = "LEGION-208", "LEGION-209", "LEGION-BLOCKER"
-	pool := migratedPool(t)
-	admission := quiet(t, 1)
-	seedLingeringHandovers(t, pool, root, child)
-	// The child its tree released but never started: still at the phase its tree's gate opened it
-	// at, with the hand-over fence its root's linger wrote standing behind it.
-	unstarted := issue(t, pool, child)
-	unstarted.Phase = phase.Admitted
-	putIssue(t, pool, unstarted)
-	seedMirror(t, pool, child, "todo", blocker)
-	seedMirror(t, pool, blocker, "in_progress")
-
-	applyMirrored(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
-		Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: handed,
-		DaemonActor: true, Blockers: []string{blocker}}, admission.engine)
-
-	if got := issue(t, pool, child); got.Tree != child || got.Phase != phase.Admitted || got.TakenBack {
-		t.Fatalf("the handed-over child = %#v, want a root of its own at admitted, carrying no mark", got)
-	}
-	assertSlots(t, pool, nil)
-	assertWaiting(t, pool, []string{child})
-
-	applyMirrored(t, pool, admission, "blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets",
-		Seq: 5, Type: "issue.updated", Status: "done", Title: blocker, Rank: "Z"}, engineStub{})
-
-	assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-}
-
-// The same hand-over of a child its tree still holds on an unfinished blocker, where the child ran
-// a phase in an earlier run of its tree: it left the workflow (a person moved it to backlog, or it
-// closed) and was set back to todo, which re-entered it at admitted, held by the blocker added
-// meanwhile. It carries no run into its tree of its own — it stands at admitted — and it is not a
-// tree Legion takes back, since its tree was another root's: the approved spec has the blocked-root
-// rule admit such a child "once its blockers are done", so the run it had before exempts it from
-// nothing and the blocker holds it in the waiting line.
-func TestAHeldChildThatRanBeforeHandedOverFromAFinishedTreeIsStillChecked(t *testing.T) {
-	const root, child, blocker = "LEGION-208", "LEGION-209", "LEGION-BLOCKER"
-	pool := migratedPool(t)
-	admission := quiet(t, 1)
-	seedLingeringHandovers(t, pool, root, child)
-	// Re-entered after an earlier run: held at admitted, marked as having stood in a phase.
-	rerun := issue(t, pool, child)
-	rerun.Phase, rerun.TakenBack = phase.Admitted, true
-	putIssue(t, pool, rerun)
-	seedMirror(t, pool, child, "todo", blocker)
-	seedMirror(t, pool, blocker, "in_progress")
-
-	applyMirrored(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
-		Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: handed,
-		DaemonActor: true, Blockers: []string{blocker}}, admission.engine)
-
-	if got := issue(t, pool, child); got.Tree != child || got.Phase != phase.Admitted {
-		t.Fatalf("the handed-over child = %#v, want a root of its own at admitted", got)
-	}
-	assertSlots(t, pool, nil)
-	assertWaiting(t, pool, []string{child})
-
-	applyMirrored(t, pool, admission, "blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets",
-		Seq: 5, Type: "issue.updated", Status: "done", Title: blocker, Rank: "Z"}, engineStub{})
-
-	assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-}
-
-// The same rule through a person's door: a child of a closed tree that a person labels as an orphan
-// root of its own while Dispatch says it waits on an unfinished issue. A child that finished its run
-// there (phase done) carries no run and is no tree taken back — what it ran was the closed tree's —
-// so re-admission clears its mark (readmit), and the blocker holds it in the waiting line, named in
-// `admission.blocked`, until it closes. A child labelled mid-phase is work already under way: it
-// carries its run into the tree it now roots (record.Issue.CarriesRun), keeps its mark with that run,
-// and takes its slot whatever its links say.
-func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *testing.T) {
-	const root, child, blocker = "LEGION-208", "LEGION-209", "LEGION-BLOCKER"
-	for _, tc := range []struct {
-		name    string
-		at      phase.Phase
-		status  string
-		carries bool
-	}{
-		{name: "a done child", at: phase.Done, status: "done"},
-		{name: "a child mid-phase", at: phase.Implementing, status: "in_progress", carries: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := quiet(t, 1)
-			parent := root
-			putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: testProject, Title: root, Tree: root, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A",
-				HandedOver: true, TakenBack: true, LastDispatchSeq: 1})
-			putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: testProject, Title: child, Tree: root, Parent: &parent, Phase: tc.at, Generation: 1, Status: tc.status,
-				Rank: "B", TakenBack: true, LastDispatchSeq: 1})
-			seedMirror(t, pool, child, tc.status, blocker)
-			seedMirror(t, pool, blocker, "todo")
-
-			applyMirrored(t, pool, admission, "person-labels", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
-				Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: handed,
-				Blockers: []string{blocker}}, admission.engine)
-
-			got := issue(t, pool, child)
-			if got.Tree != child || got.Generation != 2 {
-				t.Fatalf("the labelled child = %#v, want an orphan root of its own at generation 2", got)
-			}
-			if tc.carries {
-				if got.Phase != tc.at || !got.TakenBack {
-					t.Fatalf("the labelled child = %#v, want it carrying %s and its mark", got, tc.at)
-				}
-				assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-				return
-			}
-			if got.Phase != phase.Admitted || got.TakenBack {
-				t.Fatalf("the labelled child = %#v, want admitted with its old tree's mark cleared", got)
-			}
-			assertSlots(t, pool, nil)
-			assertWaiting(t, pool, []string{child})
-			inTx(t, pool, func(tx pgx.Tx) {
-				_, blocked, _, err := admission.tickRows(context.Background(), tx)
-				if err != nil {
-					t.Fatalf("read what is blocked: %v", err)
-				}
-				if want := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}}; !reflect.DeepEqual(blocked, want) {
-					t.Fatalf("blocked = %#v, want %#v", blocked, want)
-				}
-			})
-
-			applyMirrored(t, pool, admission, "blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets",
-				Seq: 5, Type: "issue.updated", Status: "done", Title: blocker, Rank: "Z"}, engineStub{})
-
-			assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-		})
-	}
-}
-
-// What promotion exempts is never reported as waiting: the tick notice and the state's `blocked`
-// are the deciders' own rule read rather than made (blockers.Blocked, blockers.Exempt), so a tree
-// Legion took back is named in neither while a blocker of it stands unfinished. The mark is
-// durable for exactly this moment: with every slot taken the returning root keeps its place in
-// the waiting line, and the pass that judges it when a slot frees has nothing of its run left to
-// read but the mark its record keeps — and admits it, its blocker still unfinished.
-func TestATreeTakenBackIsNeitherHeldNorReportedBlockedOnALaterPass(t *testing.T) {
-	const running, root, blocker = "LEGION-208", "LEGION-LINGER", "LEGION-BLOCKER"
-	pool := migratedPool(t)
-	admission := quiet(t, 1)
-	registerController(t, pool)
-	seedSlotted(t, pool, running, "A")
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "a finished tree", Tree: root, Phase: phase.Done, Generation: 3,
-		Status: "done", Rank: "B", HandedOver: true, TakenBack: true, LastDispatchSeq: 1, LingerUntil: &until})
-	seedMirror(t, pool, root, "done", blocker)
-	seedMirror(t, pool, blocker, "in_progress")
-
-	applyMirrored(t, pool, admission, "set-back", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets",
-		Seq: 2, Type: "issue.updated", Status: "todo", Title: "a finished tree", Rank: "B", HandedOver: handed,
-		Blockers: []string{blocker}}, engineStub{})
-	tick(t, pool, admission, "tick-1")
-
-	// It waits for capacity, not for its blocker, and the tick names nothing blocked.
-	assertSlots(t, pool, []record.Slot{{Issue: running, Index: 0, AdmittedAt: fixedNow}})
-	assertWaiting(t, pool, []string{root})
-	assertControllerNotices(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice}},
-	})
-
-	done := issue(t, pool, running)
-	done.Phase = phase.Done
-	putIssue(t, pool, done)
-	tick(t, pool, admission, "tick-2")
-
-	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
-}
-
 // The whole path, with nothing seeded but a root in its slot: the opening of its design gate starts
-// its first phase, which marks it as having run; a person then moves it out of the workflow, and
-// its tree lingers; and set back to todo while Dispatch says it waits on an unfinished issue, it
-// is re-admitted into a slot at once. Re-admission wrote no mark: the one the root's own run earned
-// is what exempts it.
-func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
+// its first phase; a person then moves it out of Legion's work, which stops it where it stands (R20
+// of dispatch://INFRA-3320); and set back to todo while Dispatch says it waits on an unfinished
+// issue, it returns to its phase as a started issue whose link holds it: it waits on that issue,
+// named blocked and holding no row (INFRA-3036), and takes a row once the issue is done.
+func TestAStoppedRootThatComesBackWaitsOnItsUnfinishedBlockerAndThenTakesItsRow(t *testing.T) {
 	const root, blocker = "LEGION-208", "LEGION-BLOCKER"
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
@@ -704,17 +424,25 @@ func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
 	}
 
 	applyMirrored(t, pool, admission, "to-backlog", moved(2, "backlog"), admission.engine)
-	if got := issue(t, pool, root); got.Phase != phase.Done || !got.Lingers() || !got.TakenBack {
-		t.Fatalf("the root out of the workflow = %#v, want it done, lingering and still marked", got)
+	if got := issue(t, pool, root); got.Phase != phase.Planning || got.Status != "backlog" || !got.TakenBack {
+		t.Fatalf("the root out of Legion's work = %#v, want it stopped in planning and still marked", got)
 	}
 	assertSlots(t, pool, nil)
 
 	seedMirror(t, pool, blocker, "in_progress")
 	applyMirrored(t, pool, admission, "back-to-todo", moved(3, "todo", blocker), admission.engine)
 
-	if got := issue(t, pool, root); got.Generation != 2 || got.Phase != phase.Admitted || !got.TakenBack || got.Lingers() {
-		t.Fatalf("the tree taken back = %#v, want its next generation at admitted, still marked, not lingering", got)
+	if got := issue(t, pool, root); got.Generation != 1 || got.Phase != phase.Planning {
+		t.Fatalf("the root back in work = %#v, want it back in planning at its generation", got)
 	}
+	assertSlots(t, pool, nil)
+	if blocked := blockedNow(t, pool, admission); !reflect.DeepEqual(blocked, []record.BlockedIssue{{Issue: root, BlockedBy: []string{blocker}}}) {
+		t.Fatalf("blocked = %+v, want %s blocked by %s", blocked, root, blocker)
+	}
+
+	// The blocker's done, as a newer reading of Dispatch than the one the copy holds.
+	spMirror(t, pool, blocker, "done", "", 5)
+	tick(t, pool, admission, "blocker-done")
 	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, nil)
 }
@@ -769,8 +497,9 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	}
 
 	// The root's own first phase is what the gate's opening offers, and its unfinished blocker
-	// holds that phase: it stands where it stood, holding no row, named with the issue it waits
-	// on. Its tree runs on, and the issues its links never touched are untouched.
+	// holds that phase, as does its open Dispatch child (R9 of dispatch://INFRA-3320): it stands
+	// where it stood, holding no row, named with each issue it waits on. Its tree runs on, and
+	// the issues its links never touched are untouched.
 	if got := issue(t, pool, slotted); got.Phase != phase.Admitted {
 		t.Fatalf("the slotted root = %s once its gate opened, want it still at admitted: its first phase waits on its unfinished blocker", got.Phase)
 	}
@@ -780,7 +509,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 		}
 	}
 	assertSlots(t, pool, nil)
-	assertBlocked("after the gate opened", append([]record.BlockedIssue{{Issue: slotted, BlockedBy: []string{blocker}}}, held...))
+	assertBlocked("after the gate opened", append([]record.BlockedIssue{{Issue: slotted, BlockedBy: []string{blocker, child}}}, held...))
 }
 
 // countingStore counts the mirror reads of the calls under test; every other read and write is

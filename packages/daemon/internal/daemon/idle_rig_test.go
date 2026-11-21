@@ -382,6 +382,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 	if _, err := st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 		r.t.Fatalf("open the lifecycle of %s: %v", key, err)
 	}
+	openIssue(r.t, st, r.project, key, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{
 		Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleImplementer, Generation: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,

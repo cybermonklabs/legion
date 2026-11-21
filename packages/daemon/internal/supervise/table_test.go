@@ -176,7 +176,6 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestResume":        {RequestResume{}},
 		"RequestRuleResume":    {RequestRuleResume{}},
 		"RequestStop":          {RequestStop{}},
-		"RequestTreeClose":     {RequestTreeClose{}},
 		"RequestIssueClose":    {RequestIssueClose{}},
 		"RequestOperatorClose": {RequestOperatorClose{}},
 		"RequestRetry":         {RequestRetry{}},

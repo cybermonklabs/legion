@@ -257,21 +257,15 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 }
 
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates every stop an open issue's claims
-// may take: the tree move that carries a child, the three statuses that take an issue out of the
-// workflow, and the idle release (INFRA-945), the one of them that leaves the issue in the
-// workflow and brings its pod back at the next wake for one of its roles. Each is told from the
-// others by the kind and op it writes. TestTheStoreRecordsWhoSuspendedAClaim covers the
-// operator's real POST /legion/v1/operator/claims/{token}/suspend route, and
-// TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
-// none of these.
+// may take: the three statuses that take an issue out of Legion's work, and the idle release
+// (INFRA-945), the one of them that leaves the issue in Legion's work and brings its pod back at
+// the next wake for one of its roles. A change of parent stops nothing (R15 of
+// dispatch://INFRA-3320). Each is told from the others by the kind and op it writes.
+// TestTheStoreRecordsWhoSuspendedAClaim covers the operator's real POST
+// /legion/v1/operator/claims/{token}/suspend route, and
+// TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes none
+// of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
-
-	t.Run("tree move", func(t *testing.T) {
-		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {
-			apply("carry", intake.DispatchIssue{Key: "LEGION-812", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-811", Rank: "B", HandedOver: true})
-		}, false, turnEnds)
-	})
-
 	for _, status := range []string{"done", "backlog", "icebox"} {
 		t.Run("leave "+status, func(t *testing.T) {
 			ctx := context.Background()

@@ -182,6 +182,12 @@ func (s *memoryClaims) OpenOperatorTreeLifecycle(_ context.Context, project, tre
 	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator}, nil
 }
 
+// The issue barrier is the store's as well: every issue is open at epoch 1, under the authority
+// that opens it.
+func (s *memoryClaims) OpenIssueLifecycle(_ context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
+	return treelifecycle.Lifecycle{Project: project, Tree: issue, Epoch: 1, Authority: authority}, nil
+}
+
 func (s *memoryClaims) ReserveOperatorTreeCleanup(_ context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
 	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator, CleanupStarted: true}, true, nil
 }

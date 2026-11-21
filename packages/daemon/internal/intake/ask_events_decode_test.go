@@ -215,14 +215,18 @@ const declineDispatchWords = "The person chose not to answer this question. " +
 // A person who declines an ask closes it as ask.resolved with a resolution of kind `declined`,
 // which carries their own note apart from the sentences Dispatch wrote for the asking agent. The
 // close decodes as the decline it is, with both kept apart, and a decline the person wrote no note
-// with carries the sentences and an empty note. A close whose payload has no resolution, and one
-// whose resolution kind this daemon does not know, decode as a close carrying no decline at all.
+// with carries the sentences and an empty note. The withdrawal an issue's close records (kind
+// `withdrawn`) decodes as a withdrawn close with no decline. A close whose payload has no
+// resolution, and one whose resolution kind this daemon does not know, decode as a close carrying
+// neither.
 func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	person := map[string]any{"kind": "user", "id": "alice"}
-	closed := func(decline *record.AskDecline) Fact {
+	closed := func(decline *record.AskDecline) DispatchAskClosed {
 		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
 			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
 	}
+	withdrawn := closed(nil)
+	withdrawn.Withdrawn = true
 	for _, tc := range []struct {
 		name       string
 		resolution map[string]any
@@ -234,8 +238,11 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 		{name: "a decline the person wrote no note with",
 			resolution: map[string]any{"kind": "declined", "reason": "", "dispatch_words": declineDispatchWords},
 			want:       closed(&record.AskDecline{Words: declineDispatchWords})},
+		{name: "the withdrawal an issue's close records",
+			resolution: map[string]any{"kind": "withdrawn", "reason": "Withdrawn by the close of LEGION-7."},
+			want:       withdrawn},
 		{name: "a resolution kind this daemon does not know",
-			resolution: map[string]any{"kind": "withdrawn", "reason": "the asker took it back"},
+			resolution: map[string]any{"kind": "superseded", "reason": "the asker took it back"},
 			want:       closed(nil)},
 		{name: "a close with no resolution at all", resolution: nil, want: closed(nil)},
 	} {

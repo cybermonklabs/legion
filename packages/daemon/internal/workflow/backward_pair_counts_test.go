@@ -21,7 +21,7 @@ import (
 func workBackEngine(reviewRoundCap int, hooks ...Hook) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: reviewRoundCap,
-		Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp,
+		ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp,
 		Repositories: testRepositories, Hooks: hooks,
 		Clock: func() time.Time { return time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC) },
 	}, nil)

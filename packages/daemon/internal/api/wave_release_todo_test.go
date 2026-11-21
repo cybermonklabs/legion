@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -42,7 +43,9 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+		// The daemon's own handler order: the copy of Dispatch's issues first, so the engine reads
+		// the child's row release_children's view of it writes.
+		Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 	}).Handler
 	root, child := "LEGION-208", "LEGION-209"
 	approved := 1
@@ -56,6 +59,9 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 		t.Fatalf("seed the live tree: %v", err)
 	}
 	h.openTree(t, testProject, root)
+	// The copy of Dispatch's issues holds the root as Dispatch shows it, as the daemon's does from
+	// the root's own events: the engine reads the child's chain up to its recorded parent there.
+	seedMirrorRow(t, h, root, "in_progress")
 	statuses.issues = map[string]dispatch.Issue{
 		root:  {Key: root, ResolvedRepo: "acme/widgets", Status: "in_progress"},
 		child: {Key: child, ResolvedRepo: "acme/widgets", Title: "the child", Status: "todo", Parent: &root, LastSeq: 7},

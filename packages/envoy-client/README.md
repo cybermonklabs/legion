@@ -1143,6 +1143,11 @@ on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error.
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
+The one exception is a call whose whole output is one JSON object (`dispatch issues --json`,
+`printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
+prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
+prints the refusal, then each issue that holds the rule as `KEY [status] title`, then the flags of
+`dispatch issue-update` that move them, and exits 1, as a near copy's refusal does.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
@@ -1181,6 +1186,27 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
+sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
+the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is
+posted first as for every close. The schema refuses them beside any other field,
+`--include-children` beside `--unlink-children`, and `--include-children` with `--status done`,
+before anything is sent (exit 2). Only a person who is signed in at a browser can close the open
+issues under an issue together with it, and the command presents a token: that person does it on
+the issue's page in Dispatch (Close issue, then Move them with it). The answer names each issue
+the call changed with its status after the call, so the command reads before it writes: the
+issue's own read names its children, with `--include-children` it reads the project's issues too,
+and with `--include-parent` alone it reads each issue above the issue, one parent at a time. It
+prints one line for each changed issue, in the order the steps ran: `KEY: status a -> b`, or
+`KEY: unlinked from P`. The issue the call names always gets a line, which carries the posted
+reason's message where there is one: in the order of the steps where the call changed it, and last
+where the call left its status as it was. A refusal names the issues the steps before it changed.
+A build older than the route answers no route: the
+write asks again as every write does, then the command refuses naming the route and sends no
+PATCH, since a PATCH would write the status without the option. The CLI's `--dry-run` prints the
+arguments and asks Dispatch nothing.
+`dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
+parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

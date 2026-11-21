@@ -176,7 +176,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
-		root, ok := byKey[issue.Tree]
+		// The tree is the issue's gate root on the pass's Dispatch chains (record.Chains.StateTree).
+		root, ok := byKey[facts.Chains.StateTree(issue.Key)]
 		if !ok {
 			continue
 		}
@@ -240,7 +241,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), 0,
+	work, err := e.resumePhaseTask(ctx, tx, owner.issue)
+	if err != nil {
+		return false, err
+	}
+	return false, e.started(ctx, tx, owner.issue, owner.role, work, 0,
 		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 

@@ -411,6 +411,7 @@ func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role 
 	t := r.t
 	t.Helper()
 	token := r.token(issue, role)
+	openIssue(t, r.st, r.project, issue, treelifecycle.AuthorityWorkflow)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role,
 		Generation: 1, State: state, SuspendedBy: by,

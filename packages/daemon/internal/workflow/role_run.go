@@ -9,49 +9,48 @@ import (
 )
 
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
-// lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
-// issue's tree root as recorded, read only for a tree close. The outbox asks it of every suspend
-// and issue close of the issue's own tree, and of a tree close whose tree holds no cleanup
-// reservation. StartFor asks it of every queued stop, so all read one rule. The other executor
-// fences are listed on record.SuperviseRequest.Generation. A reserved cleanup close still retires
-// its claim and drives the cleanup however stale its generation (reservedTreeClose). A tree
-// close acts while its tree lingers at the root generation it names (record.Issue.LingersAt): never
-// once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or a
-// re-entered child's interrupted run — a release — the idle pod's, which keeps the session and the
-// phase — and an issue close — a child's leave as done — act unless a newer start has already run:
-// that start replaced the run the stop was written for, so acting would stop the run it began and
-// retire the task with it, whatever the retry timing was. A row with no id is not older than
-// anything: the store gives every row one, and an unknown id must not silently drop a stop. Any
-// other operation is not a stop.
-func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *record.Issue) bool {
-	switch stop.Op {
-	case "tree_close":
-		return root != nil && root.LingersAt(stop.Linger)
-	case "suspend", "release", "issue_close":
-		return id <= 0 || id >= lastStart
-	default:
+// lastStart the newest start the outbox ran against the claim (its last_start_row) and at, where
+// the caller holds it, the fence the stop's issue stands at now (record.Fence). The outbox
+// executor asks it of every suspend and issue close with the fence it reads where the stop acts,
+// and actingStop of every queued stop with none, so all read one rule. A suspend — an issue's
+// stop, or an interrupted run's — a release — the idle pod's, which keeps the session and the
+// phase — and an issue close — an issue's close as done — act unless a newer start has already
+// run: that start replaced the run the stop was written for, so acting would stop the run it began
+// and retire the task with it, whatever the retry timing was. A row with no id is not older than
+// anything: the store gives every row one, and an unknown id must not silently drop a stop. Nor
+// does a stop act whose run or phase entry the issue has left (record.Fence.Outlives): a return
+// raises the entry, so a stop of the entry before it stops nothing of the run the return opened,
+// even before the return's own starts have run (R20 of dispatch://INFRA-3320). A caller that holds
+// no fence weighs the row ids alone. Any other operation is not a stop.
+func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, at *record.Fence) bool {
+	if !stop.Stops() {
 		return false
 	}
+	if queued, _ := record.FenceOf(stop); at != nil && at.Outlives(queued) {
+		return false
+	}
+	return id <= 0 || id >= lastStart
 }
 
 // actingStop is the newest queued stop of run that will still act when the outbox runs it
-// (StopActs), by row id, and 0 when no queued stop will. root is the issue's tree root as
-// recorded, which StopActs reads for a tree close, and the last start the outbox ran against the
-// claim (record.RoleClaim.LastStartRow, 0 for a role the daemon holds no claim row of) is what
-// every other stop is weighed against.
+// (StopActs), by row id, and 0 when no queued stop will. The last start the outbox ran against the
+// claim (record.RoleClaim.LastStartRow, 0 for a role the daemon holds no claim row of) is what every
+// stop is weighed against. run's rows hold no phase entry of the issue, so a stop is weighed
+// against no fence: one the executor will find late is counted as one that acts, which keeps a
+// start owed rather than taking one away.
 //
 // Such a stop undoes every start older than it, and it may run before them, so every rule that
-// reads it counts only a queued start newer than it: StartFor, asking what a re-admitted tree's
-// promotion must start, OwedEntry, asking whether a role is owed its entry's work,
+// reads it counts only a queued start newer than it: StartFor, asking whether a role's start is
+// owed, OwedEntry, asking whether a role is owed its entry's work,
 // unpromptedPhaseWorker, asking whether nothing will prompt a live claim, ArchitectRelaunchOf,
 // asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
 // asking whether a queued row covers a ready claim. One body is what keeps them from reading the
 // same rows differently.
-func actingStop(run record.RoleRun, root record.Issue) int64 {
+func actingStop(run record.RoleRun, _ record.Issue) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64
 	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
+		if StopActs(queued.ID, queued.Request, lastStart, nil) {
 			stop = max(stop, queued.ID)
 		}
 	}
@@ -66,22 +65,18 @@ func lastStartRow(run record.RoleRun) int64 {
 	return run.Claim.LastStartRow
 }
 
-// StartFor is whether a re-admitted tree's promotion starts the role of a mid-phase child, from
-// run, the role's queued rows and claim for generation, with the child in phase current and root
-// its re-admitted tree root. It does
-// not when the role is already started for this run: the newest of its operations that will still
-// act is a start. A stop that still acts (actingStop) undoes any older start, which may run first,
-// so past one only a newer queued start for current counts. With none, a queued start for current
-// counts, and so does a claim of root's tree that may have a process: a live one, or one whose
-// launch is uncertain holding current's task for generation undelivered or unconfirmed (the task
-// its start gave it). No start acts while the tree lingers, and the tree's close queues a suspend
-// of every claim, so such a claim was started since the tree ran again. A claim still in another
-// tree was not: a carried child's role whose turn in its old tree has not ended is live there, and
-// promotion starts it, a start that waits until the claim has stopped in that tree (the outbox's
-// stopElsewhere) and then resumes it in this one. A failed, retired, suspended or queued claim runs
-// nothing, so promotion starts it whatever task it holds. Whether the start's resume task is
-// delivered is the outbox executor's decision when the start runs: not to a claim that holds a task
-// for the same generation and phase by then (record.SuperviseRequest's ResumeTask).
+// StartFor is whether a start of the role of a child in phase current is owed, from run, the
+// role's queued rows and claim for generation, with root its gate root on the Dispatch chain. It
+// does not when the role is already started for this run: the newest of its operations that will
+// still act is a start. A stop that still acts (actingStop) undoes any older start, which may run
+// first, so past one only a newer queued start for current counts. With none, a queued start for
+// current counts, and so does a claim that may have a process: a live one, or one whose launch is
+// uncertain holding current's task for generation undelivered or unconfirmed (the task its start
+// gave it). The tree the claim stores is not read: a change of parent moves no claim (R17 of
+// dispatch://INFRA-3320). A failed, retired, suspended or queued claim runs nothing, so a start
+// reaches it whatever task it holds. Whether the start's resume task is delivered is the outbox
+// executor's decision when the start runs: not to a claim that holds a task for the same generation
+// and phase by then (record.SuperviseRequest's ResumeTask).
 //
 // Stranded reads the same rule for a failed claim, and for a suspended one no operator suspended: a
 // claim for which StartFor is true has no queued start that will wake it. A
@@ -97,7 +92,7 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 		return false
 	}
 	held := run.Claim
-	if stop != 0 || held == nil || held.Tree != root.Key {
+	if stop != 0 || held == nil {
 		return true
 	}
 	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)

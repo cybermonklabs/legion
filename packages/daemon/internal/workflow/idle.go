@@ -17,7 +17,7 @@ type IdleHold int
 const (
 	// IdleHoldNone: nothing held the pod and it is released.
 	IdleHoldNone IdleHold = iota
-	// IdleHoldTreeNotLive: the issue or its tree root has left the workflow, or the root lingers.
+	// IdleHoldTreeNotLive: the issue or its tree root has left the workflow.
 	// Such a pod is a close's to stop, not a release's.
 	IdleHoldTreeNotLive
 	// IdleHoldAwaitingPerson: the pod is a root's, and the root waits on an answer a person has
@@ -75,8 +75,8 @@ const (
 	// it is one thing that happened (store.ReleaseCauseOvertaken).
 	IdleHoldOvertaken
 	// IdleHoldUnauthorized: the store no longer authorized the teardown when it asked — the run
-	// the release was taken against has moved on, the issue has left the workflow, its tree
-	// lingers or its cleanup is reserved — so the teardown cancelled the release instead of
+	// the release was taken against has moved on, the issue or its tree root has left the
+	// workflow, or its cleanup is reserved — so the teardown cancelled the release instead of
 	// deleting the pod (store.ReleaseCauseUnauthorized).
 	IdleHoldUnauthorized
 	// IdleHoldNoLiveClaim: the record holds the issue, and every claim of it has failed, been
@@ -114,8 +114,8 @@ const (
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
-	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
-	// them lingers. Such a pod is a close's to stop, as it is for the idle rule
+	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow. Such a pod is
+	// a close's to stop, as it is for the idle rule
 	// (IdleHoldTreeNotLive).
 	IdleHoldUnownedTreeNotLive
 	// IdleHoldUnownedReleasing: a release of this pod is already in progress, so this rule's own
@@ -211,7 +211,7 @@ type IdleDecision struct {
 // decision reports:
 //
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
-//     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
+//     the workflow (pods.InWorkflowWithRoot). A pod in that state is a
 //     close's to stop;
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
@@ -269,7 +269,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !pods.InWorkflowWithRoot(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	if view.Paused {
@@ -376,7 +376,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     running on the lane (IdleHoldUnownedReleasing);
 //
 //   - the issue and its tree are the workflow's: neither the issue nor its root has left the
-//     workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
+//     workflow (pods.InWorkflowWithRoot). A pod in that state is a
 //     close's to stop, exactly as it is for the idle rule (IdleHoldUnownedTreeNotLive);
 //
 //   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
@@ -432,7 +432,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldUnownedReleasing}
 	}
-	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !pods.InWorkflowWithRoot(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldUnownedTreeNotLive}
 	}
 	if !sandboxPresent {

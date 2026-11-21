@@ -197,8 +197,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	parent := "LEGION-400"
 	// The issue record with every field set. It stands in another project than the pass's, so
 	// the admission line — which is no part of the issue record — puts nothing of its own on the
-	// view, and under a root of its own tree, so the hold's reason is served: the reason is
-	// suppressed by its tree's linger, not by its own.
+	// view, and the pass reads no chain of it, so its `tree` is its own key (record.Chains.StateTree).
+	// Its linger deadline and stored ancestry are kept written for a rollback and served nowhere.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
@@ -213,17 +213,16 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
 	}
-	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
-	// being what suppresses the hold's reason.
+	// The root of the issue's stored tree, which holds the draw the child took its copy of.
 	tree := record.Issue{
 		Key: root, Tree: root, Project: "OTHER", Phase: phase.Implementing, Generation: 3,
 		Status: "in_progress", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 	}
 	drawnAt := projectedAt.Add(-36 * time.Hour)
-	// The assignment record with every field set, recorded against the root for the unit `tree`,
-	// which is the shape of the one experiment every deployment runs: the child below is shown
-	// its tree's answer (assignmentViews), and the arm `memory` with an instant beside it is
-	// what the issue's three memory fields are read off (memoryOf).
+	// The assignment record with every field set, recorded for the unit `tree`, which is the
+	// shape of the one experiment every deployment runs: the child below holds its own copy, which
+	// it took at its first start and is shown (assignmentViews), and the arm `memory` with an
+	// instant beside it is what the issue's three memory fields are read off (memoryOf).
 	drawn := record.Assignment{
 		Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random",
 		DrawnAt: &drawnAt, Carried: true,
@@ -290,7 +289,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 
 	store := projectionStore{
 		issues:      []record.Issue{tree, issue},
-		assignments: map[string][]record.Assignment{root: {drawn}},
+		assignments: map[string][]record.Assignment{root: {drawn}, held: {drawn}},
 	}
 	state, err := Project(context.Background(), Inputs{
 		Store: store, Project: "LEGION",
@@ -380,12 +379,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"})
 
 		want := wire(t, map[string]any{
-			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
+			"key": issue.Key, "tree": held, "phase": issue.Phase,
 			"generation": issue.Generation, "status": issue.Status,
-			"lingerUntil": issue.LingerUntil,
-			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
+			"holdReason": issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
-			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,
@@ -410,7 +407,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			t.Fatalf("the state carries no issue %s", held)
 		}
 		if len(view.Assignments) != 1 {
-			t.Fatalf("%s runs under %+v, want the one answer its tree was drawn for", held, view.Assignments)
+			t.Fatalf("%s runs under %+v, want the one answer it holds", held, view.Assignments)
 		}
 		document := wire(t, view.Assignments[0])
 		// Every key of an assignment is the record's own: nothing else is built into the view.

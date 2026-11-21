@@ -121,12 +121,12 @@ func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
 // nowhere else. The child, LEGION-209, is first recorded by the engine named declaring, which is
 // handed no experiment at all, and that record goes through recordChild, which enters the child
 // (enterChild) and then draws its issue-unit experiments (drawExperiments), none for that engine.
-// The experiment is declared afterwards, in the engine named declared, and the person moves the
-// recorded child back to todo: that fact finds the record, so it goes through Engine.ReenterChild
-// instead, which enters the child through the same enterChild and draws nothing. The test
-// depends on that difference, and holds the re-entry to it under a source that fails the test
-// when it is read (refusingSource); the fresh child at the end, LEGION-210, recorded through
-// recordChild by a third engine, drawing, which declares the same experiment, is drawn.
+// The experiment is declared afterwards, in the engine named declared, and a person moves the
+// child, which the daemon has since closed, back to todo: that fact finds the record at phase
+// done, so it opens the child's new run (Engine.NewRun, decision 8 of dispatch://INFRA-4730), which
+// draws nothing. The test holds the new run to that under a source that fails the test when it is
+// read (refusingSource); the fresh child at the end, LEGION-210, recorded through recordChild by a
+// third engine, drawing, which declares the same experiment, is drawn.
 func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -137,11 +137,13 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 	if got := answersOf(t, pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("a child recorded by an engine handed no experiment holds %v, want none", got)
 	}
-	// The operator declares the experiment, and the person moves the recorded child back to todo.
+	// The operator declares the experiment; the child is closed, and a person moves it back to
+	// todo.
 	declared := experimentEngine(t, []config.Experiment{planLength}, refusingSource(t))
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-208", Project: "LEGION", Title: "a child", Parent: new("LEGION-208"), Phase: phase.Planning,
-		Generation: 4, Status: "in_progress", Rank: "V", LastDispatchSeq: 2})
+		Tree: "LEGION-208", Project: "LEGION", Title: "a child", Parent: new("LEGION-208"), Phase: phase.Done,
+		Generation: 1, Status: "done", Rank: "V", LastDispatchSeq: 2})
+	mirrorChild(t, pool, "LEGION-209", "LEGION-208", "todo", 10)
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-reopened", intake.DispatchIssue{
 		Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated", Status: "todo",
 		Title: "a child", Parent: "LEGION-208", Rank: "V"}, declared, admissionStub{}); err != nil {
@@ -149,7 +151,7 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 	}
 
 	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted {
-		t.Fatalf("the reopened child = %s, want it re-entered at admitted", got)
+		t.Fatalf("the reopened child = %s, want its new run at admitted", got)
 	}
 	if got := answersOf(t, pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("the reopened child holds %v, want none: an experiment declared after it was recorded never reaches it", got)
@@ -170,9 +172,11 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 }
 
 // applyChild records key as an unrecorded todo child of the held tree, the one door a child
-// enters its tree through (recordChildUnderLiveTree).
+// enters its tree through (recordChildUnderLiveTree). The copy takes the event first, as the
+// daemon's handler order has it, so the engine reads the child's chain to its parent.
 func applyChild(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, eventID string) {
 	t.Helper()
+	mirrorChild(t, pool, key, "LEGION-208", "todo", 2)
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, intake.DispatchIssue{
 		Key: key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo",
 		Title: "a child", Parent: "LEGION-208", Rank: "V"}, engine, admissionStub{}); err != nil {

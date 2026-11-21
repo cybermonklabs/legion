@@ -2,12 +2,8 @@ package admit
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
-	"reflect"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -59,20 +55,9 @@ func bootListing(labelled bool) []dispatch.IssueSummary {
 	}
 }
 
-// sortedEffects is effects in a fixed order of their own, for a comparison of two runs that
-// queue the same rows in an order their number of admission passes decides rather than the rows
-// themselves.
-func sortedEffects(got []effect) []effect {
-	sorted := slices.Clone(got)
-	slices.SortStableFunc(sorted, func(a, b effect) int {
-		return strings.Compare(fmt.Sprintf("%s|%s|%#v", a.kind, a.issue, a.payload), fmt.Sprintf("%s|%s|%#v", b.kind, b.issue, b.payload))
-	})
-	return sorted
-}
-
-// echoed is the record and outbox the two children's own todo events leave, applied live through
-// intake as the Dispatch consumer applies them, from the same tree: what the boot read must leave.
-func echoed(t *testing.T, labelled bool) (record.Issue, record.Issue, []effect) {
+// echoed is the records the two children's own todo events leave, applied live through intake as
+// the Dispatch consumer applies them, from the same tree: the place the boot read must leave each in.
+func echoed(t *testing.T, labelled bool) (record.Issue, record.Issue) {
 	t.Helper()
 	pool := migratedPool(t)
 	admission := newAdmissionWithGate(t, 2, config.DesignGateRootIssues, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -81,22 +66,22 @@ func echoed(t *testing.T, labelled bool) (record.Issue, record.Issue, []effect) 
 		Status: "todo", Title: "child", Parent: bootRoot, Rank: "B", HandedOver: labelled}, admission.engine)
 	apply(t, pool, admission, "grandchild-todo", intake.DispatchIssue{Key: bootGrandchild, ResolvedRepo: "acme/widgets", Seq: 8, Type: "issue.updated",
 		Status: "todo", Title: "grandchild", Parent: bootChild, Rank: "C"}, admission.engine)
-	return issue(t, pool, bootChild), issue(t, pool, bootGrandchild), effects(t, pool)
+	return issue(t, pool, bootChild), issue(t, pool, bootGrandchild)
 }
 
 // A child its architect released to todo that no event of it ever recorded — the event never
-// reached the daemon, or reached it while the child's parent had no record — is
-// recorded into its running tree by the boot read, from the parent the listing shows, exactly as
-// that event would have recorded it; so is its own todo child, whichever the listing shows first.
-// The boot read holds both while the Dispatch consumer is behind and records them on the release.
-// A labelled child of a running tree is recorded into it too, as its event would, not admitted as a
-// tree of its own.
+// reached the daemon, or reached it while the child's parent had no record — is recorded into its
+// running tree by the boot read, from the parent the listing shows, as that event would have
+// recorded it; so is its own todo child, whichever the listing shows first. The boot read holds
+// both while the Dispatch consumer is behind and records them on the release. A labelled child of
+// a running tree is recorded into it too, not admitted as a tree of its own.
 //
-// What the two must agree on is the record and the outbox, not the phase either reaches: a child
-// now stands at admitted until the waiting line gives it a slot, so with the root holding one of
-// the two slots only the first child starts. The guard below therefore pins the tree each child
-// lands in, which is the thing the boot read could get wrong, and leaves the phase to the
-// comparison with the live events, which is the subject.
+// The live events and the boot read see the grandchild at different moments, so the two do not
+// agree on the child's phase: the live child's first phase starts before its own child's event
+// arrives and stops for it after, while the boot read records both at once, so the child's open
+// child holds its first phase where it stands, at admitted with no row (R9 of
+// dispatch://INFRA-3320). What the boot read must agree on is the place each lands in, which is
+// what it could get wrong: the root's tree, under the parent the listing shows, at the first run.
 func TestTheBootReadRecordsATodoChildOfALiveTreeThatHasNoRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -108,7 +93,7 @@ func TestTheBootReadRecordsATodoChildOfALiveTreeThatHasNoRecord(t *testing.T) {
 		{name: "labelled child", labelled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wantChild, wantGrandchild, wantEffects := echoed(t, tc.labelled)
+			wantChild, wantGrandchild := echoed(t, tc.labelled)
 			if wantChild.Tree != bootRoot || wantGrandchild.Tree != bootRoot {
 				t.Fatalf("the live events recorded %#v and %#v, want both in %s", wantChild, wantGrandchild, bootRoot)
 			}
@@ -133,41 +118,34 @@ func TestTheBootReadRecordsATodoChildOfALiveTreeThatHasNoRecord(t *testing.T) {
 				if got == nil {
 					t.Fatalf("%s after the boot read has no record, want it recorded in %s as its todo event records it: %#v", key, bootRoot, want)
 				}
-				if !reflect.DeepEqual(withoutMovement(*got), withoutMovement(want)) {
-					t.Fatalf("%s after the boot read = %#v, want the record its todo event leaves, %#v", key, *got, want)
+				if got.Tree != want.Tree || got.Parent == nil || want.Parent == nil || *got.Parent != *want.Parent ||
+					got.Generation != want.Generation || got.HandedOver != want.HandedOver || got.Repo != want.Repo {
+					t.Fatalf("%s after the boot read = %#v, want it where its todo event records it, %#v", key, *got, want)
 				}
 			}
-			got, want := effects(t, pool), wantEffects
-			if tc.behind {
-				// A boot read held for the Dispatch consumer makes two passes: the held one,
-				// which sees the root alone and repairs the task its slot owes it
-				// (resumeSlottedWorkers), and the release, which records the children and
-				// starts the first of them. The live events make one pass per child, so that
-				// repair lands after their rows rather than before. The rows must be the same
-				// rows; their order here is the boot's own, and says nothing about either.
-				got, want = sortedEffects(got), sortedEffects(want)
+			if got := issue(t, pool, bootChild); got.Phase != phase.Admitted || holdsSlot(t, pool, bootChild) {
+				t.Fatalf("%s after the boot read = phase %s, holding a row %t; want admitted holding none: its open child holds its first phase",
+					bootChild, got.Phase, holdsSlot(t, pool, bootChild))
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("outbox after the boot read = %#v, want what the two todo events queue, %#v", got, want)
-			}
-			assertSlots(t, pool, []record.Slot{{Issue: bootRoot, Index: 0, AdmittedAt: fixedNow}, {Issue: bootChild, Index: 1, AdmittedAt: fixedNow}})
 		})
 	}
 }
 
-// A labelled todo child whose parent is in no running tree is still an orphan at boot: the
-// workflow records nothing of it, and admission records it as a root of its own, as before.
-func TestTheBootReadStillAdmitsALabelledOrphanAsItsOwnRoot(t *testing.T) {
+// A labelled todo child whose parent the copy holds no row of stands on an unknown chain at boot:
+// nothing records it, neither the workflow under its parent nor admission as a root of its own,
+// and it takes no slot (R16 of dispatch://INFRA-3320). The chain is read right once the copy holds
+// its parent's row, from the next listing or event.
+func TestTheBootReadRecordsNothingOfAChildOnAnUnknownChain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmissionWithGate(t, 2, config.DesignGateRootIssues, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	parent := "LEGION-GONE"
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
 		{Key: bootChild, ResolvedRepo: "acme/widgets", Title: "orphan", Status: "todo", Parent: &parent, Rank: "B", HandedOver: true, LastSeq: 7},
 	}, 10, 10, true)
-	if got := issue(t, pool, bootChild); got.Tree != bootChild || got.Parent == nil || *got.Parent != parent {
-		t.Fatalf("orphan after the boot read = %#v, want a root of its own under parent %s", got, parent)
+	if got := maybeIssue(t, pool, bootChild); got != nil {
+		t.Fatalf("the child on an unknown chain after the boot read = %#v, want no record", got)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: bootChild, Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, nil)
 }
 
 // A child whose parent is recorded but whose tree is not live is no member of it at boot either:

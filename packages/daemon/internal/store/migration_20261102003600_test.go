@@ -40,7 +40,9 @@ func TestEveryQueuedStatusRowCarriesItsKindAfter20261102003600(t *testing.T) {
 			payload: `{"status":"todo","observedStatus":"triage","personHandover":true}`},
 		{name: "a re-assert", issue: "LEGION-209", want: record.ReassertStatusRow,
 			payload: `{"status":"in_progress","observedStatus":"done","reassert":true}`},
-		{name: "a hand-over", issue: "LEGION-210", want: record.HandOverStatusRow,
+		// This release queues and decodes no hand-over row (its executor went with the hand-over,
+		// and the first boot's conversion finishes such rows), so its kind is read off the payload.
+		{name: "a hand-over", issue: "LEGION-210", want: "hand-over",
 			payload: `{"status":"todo","observedStatus":"in_progress","handOver":true,"handOverTree":"LEGION-200","handOverLinger":3}`},
 		{name: "an unmarked write", issue: "LEGION-211", want: record.OrdinaryStatusRow,
 			payload: `{"status":"testing","observedStatus":"in_progress"}`},
@@ -75,6 +77,13 @@ func TestEveryQueuedStatusRowCarriesItsKindAfter20261102003600(t *testing.T) {
 		var payload []byte
 		if err := store.Pool().QueryRow(ctx, "select payload from outbox where issue = $1", row.issue).Scan(&payload); err != nil {
 			t.Fatalf("read %s after the migration: %v", row.name, err)
+		}
+		if row.want == "hand-over" {
+			var kind string
+			if err := store.Pool().QueryRow(ctx, "select payload->>'kind' from outbox where issue = $1", row.issue).Scan(&kind); err != nil || kind != string(row.want) {
+				t.Fatalf("%s carries kind %q after the migration (%v), want %q", row.name, kind, err, row.want)
+			}
+			continue
 		}
 		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindDispatchStatus, Issue: row.issue, Payload: payload})
 		if err != nil {

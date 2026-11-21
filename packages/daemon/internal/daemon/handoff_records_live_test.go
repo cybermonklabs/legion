@@ -270,6 +270,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, s.key, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", s.key, err)
 		}
+		openIssue(t, r.st, r.project, s.key, treelifecycle.AuthorityWorkflow)
 		token := r.token(s.key, s.role)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: s.key, Issue: s.key, Role: s.role, Generation: 1, State: supervise.StateLaunching,

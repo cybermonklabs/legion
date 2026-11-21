@@ -2,13 +2,13 @@ package record
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // chainIssue is one member of the tree the chain tests are read over, on the repository every
@@ -23,17 +23,18 @@ func chainIssue(key, tree, parent string, stands phase.Phase, status string) Iss
 	return issue
 }
 
-// The hold under an accepted ancestor, where that ancestor is not the tree's root and a done
-// parent stands between it and the held issue. The doors into the workflow walk the whole tree
-// (AcceptedAncestorOf over Store.TreeIssues) and find it; the waiting line is read over the
-// project's live records, which leave out an issue already done, so without the records above
-// the pass (LineFacts.Parents) the walk stopped at the done parent, jumped to the root — which
-// is at admitted and has accepted nothing — and offered the held issue a first-phase slot. The
-// architect is told that issue waits until the merging ancestor closes, and OpenBeneath leaves
-// it out of that ancestor's own wait, so starting it would merge a head without its work.
+// The hold under an accepted ancestor, where that ancestor is not the root and a done parent
+// stands between it and the held issue: INFRA-500's shape in R21 of dispatch://INFRA-3320. The
+// chain is the copy's (Chains), which crosses the done parent the pass's live records leave out,
+// so the line holds the issue and the held list names the merging issue (accepted_ancestor). The
+// doors into the workflow and the merging issue's own wait read the same chains: the doors find
+// the same ancestor (AcceptedAncestorIn), and OpenBeneath leaves the held issue out of that
+// ancestor's own wait, so starting it would merge a head without its work and holding it
+// deadlocks nothing. The control is INFRA-1238's shape: with the issue above the done parent at
+// work rather than accepted, the issue is held under its parent (ancestry) instead.
 //
-// The whole path is read here, from the records as the store holds them, because the defect was
-// in which records the line's own pass holds and not in the walk over them.
+// The whole path is read here, from the records and the copy as the store holds them, because the
+// line's own pass reads the live records alone.
 func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -45,66 +46,66 @@ func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T
 		heldAtAdmit = "LEGION-903"
 	)
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.PutIssue(ctx, tx, chainIssue(root, root, "", phase.Admitted, "in_progress")))
-		must(t, records.PutIssue(ctx, tx, chainIssue(merging, root, root, phase.Merging, "needs_review")))
-		must(t, records.PutIssue(ctx, tx, chainIssue(doneParent, root, merging, phase.Done, "done")))
-		must(t, records.PutIssue(ctx, tx, chainIssue(heldAtAdmit, root, doneParent, phase.Admitted, "todo")))
+		for _, issue := range []Issue{
+			chainIssue(root, root, "", phase.Admitted, "in_progress"),
+			chainIssue(merging, root, root, phase.Merging, "needs_review"),
+			chainIssue(doneParent, root, merging, phase.Done, "done"),
+			chainIssue(heldAtAdmit, root, doneParent, phase.Admitted, "todo"),
+		} {
+			must(t, records.PutIssue(ctx, tx, issue))
+			putCopy(t, ctx, tx, issue)
+		}
 		approved := 1
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root, ArtifactID: "spec", LatestVersion: 1, ApprovedVersion: &approved}))
-		if _, err := treelifecycle.Open(ctx, tx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
-			t.Fatalf("open the tree of %s: %v", root, err)
-		}
 	})
+	// held reads the line and the held list of the project's live records, as a pass does.
+	held := func(tx pgx.Tx) ([]LineEntry, []HeldIssue, LineFacts) {
+		issues, err := records.LiveIssues(ctx, tx, "LEGION")
+		must(t, err)
+		facts, err := ReadLineFacts(ctx, tx, records, "LEGION", issues, nil)
+		must(t, err)
+		line, dropped := Waiting(issues, nil, facts)
+		return line, HeldList(issues, nil, line, dropped, facts), facts
+	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		issues, err := records.LiveIssues(ctx, tx, "LEGION")
-		if err != nil {
-			t.Fatalf("list the live issues: %v", err)
+		line, rows, facts := held(tx)
+		if inLine(line, heldAtAdmit) {
+			t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
 		}
-		facts, err := ReadLineFacts(ctx, tx, records, "LEGION", issues, nil)
-		if err != nil {
-			t.Fatalf("read the line's facts: %v", err)
-		}
-		if _, carried := facts.Parents[doneParent]; !carried {
-			t.Fatalf("the pass's facts hold no record of %s, the done parent on the chain: the line cannot walk past it", doneParent)
-		}
-		// The control: with the records above the pass taken away, which is what the line read
-		// before, the walk stops at the done parent and the line offers the held issue a slot.
-		bare := facts
-		bare.Parents = nil
-		bareLine, _ := Waiting(issues, nil, bare)
-		if !inLine(bareLine, heldAtAdmit) {
-			t.Fatalf("%s is out of the line even with no record of %s: this test proves nothing", heldAtAdmit, doneParent)
-		}
-		heldLine, _ := Waiting(issues, nil, facts)
-		for _, entry := range heldLine {
-			if entry.Issue.Key == heldAtAdmit {
-				t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
-			}
-		}
-		members, err := records.TreeIssues(ctx, tx, root)
-		if err != nil {
-			t.Fatalf("read the tree of %s: %v", root, err)
+		if row := heldRow(rows, heldAtAdmit); row.Reason != HeldAcceptedAncestor || !slices.Equal(row.HeldBy, []string{merging}) {
+			t.Fatalf("the held row of %s = %+v, want accepted_ancestor held by %s", heldAtAdmit, row, merging)
 		}
 		// The two readers answer alike, which is what keeps the hold and the merge from
 		// deadlocking: the issue the line holds is one the merging ancestor does not wait for.
-		if ancestor := AcceptedAncestorIn(members, root, heldAtAdmit, ""); ancestor != merging {
+		if ancestor := AcceptedAncestorIn(facts.Chains, heldAtAdmit, ""); ancestor != merging {
 			t.Fatalf("the doors read the accepted ancestor of %s as %q, want %s", heldAtAdmit, ancestor, merging)
 		}
-		if open := OpenBeneath(recordOf(members, merging), members); len(open) != 0 {
-			t.Fatalf("the issues beneath %s that are still in the workflow = %v, want none: the one the daemon holds is left out", merging, open)
+		if open := OpenBeneath(facts.Chains, merging); len(open) != 0 {
+			t.Fatalf("the issues beneath %s in Legion's work = %v, want none: the one the daemon holds is left out", merging, open)
+		}
+
+		// The control: the issue above the done parent at work and not accepted.
+		atWork := chainIssue(merging, root, root, phase.Implementing, "in_progress")
+		must(t, records.PutIssue(ctx, tx, atWork))
+		line, rows, _ = held(tx)
+		if inLine(line, heldAtAdmit) {
+			t.Fatalf("%s stands in the waiting line under a done parent: an issue whose parent is out of work waits for it", heldAtAdmit)
+		}
+		if row := heldRow(rows, heldAtAdmit); row.Reason != HeldAncestry || !slices.Equal(row.HeldBy, []string{merging}) {
+			t.Fatalf("the held row of %s with %s at work = %+v, want ancestry held by %s, the issue above at work", heldAtAdmit, merging, row, merging)
 		}
 	})
 }
 
-// recordOf is the record of key among members.
-func recordOf(members []Issue, key string) Issue {
-	for _, member := range members {
-		if member.Key == key {
-			return member
+// heldRow is the held row of key among rows, the zero row where none names it.
+func heldRow(rows []HeldIssue, key string) HeldIssue {
+	for _, row := range rows {
+		if row.Issue == key {
+			return row
 		}
 	}
-	return Issue{}
+	return HeldIssue{}
 }
 
 // inLine says whether key stands in the waiting line.

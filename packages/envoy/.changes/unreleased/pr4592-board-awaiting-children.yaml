@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  Dispatch's Legion board (`GET /api/v1/projects/{key}/legion/board` and the `legion` live view)
+  has a twelfth column, `awaiting_children` ("Waiting on children"), between `merging` and
+  `awaiting_person`. A parent the daemon reports in `awaiting_children` has its card there for
+  the whole wait. While the daemon lists it in `admission.blocked`, the card names its open
+  children and is not in `queue`; after its last child closes, the card stays until the daemon
+  returns the parent, where before the parent had no card. An unstarted child under such a parent
+  is counted on the parent's card. Metric 2 puts the hours an issue spends in `awaiting_children`
+  on the "no role" bar beside `awaiting_person` and `held`, so the seven bars of a parent that
+  waited still add up to its work time, and counts a root's hours while a child of it is in
+  `awaiting_children` as waiting on its children (segment 4), since that child's own children
+  are still at work.
+custom:
+    Issue: pr4592

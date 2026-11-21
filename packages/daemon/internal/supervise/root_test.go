@@ -1,8 +1,9 @@
 package supervise
 
-// The tree's root claim — the architect of the issue its tree is named for — ends only when its
-// tree closes: its exit and its registration deadline suspend it, and only the tree's close
-// releases it.
+// A root's claim — the architect of an issue that holds its own design gate, which the outbox marks
+// on the claim at each start from the Dispatch chain (Claim.HoldsGate, R15 and R18 of
+// dispatch://INFRA-3320) — ends only when its run closes: its exit and its registration deadline
+// suspend it, and only the close releases it. The mark decides, never the tree the claim stores.
 
 import (
 	"context"
@@ -157,15 +158,15 @@ func TestARetryAfterAFailedRootExitAndRefusedResumesWaitsOutTheExitedProcess(t *
 	h.wantCalls("Spawn", 1)
 }
 
-// The tree's close is the one thing that releases its root: a root the daemon already suspended
-// has no process, so the release carries no locator.
+// The issue's close is the one thing of the workflow's that releases its root: a root the daemon
+// already suspended has no process, so the release carries no locator.
 func TestTreeCloseReleasesASuspendedRootWithNoLocator(t *testing.T) {
 	h := newHarnessOf(t, rootClaim())
 	h.reach(StateIdle)
 	h.must(RequestExit{Claim: rootToken, Generation: h.generation(), Session: session, Reason: "tree waiting"})
 	h.wantState(StateSuspended)
 
-	h.must(RequestTreeClose{Claim: rootToken})
+	h.must(RequestIssueClose{Claim: rootToken})
 
 	wantReleasedWithNoLocator(t, h, rootToken)
 	h.wantState(StateRetired)
@@ -179,7 +180,7 @@ func TestTreeCloseReleasesALiveRoot(t *testing.T) {
 			h.reach(state)
 			loc := h.locator()
 
-			h.must(RequestTreeClose{Claim: rootToken})
+			h.must(RequestIssueClose{Claim: rootToken})
 
 			if released := h.wantCalls("Release", 1)[0].Released; released.Claim != rootToken || released.Locator == nil || *released.Locator != loc {
 				t.Errorf("released %+v, want %s at %+v", released, rootToken, loc)
@@ -195,7 +196,7 @@ func TestTreeCloseReleasesALiveRoot(t *testing.T) {
 // refused in every state and changes nothing. The refusal is ErrRootStop, whatever the state, and
 // says what stops the root's process where one runs: suspend, once its agent has registered. What
 // ends a tree no workflow issue backs is the operator's close, so its refusal names that too; a
-// workflow issue's tree ends when its linger expires, and its refusal does not.
+// workflow issue's tree ends with its issue's close, and its refusal does not.
 func TestAStopThatIsNotTheTreesCloseNeverRetiresItsRoot(t *testing.T) {
 	const (
 		refused   = "stop refused: the tree's root claim ends only when its tree closes; "
@@ -301,4 +302,52 @@ func TestARegisteredRootCanBeSuspendedAndResumed(t *testing.T) {
 	if resume := h.wantCalls("Resume", 1)[0]; resume.Spec.ResumeSessionFile != sessionFile || resume.Previous == nil || *resume.Previous != loc {
 		t.Errorf("resumed %+v, want the recorded session after the suspended process", resume)
 	}
+}
+
+// The machine reads a gate holder's architect by the mark the outbox writes at each start, never by
+// the tree the claim stores (R18 of dispatch://INFRA-3320): an architect stored in another issue's
+// tree whose issue holds its own gate now — a member a change of parent made a root, or a root
+// that keeps its gate under a parent in Legion's work — is that gate holder's, so its exit suspends
+// it and a stop is refused; an architect stored as its own tree's whose issue the chain puts under
+// another gate holder is no root's, so its exit ends it and a stop stops it.
+func TestTheGateHoldersArchitectIsReadByItsMarkNotItsTree(t *testing.T) {
+	moved := rootClaim()
+	moved.Tree = "LEGION-100"
+	t.Run("an architect stored in another tree, its issue holding its own gate", func(t *testing.T) {
+		h := newHarnessOf(t, moved)
+		h.reach(StateReady)
+		h.must(RequestExit{Claim: rootToken, Generation: h.generation(), Session: session, Reason: "waiting"})
+		h.wantState(StateSuspended)
+		h.wantCalls("Release", 0)
+		if err := h.handle(RequestStop{Claim: rootToken}); !errors.Is(err, ErrRootStop) {
+			t.Fatalf("stop of a gate holder's architect stored in another tree = %v, want ErrRootStop", err)
+		}
+	})
+	member := rootClaim()
+	member.HoldsGate = false
+	t.Run("an architect stored as its own tree's, its issue holding no gate of its own", func(t *testing.T) {
+		h := newHarnessOf(t, member)
+		h.reach(StateReady)
+		if err := h.handle(RequestStop{Claim: rootToken}); err != nil {
+			t.Fatalf("stop of an architect whose issue holds no gate of its own = %v, want it stopped", err)
+		}
+		if h.claim().State == StateSuspended {
+			t.Fatalf("the stopped architect is %s, want it ended as any claim's stop ends it", h.claim().State)
+		}
+	})
+	// The outbox's start marks a claim whose issue became a gate holder since its last launch
+	// (Machine.MarkGate), and the mark persists with the claim.
+	t.Run("an architect marked at its start", func(t *testing.T) {
+		h := newHarnessOf(t, member)
+		if err := h.m.MarkGate(h.ctx, true); err != nil {
+			t.Fatalf("mark the gate: %v", err)
+		}
+		if stored := h.store.load(rootToken); !stored.HoldsGate {
+			t.Fatalf("stored %+v, want the mark persisted", stored)
+		}
+		h.reach(StateReady)
+		if err := h.handle(RequestStop{Claim: rootToken}); !errors.Is(err, ErrRootStop) {
+			t.Fatalf("stop of an architect its start marked a gate holder's = %v, want ErrRootStop", err)
+		}
+	})
 }

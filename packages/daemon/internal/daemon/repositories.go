@@ -1882,7 +1882,7 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, told := range notices {
-			row, err := record.NewOutboxRow(told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
+			row, err := record.NewFencedRow(scoped, tx, w.records, told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
 			if err != nil {
 				return err
 			}
@@ -2367,7 +2367,7 @@ func (w *workflowRuntime) keptRepository(key string) (ghbranch.Repository, bool)
 }
 
 // dropLaunchedRepository drops the repository kept for issue (keptRepository): what the end of
-// the issue's pod calls (podEndsOn). Each of the three hooks of that end (outbox.podEnded) runs
+// the issue's pod calls (podEndsOn). Each of the two hooks of that end (outbox.podEnded) runs
 // for an issue the workflow records, which works its record's repository (repositoryOf), so the
 // drop clears only a repository kept before the issue was recorded.
 func (w *workflowRuntime) dropLaunchedRepository(issue string) {
@@ -2423,13 +2423,6 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // it was delivered, and once the issue is recorded, a stale event below its sequence is fenced as
 // any is.
 //
-// Every labelled todo of an issue unrecorded or recorded as a root, under a Dispatch parent recorded
-// or not, also reads that parent's chain from Dispatch (withAncestry), which keeps the issue out
-// of admission's line while any live root is on it. An event of an issue the workflow does not
-// record, or a fresh event of a recorded issue whose Dispatch parent is not its record's, reads
-// again the chain of every queued root whose recorded chain holds the issue: that issue may be the
-// ancestor a person just moved.
-//
 // An unrecorded root in triage that carries the label also has its Dispatch event log read, from
 // its start, for who set the label (labelSetter, intake.DispatchIssue.LabelSetter): a person's
 // label queues the root through the outbox, a session's wakes the controller as today, and the
@@ -2442,22 +2435,20 @@ func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.Di
 }
 
 // prepareObserved readies release_children's todo child, already observed as Dispatch's issue
-// detail shows it now (intake.ObservedIssue), as prepareRepository readies an event's, but reads no
-// other root's chain again: the view is no re-parent.
+// detail shows it now (intake.ObservedIssue), as prepareRepository readies an event's.
 func (w *workflowRuntime) prepareObserved(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, false)
 }
 
-// prepareIssue is prepareRepository, preparing an admission event from Dispatch's current view, and
-// reading other roots' chains again, only when observe is set: release_children's child is that
-// view already.
+// prepareIssue is prepareRepository, preparing an admission event from Dispatch's current view
+// only when observe is set: release_children's child is that view already.
 func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.DispatchIssue, observe bool) (intake.DispatchIssue, error) {
 	recorded, err := w.recordOf(ctx, issue.Key)
 	if err != nil {
 		return issue, err
 	}
 	if recorded != nil {
-		return w.withAncestry(ctx, w.prepareRecorded(issue, recorded), recorded, observe)
+		return w.prepareRecorded(issue, recorded), nil
 	}
 	if !admissionBound(issue) {
 		if issue.LabelledTriageRoot() {
@@ -2465,11 +2456,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 				return issue, err
 			}
 		}
-		prepared, err := w.prepareUnrecorded(ctx, issue, false)
-		if err != nil {
-			return prepared, err
-		}
-		return w.withAncestry(ctx, prepared, nil, observe)
+		return w.prepareUnrecorded(ctx, issue, false)
 	}
 	delivered := issue.Seq
 	if observe {
@@ -2481,11 +2468,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		issue = intake.ObservedIssue(now)
 		issue.Seq, issue.Delivered = max(delivered, issue.Seq), &event
 	}
-	prepared, err := w.prepareUnrecorded(ctx, issue, false)
-	if err != nil {
-		return prepared, err
-	}
-	return w.withAncestry(ctx, prepared, nil, observe)
+	return w.prepareUnrecorded(ctx, issue, false)
 }
 
 // labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
@@ -2532,9 +2515,7 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 // recovery's (recoverRepositories) — as prepareRepository readies an event's, from the listing the
 // daemon has just read: an issue records holds a record of takes that record's repository, and an
 // unrecorded one's repository is readied as an event's is (prepareUnrecorded), with no read of
-// Dispatch's view. Its Dispatch chain
-// is read up walk, the one cache over the listing (listingAncestry), and no other root's is read
-// again: the listing holds every queued root's own todo.
+// Dispatch's view.
 //
 // The boot's listing reads GitHub for no repository. It runs inside the boot's
 // bounded reconcile (readinessAttempt(workflow.reconcile, bootTimeout, …), 30 s), and a
@@ -2545,23 +2526,11 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 // refresher's recovery, which runs as soon as the boot is over, reads it outside any boot bound
 // and takes the issue from its own listing (recoverRepositories): the issue waits, and is not
 // dropped.
-func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, walk ancestry, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
-	recorded := records[issue.Key]
-	if recorded != nil {
-		issue = w.prepareRecorded(issue, recorded)
-	} else {
-		prepared, err := w.prepareUnrecorded(ctx, issue, boot)
-		if err != nil {
-			return prepared, err
-		}
-		issue = prepared
+func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
+	if recorded := records[issue.Key]; recorded != nil {
+		return w.prepareRecorded(issue, recorded), nil
 	}
-	if !queuesUnderParent(issue, recorded) {
-		return issue, nil
-	}
-	chain, err := w.chainOf(ctx, walk, issue.Key, issue.Parent)
-	issue.Ancestry = chain
-	return issue, err
+	return w.prepareUnrecorded(ctx, issue, boot)
 }
 
 // prepareRecorded readies an event of an issue recorded as recorded, an event's or the boot
@@ -2573,136 +2542,30 @@ func (w *workflowRuntime) prepareRecorded(issue intake.DispatchIssue, recorded *
 	return issue
 }
 
-// listingAncestry is what reconcile's boot prepares its listing from: every record, by key, read
-// once in a read-only transaction, and the walk every chain is read up, holding the Dispatch parent
-// of every listed issue as the listing shows it, so only an ancestor outside the listing is read
-// from Dispatch.
-func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch.IssueSummary) (map[string]*record.Issue, ancestry, error) {
-	var issues []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var err error
-		issues, err = w.records.Issues(ctx, tx)
-		return err
-	}); err != nil {
-		return nil, nil, fmt.Errorf("read the records for the boot listing: %w", err)
-	}
-	records := make(map[string]*record.Issue, len(issues))
-	for i := range issues {
-		records[issues[i].Key] = &issues[i]
-	}
-	walk := make(ancestry, len(listed))
-	for _, summary := range listed {
-		walk[summary.Key] = parentKey(summary.Parent)
-	}
-	return records, walk, nil
-}
-
-// withAncestry is an event's issue, recorded as recorded (nil when the workflow does not record
-// it), with what its preparation reads up Dispatch's parent chains, outside the fact lock as the
-// rest of the preparation reads. Its Ancestry (intake.DispatchIssue.Ancestry) is read for a
-// labelled todo of an issue unrecorded or recorded as a root under a parent, recorded or not
-// (queuesUnderParent); any other issue's is empty: an unlabelled todo never queues, and a child
-// already runs in its tree.
-//
-// With reread set, an event of an issue the workflow does not record, or a fresh event of a
-// recorded issue whose Dispatch parent differs from its record's (a person moved it), reads again
-// the Ancestry of every queued root whose recorded Ancestry holds the issue's key
-// (record.Store.QueuedRootsUnder), and carries each that differs from its record's as Reread: the
-// issue may be the ancestor a person moved, whose roots below it have no event of their own. A
-// re-parent of any issue on a chain is an event of a key already on that chain, so no other root
-// can be moved by it. A recorded issue's event at or below its record's sequence is stale and
-// reads no root again, so a late event never brings back an ancestry hold its newer re-parent
-// removed; a fresh one is read as the event shows it, so the moved ancestor is read as moved, and an
-// unrecorded issue is read as Dispatch shows it now, as any other ancestor is. A failed read of
-// Dispatch while reading one such root again leaves that root's record as it stands, and says
-// so; only a failed read of the issue's own chain fails the preparation, and the event is
-// delivered again. Every walk the preparation takes reads each Dispatch issue once, reads no
-// record, and holds no transaction open across a read of Dispatch.
-func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, reread bool) (intake.DispatchIssue, error) {
-	walk := ancestry{}
-	if queuesUnderParent(issue, recorded) {
-		chain, err := w.chainOf(ctx, walk, issue.Key, issue.Parent)
-		if err != nil {
-			return issue, err
-		}
-		issue.Ancestry = chain
-	}
-	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
-	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
-	// by the keys as Dispatch gave them.
-	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
-		return issue, nil
-	}
-	var roots []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var err error
-		roots, err = w.records.QueuedRootsUnder(ctx, tx, issue.Key)
-		return err
-	}); err != nil {
-		return issue, fmt.Errorf("read the queued roots whose chain holds %s: %w", issue.Key, err)
-	}
-	if len(roots) != 0 && recorded != nil {
-		walk[issue.Key] = issue.Parent
-	}
-	for i := range roots {
-		root := &roots[i]
-		chain, err := w.chainOf(ctx, walk, root.Key, parentKey(root.Parent))
-		if err != nil {
-			w.log.Warn("workflow: a queued root's Dispatch chain was not read again, so its record keeps the one it has",
-				"root", root.Key, "event", issue.Key, "ancestry", root.Ancestry, "error", err)
-			continue
-		}
-		if slices.Equal(storetext.Strings(chain), root.Ancestry) {
-			continue
-		}
-		if issue.Reread == nil {
-			issue.Reread = map[string][]string{}
-		}
-		issue.Reread[root.Key] = chain
-	}
-	return issue, nil
-}
-
-// queuesUnderParent says whether issue, recorded as recorded (nil when the workflow does not record
-// it), is a root the waiting line may hold under an unreleased child of an ancestor's tree (the
-// ancestry hold): a labelled todo under a Dispatch parent, unrecorded or recorded as a root.
-func queuesUnderParent(issue intake.DispatchIssue, recorded *record.Issue) bool {
-	return issue.Status == "todo" && issue.HandedOver && issue.Parent != "" &&
-		(recorded == nil || claim.IsTreeRoot(recorded.Key, recorded.Tree))
-}
-
-// ancestry is what one preparation's walks up Dispatch's parent chains read, each issue once: the
-// Dispatch parent ("" for none) of every issue read from Dispatch or shown to the walk.
-type ancestry map[string]string
-
-// chainOf is the keys of key's Dispatch parent chain, read up walk from parent upward to the top,
-// stopping only at a repeated key or back at key; nil when parent is "". It reads no record: it is
-// the chain release_children's own walk reads (api's releasableChild), so an ancestry hold lasts
-// exactly while a live root on it could release the issue into its tree (record.Waiting).
-func (w *workflowRuntime) chainOf(ctx context.Context, walk ancestry, key, parent string) ([]string, error) {
-	var chain []string
-	for ancestor := parent; ancestor != "" && ancestor != key && !slices.Contains(chain, ancestor); {
-		chain = append(chain, ancestor)
-		next, ok := walk[ancestor]
-		if !ok {
-			detail, err := w.dispatch.GetIssue(ctx, ancestor)
-			if err != nil {
-				return nil, fmt.Errorf("read %s from Dispatch, an ancestor of %s: %w", ancestor, key, err)
-			}
-			next = parentKey(detail.Parent)
-			walk[ancestor] = next
-		}
-		ancestor = next
-	}
-	return chain, nil
-}
-
 // parentKey is the key a Dispatch parent names, "" for none.
 func parentKey(parent *string) string {
 	if parent == nil {
 		return ""
 	}
 	return *parent
+}
+
+// listingRecords is what reconcile's boot prepares its listing against: every record, by key, read
+// once in a read-only transaction.
+func (w *workflowRuntime) listingRecords(ctx context.Context) (map[string]*record.Issue, error) {
+	var issues []record.Issue
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		issues, err = w.records.Issues(ctx, tx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the records for the boot listing: %w", err)
+	}
+	records := make(map[string]*record.Issue, len(issues))
+	for i := range issues {
+		records[issues[i].Key] = &issues[i]
+	}
+	return records, nil
 }
 
 // prepareUnrecorded readies the event of an issue the workflow does not record, as

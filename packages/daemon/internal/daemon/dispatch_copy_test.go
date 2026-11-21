@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -89,10 +90,12 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // decisions that read them, so admission starts no issue an unfinished blocker holds. In each case
 // W waits on B and B is unfinished: an issue event of W names B, while the copy shows B in
 // progress; the first boot's listing, which refills the project's rows of the copy, lists W
-// waiting on B and B in progress; the periodic turn re-reads B; and the release's read of W, as it
-// adopts W into a live tree, shows W waiting on B. In the first three W is a labelled todo root on
-// the waiting line with a slot free for it, which it takes only if the pass of the same fact reads
-// a copy in which W waits on nothing.
+// waiting on B and B in progress; the periodic turn re-reads B; and the release's read of W, a
+// recorded child of a live tree, applied as a reading of Dispatch (intake.ObservedIssue), shows W
+// waiting on B. In the first three W is a labelled todo root on the waiting line with a slot free
+// for it; in the fourth W is the tree's child at admitted, todo, and the one slot the tree's root
+// does not hold stands free. In each W takes a slot only if the pass of the same fact reads a copy
+// in which W waits on nothing.
 //
 // The turn re-reads a blocker only while the copy shows it unfinished
 // (TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn), so its case holds B todo in the copy,
@@ -174,11 +177,12 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		w := copyRuntime(t, pool, &copyBoard{}, 2)
 		seedLiveTree(t, pool, tree)
-		seedWaitingRoot(t, pool, waiter, "B")
+		seedHeldChild(t, pool, waiter, tree)
 		seedTickMirror(t, pool, blocker, "in_progress", 1)
 
-		applyCopyFact(t, w, "api", "waves/adopt", intake.ChildAdoption{Tree: tree, Children: []intake.AdoptedChild{
-			{Issue: waiter, Parent: tree, Status: "todo", BlockedBy: []string{blocker}, Seq: 4}}})
+		parent := tree
+		applyCopyFact(t, w, "api", "waves/read", intake.ObservedIssue(dispatch.Issue{Key: waiter, Status: "todo", Title: waiter,
+			Parent: &parent, Rank: "A", ResolvedRepo: "acme/widgets", BlockedBy: []string{blocker}, LastSeq: 4}))
 
 		if got := copied(t, pool, waiter); !slices.Equal(got.blockers, []string{blocker}) || got.blockersSeq != 4 {
 			t.Fatalf("the copy holds %s waiting on %q at %d, want %s at the read's 4", waiter, got.blockers, got.blockersSeq, blocker)
@@ -187,8 +191,8 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the record of %s: %v", waiter, err)
 		}
-		if recorded == nil || recorded.Tree != tree || recorded.Phase != phase.Admitted {
-			t.Fatalf("%s = %#v, want it in the tree of %s at admitted: its first phase waits on %s", waiter, recorded, tree, blocker)
+		if recorded == nil || recorded.Phase != phase.Admitted {
+			t.Fatalf("%s = %#v, want it at admitted: its first phase waits on %s", waiter, recorded, blocker)
 		}
 		if slotted := tickSlotted(t, pool); !slices.Equal(slotted, []string{tree}) {
 			t.Fatalf("slots = %v, want %s's alone: %s waits on %s, which is in progress", slotted, tree, waiter, blocker)

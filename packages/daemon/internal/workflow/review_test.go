@@ -495,7 +495,7 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 				Decision: &record.ReviewDecision{State: "approved", Head: approved}})
 			var asked []string
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
-				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+				ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 				Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 				ReadMergeState: func(issue string) { asked = append(asked, issue) }}, nil)
 

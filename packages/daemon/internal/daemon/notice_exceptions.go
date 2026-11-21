@@ -167,7 +167,7 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 
 // noticeAnswered is what the listener's answer to one notice publish decides for its row:
 // published is that answer, payload the row's own Notice, which gives the notice as it went out
-// and its dedupe key (Notice.Published), and tree the snapshot the row was routed against.
+// and its dedupe key (Notice.Published), and snapshot the route the row was read against.
 //
 // A publish the listener took writes one line naming the architect it reached (noticePublished).
 //
@@ -184,10 +184,11 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // state the listener reported it in: a session that will answer for itself is no failure of the
 // row's, so it costs no error line per attempt, where a publish that did fail still costs one.
 // A role no session holds is held for its architect while that architect's claim can hold it
-// again, and finishes undelivered once nobody will. Any other failure is the row's, retried on
-// its backoff.
+// again — suspended or released, which R18 of dispatch://INFRA-3320 has wait for it — and
+// finishes undelivered once nobody will: the claim failed or retired, or this daemon does not
+// supervise it (claimEnded). Any other failure is the row's, retried on its backoff.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
-	tree treeSnapshot, architect claim.Token, published error,
+	snapshot noticeSnapshot, architect claim.Token, published error,
 ) error {
 	// The same pair the publish went out as (Notice.Published): the notice as it was sent and the
 	// dedupe key it was sent under, derived here rather than passed in, so no caller can hand this
@@ -209,7 +210,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// under the key it went out on, before anything forgets them, and the settle after this
 		// run forgets them (toldKept, settleTold).
 		if payload.CatchUp != nil && payload.CatchUp.Kept != nil {
-			return r.toldKept(ctx, tree.root.Key, key)
+			return r.toldKept(ctx, row.Issue, key)
 		}
 		return nil
 	case errors.As(published, &notDelivered) && notDelivered.Reason == notify.ReasonReceiptTimeout:
@@ -243,12 +244,13 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	case !errors.Is(published, notify.ErrNoHolder):
 		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
 	}
-	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
-		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
+	if state := r.claimState(architect); claimEnded(state) {
+		if err := r.parkDecision(ctx, row.Issue, snapshot.root, payload, key, row.ID); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", "its claim has failed, retired, or is not supervised",
+			"state", state)
 		return nil
 	}
 	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
@@ -305,31 +307,14 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // behind the failed one, so it can arrive before the copy. A catch-up a newer one superseded
 // (catchUpSuperseded) is not queued again: its copy would arrive after the fresh catch-up, so what
 // it named is handed over to that fresh catch-up instead (workflow.HandOverKept, through
-// supersededKept), the copy that would have carried its claims on never being written. Nor is
-// a notice whose architect stopped with its finished tree (stoppedWithTree): nothing of the close
-// is sent to it, and a person's spec decision such a notice reports goes to the controller instead
-// (parkDecision). Those checks read the claim from memory, outside ApplyFact's lock, which the
-// ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
-// again when it runs the row.
+// supersededKept), the copy that would have carried its claims on never being written. That check
+// reads the claim from memory, outside ApplyFact's lock, which the ready handler holds, so a copy
+// can still lose the race to a ready; the notice executor checks again when it runs the row.
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
 	topic := notify.RoleTopicPrefix + string(reported.architect)
 	held := r.supervisedClaim(reported.architect)
-	if !holdsRole(held) {
-		root, lingers, err := r.issueTree(ctx, issue)
-		if err != nil {
-			return err
-		}
-		if stoppedWithTree(lingers, held) {
-			if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
-				return err
-			}
-			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",
-				"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "state", held.State, "stopping", held.Stopping)
-			return nil
-		}
-	}
 	if notice.Resends >= len(noticeReholdDelays) {
 		r.log.Warn("outbox notice not re-held again: it was queued again the most times a notice is",
 			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "resends", notice.Resends)
@@ -350,10 +335,9 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	mark := fmt.Sprintf("%s#%d", key, notice.Resends)
 	notice.Resends++
 	notice.ResendOf = reported.row
-	row, err := record.NewOutboxRow(issue, notice, due)
-	if err != nil {
-		return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
-	}
+	// The copy keeps the fence of the row it copies, which the publish carried (record.Notice):
+	// it is that row's notice, of that run and phase entry. A copy of a row a release before this
+	// one queued names none, and takes the fence its issue stands at now (record.NewFencedRow).
 	queued, superseded := false, false
 	// The re-hold is its own transaction, so it owns the commit hook the row's write registers
 	// (projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
@@ -373,6 +357,10 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			return err
 		}
 		queued = true
+		row, err := record.NewFencedRow(scoped, tx, r.records, issue, notice, due)
+		if err != nil {
+			return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
+		}
 		// A copy of a catch-up whose row still claims decisions (the confirmed route's answer, in the
 		// row's own run) takes those claims over before the row finishes and its deletion releases
 		// them, so no other start or catch-up names what the copy will.
@@ -410,24 +398,6 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
 	}
 	return nil
-}
-
-// issueTree is the root of the tree of issue, as recorded, and whether that tree lingers or has
-// closed. An issue that is not recorded has no tree to finish.
-func (r *outbox) issueTree(ctx context.Context, issue string) (root string, lingers bool, err error) {
-	err = pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		recorded, err := r.records.Issue(ctx, tx, issue)
-		if err != nil || recorded == nil {
-			return err
-		}
-		root = recorded.Tree
-		lingers, err = record.TreeLingers(ctx, r.records, tx, recorded.Tree)
-		return err
-	})
-	if err != nil {
-		return "", false, fmt.Errorf("read the tree of %s: %w", issue, err)
-	}
-	return root, lingers, nil
 }
 
 // catchUpSuperseded says whether a newer catch-up than catchUp exists for its architect, the
@@ -526,9 +496,10 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
 // minutes for a stopped session's registration to lapse would otherwise hold back every later
 // notice to that architect behind the fence, after the architect is back. Released, the notices
-// go in the order they were written, ahead of the ones behind them. The waiting notices and their
-// trees are one repeatable read, each tree read once; the fence is not read, since a release only
-// makes a notice due and its send still passes the fence.
+// go in the order they were written, ahead of the ones behind them. The waiting notices and the
+// Dispatch chains of their issues are one repeatable read, the chains read once for every row
+// (readNoticeRoute), so the reads do not grow with the rows; the fence is not read, since a
+// release only makes a notice due and its send still passes the fence.
 //
 // A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
 // architect being away — the architect is running, which is why a start wrote a catch-up instead
@@ -546,7 +517,9 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 		if err != nil {
 			return err
 		}
-		routes := map[string]noticeRoute{}
+		var candidates []record.OutboxRow
+		var notices []record.Notice
+		keys := make([]string, 0, len(waiting))
 		for _, row := range waiting {
 			payload, err := record.DecodeOutboxPayload(row)
 			if err != nil {
@@ -556,14 +529,24 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 			if !ok || notice.PacedAt.After(now) {
 				continue
 			}
-			issue, route, err := r.readNoticeRoute(ctx, tx, row.Issue, routes)
-			if errors.Is(err, errNoticeUnroutable) {
+			candidates, notices, keys = append(candidates, row), append(notices, notice), append(keys, row.Issue)
+		}
+		if len(candidates) == 0 {
+			return nil
+		}
+		route, err := r.readNoticeRoute(ctx, tx, r.dispatchProject, keys)
+		if errors.Is(err, errNoticeUnroutable) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for i, row := range candidates {
+			issue, err := route.issue(row.Issue)
+			if err != nil {
 				continue
 			}
-			if err != nil {
-				return err
-			}
-			if owner, err := noticeArchitect(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
+			if owner, err := noticeArchitect(route, issue, notices[i], r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
 				released = append(released, row)
 			}
 		}

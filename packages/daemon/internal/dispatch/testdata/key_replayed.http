@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Idempotency-Key: capture-key-replayed-1
+Idempotency-Replayed: ?1
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Fri, 20 Nov 2026 15:47:36 GMT
+Content-Length: 788
+
+{"key":"CORE-5","project":"CORE","number":5,"title":"Agents page freshness folds","status":"todo","priority":null,"rank":"Y","labels":[],"parent":null,"blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-20T15:44:52.910093Z","updated_at":"2026-11-20T15:47:36.772379Z","closed_at":null,"primary_artifact_id":"32c04a24-77e7-4e95-877c-a6a424dd7ecb","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4,"advice":{"issue_status":"todo","session_writes_since_human":0,"your_open_asks":[]}}

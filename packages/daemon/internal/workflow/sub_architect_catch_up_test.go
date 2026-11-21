@@ -129,7 +129,6 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 		}
 	})
 
-	until := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name  string
 		root  func(*record.Issue)
@@ -138,7 +137,6 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 		{"a child out of the workflow", nil, func(child *record.Issue) { child.Status = "backlog" }},
 		{"a child done", nil, func(child *record.Issue) { child.Phase, child.Status = phase.Done, "done" }},
 		{"a child whose work is done before its status says so", nil, func(child *record.Issue) { child.Phase = phase.Done }},
-		{"a child of a lingering tree", func(root *record.Issue) { root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until }, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

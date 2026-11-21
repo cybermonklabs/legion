@@ -697,15 +697,17 @@ func queuedClaim() Claim {
 	}
 }
 
-// rootClaim is the tree's root claim: the architect of the issue the tree is named for.
+// rootClaim is a root's claim: the architect of an issue that holds its own design gate, which the
+// daemon's outbox marks on the claim at its start (Claim.HoldsGate).
 func rootClaim() Claim {
 	return Claim{
-		Token:   rootToken,
-		Project: "legion",
-		Tree:    "LEGION-208",
-		Issue:   "LEGION-208",
-		Role:    claim.RoleArchitect,
-		State:   StateQueued,
+		Token:     rootToken,
+		Project:   "legion",
+		Tree:      "LEGION-208",
+		Issue:     "LEGION-208",
+		Role:      claim.RoleArchitect,
+		State:     StateQueued,
+		HoldsGate: true,
 	}
 }
 

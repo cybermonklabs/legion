@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -98,68 +97,6 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	})
 }
 
-// A hand-over carries a copy of every step of its old root's gate, each keeping its own step, so
-// a tree gated on several steps arrives approved on each of them as the old root was, and the new
-// root's phases run on from where the old tree left them.
-func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	const root, child = "LEGION-208", "LEGION-209"
-	until := fixedNow.Add(time.Hour)
-	parent := root
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		for _, put := range []error{
-			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B",
-				LastDispatchSeq: 1}),
-			records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, Step: record.DesignStepCriteria,
-				ArtifactID: criteriaDoc, LatestVersion: 2, ApprovedVersion: new(2)}),
-			records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, Step: record.DesignStepSpec,
-				ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(4)}),
-			records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-		} {
-			if put != nil {
-				t.Fatalf("seed: %v", put)
-			}
-		}
-	})
-
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true, DaemonActor: true}, admission.engine)
-
-	if got := issue(t, pool, child); got.Tree != child || got.Generation != 2 || got.Phase != phase.Merging {
-		t.Fatalf("the handed-over child = %#v, want its own tree at generation 2, still merging", got)
-	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		gates, err := records.GatesOf(context.Background(), tx, child)
-		if err != nil || len(gates) != 2 {
-			t.Fatalf("the carried gates = %#v, %v; want one row for each step the old root held", gates, err)
-		}
-		for step, want := range map[record.DesignStep]record.DesignGate{
-			record.DesignStepCriteria: {Issue: child, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2, ApprovedVersion: new(2)},
-			record.DesignStepSpec:     {Issue: child, Step: record.DesignStepSpec, ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(4)},
-		} {
-			got := gates[step]
-			if got.Issue != want.Issue || got.Step != want.Step || got.ArtifactID != want.ArtifactID || got.LatestVersion != want.LatestVersion ||
-				got.ApprovedVersion == nil || *got.ApprovedVersion != *want.ApprovedVersion {
-				t.Fatalf("the carried %s gate = %#v, want %#v", step, got, want)
-			}
-		}
-		if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil ||
-			handedRoot.Generation != 2 || !handedRoot.GateCarried {
-			t.Fatalf("the handed-over root = %#v, %v; want generation 2 with its gate carried", handedRoot, err)
-		}
-	})
-	if starts := phaseStarts(t, pool, child, claim.RoleMerger, phase.Merging); starts != 1 {
-		t.Fatalf("the carried root's merger was started %d times, want once: every carried step is open, so its phase runs", starts)
-	}
-}
-
 // A step nobody has registered holds the tree's work and nothing more: the wait a registered
 // step after it raised still reaches the person, and the root keeps the row it holds through
 // that wait (record.KeepsSlot). Reading the unregistered step as the step the person has would
@@ -209,8 +146,9 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 
 	readmitRoot(t, pool, admission)
 
-	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
-		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
+	want := "A person approved version 2 of the decisions document, and the decisions document is now at version 3. " +
+		"Request approval of version 3, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. " +
+		"The other way is to write LEGION-ROOT as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
 	starts := architectStartRows(t, pool)
 	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
 		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)

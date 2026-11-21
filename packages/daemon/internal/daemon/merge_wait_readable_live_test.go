@@ -231,6 +231,7 @@ func (r *mergeWaitReadableLive) seed() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", key, err)
 		}
+		openIssue(t, r.st, r.project, key, treelifecycle.AuthorityWorkflow)
 		// Every role a move of these issues could launch needs its prompt on disk, as the daemon's
 		// own launch writes it: step 5's request for changes starts an implementer.
 		for _, role := range claim.Roles {

@@ -34,11 +34,11 @@ const movedIssue = "LEGION-208"
 // record changed leaves the mark at that fact's own moment, and the daemon's own bookkeeping
 // leaves it where it stands.
 //
-// This test is in internal/admit because it is the one package that can show every half. Nine
+// This test is in internal/admit because it is the one package that can show every half. Ten
 // of the eleven write sites are in internal/workflow — the resume of an answered root among
-// them (workflow's ResumeAwaitedRoot), which only an admission pass reaches — and two are
-// admission's own, the re-admission and the promotion of a root the line was holding; the
-// boot's read of the Dispatch listing, which marks nothing of its own, is
+// them (workflow's ResumeAwaitedRoot), which only an admission pass reaches, and the new run of
+// a closed root (workflow's NewRun) — and one is admission's own, the promotion of a root the
+// line was holding; the boot's read of the Dispatch listing, which marks nothing of its own, is
 // Admission.Reconcile's; admit imports workflow, so an Engine and an Admission stand side by
 // side here exactly as the daemon runs them. internal/store, whose own migrateThrough helper would
 // have served the last part, cannot: admit's own dependencies reach it, so a test in package store
@@ -426,10 +426,10 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
 	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding
 	// (admit's promoteHolds), the resume of a root a person answered (workflow's
-	// ResumeAwaitedRoot, which that same promotion calls), and a re-admission (admit's
-	// readmit). Each is driven by the fact that reaches it, as the daemon drives it, and the
-	// engine's clock is held apart from the pass's so that every mark names the site that
-	// wrote it.
+	// ResumeAwaitedRoot, which that same promotion calls), and the new run of a closed root a
+	// person set back to todo (workflow's NewRun, decision 8 of dispatch://INFRA-4730). Each is
+	// driven by the fact that reaches it, as the daemon drives it, and the engine's clock is held
+	// apart from the pass's so that every mark names the site that wrote it.
 	t.Run("the daemon marks the phases and the starts it writes itself", func(t *testing.T) {
 		pool := migratedPool(t)
 		const (
@@ -439,8 +439,8 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		)
 		// A slotted root whose architect handed a question to a person, a root waiting in the
 		// line behind it, and a closed root a person is about to set back to todo. The cap is
-		// the two slots the first two take, so the re-admitted root below stays in the line and
-		// the mark it carries can only be the re-admission's own.
+		// the two slots the first two take, so the root's new run below stays in the line and
+		// the mark it carries can only be the new run's own.
 		seedSlotted(t, pool, waits, "U")
 		seedWaiting(t, pool, promoted, "V")
 		seedArchitectClaim(t, pool, waits, true)
@@ -498,23 +498,24 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		}
 		marked("the resume of a root a person answered", waits, at(3))
 
-		// A person sets the closed root back to todo. The engine's own handler marks that event
-		// first, on its own clock, so the pass's clock standing after it is what says the
-		// re-admission wrote the mark the record carries.
-		engineNow, passNow = at(4), at(5)
+		// A person sets the closed root back to todo. Its new run is the engine's write
+		// (workflow's NewRun), so it runs on the engine's clock, and the pass's clock is left
+		// standing where it was: the time the record carries after this fact can only be the new
+		// run's own.
+		engineNow = at(4)
 		apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: readmitted, ResolvedRepo: "acme/widgets",
 			Seq: 2, Type: "issue.updated", Status: "todo", Title: readmitted, Rank: "W", HandedOver: handed}, engine)
 		if got := issue(t, pool, readmitted); got.Generation != 2 || got.Phase != phase.Admitted {
-			t.Fatalf("%s stands at %s in generation %d, want admitted in generation 2: the fact must be the re-admission it is read as",
+			t.Fatalf("%s stands at %s in generation %d, want admitted in generation 2: the fact must be the new run it is read as",
 				readmitted, got.Phase, got.Generation)
 		}
 		for _, slot := range slots(t, pool) {
 			if slot.Issue == readmitted {
-				t.Fatalf("%s holds admission slot %d: the cap must keep it in the line, so that the mark it carries is the re-admission's own",
+				t.Fatalf("%s holds admission slot %d: the cap must keep it in the line, so that the mark it carries is the new run's own",
 					readmitted, slot.Index)
 			}
 		}
-		marked("a re-admission", readmitted, at(5))
+		marked("a new run", readmitted, at(4))
 	})
 
 	// A claim that fails takes its issue into held, which is a phase change and so a movement
@@ -644,7 +645,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			switch payload := row.payload.(type) {
 			case record.SuperviseRequest:
 				resend = resend || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands, false))
 			case record.Notice:
 				told = told || (row.issue == issueKey && payload.Kind == "worker-silent")
 			}
@@ -927,7 +928,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			if payload, ok := row.payload.(record.SuperviseRequest); ok {
 				resumed = resumed || (row.issue == issueKey && payload.Op == "start" && payload.RuleResume &&
 					payload.ResumeTask && payload.Entry == 0 && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands, false))
 			}
 		}
 		if !resumed {

@@ -1284,9 +1284,10 @@ func streamEventTypes(t *testing.T) []string {
 	return sealed
 }
 
-// putClaim stores c as every claim the daemon stores is: a claim of an admitted tree, bound to the
-// tree's open lifecycle epoch. No workflow issue backs these trees, so their authority is the
-// operator's, as the lifecycle migration gives a tree it finds only claims of.
+// putClaim stores c as every claim the daemon stores is: a claim of an admitted tree, bound to its
+// issue's open lifecycle epoch. No workflow issue backs these trees, so the authority of the tree
+// and of the issue is the operator's, as the lifecycle migration gives a tree it finds only claims
+// of and the operator's spawn gives the issue it spawns.
 func putClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
@@ -1301,6 +1302,7 @@ func putClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
 	if _, err := st.OpenTreeLifecycle(ctx, c.Project, c.Tree, treelifecycle.AuthorityOperator); err != nil {
 		t.Fatalf("admit the tree of %s: %v", c.Token, err)
 	}
+	openIssue(t, st, c.Project, c.Issue, treelifecycle.AuthorityOperator)
 	if _, err := st.AdmitClaim(ctx, c); err != nil {
 		t.Fatalf("put %s: %v", c.Token, err)
 	}

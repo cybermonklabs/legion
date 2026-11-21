@@ -1,0 +1,27 @@
+-- 20261120091044_issue_holds_gate.up.sql — records, on each issue, that it holds its own design
+-- gate: the fact the daemon reads, beside the Dispatch chain, to find each issue's gate root once
+-- it stores no tree (dispatch://INFRA-4730, R15 of dispatch://INFRA-3320).
+--
+-- What the column holds. An issue holds its own gate when it is a root, an issue with no issue
+-- above it in Legion's work, and when it held its own gate as a root before it got a parent in
+-- Legion's work, which keeps that gate. The chain gives the first half on each read
+-- (record.Chains.IsRoot); the second half is history the chain no longer shows, so it is this
+-- mark (record.Issue.HoldsGate, read by record.Chains.HoldsOwnGate). The daemon sets it when it
+-- first records an issue as a root and when a decision pass finds a recorded issue a root, and
+-- never clears it: record.Store.PutIssue writes it set-only, and record.Store.MarkHoldsGate is the
+-- pass's one batched update.
+--
+-- Why not the gate's rows. A gate row exists only once the issue's architect registers a step,
+-- so a root whose architect has not registered yet would hold no gate by them, and a hand-over
+-- of the release before copied a root's rows onto its members, so those members would hold one.
+--
+-- The backfill. Every record whose key is its stored tree is a root of the release before, or a
+-- root a hand-over made, and each of those held its own gate, so each is marked. Every other
+-- record is a member of a tree and is left unmarked: it holds its own gate only if the chain
+-- makes it a root, which the first decision pass after the deploy reads and marks.
+--
+-- Migrations here are forward-only and this one has no down file. A daemon of the release before
+-- names the column nowhere — it neither selects it nor inserts it, and an insert of its takes the
+-- default — so a rollback runs over it as it stands, and the roll forward finds every mark it set.
+alter table issues add column holds_gate boolean not null default false;
+update issues set holds_gate = true where key = tree;

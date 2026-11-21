@@ -423,6 +423,7 @@ func (r *lateCompletionLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
+	openIssue(t, r.st, r.project, r.key, treelifecycle.AuthorityWorkflow)
 	implementer := r.token(claim.RoleImplementer)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,

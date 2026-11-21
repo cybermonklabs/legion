@@ -100,7 +100,15 @@ func TestAQuietTreeIsMeasuredFromItsFactsAndItsSteps(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the issues of %s after %s: %v", quietRoot, what, err)
 			}
-			if trees, _, err = admission.quietTrees(ctx, tx, issues, admission.now()); err != nil {
+			keys := make([]string, len(issues))
+			for i, issue := range issues {
+				keys[i] = issue.Key
+			}
+			chains, err := record.ReadChains(ctx, tx, record.NewStore(), testProject, keys)
+			if err != nil {
+				t.Fatalf("read the chains after %s: %v", what, err)
+			}
+			if trees, _, err = admission.quietTrees(ctx, tx, issues, chains, admission.now()); err != nil {
 				t.Fatalf("measure the trees after %s: %v", what, err)
 			}
 		})

@@ -63,7 +63,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 		t.Fatalf("hold the pod: %v", err)
 	}
 	var seen pods.IdleView
-	decide := func(view pods.IdleView) (IdleReleaseMark, error) {
+	decide := func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		seen = view
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}`)},

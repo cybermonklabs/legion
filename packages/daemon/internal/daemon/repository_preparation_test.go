@@ -76,7 +76,7 @@ func TestAnIssueOnARepositoryNoRecordNamesIsRecordedWithGitHubsSpellingAndAdmitt
 	if prepared.RepositoryRefusal != "" {
 		t.Fatalf("the prepared event refuses %q, want it recorded: both Apps are installed", prepared.RepositoryRefusal)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-901", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-901", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	got := recordedIssue(t, w, "LEGION-901")
@@ -128,7 +128,7 @@ func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prepare %s: %v", key, err)
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-"+key, prepared, engine, admission); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-"+key, prepared, rigCopy(w), engine, admission); err != nil {
 			t.Fatal(err)
 		}
 		if got := recordedIssue(t, w, key); got == nil || got.Repo != strangerNamed {
@@ -166,7 +166,7 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 	if err != nil {
 		t.Fatalf("prepare LEGION-921 = %v, want it prepared to be applied and acknowledged", err)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-921", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-921", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-921"); got != nil {
@@ -465,7 +465,7 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 	if err != nil {
 		t.Fatalf("prepare LEGION-931 = %v, want it prepared with its refusal", err)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-931", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-931", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-931"); got != nil {
@@ -487,7 +487,7 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 	if prepared.RepositoryRefusal != "" {
 		t.Fatalf("the second preparation refuses %q, want the refusal kept nowhere", prepared.RepositoryRefusal)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-931-again", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-931-again", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-931"); got == nil || got.Repo != strangerNamed || got.Phase != phase.Admitted {
@@ -522,7 +522,7 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-941", prepared, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-941", prepared, rigCopy(w), engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-941"); got == nil || got.Repo != strangerNamed {

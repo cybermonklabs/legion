@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/legion/daemon/internal/intake"
+
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -80,33 +79,55 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	}
 }
 
-// A hand-over fence an earlier linger of the tree left can stand beside a member whose merge waits
-// in the tree's linger now (record.Handover outlives its linger). It is that earlier linger's, so
-// it hands the member to no readmit: the unmerged close of the member's pull request after this
-// linger's deadline ends the merge stopped. Only a fence of this tree at the generation of the
-// linger the merge waits in keeps the merge open (mergeCanLand).
-func TestAnUnmergedCloseEndsAMergeWhoseFenceIsAnEarlierLingers(t *testing.T) {
+// A move whose start an open Dispatch child holds (dispatch://INFRA-3320 R9) ends the step it
+// leaves as the move it holds would: the tester's pass passed, a request for changes failed. The
+// parent's wait in awaiting_children follows the step, and it runs no step of its own. With the
+// move's end named after the guard instead of before it, every one of these steps ends stopped.
+func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 	pool := migratedPool(t)
-	root := stepRoot(t, pool, phase.Reviewing)
-	root.Generation = 2
-	seedIssue(t, pool, root)
 	engine := stepEngine(nil)
-	mergingChild(t, pool, engine)
-	apply := applyFacts(t, pool, engine)
-	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
-		Status: "backlog", Title: "root", Rank: "U"})
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return engine.store.PutHandover(t.Context(), tx, record.Handover{Issue: "LEGION-209", Tree: root.Tree, Generation: root.Generation - 1})
-	})
-	if _, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0); isEnd(end) {
-		t.Fatalf("the park ended LEGION-209's merge %+v; a merge that awaits its landing in the linger stays open", end)
+	held := 0
+	for i, row := range Table {
+		from, _, _, runs := stepOf(row.From)
+		if !runs {
+			continue
+		}
+		name := fmt.Sprintf("%s --%s--> %s", row.From, row.Trigger, row.To)
+		key, child := fmt.Sprintf("LEGION-%d", 600+i), fmt.Sprintf("LEGION-%d", 900+i)
+		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
+			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
+		seedIssue(t, pool, issue)
+		seedTreeLifecycle(t, pool, key)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 600 + i,
+			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
+		seedMirrorChild(t, pool, child, "todo", key)
+		target := phase.Phase("")
+		if row.Trigger == TriggerBackward {
+			target = row.To
+		}
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			pr, err := engine.store.PullRequest(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			return engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the held move")
+		})
+		if issueRecord(t, pool, key).Phase != phase.AwaitingChildren {
+			continue
+		}
+		held++
+		want, _ := endOf(row.Trigger)
+		var ends []string
+		for _, w := range writesAt(stepWrites(t, pool, key), from.Kind, from.Place) {
+			if isEnd(w) {
+				ends = append(ends, resultOf(w))
+			}
+		}
+		if !slices.Equal(ends, []string{string(want)}) {
+			t.Errorf("%s, held by the open child %s, wrote the ends %v of the step it left, want one, %s", name, child, ends, want)
+		}
 	}
-	parked := issueRecord(t, pool, root.Key)
-	engine.cfg.Clock = func() time.Time { return parked.LingerUntil.Add(time.Second) }
-	apply("close-unmerged", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"})
-	start, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0)
-	if !isEnd(end) || end.ID != start.ID {
-		t.Fatalf("after the unmerged close past the deadline LEGION-209's merge is %+v then %+v, want its start and its end", start, end)
+	if held < 8 {
+		t.Fatalf("an open child held %d moves of the table out of a step, want every move into planning through accepting", held)
 	}
-	assertEnd(t, end, "merge", 0, 3, "stopped", nil)
 }

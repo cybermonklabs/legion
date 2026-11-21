@@ -196,13 +196,13 @@ func (r *backstopRig) sweep(claims []supervise.Claim) {
 	r.s.backstopStalledTurns(context.Background(), claims)
 }
 
-// settled waits for every event the sweep posted for c to have been decided: a tree close of its
+// settled waits for every event the sweep posted for c to have been decided: an issue close of its
 // own, posted through the same inbox and so behind whatever the sweep put there, which the
 // machine answers by retiring the claim. A case that must see nothing happen reads its
 // assertions after this.
 func (r *backstopRig) settled(c supervise.Claim) {
 	r.t.Helper()
-	r.sup.post(c.Token, supervise.RequestTreeClose{Claim: c.Token})
+	r.sup.post(c.Token, supervise.RequestIssueClose{Claim: c.Token})
 	testwait.Eventually(r.t, "the claim to answer a close posted behind the sweep's own events", func() bool {
 		m, ok := r.sup.Machine(c.Token)
 		return ok && m.Claim().State == supervise.StateRetired

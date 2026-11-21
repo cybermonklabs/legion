@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -15,87 +16,77 @@ import (
 
 // A run no start of this release counted is open only where this release's own end rule holds it
 // open (runOver) and its generation started a run (generationStarted): the boot gives no row to
-// any other, and the settle of a fact records none. Three runs that are not open:
-//   - a member of a lingering tree that awaits no merge: the root's linger is over it. The control
-//     is the same member under a running root, whose run the boot opens;
-//   - a root a hand-over carried in, waiting for the promotion that opens its tree, with no slot
-//     or with the row it carried from the tree it left: its carried phase starts its run at its
-//     promotion, so its generation started none. The control is the same root promoted, holding
-//     the slot its own tree granted it, whose run the boot opens;
-//   - a member of a tree admitted again, whose root waits for the promotion that opens the tree
-//     again: the re-admission cleared the linger that ended the member's run, and the promotion
-//     starts the member again. The control is the same root holding its slot, whose member's run
-//     the boot opens.
+// any other, and the settle of a fact records none. Two runs that are not open:
+//   - an issue out of Legion's work that awaits no merge: its stop is over its run. The control
+//     is the same issue in work, whose run the boot opens; and nothing above an issue decides it:
+//     a member under a stopped root runs on;
+//   - a root a hand-over of the release before carried in (record.CarriedIn), waiting for the
+//     promotion that starts it, with no slot: its carried phase starts its run at its promotion,
+//     so its generation started none. The control is the same root promoted, holding its slot,
+//     whose run the boot opens.
 //
-// A fact that writes the issue — the member's rank, the person's park of the root or of the
-// member — writes no record of the run that was not open.
+// A fact that writes the issue — its rank, a person's park — writes no record of the run that was
+// not open.
 func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) {
-	t.Run("a member of a lingering tree", func(t *testing.T) {
-		for _, lingers := range []bool{true, false} {
+	t.Run("an issue out of Legion's work", func(t *testing.T) {
+		for _, stopped := range []bool{true, false} {
 			pool := migratedPool(t)
 			root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 				Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
-			if lingers {
-				until := stepClock.Add(time.Hour)
-				root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
+			if stopped {
+				root.Status = "backlog"
 			}
 			seedIssue(t, pool, root)
 			seedTreeLifecycle(t, pool, root.Key)
 			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 			engine := stepEngine(nil)
-			// The running root's own run of implementing is open too; the lingering root runs none.
-			want, member := 2, 1
-			if lingers {
-				want, member = 0, 0
+			// The member's run is open either way; the root's own run of implementing only while it
+			// is in work.
+			want := 2
+			if stopped {
+				want = 1
 			}
-			if opened := openUncountedRuns(t, pool, engine); opened != want || countStepStarts(t, pool, "LEGION-209") != member {
-				t.Fatalf("lingering root %t: the boot opened %d runs, %d of the member; want %d, %d of the member", lingers, opened, countStepStarts(t, pool, "LEGION-209"), want, member)
+			if opened := openUncountedRuns(t, pool, engine); opened != want || countStepStarts(t, pool, "LEGION-209") != 1 {
+				t.Fatalf("stopped root %t: the boot opened %d runs, %d of the member; want %d, 1 of the member", stopped, opened, countStepStarts(t, pool, "LEGION-209"), want)
 			}
-			if !lingers {
+			if !stopped {
 				continue
 			}
-			onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, member record.Issue) error {
-				member.Rank = "X"
-				return engine.store.PutIssue(ctx, tx, member)
+			onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, stored record.Issue) error {
+				stored.Rank = "X"
+				return engine.store.PutIssue(ctx, tx, stored)
 			})
-			if writes := stepWrites(t, pool, "LEGION-209"); len(writes) != 0 || countStepStarts(t, pool, "LEGION-209") != 0 {
-				t.Fatalf("a fact that wrote the lingering tree's member left step rows %+v and %d step_starts rows, want none: its run was over before it began",
-					writes, countStepStarts(t, pool, "LEGION-209"))
+			if writes := stepWrites(t, pool, "LEGION-208"); len(writes) != 0 || countStepStarts(t, pool, "LEGION-208") != 0 {
+				t.Fatalf("a fact that wrote the stopped root left step rows %+v and %d step_starts rows, want none: its run was over before it began",
+					writes, countStepStarts(t, pool, "LEGION-208"))
 			}
 		}
 	})
-	t.Run("a carried root waiting for the promotion that opens its tree", func(t *testing.T) {
+	t.Run("a carried root waiting for the promotion that starts it", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string
-			// slotted gives the root a slot row; promoted is the promotion's write of the root: its
-			// status in_progress and the hand-over's mark gone.
-			slotted, promoted bool
-			want              int
+			// promoted is the promotion's write of the root: its status in_progress and its slot.
+			promoted bool
+			want     int
 		}{
 			{name: "with no slot"},
-			{name: "with the row it carried from the tree it left", slotted: true},
-			{name: "control: promoted, with the slot of its own tree", slotted: true, promoted: true, want: 1},
+			{name: "control: promoted, with its slot", promoted: true, want: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				pool := migratedPool(t)
 				carried := record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300",
 					Project: "LEGION", Title: "carried", Phase: phase.Testing, Generation: 2, Status: "todo", Rank: "W", LastDispatchSeq: 1, HandedOver: true,
-					HandedOverFrom: "LEGION-208"}
+					CarriedGeneration: 2, TakenBack: true}
 				if tc.promoted {
-					carried.Status, carried.HandedOverFrom = "in_progress", ""
+					carried.Status = "in_progress"
 				}
 				seedIssue(t, pool, carried)
 				seedTreeLifecycle(t, pool, "LEGION-300")
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					store := record.NewStore()
-					if err := store.PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: "LEGION-300", Generation: 2}); err != nil {
-						return err
-					}
-					if !tc.slotted {
-						return nil
-					}
-					return store.PutSlot(t.Context(), tx, record.Slot{Issue: "LEGION-300", Index: 0, AdmittedAt: stepClock})
-				})
+				if tc.promoted {
+					seedRecord(t, pool, func(tx pgx.Tx) error {
+						return record.NewStore().PutSlot(t.Context(), tx, record.Slot{Issue: "LEGION-300", Index: 0, AdmittedAt: stepClock})
+					})
+				}
 				engine := stepEngine(nil)
 				if opened := openUncountedRuns(t, pool, engine); opened != tc.want {
 					t.Fatalf("the boot opened %d runs, want %d", opened, tc.want)
@@ -110,42 +101,6 @@ func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) 
 						writes, countStepStarts(t, pool, "LEGION-300"))
 				}
 			})
-		}
-	})
-	t.Run("a member of a tree admitted again, waiting for its promotion", func(t *testing.T) {
-		for _, slotted := range []bool{false, true} {
-			pool := migratedPool(t)
-			// The re-admission put the root back at admitted in todo at its next generation, with
-			// its linger cleared, and left the lifecycle of the run that ended standing.
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
-				Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "U", LastDispatchSeq: 1, HandedOver: true})
-			seedTreeLifecycle(t, pool, "LEGION-208")
-			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
-			if slotted {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutSlot(t.Context(), tx, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: stepClock})
-				})
-			}
-			engine := stepEngine(nil)
-			want := 0
-			if slotted {
-				want = 1
-			}
-			if opened := openUncountedRuns(t, pool, engine); opened != want || countStepStarts(t, pool, "LEGION-209") != want {
-				t.Fatalf("root holding its slot %t: the boot opened %d runs, %d of the member; want %d", slotted, opened, countStepStarts(t, pool, "LEGION-209"), want)
-			}
-			if slotted {
-				continue
-			}
-			applyFacts(t, pool, engine)("park", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
-				Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"})
-			if got := issueAt(t, pool, "LEGION-209"); got == phase.Testing {
-				t.Fatalf("the park left LEGION-209 at %s, want it out of testing", got)
-			}
-			if writes := stepWrites(t, pool, "LEGION-209"); len(writes) != 0 || countStepStarts(t, pool, "LEGION-209") != 0 {
-				t.Fatalf("the park of the member before its promotion left step rows %+v and %d step_starts rows, want none: its run ended with the linger",
-					writes, countStepStarts(t, pool, "LEGION-209"))
-			}
 		}
 	})
 }
@@ -235,6 +190,9 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 				t.Fatalf("a second boot opened %d runs and left the row %+v; want none and the row unchanged", again, readStepStartRow(t, pool, "LEGION-208", testing3))
 			}
 
+			// Dispatch shows both children done before the root's move, so no open child holds
+			// its start of reviewing (R9 of dispatch://INFRA-3320) and the move lands.
+			execSQL(t, pool, `update dispatch_issues set status = 'done' where key in ('LEGION-209', 'LEGION-210')`)
 			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
 			after := stepWrites(t, pool, "LEGION-208")[written:]
 			if len(after) != 2 {

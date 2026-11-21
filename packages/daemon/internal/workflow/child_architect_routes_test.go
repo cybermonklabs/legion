@@ -99,6 +99,8 @@ func TestAChildNotRecordedIsToldOnItsRecordedParent(t *testing.T) {
 				Project: "LEGION", Title: "child", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "V"})
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
+			// The copy takes the event before the engine reads it (the daemon's handler order).
+			mirrorChild(t, pool, "LEGION-210", tc.parent, "todo", 1)
 			apply("unserved-todo", intake.DispatchIssue{Key: "LEGION-210", Seq: 1, Type: "issue.updated", Status: "todo", Title: "unserved", Parent: tc.parent, Rank: "W", ResolvedRepo: "acme/gadgets"})
 			if got := issueRecord(t, pool, "LEGION-210"); got != nil {
 				t.Fatalf("LEGION-210 recorded as %#v, want none", got)

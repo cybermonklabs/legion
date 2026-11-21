@@ -285,9 +285,9 @@ func TestAReopenOfAMergedPullRequestChangesNothing(t *testing.T) {
 }
 
 // An issue that reaches merging with its pull request already merged has nothing left to merge:
-// the merge closes it at once, no merger is started for it, its tree lingers as any root's close
-// does, and the one start the close queues is the tester's first look of the production check
-// the merge opens (merge_close_test.go).
+// no merger is started for it and the merge queues its close at once (closeMerged), which ends the
+// run once Dispatch shows it done; the one start the close queues is the tester's first look of
+// the production check the merge opens (merge_close_test.go), and nothing lingers.
 func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U"})
@@ -295,17 +295,19 @@ func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implementer-claim"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
 		MergeSHA: "merge", Failing: []string{}, CheckRuns: []record.AttemptRun{}})
+	engine := mergingEngine()
 
-	result, err := intake.ApplyFact(context.Background(), pool, "api", "retro", intake.HandoffComplete{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implementer-claim", Generation: 1, Summary: "retro done", Commit: "head"}, mergingEngine(), admissionStub{})
+	result, err := intake.ApplyFact(context.Background(), pool, "api", "retro", intake.HandoffComplete{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implementer-claim", Generation: 1, Summary: "retro done", Commit: "head"}, engine, admissionStub{})
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("ApplyFact retro = %#v, %v", result, err)
 	}
-	assertPhase(t, pool, phase.Done)
-	var lingering bool
-	if err := pool.QueryRow(context.Background(), "select linger_until is not null from issues where key = 'LEGION-208'").Scan(&lingering); err != nil || !lingering {
-		t.Fatalf("the root lingers = %t, %v; want its tree lingering after the close", lingering, err)
+	assertPhase(t, pool, phase.Merging)
+	if pending := storedIssue(t, pool, "LEGION-208").PendingClose; pending == nil || pending.Kind != "merge" {
+		t.Fatalf("the close pending = %+v, want the merge's", pending)
 	}
-	assertOutboxCount(t, pool, "linger_close", 1)
+	landClose(t, pool, engine, "LEGION-208")
+	assertPhase(t, pool, phase.Done)
+	assertOutboxCount(t, pool, "linger_close", 0)
 	if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/tester"] != 1 {
 		t.Fatalf("the close started %v, want the tester's check look alone and no merger", started)
 	}

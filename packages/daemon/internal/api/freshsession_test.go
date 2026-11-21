@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -365,12 +364,12 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 			return err
 		}
 		// The Dispatch project key is what the starts a project owes are read under
-		// (record.Store.OwedStarts), and the tree lifecycles under the claim token derived from
-		// it (record.ReadLifecycles), so this passes the one key the daemon passes.
+		// (record.Store.OwedStarts), and the chains of the copy under (record.ReadChains), so this
+		// passes the one key the daemon passes.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil, time.Now())
+		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)

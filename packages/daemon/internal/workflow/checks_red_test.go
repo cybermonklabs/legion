@@ -193,28 +193,6 @@ func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
 	assertRoleMessages(t, pool, "LEGION-208", want)
 }
 
-// Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of the
-// tree is suspended there, so a settlement that reaches a lingering tree's issue is recorded and
-// nobody is told - a message to a role nobody holds reaches nobody, and the tree is done.
-func TestASettlementOfALingeringTreeTellsNobody(t *testing.T) {
-	pool := migratedPool(t)
-	until := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until})
-	parent := "LEGION-208"
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Parent: &parent,
-		Project: "LEGION", Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
-
-	assertRoleMessages(t, pool, "LEGION-209", nil)
-	if checked := recordedPR(t, pool, "LEGION-209").CheckedHead; checked != "head" {
-		t.Fatalf("the settlement stands for %q, want it recorded at head while the tree lingers", checked)
-	}
-}
-
 // A settlement of a commit the head's settlement is not - an earlier head the branch has left -
 // stands for no head, so there is nothing to tell: the daemon knows nothing of the head's CI, and
 // a message naming another commit's checks would be read as the head's.

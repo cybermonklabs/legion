@@ -171,3 +171,98 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		t.Fatalf("released %q, want %q: slot order, counting this project's slots alone", released, wantReleased)
 	}
 }
+
+// k47 (R16 of dispatch://INFRA-3320): one admission pass reads the Dispatch chains of every issue
+// it weighs in a fixed number of queries (record.ReadChains: the chain rows, the children of each
+// key the walk started from, the records those name), so it runs the same number of statements
+// over 10 recorded issues one link deep as over 1,000 recorded issues 32 links deep, the most
+// links Dispatch lets a chain hold (record.MaxChainLinks). A read of the children per parent, or
+// of a chain one link at a time, costs a project of deep trees a round trip per issue on every
+// fact.
+//
+// Each chain's top issue is a root the daemon runs, holding a slot of a full cap, and every issue
+// under it is recorded at admitted and todo, so the pass judges every one of them and starts
+// none: what it costs is the reading alone.
+func TestOneAdmissionPassRunsTheSameQueriesFor10And1000Issues(t *testing.T) {
+	facts := []struct {
+		name string
+		fact intake.Fact
+	}{
+		{"an observation of an issue Legion does not record", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
+			Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}},
+		{"a document version of a root", intake.DispatchArtifact{Key: chainedKey(0), ArtifactID: "spec", Kind: intake.DispatchArtifactVersion, Version: 2}},
+	}
+	run := func(t *testing.T, issues, links int) []int64 {
+		t.Helper()
+		pool := migratedPool(t)
+		roots := seedChained(t, pool, issues, links)
+		counter := &statementCounter{}
+		counted := countedPool(t, pool, counter)
+		admission := newAdmission(t, roots, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		handlers := []intake.Handler{blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission}
+		sent := make([]int64, len(facts))
+		for i, tc := range facts {
+			counter.sent.Store(0)
+			if _, err := intake.ApplyFact(context.Background(), counted, "dispatch", tc.name, tc.fact, handlers...); err != nil {
+				t.Fatalf("apply %s over %d issues %d links deep: %v", tc.name, issues, links, err)
+			}
+			if sent[i] = counter.sent.Load(); sent[i] == 0 {
+				t.Fatalf("apply %s over %d issues: the counted pool saw no statement", tc.name, issues)
+			}
+		}
+		// The premise: the deepest issue's chain is known, and as long as the case says.
+		deepest := chainedKey((issues/(links+1))*(links+1) - 1)
+		inTx(t, pool, func(tx pgx.Tx) {
+			chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testProject, nil)
+			if err != nil {
+				t.Fatalf("read the chains: %v", err)
+			}
+			if chain := chains.Chain(deepest); !chain.Known() || len(chain.Links) != links {
+				t.Fatalf("the chain of %s = %+v, want a known chain of %d links: the case's premise", deepest, chain, links)
+			}
+		})
+		if started := slots(t, pool); len(started) != roots {
+			t.Fatalf("%d slots held after the facts, want the %d roots' alone: the pass starts nothing", len(started), roots)
+		}
+		return sent
+	}
+	few := run(t, 10, 1)
+	many := run(t, 1000, record.MaxChainLinks)
+	for i, tc := range facts {
+		if many[i] != few[i] {
+			t.Errorf("%s: %d statements over 1,000 issues %d links deep, %d over 10 issues one link deep; want as many",
+				tc.name, many[i], record.MaxChainLinks, few[i])
+		}
+	}
+}
+
+func chainedKey(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
+
+// seedChained records issues issues in chains of links links under a root, in key order: the
+// first of every links+1 is a root the daemon runs (seedSlotted), and each issue after it stands
+// under the one before it on Dispatch's chain, recorded at admitted and todo. It answers the
+// number of roots.
+func seedChained(t *testing.T, pool *pgxpool.Pool, issues, links int) int {
+	t.Helper()
+	roots := 0
+	for i := 0; i < issues; i += links + 1 {
+		seedSlotted(t, pool, chainedKey(i), fmt.Sprintf("A%04d", i))
+		roots++
+	}
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		for i := range issues {
+			if i%(links+1) == 0 {
+				continue
+			}
+			issue := record.Issue{Key: chainedKey(i), Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: testProject, Title: chainedKey(i), Tree: chainedKey(i - i%(links+1)), Parent: new(chainedKey(i - 1)),
+				Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: fmt.Sprintf("A%04d", i)}
+			if err := records.PutIssue(context.Background(), tx, issue); err != nil {
+				t.Fatalf("put %s: %v", issue.Key, err)
+			}
+			putCopyTx(t, tx, issue)
+		}
+	})
+	return roots
+}

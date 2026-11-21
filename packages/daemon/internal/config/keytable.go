@@ -323,11 +323,6 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.WorkerBackground = v }),
 		},
 		{
-			Name: "linger_hours", Default: "`72`", RequiredBy: "no",
-			Description: "How many hours a closed root's tree lingers before the daemon retires it, which is also where a claim carried out of that tree has its stop bounded; decimals allowed.",
-			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.Linger = v }),
-		},
-		{
 			Name: "production_check_hours", Default: "`336`, fourteen days", RequiredBy: "no",
 			Description: "How many hours a closed issue's production check runs before its last look; decimals allowed.",
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.ProductionCheckBound = v }),

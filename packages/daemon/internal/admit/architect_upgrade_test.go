@@ -357,67 +357,6 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	}
 }
 
-// A tree of the release before that a person parked at admitted after its architect had released
-// a child, re-admitted after the upgrade, is a tree whose architect has run. That release's start
-// of an architect carried a task only where a person had decided something, so where nobody had
-// the claim served no run (serving_generation 0), and the fill settles it at given and served
-// entry 1. The re-admission's promotion gives its architect the earlier generation's shape —
-// register the spec again, decompose nothing anew — and not the fresh tree's, which says nothing
-// in the tree runs and asks for every child of a decomposition: the same promotion starts again
-// the child that stood mid-phase (startMidPhaseMembers), so both of those would be false. Two
-// facts tell it, each enough for workflow.ArchitectStartTask's fourth rule: the served entry, since
-// the claim served no run and the root's run never stood in a phase of its own, and the child the
-// promotion starts again (ArchitectStart.MembersRun). So this test passes with either of the two
-// taken away, and TestTheArchitectTaskShapeRule and
-// TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches pin the served entry alone.
-func TestTheArchitectUpgradeReadmissionOfATreeWhoseArchitectServedNoRunIsAnEarlierGenerations(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, nil)
-	const root, child = "LEGION-839", "LEGION-840"
-	until := fixedNow.Add(72 * time.Hour)
-	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Admitted,
-		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until,
-		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
-	token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
-	if _, err := pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(token)); err != nil {
-		t.Fatalf("record the architect claim of %s as the release before left it, serving no run: %v", root, err)
-	}
-	implementer := midPhaseChild(t, pool, root, child, phase.Implementing, "in_progress")
-	applyArchitectUpgrade(t, pool)
-	var given, served, serving int64
-	if err := pool.QueryRow(context.Background(), `select given_entry, served_entry, serving_generation from claims where token = $1`,
-		string(token)).Scan(&given, &served, &serving); err != nil {
-		t.Fatalf("read the architect claim of %s after the upgrade: %v", root, err)
-	}
-	if given != 1 || served != 1 || serving != 0 {
-		t.Fatalf("the architect claim of %s after the upgrade is given entry %d, served entry %d, serving run %d; want 1, 1 and 0: "+
-			"the case's own premise", root, given, served, serving)
-	}
-
-	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5,
-		Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
-
-	if readmitted := issue(t, pool, root); readmitted.Generation != 2 || readmitted.Phase != phase.Admitted {
-		t.Fatalf("the re-admitted %s = generation %d at %s, want generation 2 at admitted", root, readmitted.Generation, readmitted.Phase)
-	}
-	start := assertArchitectEntry(t, pool, root, 2)
-	if !strings.Contains(start.Task, workflow.ArchitectReadmittedLabel) {
-		t.Fatalf("the re-admission's architect task of %s = %q, want the shape of a tree that ran at an earlier generation, labelled %q",
-			root, start.Task, workflow.ArchitectReadmittedLabel)
-	}
-	for _, untrue := range []string{workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel, "while nothing in it runs"} {
-		if strings.Contains(start.Task, untrue) {
-			t.Fatalf("the re-admission's architect task of %s = %q; it holds %q, which is false of a tree whose architect ran and whose "+
-				"mid-phase child this promotion starts again", root, start.Task, untrue)
-		}
-	}
-	starts := startsOf(t, pool, child)
-	if len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task == "" {
-		t.Fatalf("the starts of %s = %+v, want its implementer's, carrying its resume task: the promotion starts the mid-phase child "+
-			"again (claim %s)", child, starts, implementer)
-	}
-}
-
 // embeddedMigration is the text of migration version as the binary ships it (migrations.All).
 func embeddedMigration(t *testing.T, version int) string {
 	t.Helper()
@@ -590,8 +529,8 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			registerController(t, pool)
 			// The wake this release wrote and had not sent when the daemon stopped.
 			inTx(t, pool, func(tx pgx.Tx) {
-				row, err := record.NewOutboxRow(settled, record.ControllerNotice{Kind: record.ArchitectStalledNotice,
-					Role: claim.RoleArchitect, Reason: record.ArchitectTookNothing.Words() + ": unsent when the daemon stopped"}, fixedNow)
+				row, err := record.NewOutboxRow(settled, record.Fenced(record.ControllerNotice{Kind: record.ArchitectStalledNotice,
+					Role: claim.RoleArchitect, Reason: record.ArchitectTookNothing.Words() + ": unsent when the daemon stopped"}, record.FirstFence), fixedNow)
 				if err != nil {
 					t.Fatalf("build the unsent architect wake of %s: %v", settled, err)
 				}

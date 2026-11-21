@@ -159,8 +159,8 @@ func TestApplyFactRollsBackHandlerAndDeduplicationOnError(t *testing.T) {
 // An Observed fact, Dispatch's view of an issue the workflow did not record when the fact was
 // prepared, reaches the handlers as a plain observation while the issue stays unrecorded, with
 // neither field of the view. Once the issue is recorded, the handlers get the event the view was
-// prepared in place of, carrying the view's Ancestry and Reread, which the preparation read
-// for the view alone, or nothing for release_children's view, prepared in place of none.
+// prepared in place of, or, for release_children's view, prepared in place of none, the view
+// itself still marked Observed: a reading the copy of Dispatch's issues takes and nothing decides on.
 func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -176,11 +176,9 @@ func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 		}
 	}
 	event := DispatchIssue{Key: "LEGION-208", Seq: 5, Status: "todo", HandedOver: true, ActorSession: "session", ResolvedRepo: "acme/widgets"}
-	reread := map[string][]string{"LEGION-214": nil}
-	ancestry := []string{"LEGION-169", "LEGION-168"}
-	view := DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Ancestry: ancestry, Reread: reread, Observed: true, Delivered: &event}
+	view := DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Observed: true, Delivered: &event}
 	apply("unrecorded", view)
-	if want := (DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Ancestry: ancestry, Reread: reread}); len(seen) != 1 || !reflect.DeepEqual(seen[0], want) {
+	if want := (DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets"}); len(seen) != 1 || !reflect.DeepEqual(seen[0], want) {
 		t.Fatalf("the handlers saw %+v for an unrecorded issue's view, want only %+v", seen, want)
 	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -191,11 +189,10 @@ func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 	}
 	seen = nil
 	apply("recorded", view)
-	apply("recorded-release", DispatchIssue{Key: "LEGION-208", Seq: 8, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", Observed: true})
-	delivered := event
-	delivered.Ancestry, delivered.Reread = ancestry, reread
-	if len(seen) != 1 || !reflect.DeepEqual(seen[0], delivered) {
-		t.Fatalf("the handlers saw %+v once the issue was recorded, want only the delivered event %+v", seen, delivered)
+	release := DispatchIssue{Key: "LEGION-208", Seq: 8, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", Observed: true}
+	apply("recorded-release", release)
+	if want := []DispatchIssue{event, release}; !reflect.DeepEqual(seen, want) {
+		t.Fatalf("the handlers saw %+v once the issue was recorded, want the delivered event and then the release's view as a reading %+v", seen, want)
 	}
 }
 

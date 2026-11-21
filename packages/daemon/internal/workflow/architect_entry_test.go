@@ -48,17 +48,17 @@ func assertArchitectEntryUntouched(t *testing.T, pool *pgxpool.Pool, what string
 	}
 }
 
-// architectStartOf is the one architect start the issue's outbox holds.
-func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest {
+// architectStartOf is the one architect start the outbox holds for issue.
+func architectStartOf(t *testing.T, pool *pgxpool.Pool, issue string) record.SuperviseRequest {
 	t.Helper()
 	var starts []record.SuperviseRequest
-	for _, start := range superviseRowsOf(t, pool, entryIssue, "start") {
+	for _, start := range superviseRowsOf(t, pool, issue, "start") {
 		if start.Role == claim.RoleArchitect {
 			starts = append(starts, start)
 		}
 	}
 	if len(starts) != 1 {
-		t.Fatalf("the outbox holds %d architect starts, want the one the transition wrote: %+v", len(starts), starts)
+		t.Fatalf("the outbox holds %d architect starts of %s, want the one the transition wrote: %+v", len(starts), issue, starts)
 	}
 	return starts[0]
 }
@@ -264,7 +264,7 @@ func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine
 		t.Fatal("the architect's row after the resume is not marked to be sent as written, want it marked: its task names the answer, " +
 			"which the derivation cannot give, so a lost start is sent this text again (SendArchitectStart)")
 	}
-	start := architectStartOf(t, pool)
+	start := architectStartOf(t, pool, entryIssue)
 	if start.Entry != entry || start.Task != row.EntryTask || start.Kept != nil {
 		t.Fatalf("the resume's start = entry %d carrying %q naming %+v, want entry %d carrying the %q its row names and no kept decision: "+
 			"the two are written in one transaction", start.Entry, start.Task, start.Kept, entry, row.EntryTask)
@@ -295,7 +295,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 	rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"})
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeRoleMessage, string(token))
-	start := architectStartOf(t, rig.pool)
+	start := architectStartOf(t, rig.pool, entryIssue)
 	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token), StoppedByRelease) {
 		t.Fatalf("the wake's start = entry %d carrying %q, want no entry and the wake's own task: a wake hands no phase entry's work",
 			start.Entry, start.Task)

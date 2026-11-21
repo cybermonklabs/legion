@@ -46,7 +46,7 @@ const (
 	dequeueReadQueued   = "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once"
 	dequeueReadDropped  = "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read"
 	dequeueMessageOwed  = "workflow: the merger is owed word that its pull request left the merge queue"
-	dequeueLeftMerging  = "outbox merge-queue removal finished undelivered: the issue left merging at that head"
+	dequeueFenced       = "outbox row of an earlier run or phase entry of its issue; finished without acting"
 	dequeueMergerEnded  = "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired"
 	dequeueDelivered    = "outbox merge-queue removal delivered to the merger"
 )
@@ -111,8 +111,8 @@ const dequeueRetry = 20 * time.Millisecond
 // holds the count to the read executor's own lines (one per read), so a read anything else made
 // would fail it.
 //
-// Each case has an issue of its own, and each issue but the tenth's and the twelfth's is its own
-// tree root, so the sixteen share one daemon:
+// Each case has an issue of its own, and each issue is its own tree root, so the fifteen share one
+// daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
@@ -122,8 +122,9 @@ const dequeueRetry = 20 * time.Millisecond
 //     a hook prompt's does, would leave the merger it woke untold. The removal moves no
 //     phase and writes no slot.
 //  2. GitHub's merge queue reports a removal in the same second as the merge it makes, so the read
-//     decides: GitHub answers merged, and the issue closes as the webhook's merge would close it,
-//     with no message written, nothing published and no pod woken.
+//     decides: GitHub answers merged, and the issue's close is queued as the webhook's merge would
+//     queue it, the issue standing in merging until Dispatch shows it done (R24 of
+//     dispatch://INFRA-3320), with no message written, nothing published and no pod woken.
 //  3. An issue in implementing has no merge to watch, and 4, a removal at a head the record has
 //     moved past, is of a head the merger no longer holds: neither reads GitHub, writes a
 //     message, publishes or wakes anyone.
@@ -131,9 +132,10 @@ const dequeueRetry = 20 * time.Millisecond
 //     overrides.mergeStateRetry, and then tells the merger once that it could not read the pull
 //     request, rather than saying nothing or reading on.
 //  6. The issue leaves merging while the message waits for the woken session, by the merger's own
-//     backward move as the API applies it, which records no handoff and applies no push: the row
-//     ends with nothing delivered, and its line names why, since the merger would read of a phase
-//     it no longer works.
+//     backward move as the API applies it, which records no handoff and applies no push: the move
+//     is a new phase entry, so the row, queued at the entry it left, ends on its fence with nothing
+//     delivered (decision 10 of dispatch://INFRA-4730), since the merger would read of a phase it
+//     no longer works.
 //  7. A retired merger will not hold its role again, so a row that waited for it would wait for
 //     ever: the row ends undelivered, with nothing published.
 //  8. So will a failed merger not, and the row ends the same way. The failure holds the issue's
@@ -147,28 +149,22 @@ const dequeueRetry = 20 * time.Millisecond
 //     the gate closed, and woken by the message it could enqueue the pull request again against
 //     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
 //     opens the gate, the merger is woken and told once.
-//  10. The issue's tree lingers: its root has closed, and a linger leaves every member where it
-//     stood, so the issue still stands in merging, but the close suspended the tree's merger, and
-//     the workflow no longer works the phase. An issue that is its own root leaves merging when that
-//     root closes, so this case's issue is a member of a second root that is done and lingers. The
-//     removal reads nothing, owes nothing, publishes nothing and wakes nobody.
-//  11. The record does not show the pull request open: the same holds. The record shows it closed
-//     only after the boot, since the boot's start read reads every issue whose pull request the
-//     record shows open, and the boot waits for that read.
-//  12. The read row judges the issue again just before it reads GitHub, so a read the workflow
+//  10. The record does not show the pull request open: the removal reads nothing, owes nothing,
+//     publishes nothing and wakes nobody. The record shows it closed only after the boot, since
+//     the boot's start read reads every issue whose pull request the record shows open, and the
+//     boot waits for that read.
+//  11. The read row judges the issue again just before it reads GitHub, so a read the workflow
 //     queued while the issue merged reads nothing, owes nothing and publishes nothing once the
-//     issue's tree starts to linger before the read runs. The issue is a member of a second root,
-//     as in case 10, and that root closes and lingers after the read is queued. A role-message
-//     lane runs one row at a time, so GitHub holds the read of an earlier removal of the same pull
-//     request unanswered while the second removal queues its read and the root closes; that
-//     earlier read is the one GitHub counts, and the fact it applies finds the issue gone from
-//     merging too.
-//  13. The same holds when the record shows the pull request closed after the read is queued.
-//  14. An issue out of the workflow, at a Dispatch status that takes it out (record.OutOfWorkflow),
+//     issue leaves the workflow before the read runs. A role-message lane runs one row at a time,
+//     so GitHub holds the read of an earlier removal of the same pull request unanswered while the
+//     second removal queues its read and the issue leaves; that earlier read is the one GitHub
+//     counts, and the fact it applies finds the issue out of the workflow too.
+//  12. The same holds when the record shows the pull request closed after the read is queued.
+//  13. An issue out of the workflow, at a Dispatch status that takes it out (record.OutOfWorkflow),
 //     reads nothing, owes nothing, publishes nothing and wakes nobody, its phase still merging.
-//  15. So does an issue whose pull request the record holds merged.
-//  16. A read queued before the record holds another pull request for the issue, at the same head,
-//     reads nothing, as case 12 holds it. No event reaches this rule: the record holds one pull
+//  14. So does an issue whose pull request the record holds merged.
+//  15. A read queued before the record holds another pull request for the issue, at the same head,
+//     reads nothing, as case 11 holds it. No event reaches this rule: the record holds one pull
 //     request for each issue, and the event finds the issue by the number that pull request has.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	rig := newDequeueRig(t)
@@ -181,9 +177,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	retired := rig.seed(t, phase.Merging, supervise.StateRetired, false)
 	failed := rig.seed(t, phase.Merging, supervise.StateFailed, true)
 	gated := rig.seed(t, phase.Merging, supervise.StateSuspended, true)
-	lingering := rig.seedUnderSecondRoot(t, true)
 	closed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
-	lingersLater := rig.seedUnderSecondRoot(t, false)
+	leavesLater := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	closedLater := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	outOfWorkflow := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	mergedRecord := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -221,8 +216,9 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		issue := merged
 		rig.github.answer(issue.number, dequeueMerged)
 		reads := rig.publish(t, issue, issue.head)
-		rig.await(t, "the issue to close on the merge GitHub reported", func() bool {
-			return rig.phase(t, issue.key) == phase.Done
+		rig.await(t, "the issue's close queued on the merge GitHub reported", func() bool {
+			recorded := readIssue(t, rig.pool, issue.key)
+			return recorded != nil && recorded.Phase == phase.Merging && recorded.PendingClose != nil && recorded.PendingClose.Kind == "merge"
 		})
 		rig.await(t, "the read's row to finish", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
@@ -272,9 +268,15 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the message's row to finish once the issue left merging", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
-		ended := rig.logged(t, dequeueLeftMerging, issue.key)
-		if len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), string(phase.Implementing)) {
-			t.Fatalf("the row's lines %q = %v, want one naming the move to %s", dequeueLeftMerging, ended, phase.Implementing)
+		// The backward move is a new phase entry of the issue, so the removal, queued at the entry
+		// it left, finishes on its fence before it reads anything (record.Fence, decision 10 of
+		// dispatch://INFRA-4730): its line names the entry it was queued at and the one the issue
+		// stands at now.
+		ended := slices.DeleteFunc(rig.logged(t, dequeueFenced, issue.key), func(line map[string]any) bool {
+			return line["kind"] != string(record.OutboxKindMergeQueueRemoval)
+		})
+		if len(ended) != 1 || fmt.Sprint(ended[0]["entry"]) == fmt.Sprint(ended[0]["current_entry"]) {
+			t.Fatalf("the row's lines %q = %v, want one naming the entry it was queued at and a later one the issue stands at", dequeueFenced, ended)
 		}
 		if delivered := rig.listener.accepted(issue.topic); len(delivered) != 0 {
 			t.Fatalf("the merger's topic was delivered %v, want nothing: the issue left merging before its merger held the role", delivered)
@@ -344,17 +346,13 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.wokenOnce(t, issue)
 	})
 
-	t.Run("an issue whose tree lingers reads nothing", func(t *testing.T) {
-		rig.dropped(t, lingering, lingering.head, "lingers")
-	})
-
 	t.Run("a pull request the record does not show open reads nothing", func(t *testing.T) {
 		rig.closePullRequest(t, closed)
 		rig.dropped(t, closed, closed.head, "the pull request is closed")
 	})
 
-	t.Run("a read queued before the tree lingers reads nothing", func(t *testing.T) {
-		rig.queuedBeforeItLeft(t, lingersLater, rig.closeTree, "lingers")
+	t.Run("a read queued before the issue leaves the workflow reads nothing", func(t *testing.T) {
+		rig.queuedBeforeItLeft(t, leavesLater, rig.leaveWorkflow, "out of the workflow")
 	})
 
 	t.Run("a read queued before the record shows the pull request closed reads nothing", func(t *testing.T) {
@@ -473,59 +471,6 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
 	return r.track(issue)
-}
-
-// seedUnderSecondRoot records, before the boot, one case's issue in merging as a member of a tree
-// whose root is another issue. The member carries what seed gives an issue: its released merger,
-// bound to the root's lifecycle, and the open pull request seed records. lingering records the
-// root closed and lingering already (closedAndLingering); otherwise the root stands open in merging
-// until a case closes it (closeTree).
-func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIssue {
-	t.Helper()
-	index := len(r.issues) + 1
-	key := r.cfg.Project + "-" + strconv.Itoa(index)
-	rootKey := r.cfg.Project + "-" + strconv.Itoa(100+index)
-	issue := dequeueIssue{key: key, number: 300 + index, head: dequeueHead(300 + index)}
-	merger := r.claim(t, key, claim.RoleMerger, supervise.StateSuspended)
-	merger.Tree = rootKey
-	issue.merger = merger.Token
-	issue.topic = notify.RoleTopicPrefix + string(issue.merger)
-
-	root := startedAgainIssue(r.cfg, rootKey, rootKey, phase.Merging)
-	if lingering {
-		root = closedAndLingering(root)
-	}
-	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
-	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
-	}); err != nil {
-		t.Fatalf("record the pull request of %s: %v", key, err)
-	}
-	return r.track(issue)
-}
-
-// closedAndLingering is root as its close leaves a tree that lingers: done, its linger deadline an
-// hour away, and every member left where it stood (record.TreeLingers).
-func closedAndLingering(root record.Issue) record.Issue {
-	until := time.Now().Add(time.Hour)
-	root.Phase, root.Status, root.DispatchStatus, root.LingerUntil = phase.Done, "done", "done", &until
-	return root
-}
-
-// closeTree records the root of issue's tree closed and lingering (closedAndLingering). A case
-// calls it after the boot, on an issue seedUnderSecondRoot gave a root that stands open.
-func (r *dequeueRig) closeTree(t *testing.T, issue dequeueIssue) {
-	t.Helper()
-	member := readIssue(t, r.pool, issue.key)
-	if member == nil || member.Tree == issue.key {
-		t.Fatalf("the record holds %+v for %s, want a member of another root", member, issue.key)
-	}
-	root := readIssue(t, r.pool, member.Tree)
-	if root == nil {
-		t.Fatalf("the record holds no root %s for %s", member.Tree, issue.key)
-	}
-	putOutboxIssue(t, r.pool, r.records, closedAndLingering(*root))
 }
 
 // openPullRequest is issue's pull request open at the issue's head on main, as GitHub last read

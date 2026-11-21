@@ -213,6 +213,30 @@ function relayTakes(word: string): word is RelayTake {
   return relayAnswerMeaning(word)?.takes === true;
 }
 
+/** What a JetStream publish acknowledgement answered in a session's place means, or undefined for
+ *  an answer that is no such acknowledgement. A stream of the server whose subjects cover the
+ *  session's deliver subject takes the request itself and acknowledges it, so no session is ever
+ *  asked. That is what a NATS server another suite's streams live on does to this harness: the
+ *  daemon's Go tests make `ENVOY_NOTIFICATIONS` over the notification subjects on the server
+ *  `LEGION_TEST_NATS_URL` names, and a Bun suite pointed at that same server reads its
+ *  acknowledgement as a word of the relay protocol. The refusal says so, rather than naming the
+ *  answer alone. */
+function jetStreamAckMeaning(answered: string): string | undefined {
+  let ack: unknown;
+  try {
+    ack = JSON.parse(answered);
+  } catch {
+    return undefined;
+  }
+  if (typeof ack !== "object" || ack === null) return undefined;
+  if (!("stream" in ack) || !("seq" in ack) || typeof ack.stream !== "string") return undefined;
+  return (
+    `the JetStream stream ${ack.stream} of this server acknowledged the request in the session's ` +
+    "place, so its subjects cover the deliver subject: run this suite against a NATS server of " +
+    "its own, never one the daemon's own tests have made their streams on"
+  );
+}
+
 /** How long a send waits for a session to take its frame when the caller names no bound of its
  *  own: long enough for a real Oh My Pi to start and register, since most sends are made before
  *  the session subscribes its deliver subject. */
@@ -265,7 +289,9 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
     }
     if (!relayTakes(answered)) {
       const means =
-        relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
+        relayAnswerMeaning(answered)?.means ??
+        jetStreamAckMeaning(answered) ??
+        "a word the relay protocol does not hold";
       throw new Error(
         `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
       );

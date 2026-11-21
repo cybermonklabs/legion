@@ -165,7 +165,9 @@ func (r *claimReleaseRig) records(issue record.Issue) {
 }
 
 // heldByOperator opens the tree's lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does (treelifecycle.AuthorityOperator).
+// spawn under the root's key does (treelifecycle.AuthorityOperator), and the parked issue's own
+// lifecycle under it too: an operator's hold of a tree is a hold of each issue of it, which is the
+// hold the workflow reads (record.OperatorHolds, R22 of dispatch://INFRA-3320).
 func (r *claimReleaseRig) heldByOperator() {
 	r.t.Helper()
 	token, err := claim.ProjectToken("LEGION")
@@ -173,8 +175,10 @@ func (r *claimReleaseRig) heldByOperator() {
 		r.t.Fatalf("the project token of LEGION: %v", err)
 	}
 	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
-		return err
+		if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator); err != nil {
+			return err
+		}
+		return openIssueTx(context.Background(), tx, token, claimIssue, treelifecycle.AuthorityOperator)
 	}); err != nil {
 		r.t.Fatalf("open %s under the operator: %v", claimTree, err)
 	}

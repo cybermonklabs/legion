@@ -148,9 +148,6 @@ func TestTheArchitectEntryMarkToSendAsWrittenRoundTripsAndGoesWithTheGeneration(
 		{name: "a re-admission of the issue", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
 			return records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
 		}},
-		{name: "a re-admission of the tree", key: "LEGION-292", clear: func(tx pgx.Tx, issue Issue) error {
-			return records.ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := issueFixture(tc.key)

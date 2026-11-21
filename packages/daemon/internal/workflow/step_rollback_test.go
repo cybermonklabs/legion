@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -55,7 +56,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			if tc.open {
 				engine := stepEngine(nil)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil)
+					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil, false)
 				})
 			}
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)
@@ -100,43 +101,6 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A member's merge runs on through the linger of its tree and the re-admission of its root, and
-// only the promotion that starts its merger again ends it (admit's startMidPhaseMembers). So an
-// earlier release that re-admits the root after a rollback, and has not promoted the tree by the
-// roll forward, ended no run of the member: the roll forward writes nothing of its merge, and the
-// merge that lands then ends the record this release counted, passed, under its own id.
-func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) {
-	pool := migratedPool(t)
-	root := stepRoot(t, pool, phase.Reviewing)
-	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
-	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
-	apply := applyFacts(t, pool, engine)
-	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
-		Status: "backlog", Title: "root", Rank: "U"})
-	writes := stepWrites(t, pool, "LEGION-209")
-	if len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {
-		t.Fatalf("the member's writes before the rollback = %+v, want the retro's end and the merge's start, open", writes)
-	}
-	merge := writes[1].ID
-	rollBackStepRecords(t, pool)
-	// The earlier release re-admits the root (admit's readmit): a new generation, its linger
-	// cleared, and no promotion yet.
-	execSQL(t, pool, `update issues set generation = generation + 1, linger_until = null, phase = 'admitted', status = 'todo' where key = $1`, root.Key)
-	rollForwardStepRecords(t, pool)
-	if after := stepWrites(t, pool, "LEGION-209")[len(writes):]; len(after) != 0 {
-		t.Fatalf("the roll forward wrote %+v for LEGION-209, whose merge still runs", after)
-	}
-	apply("merge", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
-	after := stepWrites(t, pool, "LEGION-209")[len(writes):]
-	if len(after) != 1 || after[0].ID != merge {
-		t.Fatalf("the merge's writes after the roll forward = %+v, want the one end of the record %s this release counted", after, merge)
-	}
-	assertEnd(t, after[0], "merge", 0, 3, "passed", nil)
 }
 
 // A review the review event approves before the reviewer completes ends passed with no report, and

@@ -72,32 +72,25 @@ func (g *twoOwnersGitHub) called() []string {
 
 // Every repository-dependent action of the outbox reads the repository from the issue's record:
 // two issues on repositories of two owners, each at a default branch of its own, have their
-// branches created, their workspaces provisioned and removed and their pull requests disarmed in
-// their own repositories, each with the implement App's token minted for its own owner.
+// branches created and their workspaces provisioned in their own repositories, each with the
+// implement App's token minted for its own owner.
 func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newTwoOwnersGitHub(t)
-	until := time.Now().Add(time.Hour)
 	widgets := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Widgets",
-		Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
+		Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"}
 	tools := record.Issue{Key: "LEGION-209", Repo: "zeta/tools", DefaultBranch: "release/v7.1", GitHubRepo: "zeta/tools", Project: "LEGION", Tree: "LEGION-209", Title: "Tools",
-		Phase: phase.Done, Generation: 1, Status: "done", Rank: "V", LingerUntil: &until}
+		Phase: phase.Done, Generation: 1, Status: "done", Rank: "V"}
 	putOutboxIssue(t, pool, records, widgets)
 	putOutboxIssue(t, pool, records, tools)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	stateDir := t.TempDir()
 	var provisioned []string
-	var removed []string
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: roleTokens{}, project: "legion",
-		stateDir: stateDir, githubAPI: github.url,
+		stateDir: t.TempDir(), githubAPI: github.url,
 		provision: func(_ context.Context, request workspace.Request) (workspace.Workspace, error) {
 			provisioned = append(provisioned, request.Issue+" "+request.Repo.String()+"@"+request.DefaultBranch)
 			return workspace.Workspace{Dir: t.TempDir()}, nil
-		},
-		remove: func(_ context.Context, working workspace.Workspace, _ sync.Locker) error {
-			removed = append(removed, working.Dir)
-			return nil
 		},
 	}
 
@@ -107,10 +100,6 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 		}
 		if err := runner.provisionWorkspace(context.Background(), issue); err != nil {
 			t.Fatalf("provision the workspace of %s: %v", issue.Key, err)
-		}
-		row := mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: 1}, time.Now())
-		if err := runner.removeWorkspace(context.Background(), row, record.WorkspaceRemove{Linger: 1}); err != nil {
-			t.Fatalf("remove the workspace of %s: %v", issue.Key, err)
 		}
 	}
 
@@ -125,17 +114,6 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	}
 	if want := []string{"LEGION-208 acme/widgets@main", "LEGION-209 zeta/tools@release/v7.1"}; !slices.Equal(provisioned, want) {
 		t.Fatalf("provisioned %v, want %v", provisioned, want)
-	}
-	var wantRemoved []string
-	for _, issue := range []record.Issue{widgets, tools} {
-		located, err := workspace.Location(stateDir, ghrepo.MustParse(issue.Repo), issue.Key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wantRemoved = append(wantRemoved, located.Dir)
-	}
-	if !slices.Equal(removed, wantRemoved) {
-		t.Fatalf("removed %v, want each issue's clone in its own repository, %v", removed, wantRemoved)
 	}
 }
 

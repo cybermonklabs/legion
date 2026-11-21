@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -451,6 +452,9 @@ func (d *fleetHandoffs) SetStatus(context.Context, string, string) (dispatch.Iss
 }
 func (d *fleetHandoffs) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
+}
+func (d *fleetHandoffs) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("fleetHandoffs takes no status change")
 }
 func (d *fleetHandoffs) HandOver(context.Context, dispatch.Issue, string) error    { return nil }
 func (d *fleetHandoffs) ReleaseClaim(context.Context, string) error                { return nil }

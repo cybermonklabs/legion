@@ -47,23 +47,21 @@ type ArchitectStart struct {
 	// is open at, the phase it stands in and whether its run has stood in a phase of its own
 	// (record.Issue.TakenBack).
 	Root record.Issue
-	// Carried says a hand-over carried the root in at the generation it stands at, which the
-	// hand-over row of that generation says (ArchitectCarried): the root stands in the run that
-	// hand-over carried it into, in the phase that came with it or in one it has moved to since,
-	// which the record does not tell apart (ArchitectAtWork says why). The derivation reads it for
-	// a root past phase.Admitted alone, so the reader reads that row for such a root alone.
+	// Carried says a hand-over of the release before carried the root in at the generation it
+	// stands at, which the root's own record says (ArchitectCarried): the root stands in the run
+	// that hand-over carried it into, in the phase that came with it or in one it has moved to
+	// since, which the record does not tell apart (ArchitectAtWork says why). The derivation reads
+	// it for a root past phase.Admitted alone.
 	Carried bool
 	// GateCarried says the hand-over that carried the root in brought its design gate with it
-	// (record.HandedOverRoot.GateCarried), which it does where the tree it left had one. A tree
-	// whose root was reopened in its linger has its gate cleared, so its children are handed over
-	// with none, and their architects register their own steps
-	// (internal/prompts/roles/architect-root.md). The reader reads it with Carried.
+	// (record.Issue.CarriedGate), which it did where the tree it left had one. A root carried in
+	// with none has its architect register its own steps (internal/prompts/roles/architect-root.md).
+	// The reader reads it with Carried.
 	GateCarried bool
 	// PhaseFinished says the phase a carried root stands in is over by its own terminating fact
 	// (PhaseFinished): it stands in merging and its pull request has merged, so the daemon starts
-	// no worker of that phase again: the promotion that opens its tree passes it over (admit's
-	// startMidPhaseMembers). The reader reads it for a carried root alone, the one root whose task
-	// names that phase's worker.
+	// no worker of that phase again. The reader reads it for a carried root alone, the one root
+	// whose task names that phase's worker.
 	PhaseFinished bool
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.
@@ -79,23 +77,29 @@ type ArchitectStart struct {
 	// a wake's, leaves it where it stood (supervise's retirePending, Claim.ServingEntry).
 	ServedEntry int64
 	// MembersRun says an issue of the root's tree other than the root stands past phase.Admitted
-	// in the workflow (record.Store.TreeMembersRun): a member a re-admission's promotion starts
-	// again (admit's startMidPhaseMembers), or one whose own first phase has started. The
+	// in the workflow (record.Store.TreeMembersRun), one whose own first phase has started. The
 	// derivation reads it for a root at phase.Admitted alone (its fourth and fifth rules), so the
 	// reader reads it for such a root alone.
 	MembersRun bool
+	// Resting is each root that rests on the root's approval and is still in the workflow, as
+	// restingRootsTask writes it (dispatch://INFRA-3320, R8), empty where there is none. It is a
+	// fact of the record like the gate rows, so the reader fills it for every root: an ancestor
+	// the daemon recorded in no live tree when a root came to rest on its approval was queued no
+	// resting-root notice then (queueRestingRoot), and its start is where it hears of that root.
+	Resting string
 	// Decided is what a person decided on the tree while nobody in it could hear them, as
 	// KeptDecisionsTask writes it, empty where there is nothing.
 	Decided string
 }
 
 // ArchitectStartOf reads from the record what the first task of root's architect is derived from
-// (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
-// and whether it brought a design gate with it (ArchitectCarried) and, for such a root, whether
-// its phase is over by its own terminating fact (PhaseFinished), the design gate rows it holds
-// under steps, the design-gate steps the deployment gates, the run and the phase entry its tree's
-// architect claim last served, and, for a root at phase.Admitted, whether a member of its tree
-// runs. It is the one reader of them, which every derivation of a root architect's task reads
+// (ArchitectStart), all but Decided: whether a hand-over of the release before carried the root in
+// at its generation and whether it brought a design gate with it (ArchitectCarried, the root's own
+// record) and, for such a root, whether its phase is over by its own terminating fact
+// (PhaseFinished), the design gate rows it holds under steps, the design-gate steps the deployment
+// gates, the run and the phase entry its tree's architect claim last served, the roots that rest
+// on its approval (restingRootsTask) and, for a root at phase.Admitted, whether a member of its
+// tree runs. It is the one reader of them, which every derivation of a root architect's task reads
 // them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
@@ -105,26 +109,14 @@ type ArchitectStart struct {
 // task's own decisions are claimed by that task, so the unclaimed read would pass over them
 // (record.Store.UnclaimedKept), and it takes a lock on every decision of the tree besides.
 //
-// The hand-over row is read only for a root past phase.Admitted, the one root the derivation
-// reads Carried for (its first rule). At admission's promotion that row already stands for a root
-// a hand-over carried in with its phase: the re-admission that carried it (admit's readmit) writes
-// it at the generation it opens, in the promotion's own pass or one before it, and nothing raises
-// a queued root's generation before its promotion. A root whose mark says it left another tree
-// without its run (record.Issue.HandedOverFrom) holds no row, and it stands at phase.Admitted,
-// where Carried decides nothing. So the row gives the promotion the answer the mark gave it, and
-// every reader after the promotion, whose write clears the mark, the same answer again. The pull
-// request PhaseFinished reads is read for a carried root alone, and only in merging, the one phase
-// it answers for.
+// The carried facts are read only for a root past phase.Admitted, the one root the derivation
+// reads Carried for (its first rule). The pull request PhaseFinished reads is read for a carried
+// root alone, and only in merging, the one phase it answers for.
 //
 // Whether a member runs is read in the caller's transaction, at the moment the task is composed,
-// by each of the three that compose it. Admission's promotion composes it (StartArchitect) after
-// the re-admission has set the root back to admitted and cleared its generation, which rewrites no
-// member's phase or status (record.Store.ClearTreeGeneration), and before it starts again the
-// members that stood mid-phase (admit's startMidPhaseMembers), which writes start rows and no
-// member's record; so the read finds exactly the members that promotion starts. The sweep's
-// send of an entry the derivation raised (SendArchitectStart) and the daemon's narrowing of a
-// held task at its send (NarrowRootTask, the daemon's rootTask) each read the members as they
-// stand when that send is made.
+// by each of the three that compose it: admission's promotion (StartArchitect), the sweep's send
+// of an entry the derivation raised (SendArchitectStart) and the daemon's narrowing of a held task
+// at its send (NarrowRootTask, the daemon's rootTask), each as the members stand when it is made.
 func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep,
 	root record.Issue,
 ) (ArchitectStart, error) {
@@ -136,18 +128,16 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
 		return ArchitectStart{}, err
 	}
+	if start.Resting, err = restingRootsTask(ctx, tx, store, root.Key); err != nil {
+		return ArchitectStart{}, err
+	}
 	if root.Phase == phase.Admitted {
 		if start.MembersRun, err = store.TreeMembersRun(ctx, tx, root.Tree); err != nil {
 			return ArchitectStart{}, err
 		}
 		return start, nil
 	}
-	handed, err := ArchitectCarried(ctx, tx, store, root)
-	if err != nil {
-		return ArchitectStart{}, err
-	}
-	if handed != nil {
-		start.Carried, start.GateCarried = true, handed.GateCarried
+	if start.Carried, start.GateCarried = ArchitectCarried(root); start.Carried {
 		if start.PhaseFinished, err = PhaseFinished(ctx, store, tx, root); err != nil {
 			return ArchitectStart{}, err
 		}
@@ -185,9 +175,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //  2. The root is past phase.Admitted under its own power. It stands in a working phase, waits on
 //     a person, or stands in accepting, and its work is told by that phase's own role, by the
 //     resume the daemon composes when a person answers, or by the notice that moved it. A
-//     first-act statement would be false of it, so this writes none: the answer is Decided alone,
-//     which is the empty string where a person has decided nothing, and which carries no closing
-//     sentence.
+//     first-act statement would be false of it, so this writes none: the answer is Decided and
+//     Resting alone (architectLead), which is the empty string where a person has decided nothing
+//     and no root rests on its approval, and which carries no closing sentence.
 //  3. The root holds design gate rows. The task reports its gate step by step. Where the gate is
 //     not open it stands part way, and the architect carries it on from there. Where it is open
 //     (record.TreeGate.Open), the root stands at admitted only while its first phase waits, for an
@@ -268,14 +258,20 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // the first-task instruction is the entry it is of (NarrowRootTask).
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and
-// a tree that owes one still has to be taken up.
+// a tree that owes one still has to be taken up. Resting comes after it in every shape, the second
+// rule's among them, and before the shape's own words, so the closing sentence stays the last
+// (architectLead): the roots that rest on the root's approval are no decision of its tree and no
+// part of its first act, and the ancestor's architect is told of them whatever shape it is given
+// (dispatch://INFRA-3320, R8). The text carries no shape's label, so a task still carries the
+// label of its own shape alone.
 func ArchitectStartTask(start ArchitectStart) string {
+	lead := architectLead(start)
 	if start.Root.Phase != phase.Admitted && !start.Carried {
-		return start.Decided
+		return lead
 	}
 	var task strings.Builder
-	if start.Decided != "" {
-		task.WriteString(start.Decided)
+	if lead != "" {
+		task.WriteString(lead)
 		task.WriteString("\n\n")
 	}
 	switch {
@@ -292,6 +288,19 @@ func ArchitectStartTask(start ArchitectStart) string {
 		writeFreshTree(&task, start)
 	}
 	return task.String()
+}
+
+// architectLead is what leads every shape of a root architect's task: Decided, then Resting, a
+// blank line between them, either left out where it is empty, and the empty string where both
+// are.
+func architectLead(start ArchitectStart) string {
+	switch {
+	case start.Decided == "":
+		return start.Resting
+	case start.Resting == "":
+		return start.Decided
+	}
+	return start.Decided + "\n\n" + start.Resting
 }
 
 // writeFreshTree writes the task of a tree nobody has architected: the whole first act, since
@@ -470,8 +479,11 @@ func gatedDocuments(steps []record.DesignStep) string {
 // (ArchitectStartOf), whose Decided this writes from stays; the shape is derived again from it, so
 // a root that moved between the send and the narrowing is rewritten into the shape it stands in
 // now, and a root that moved past admitted under its own power, which the derivation serves no
-// task, is rewritten into the kept decisions' own text alone. The empty string is a task that
-// names nothing, which its caller retires rather than sends.
+// first act, is rewritten into the kept decisions' own text with no first-task instruction. Every
+// rewrite names the roots that rest on the root's approval as the record shows them then
+// (Resting), after the decisions, as every shape does (architectLead), so a task left naming no
+// decision still names them (dispatch://INFRA-3320, R8). The empty string is a task that names
+// nothing, which its caller retires rather than sends.
 //
 // entry is the phase entry the held task is of (supervise.Delivery.Entry), and it is what says
 // whether the task was the derivation's, not the task's text. A task that holds kept decisions
@@ -480,11 +492,12 @@ func gatedDocuments(steps []record.DesignStep) string {
 // its task is the work of. The one other raise of an architect entry, the resume of an answered
 // root (ResumeAwaitedRoot), names no kept decision, so its task is never narrowed. A task of no
 // entry was queued by a release before the architect held an entry, whose start carried a task
-// only where it named decisions, and whose text was those decisions alone.
+// only where it named decisions, and whose text was those decisions alone, so it is rewritten into
+// the decisions and the resting roots alone.
 func NarrowRootTask(start ArchitectStart, entry int64, stays record.KeptDecisions) string {
 	start.Decided = KeptDecisionsTask(start.Root.Tree, stays)
 	if entry == 0 {
-		return start.Decided
+		return architectLead(start)
 	}
 	return ArchitectStartTask(start)
 }

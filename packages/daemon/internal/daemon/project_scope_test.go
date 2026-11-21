@@ -78,7 +78,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		}
 		// Due a minute ago, so an outbox that claimed across projects would run it before any row
 		// this daemon's admission enqueues.
-		row, err := record.NewOutboxRow(running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
+		row, err := record.NewFencedRow(ctx, tx, records, running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
 		if err != nil {
 			return err
 		}
@@ -294,19 +294,6 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 			got, err := records.Issues(ctx, tx)
 			if want := []string{"LEGION-1", "LEGION-2", "LEGION-3"}; err != nil || !reflect.DeepEqual(keysOf(got), want) {
 				t.Errorf("the project's records = %v, %v; want %v, none of OTHERPROJECT's", keysOf(got), err, want)
-			}
-			return nil
-		})
-	})
-	t.Run("QueuedRootsUnder", func(t *testing.T) {
-		read(t, func(tx pgx.Tx) error {
-			theirs, err := raw.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if err != nil || !slices.Contains(keysOf(theirs), "OTHERPROJECT-3") {
-				t.Fatalf("the raw store's queued roots under LEGION-1 = %v, %v; want OTHERPROJECT-3 among them", keysOf(theirs), err)
-			}
-			got, err := records.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if want := []string{"LEGION-3"}; err != nil || !reflect.DeepEqual(keysOf(got), want) {
-				t.Errorf("the project's queued roots under LEGION-1 = %v, %v; want %v, none of OTHERPROJECT's", keysOf(got), err, want)
 			}
 			return nil
 		})
@@ -539,7 +526,6 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		clear       func(tx pgx.Tx, key string) error
 	}{
 		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) error { return records.ClearGeneration(ctx, tx, key, now) }},
-		{"ClearTreeGeneration", "OTHERPROJECT-9", "LEGION-9", func(tx pgx.Tx, key string) error { return records.ClearTreeGeneration(ctx, tx, key, now) }},
 	} {
 		t.Run(generation.name, func(t *testing.T) {
 			gated(t, "OTHERPROJECT", generation.theirs)
@@ -573,7 +559,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	raw := record.NewStore()
 	records := projectRecords{Store: raw, project: "LEGION"}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour, ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
+		ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
 	merging := func(project, key, repo string, number int) (record.Issue, record.PullRequest) {
 		return record.Issue{Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: project, Title: key,
 				Phase: phase.Merging, Generation: 1, Status: "retro", Rank: key},

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // The tree lifecycle (internal/treelifecycle) is the store's barrier between a tree's runnable
@@ -18,11 +17,14 @@ import (
 // whose process a retirement already stopped (relaunchRefused); the start that met it retries once
 // the cleanup confirmed and a fresh admission opened the next epoch.
 
-// revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
-// launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
-// cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
-// asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced.
+// revive binds an explicitly spawned, resumed or retried claim to its issue's open lifecycle
+// epoch before launching, and carries the epochs the admission bound into the claim the launch
+// rechecks: a claim a stop suspended and a return starts again binds the epoch the return's
+// promotion opened, not the one it bound before its stop. In-lifetime recovery only rechecks the
+// bound epoch (checkLaunch), so an old launch cannot cross a cleanup confirmation into a later
+// admission. exempt is whether the request that asked for it is one the wake pacing never makes
+// wait (exemptWake); every caller reads it from its own event, so a request that carries no such
+// field is paced.
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -36,7 +38,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if err != nil {
 		return err
 	}
-	m.claim.TreeEpoch = bound.TreeEpoch
+	m.claim.TreeEpoch, m.claim.IssueEpoch = bound.TreeEpoch, bound.IssueEpoch
 	if admitted != nil {
 		admitted()
 	}
@@ -206,34 +208,26 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	return relaunch(ctx)
 }
 
-// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
-// only such a claim may move to another tree.
+// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates).
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
 
 // Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
 // let go, so a project's pause has nothing of it to stop.
 func (c Claim) Gone() bool { return IsGone(c.State) }
 
-// Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
-// re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
-// claim drops its old tree's epoch, so its next start binds the new tree's lifecycle and launches
-// in the new tree's resources, and keeps its session: the session is the issue's, on the host under
-// tmux, and under a sandbox in the runtime's session database (runtime.kubernetes.session_store
-// postgres), which every tree's pods read, so it resumes in the new tree while the old tree
-// lingers, whatever the old tree's cleanup takes. Only a claim that runs nothing is re-pointed; one
-// whose process still runs in the old tree is a wait (wait.ErrWaiting): the new tree's start
-// suspends it first, keeping its session, and waits for that suspension to land (the daemon's
-// outbox, stopElsewhere).
-func (m *Machine) Retree(ctx context.Context, tree string) error {
+// MarkGate records on the claim whether its issue holds its own design gate, as the Dispatch chain
+// reads it when the claim is started (Claim.HoldsGate, record.Chains.HoldsOwnGate): the daemon's
+// outbox writes it at each start, so a change of parent that makes the issue a root, or takes a
+// root under a parent that holds the gate, reaches the claim's next launch. The mark is what the
+// machine reads a gate holder's architect by (Claim.treeRoot); a claim already marked so writes
+// nothing.
+func (m *Machine) MarkGate(ctx context.Context, holds bool) error {
 	m.mu.Lock()
 	defer m.unlock()
-	if m.claim.Tree == tree {
+	if m.claim.HoldsGate == holds {
 		return nil
 	}
-	if !m.claim.RunsNothing() {
-		return wait.Errorf("re-point claim %s from tree %s to %s: it is %s there", m.claim.Token, m.claim.Tree, tree, m.claim.State)
-	}
-	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
-	m.claim.Tree, m.claim.TreeEpoch = tree, 0
+	m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
+	m.claim.HoldsGate = holds
 	return m.persist(ctx)
 }

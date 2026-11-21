@@ -39,7 +39,9 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 		if member.parent != "" {
 			issue.Parent = new(member.parent)
 		}
-		putOutboxIssue(t, pool, records, issue)
+		// The owner walk reads Dispatch's chain from the copy (R18 of dispatch://INFRA-3320), so
+		// each issue is recorded with its row of it.
+		putChainIssue(t, pool, records, issue)
 	}
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {

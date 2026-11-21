@@ -19,11 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// checkRoot is a closed root whose tree lingers for another hour: the state a production check's
-// look runs in, where a phase start would finish without acting.
+// checkRoot is a closed root: the state a production check's look runs in, where a phase start
+// would finish without acting.
 func checkRoot() record.Issue {
-	until := time.Now().Add(time.Hour)
-	return record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
+	return record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"}
 }
 
 // openCheck is issue's production check on acme/widgets#42 at merge, worked by the implementer —
@@ -101,37 +100,6 @@ func sameCheckFact(got, want intake.Fact, check record.ProductionCheck) bool {
 		return got == want
 	}
 	return got == want
-}
-
-// A check start is the one start a lingering tree runs: it reaches the implementer the linger
-// suspended, resumes it, and delivers the look's task, where a phase start on the same tree finishes
-// without acting. The delivery names no phase, so nothing drops it for the phase the issue has left,
-// and the row's id is its delivery's.
-func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	root := checkRoot()
-	putOutboxIssue(t, pool, records, root)
-	putProductionCheck(t, pool, records, openCheck(root, "a1b2c3d4"))
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), log: quietLogger(), now: time.Now}
-
-	if err := runner.execute(ctx, checkStart(t, root, 1)); err != nil {
-		t.Fatalf("check start under the lingering root = %v, want the implementer resumed", err)
-	}
-	got := machine.Claim()
-	if got.LastStartRow != 57 || len(rt.CallsOf("Resume")) != 1 {
-		t.Fatalf("implementer after the check start = %s with last start %d and %d resumes, want resumed by row 57", got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
-	}
-	if got.Pending == nil || got.Pending.ID != "outbox:57" || got.Pending.Phase != "" || got.Pending.Generation != 1 || !strings.HasPrefix(got.Pending.Task, "Production check of ") {
-		t.Fatalf("implementer's pending delivery = %+v, want the look's task under outbox:57 with no phase at generation 1", got.Pending)
-	}
-	// The same row again is the same delivery, not a second one.
-	if err := runner.execute(ctx, checkStart(t, root, 1)); err != nil {
-		t.Fatalf("the check start run again = %v, want its delivery accepted as the same", err)
-	}
 }
 
 // A check start finishes without acting once its look is no longer the open one: the look ended (its
@@ -372,7 +340,7 @@ func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
 				t.Fatalf("store the check's role %s: %v", tc.state, err)
 			}
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, lookAt.Add(workflow.CheckLookBound)))
-			engine := workflow.New(records, workflow.Config{Project: "legion", Linger: 24 * time.Hour}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "legion"}, quietLogger())
 			clock := now
 			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, project: "legion",
 				log: quietLogger(), now: func() time.Time { return clock }}
@@ -479,7 +447,7 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 	ctx := context.Background()
 	root := checkRoot()
 	putOutboxIssue(t, pool, records, root)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, log: quietLogger(), now: time.Now}
 
 	first := openCheck(root, "a1b2c3d4")
@@ -512,9 +480,9 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 	}
 }
 
-// A row whose effect waits for a known moment (wait.Until: a lingering tree's close waiting for a
-// member's production check, bounded at a time the record holds) runs again at that moment rather
-// than on its backoff; a moment already past is the backoff's.
+// A row whose effect waits for a known moment (wait.Until: a production check's wake whose fact
+// waits, bounded at a time the record holds) runs again at that moment rather than on its backoff;
+// a moment already past is the backoff's.
 func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {
@@ -528,8 +496,14 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 1}, now))
-			waiting := &outboxFactHandler{err: wait.Until(tc.at, "tree LEGION-208 lingers past its deadline; member LEGION-209's production check is open")}
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			check := openCheck(root, "a1b2c3d4")
+			check.LookOpen = false
+			putProductionCheck(t, pool, records, check)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.CheckWakeDue{Look: 1, OpenedAt: check.OpenedAt,
+				Reason: "the deploy has not carried the merge"}, now))
+			waiting := &outboxFactHandler{err: wait.Until(tc.at, "LEGION-208's production check waits for its bound")}
 			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{waiting}, log: quietLogger(), now: func() time.Time { return now }}
 
 			if err := runner.RunOnce(context.Background()); err != nil {
@@ -541,7 +515,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 			if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox").Scan(&attempts, &nextAt, &lastError); err != nil {
 				t.Fatalf("read the waiting row: %v", err)
 			}
-			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "production check is open") {
+			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "waits for its bound") {
 				t.Fatalf("retry = attempts=%d next_at=%s error=%q, want one attempt due at %s", attempts, nextAt, lastError, tc.want)
 			}
 		})
@@ -603,7 +577,7 @@ func TestACheckWakeRowStartsTheNextLookAndAReplacedChecksStartsNone(t *testing.T
 	check := openCheck(root, "a1b2c3d4")
 	check.LookOpen, check.Role = false, claim.RoleTester
 	putProductionCheck(t, pool, records, check)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Linger: 24 * time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", ProductionCheckRole: claim.RoleTester}, quietLogger())
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, log: quietLogger(), now: time.Now}
 
 	orphan := mustOutboxRow(t, root.Key, record.CheckWakeDue{Look: 1, OpenedAt: check.OpenedAt.Add(-24 * time.Hour), Reason: "an earlier check's wake"}, time.Now())

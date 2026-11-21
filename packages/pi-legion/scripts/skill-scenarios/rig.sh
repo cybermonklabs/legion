@@ -776,16 +776,20 @@ lock_services() {
     fail "a batch already holds $S/up; a batch killed outright leaves it, its $tag-* containers and its processes behind"
 }
 
-# Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
-# (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
-# packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so max_connections is 30 for each concurrent run and 20 more for psql.
+# Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
+# Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
+# pool.go), which `store/cmd/connections -process` prints, so this script holds no number of its
+# own. Postgres admits 100 by default, too few for 5 servers at once, so max_connections is that
+# count for each concurrent run and 20 more for psql.
 services_up() {
   evidence=$S
+  per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
+    [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
+    fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
   # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
   docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
+    -c max_connections=$((per_run * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon

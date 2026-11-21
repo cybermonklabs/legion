@@ -1,7 +1,9 @@
 package record
 
 import (
+	"context"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -9,6 +11,81 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
+
+// The daemon counts its own status write for its own decisions before Dispatch echoes it (R16 of
+// dispatch://INFRA-3320; the record's Status holds the write, its DispatchStatus what Dispatch
+// last showed): a record whose Status holds the daemon's own backlog while its DispatchStatus
+// still reads in_progress is out of Legion's work, and one whose Status holds the daemon's own
+// in_progress while Dispatch still shows backlog is in it. A record at phase done is out of work
+// whatever its status, and so is a status outside the five R15 names, one Dispatch adds later
+// included.
+//
+// The chain reads the record and not the copy, which still shows Dispatch's status: an issue under
+// that parent has it above in Legion's work exactly when the record says so.
+func TestTheDaemonsOwnStatusCountsBeforeItsEcho(t *testing.T) {
+	record := func(at phase.Phase, status, dispatchStatus string) Issue {
+		issue := issueFixture("LEGION-2")
+		issue.Parent, issue.Phase, issue.Status, issue.DispatchStatus = ParentOf("LEGION-1"), at, status, dispatchStatus
+		return issue
+	}
+	for _, tc := range []struct {
+		name   string
+		issue  Issue
+		inWork bool
+	}{
+		{"the daemon's own backlog before its echo", record(phase.Implementing, "backlog", "in_progress"), false},
+		{"the daemon's own in_progress before its echo", record(phase.Implementing, "in_progress", "backlog"), true},
+		{"todo", record(phase.Admitted, "todo", "todo"), true},
+		{"testing", record(phase.Testing, "testing", "testing"), true},
+		{"needs_review", record(phase.Reviewing, "needs_review", "needs_review"), true},
+		{"retro", record(phase.Retro, "retro", "retro"), true},
+		{"triage", record(phase.Implementing, "triage", "triage"), false},
+		{"icebox", record(phase.Implementing, "icebox", "icebox"), false},
+		{"done", record(phase.Merging, "done", "done"), false},
+		{"phase done in a status in work", record(phase.Done, "in_progress", "in_progress"), false},
+		{"a status Dispatch adds later", record(phase.Implementing, "blocked", "blocked"), false},
+	} {
+		if got := InLegionsWork(tc.issue); got != tc.inWork {
+			t.Errorf("%s: a record at %s with status %s, Dispatch showing %s, in Legion's work = %t, want %t",
+				tc.name, tc.issue.Phase, tc.issue.Status, tc.issue.DispatchStatus, got, tc.inWork)
+		}
+	}
+
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	// LEGION-1 is a root at work, LEGION-2 its child and LEGION-3 at work under LEGION-2; the copy
+	// shows LEGION-2 at the status Dispatch last showed, a sequence newer each time.
+	for _, tc := range []struct {
+		status, dispatchStatus string
+		seq                    int64
+		above                  []string
+	}{
+		{"backlog", "in_progress", 1, []string{"LEGION-1"}},
+		{"in_progress", "backlog", 2, []string{"LEGION-2", "LEGION-1"}},
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			for _, written := range []struct {
+				issue  Issue
+				parent string
+			}{
+				{chainIssue("LEGION-1", "LEGION-1", "", phase.Implementing, "in_progress"), ""},
+				{record(phase.Implementing, tc.status, tc.dispatchStatus), "LEGION-1"},
+				{chainIssue("LEGION-3", "LEGION-1", "LEGION-2", phase.Implementing, "in_progress"), "LEGION-2"},
+			} {
+				must(t, records.PutIssue(ctx, tx, written.issue))
+				must(t, records.PutDispatchIssue(ctx, tx, DispatchReading{Key: written.issue.Key, Project: "LEGION", Seq: tc.seq,
+					Status: Carry(written.issue.DispatchStatus), Parent: Carry(written.parent), Blockers: Carry[[]string](nil)}))
+			}
+			chains, err := ReadChains(ctx, tx, records, "LEGION", nil)
+			must(t, err)
+			if got := chains.Above("LEGION-3"); !slices.Equal(got, tc.above) {
+				t.Errorf("with LEGION-2 recorded %s and Dispatch still showing %s, the issues above LEGION-3 in Legion's work = %v, want %v",
+					tc.status, tc.dispatchStatus, got, tc.above)
+			}
+		})
+	}
+}
 
 // A project keeps the record of every issue it ever finished, so what a fact reads must be the
 // records it can act on: every record of the project not in phase done, a done root a person set

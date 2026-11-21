@@ -18,24 +18,25 @@ import (
 
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
-// task it carries, a stop), an architect's notice, the words a hook fired on a move back puts in
-// front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
-// (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
+// task it carries, a stop), an architect's notice, the message that tells a parent's worker the
+// admission pass stopped that its phase ended (record.PhaseEnded), the words a hook fired on a move
+// back puts in front of a role (record.HookPrompt), the ask an update round puts to a role of the
+// pod (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and
 // the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Two reads of
-// GitHub reach no session themselves, but their answers are what write a message, so each holds
-// the pod as its message does: the read that comes before a merge-queue removal's message
+// GitHub reach no session themselves, but their answers are what write a message, so each holds the
+// pod as its message does: the read that comes before a merge-queue removal's message
 // (record.MergeQueueRead), and the second read of a head a first read found conflicting, whose
-// confirmation writes a merge forward's messages (record.ConflictConfirm). The issue's board
-// writes — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no
-// pod. The same set is what the release's boundary is read over (IssueRelease), so the rule that
-// holds a pod and the rule that cancels its release never disagree about which row speaks to a
-// role. Every kind of the role-message lane belongs here: one left out lets the daemon release the
-// issue's pod out from under the row that was just written for one of its roles, and that role
-// never reads it. An update ask holds the pod only while its row is pending, which is one attempt
-// where the publish goes through or finds no holder.
-var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
-	"conflict_confirm", "merge_forward"}
+// confirmation writes a merge forward's messages (record.ConflictConfirm). The issue's board writes
+// — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no pod. The
+// same set is what the release's boundary is read over (IssueRelease), so the rule that holds a pod
+// and the rule that cancels its release never disagree about which row speaks to a role. Every kind
+// of the role-message lane belongs here: one left out lets the daemon release the issue's pod out
+// from under the row that was just written for one of its roles, and that role never reads it. An
+// update ask holds the pod only while its row is pending, which is one attempt where the publish
+// goes through or finds no holder.
+var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
+	"merge_queue_removal", "conflict_confirm", "merge_forward"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -130,11 +131,11 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 //
 // outOfWorkflow is the workflow's list of statuses that take an issue out of it
 // (record.OutOfWorkflowStatuses), which the store does not restate: the gate every other path
-// reads is a Go predicate (pods.InWorkflowNotLingering) and a select cannot call one, so the
-// rule arrives as a list and the filter is this statement's three conditions per row — the
-// status outside that list, the phase short of done, and no linger.
+// reads is a Go predicate (pods.InWorkflowWithRoot) and a select cannot call one, so the rule
+// arrives as a list and the filter is this statement's conditions per row — the status outside
+// that list and the phase short of done.
 //
-// Those three conditions are what the filter is for, since the claim states alone would answer
+// Those conditions are what the filter is for, since the claim states alone would answer
 // every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
 // of ReleaseIdleIssue, which opens by taking the daemon's global fact serializer
 // (treelifecycle.Serialize, pg_advisory_xact_lock(hashtext('legion.apply_fact'))) — the same
@@ -153,8 +154,8 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 	what := "list the pods of " + project + " no claim owns"
 	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
 		where i.project = $1
-		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
-		and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+		and i.status <> all($2) and i.phase <> 'done'
+		and root.status <> all($2) and root.phase <> 'done'
 		and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
 		and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
 			and c.state not in ('failed', 'retired', 'suspended'))
@@ -166,8 +167,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
-// decide, and when decide answers rows it writes them and the release's mark together, so the
-// view the decision rests on and the mark that records it are one atomic act.
+// decide, with the transaction, in which decide reads the fence its rows carry
+// (record.NewFencedRow), and when decide answers rows it writes them and the release's mark
+// together, so the view the decision rests on and the mark that records it are one atomic act.
 //
 // The mark records the ids the rows were given: first_row and last_row are the release's own
 // first and last, which is how a row of this release is told from a row of one that is over
@@ -189,7 +191,7 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // written, as a fault of the rule that decided it rather than of the database: the save of the
 // workspace is asked of the role the mark names, so a release without one and without the
 // second rule's kind is a release nobody can carry out.
-func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
+func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(context.Context, pgx.Tx, pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
 	}
@@ -202,7 +204,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if err != nil {
 			return err
 		}
-		mark, err := decide(view)
+		mark, err := decide(ctx, tx, view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
 		}
@@ -330,7 +332,7 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 //
 // It answers the roles it queued a resume for (ReleaseCancelled.Resumed): the claims this release
 // suspended that are still suspended as `released`. A claim another path took over — a close, a
-// linger, an operator — is left to that path, which is what the source on the suspension says;
+// stop, an operator — is left to that path, which is what the source on the suspension says;
 // one an earlier release left `released` is no business of this release, which is why the
 // mark's own set is read and never every released claim of the issue.
 //
@@ -353,10 +355,10 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // DueRows). It is read after the issue's lock (LockIssueForPause), which this transaction takes
 // after the serializer, the one order every writer of a pod hold keeps (decision 13).
 //
-// An issue the record no longer holds, one that has left the workflow, and one whose tree
-// lingers are given no resume at all, and the mark goes all the same: those claims are a close's
-// to end. The gate is the one every path that acts on a released pod reads
-// (pods.InWorkflowNotLingering), read here inside the cancel's own transaction, because the
+// An issue the record no longer holds and one that has left the workflow, or whose tree root has,
+// are given no resume at all, and the mark goes all the same: those claims are a close's to end.
+// The gate is the one every path that acts on a released pod reads
+// (pods.InWorkflowWithRoot), read here inside the cancel's own transaction, because the
 // cancel of a release whose issue left the workflow runs beside that issue's close — the close's
 // rows are queued above the release's and the teardown answers Unauthorized for the same leave —
 // and a resume queued above them supersedes the close: the close's own suspension then finishes
@@ -522,7 +524,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
 // the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
 // and whether the issue and its tree root are both still the workflow's to run
-// (pods.InWorkflowNotLingering).
+// (pods.InWorkflowWithRoot).
 type issueStanding struct {
 	generation uint64
 	phase      phase.Phase
@@ -534,20 +536,18 @@ type issueStanding struct {
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
 	var generation int64
 	var issuePhase, status, rootPhase, rootStatus string
-	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
-		root.phase, root.status, root.linger_until is not null
+	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.phase, root.status
 		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+		&generation, &issuePhase, &status, &rootPhase, &rootStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
 	if err != nil {
 		return issueStanding{}, fmt.Errorf("read %s for the resumes of its cancelled release: %w", issue, err)
 	}
-	live := pods.InWorkflowNotLingering(
-		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
-		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
+	live := pods.InWorkflowWithRoot(
+		pods.Standing{Phase: phase.Phase(issuePhase), Status: status},
+		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus},
 		outOfWorkflow)
 	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
 }
@@ -626,12 +626,12 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase string
-	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
-		root.phase, root.status, root.generation, root.linger_until,
+	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation,
+		root.phase, root.status, root.generation,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
-		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
-		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
+		&view.Tree, &issuePhase, &view.Status, &issueGeneration,
+		&rootPhase, &view.Root.Status, &rootGeneration,
 		&view.Root.AwaitingPerson, &view.Root.Answered)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):

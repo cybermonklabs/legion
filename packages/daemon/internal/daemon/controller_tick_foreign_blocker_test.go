@@ -103,8 +103,11 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 		if asked, want := client.asked(), []string{foreignBlocker}; !slices.Equal(asked, want) {
 			t.Fatalf("the turn read %v one at a time, want exactly %v", asked, want)
 		}
-		if listings := client.listings(); listings != 0 {
-			t.Fatalf("the turn listed the project %d times, want none: one waited-on key is far under the bound", listings)
+		// The one listing is the read of CAPTURE-50's children, which the turn makes for every
+		// issue whose phases have started (readObserved), and which takes only the summaries of
+		// this project: the waited-on key is another project's, so it is read singly all the same.
+		if listings := client.listings(); listings != 1 {
+			t.Fatalf("the turn listed the project %d times, want one, for the children of CAPTURE-50, an issue in implementing", listings)
 		}
 		if slotted := tickSlotted(t, pool); len(slotted) != 0 {
 			t.Fatalf("slots = %v, want none while the foreign blocker is open", slotted)

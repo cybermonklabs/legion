@@ -4,34 +4,37 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // A child-closed or a child-status notice is about the child, and the architect above it decides
-// what the rest of the tree does: a child-status tells of the child's first phase start, which
-// starts the child's own architect beside it, of its leave or its re-entry, of its joining the
-// tree, or of its hold under an accepted parent, and a child-closed tells of its close. So the
-// owner walk of either starts at the child's parent and never ends at the child's own architect
-// (NoticeStartsAtParent). A child of a tree whose recorded parent is nil — a person moved it out
-// from under its parent in Dispatch, and admission kept it in its tree (admit's recordObservation) —
-// has no parent to start the walk at, so the architect above it is the tree root's. The outbox can
-// publish such a notice while the child's own architect holds its role (one just started with the
-// child's first phase, or one whose stop, on another lane, has not run yet), and that architect
-// must not be the one told of its own issue.
-func TestAParentlessChildsCloseAndStatusChangeReachTheTreeRoot(t *testing.T) {
-	root, orphan := "LEGION-1", "LEGION-5"
-	tree := map[string]Issue{
-		root:   {Key: root, Tree: root},
-		orphan: {Key: orphan, Tree: root},
-	}
-	// The child's own architect holds its role, as a newly started one does, and as one does until
-	// its stop runs.
+// what the rest of the work under it does: a child-status tells of the child's first phase start,
+// which starts the child's own architect beside it, of its leave or its return, or of its hold
+// under an accepted parent, and a child-closed tells of its close. So the owner walk of either
+// starts above the child on its Dispatch chain (NoticeStartsAtParent) and never ends at the
+// child's own architect while an issue above it is in Legion's work, though that architect holds
+// its role, as a newly started one does and as one does until its stop runs. An issue a person
+// moved out from under its parent in Dispatch has nothing above it in Legion's work: it is a root
+// of its own (R15 of dispatch://INFRA-3320), whatever tree its record stores, and hears its own at
+// its gate root, itself.
+func TestAChildsCloseAndStatusChangeStartAboveItOnTheChain(t *testing.T) {
+	root := chainIssue("LEGION-1", "LEGION-1", "", phase.Implementing, "in_progress")
+	child := chainIssue("LEGION-2", "LEGION-1", "LEGION-1", phase.Planning, "in_progress")
+	orphan := chainIssue("LEGION-5", "LEGION-1", "", phase.Planning, "in_progress")
+	issues := []Issue{root, child, orphan}
+	chains := chainsOf(issues, copyOf(issues...))
 	runs := func(token claim.Token) bool {
-		return token == architectToken(t, root) || token == architectToken(t, orphan)
+		return token == architectToken(t, root.Key) || token == architectToken(t, child.Key) || token == architectToken(t, orphan.Key)
 	}
 	for _, kind := range []NoticeKind{"child-closed", "child-status"} {
 		t.Run(string(kind), func(t *testing.T) {
-			if got := OwningIssue("legion", tree, tree[orphan], NoticeStartsAtParent(kind, claim.RoleArchitect), runs); got != root {
-				t.Fatalf("a %s notice of the parentless child %s goes to the architect of %s, want the tree root %s's", kind, orphan, got, root)
+			fromParent := NoticeStartsAtParent(kind, claim.RoleArchitect)
+			if got := OwningIssue("legion", chains, child.Key, fromParent, runs); got != root.Key {
+				t.Errorf("a %s notice of %s under %s goes to the architect of %s, want %s's", kind, child.Key, root.Key, got, root.Key)
+			}
+			if got := OwningIssue("legion", chains, orphan.Key, fromParent, runs); got != orphan.Key {
+				t.Errorf("a %s notice of %s, which has no parent in Dispatch and stores the tree of %s, goes to the architect of %s, want its own as the root it is",
+					kind, orphan.Key, root.Key, got)
 			}
 		})
 	}

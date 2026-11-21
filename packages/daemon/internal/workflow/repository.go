@@ -167,10 +167,10 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 // for it as one a role App reaches. The architect is told what the issue is told, since no list of
 // the project's repositories is there to choose from: any repository both role Apps are
 // installed on records an issue, so what is wrong is the name or the installation. The notice is
-// queued on that parent when the record holds it in root's tree, so the owner walk takes it to the
-// parent's own architect while that claim holds its role, the one that releases the parent's
-// children, and on up the tree once it does not; a parent the record does not hold in the tree has
-// no architect of it, and the notice goes on root, the tree's architect.
+// queued on that parent when the daemon records it, so the owner walk takes it up the Dispatch
+// chain to the parent's own architect while that claim holds its role, the one that releases the
+// parent's children, and on up the chain once it does not (R18 of dispatch://INFRA-3320); a parent
+// the daemon does not record has no architect of it, and the notice goes on root.
 func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, parent, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
@@ -182,7 +182,7 @@ func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		if err != nil {
 			return err
 		}
-		if recorded != nil && recorded.Tree == root.Key {
+		if recorded != nil {
 			on = recorded.Key
 		}
 	}

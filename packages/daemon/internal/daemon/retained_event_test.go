@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -140,14 +141,16 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
+			reconcileAdmission(t, pool, admission, "LEGION", []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
 				ResolvedRepo: "acme/widgets"}}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
 			if !admission.Held() {
 				t.Fatal("the boot summary is not held behind the retained event")
 			}
 			run, cancel := context.WithCancel(ctx)
 			done := make(chan error, 1)
-			go func() { done <- consumers.Run(run, engine, admission) }()
+			// The daemon's own handler order (workflow.go): the copy first, so the engine reads the
+			// chain and the labels this very event writes.
+			go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 			t.Cleanup(func() {
 				cancel()
 				if err := <-done; err != nil {
@@ -215,7 +218,9 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- consumers.Run(run, engine, admission) }()
+	// The daemon's own handler order (workflow.go): the copy first, so admission reads the row
+	// this very event writes.
+	go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

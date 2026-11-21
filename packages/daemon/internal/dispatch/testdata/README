@@ -1,0 +1,142 @@
+Dispatch's answers to the daemon's status writes, which client_test.go serves from an httptest
+server to HTTPClient.ChangeStatus and HTTPClient.SetStatusAt, one case for each file here, and
+which the daemon's status executor's tests serve to its outbox (internal/daemon's
+capturedAnswer).
+
+Each file is one whole answer as `curl --include` prints it: the status line, every header and
+the body, with CRLF line ends. A body Dispatch sent chunked was captured with `--raw` (or by
+Go's httputil.DumpResponse), so the file holds it as it went on the wire, chunk sizes included.
+
+Captured on 2026-11-20 between 15:47:21Z and 15:47:57Z from `bun run dispatch:local`
+(packages/dispatch/e2e/local-instance.ts), built from this repository at commit 25c0b17968b3,
+whose Dispatch serves no status-change route. It ran with DATABASE_URL naming a new database of
+its own, and the commands below use the URL it printed as $URL, its agent token e2e-token and the
+issues its seed files (CORE-1 to CORE-7). Each command writes the file named beside it:
+
+  status_change_no_route.http  the router's 404 of a Dispatch older than the route, which the
+                               client reads as NoRoute:
+      curl -sS --include -X POST -H 'Accept: application/json' -H 'Authorization: Bearer e2e-token' \
+        -H 'Content-Type: application/json' -H 'Idempotency-Key: capture-no-route-1' \
+        "$URL/api/v1/issues/CORE-1/status-change" \
+        -d '{"status":"backlog","unlink_children":true,"actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+The request key's answers are the same on every POST and PATCH route (keyedWrites in
+packages/envoy/internal/dispatch/api/request_keys.go), so these were captured on the issue PATCH.
+Each command below sends, besides the Idempotency-Key it names, the headers of the first one:
+Accept: application/json, Authorization: Bearer e2e-token and Content-Type: application/json.
+
+  key_reused.http     422 KEY_REUSED: a second PATCH under one key with another body; the first,
+                      under the same key, was answered 200.
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-reused-1' "$URL/api/v1/issues/CORE-4" \
+        -d '{"status":"backlog","actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-reused-1' "$URL/api/v1/issues/CORE-4" \
+        -d '{"status":"todo","actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+  key_replayed.http   the repeat of a finished PATCH under its key: the first answer's status and
+                      body again, with Idempotency-Replayed: ?1. The same command was run twice;
+                      this is the second answer, whose body is byte for byte the first's.
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-replayed-1' "$URL/api/v1/issues/CORE-5" \
+        -d '{"status":"todo","expected_sequence":3,"actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+  key_in_flight.http  409 KEY_IN_FLIGHT with Retry-After: 1: the repeat of a PATCH whose first run
+                      still runs. Dispatch's slow-write hook (DISPATCH_TEST_HOOKS=1, which
+                      dispatch:local sets; slow_write_hook.go) holds the first run five seconds,
+                      and the repeat is sent one second after it:
+      curl -sS ... -X POST "$URL/api/v1/writes/_test/slow" \
+        -d '{"method":"PATCH","path":"/api/v1/issues/CORE-7","delay_ms":5000}'
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-in-flight-1' "$URL/api/v1/issues/CORE-7" \
+        -d '{"status":"backlog","actor":{"kind":"session","id":"legion-daemon:CORE"}}' &
+      sleep 1
+      (the same PATCH again, in the foreground: this answer)
+      curl -sS ... -X POST "$URL/api/v1/writes/_test/slow" \
+        -d '{"method":"PATCH","path":"/api/v1/issues/CORE-7","delay_ms":0}'
+
+  key_committed.http  409 KEY_COMMITTED: the repeat of a write that committed and kept no answer.
+                      The agent-token mint is the route that answers so on demand
+                      (answerHoldsSecret in request_keys.go: its answer holds a secret, so its key
+                      keeps none), and it takes a person, here alice by dev sign-in. The first
+                      answer, 201 with the new token, was not kept:
+      curl -sS -o /dev/null -c jar "$URL/auth/_dev/signin?login=alice&next=/"
+      curl -sS -o /dev/null -X POST -b jar -H "Origin: $URL" -H 'Accept: application/json' \
+        -H 'Content-Type: application/json' -H 'Idempotency-Key: capture-key-committed-1' \
+        "$URL/api/v1/me/agent-tokens" -d '{"name":"capture-key-committed"}'
+      (the same POST again, with --include in place of -o /dev/null: this answer)
+
+The status-change route's own answers were captured on 2026-11-21 between 11:46:21Z and
+11:50:20Z from `bun run dispatch:local`, built from this repository's working copy of
+legion/INFRA-4730 at 0b52372a121d, which carries INFRA-4731's route (merged at 3577e4da). It ran
+with DATABASE_URL naming a new database of its own, once with DISPATCH_PARENT_STATUS_RULE=on and
+once, after a restart that empties the database, with DISPATCH_PARENT_STATUS_RULE=off. In each
+run a person (alice, by dev sign-in) created the project LEGION and, for each case, a parent and a
+child of it, each filed with `force` past the near-copy gate, and moved them as the case says;
+the call itself went as the daemon sends it, under the agent token e2e-token with the actor
+{"kind":"session","id":"legion-daemon:LEGION"}, its Idempotency-Key the case's name and the
+run's time, and the body its status, its expected_sequence (the issue's last_seq as read just
+before) and its options:
+
+  curl -sS --include --raw -X POST -H 'Accept: application/json' -H 'Authorization: Bearer e2e-token' \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: capture-<case>-<time>" \
+    "$URL/api/v1/issues/<key>/status-change" \
+    -d '{"status":"<status>","expected_sequence":<seq>,"actor":{"kind":"session","id":"legion-daemon:LEGION"},<options>}'
+
+With the rule on:
+
+  status_change_no_option.http
+                      LEGION-33 in_progress with LEGION-34 in_progress under it, backlog with no
+                      option: 409 PARENT_STATUS_CONFLICT naming LEGION-34 (in_progress).
+  status_change_todo_under_backlog.http
+                      LEGION-36 at triage under LEGION-35 on the backlog, todo with no option: 409
+                      PARENT_STATUS_CONFLICT naming LEGION-35 (backlog).
+  status_change_stale_sequence.http
+                      LEGION-37 and its child at work, backlog with include_children fenced one
+                      below LEGION-37's sequence: 409 ISSUE_CHANGED, nothing changed.
+  status_change_dry_run.http
+                      LEGION-39 and LEGION-40 at work, backlog with include_children and dry_run:
+                      the two entries the call would make, with no issue in them.
+  status_change_include_children.http
+                      LEGION-41 and LEGION-42 at work, backlog with include_children: LEGION-42's
+                      step, then LEGION-41's.
+  status_change_replayed.http
+                      the same call again under the same key: Idempotency-Replayed: ?1 and the
+                      first answer, each entry's issue as its step's write answered it.
+  status_change_unlink_children.http
+                      LEGION-43 and LEGION-44 at work, backlog with unlink_children: LEGION-44
+                      unlinked at in_progress, then LEGION-43.
+  status_change_include_parent.http
+                      LEGION-46 at triage under LEGION-45 on the backlog, todo with include_parent:
+                      LEGION-45's step to in_progress, then LEGION-46's.
+  status_change_key_in_flight.http
+                      LEGION-47 and its child at work, backlog with include_children while the
+                      first run under the key still runs: 409 KEY_IN_FLIGHT with Retry-After: 1.
+                      The slow-write hook held the first run five seconds, and the repeat went one
+                      second after it:
+      curl -sS ... -X POST "$URL/api/v1/writes/_test/slow" \
+        -d '{"method":"POST","path":"/api/v1/issues/LEGION-47/status-change","delay_ms":5000}'
+
+With the rule off:
+
+  status_change_no_option_rule_off.http
+                      the same move as status_change_no_option.http, on LEGION-1 over LEGION-2:
+                      taken, the named issue's step alone.
+  status_change_todo_under_backlog_rule_off.http
+                      the same move as status_change_todo_under_backlog.http, on LEGION-4 under
+                      LEGION-3: taken.
+
+Two answers no single curl can be made to give were captured on 2026-11-21 by
+TestCaptureStatusChangeAnswers (internal/daemon/status_change_capture_test.go, build tag
+capture, run by hand), from the rig's scratch Dispatch built from the same working copy, with
+the rule on:
+
+  go -C packages/daemon test -tags capture -count=1 -run '^TestCaptureStatusChangeAnswers$' ./internal/daemon/
+
+  status_change_midway_refused.http (12:24Z)
+                      LEGION-2 with 200 children at work, backlog with include_children while a
+                      person writes LEGION-2 once three steps have committed: 409 ISSUE_CHANGED
+                      with the entries of the four steps that committed before the refused one
+                      (LEGION-3 to LEGION-6, each from sequence 2 to 4).
+  status_change_keyed_repeat.http (11:54Z)
+                      LEGION-203 with 200 children at work, the same call: its Dispatch process
+                      killed (SIGKILL) after a step committed, and the call sent again under the
+                      same key to the process started again on the same database, once the first
+                      run's lease on the key lapsed. The route finished what the first run left
+                      and answered the whole call: 201 entries, the named issue's last.

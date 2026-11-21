@@ -1843,7 +1843,7 @@ func TestLoadForValidationRefusesTheOperatorRouteWithItsAccountUnfilled(t *testi
 // The Stage 4b proof's configuration (the LEGION-208 Stage 4b plan, decisions 1, 2, 4, 5, 6, 7),
 // with placeholder hosts for Dispatch, the Envoy listener, and NATS: the daemon on the devbox's
 // private address driving namespace legion through the restricted role's kubeconfig and context,
-// with the gate off, a linger of 0.3 hours, and pods routed to middleman by the harnesses'
+// with the gate off, and pods routed to middleman by the harnesses'
 // operator pod, the fixture itself. Its sessions are in the session database every
 // `runtime: kubernetes` deployment names (session_store, session_dsn_secret). No node selector and
 // no requests: the pool's floor sizes the node.
@@ -1868,7 +1868,6 @@ gates:
   design: off
 admission_cap: 2
 review_round_cap: 3
-linger_hours: 0.3
 instructions: /tmp/stage4b/instructions.md
 github_apps:
   implement:
@@ -1896,8 +1895,8 @@ runtime:
 	if cfg.Runtime.Name != "kubernetes" || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want the kubernetes block", cfg.Runtime)
 	}
-	if cfg.Linger != 18*time.Minute || len(cfg.Gates.Design) != 0 || cfg.AdmissionCap != 2 {
-		t.Errorf("Linger=%s Gates=%+v AdmissionCap=%d, want 18m, no gated step, 2", cfg.Linger, cfg.Gates, cfg.AdmissionCap)
+	if len(cfg.Gates.Design) != 0 || cfg.AdmissionCap != 2 {
+		t.Errorf("Gates=%+v AdmissionCap=%d, want no gated step, 2", cfg.Gates, cfg.AdmissionCap)
 	}
 	if block := cfg.Runtime.Kubernetes; block.Context != "legion-daemon@example" || block.Resources != DefaultResources() || block.Scheduling.NodeSelector != nil {
 		t.Errorf("kubernetes block = %+v, want the restricted context, both pods' default reservations, and no node selector", *block)

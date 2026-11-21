@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -100,13 +101,11 @@ func startedAgainGitHub(t *testing.T) string {
 // startedAgainDaemon is the daemon each subtest boots: the rig the stop's own tests use
 // (stoppedWorkerDaemon — its own database, a controller tick every stopTickInterval, and a
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
-// GitHub above, a linger no tree of these subtests outlives, and the shipped production check
-// bound.
+// GitHub above and the shipped production check bound.
 func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
-	cfg.Linger = time.Hour
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
 	return pool, cfg, o, rt
@@ -160,8 +159,8 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 
 // seedSlottedMember records member as an issue of a tree seedWorkflowTree has already opened,
 // holding an admission slot of its own, with worker's claim and the task that claim holds. The
-// tree's lifecycle is the root's, which the claim binds to (store.Store.AdmitClaim), so only the
-// issue, its slot and the claim are written here.
+// claim binds the member's own lifecycle (store.Store.AdmitClaim), which admission opened when it
+// started the member, so the issue, its slot, that lifecycle and the claim are written here.
 func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim) {
 	t.Helper()
 	ctx := context.Background()
@@ -191,6 +190,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}); err != nil {
 		t.Fatalf("record %s and its slot: %v", member.Key, err)
 	}
+	openIssue(t, st, worker.Project, worker.Issue, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, worker); err != nil {
 		t.Fatalf("put %s: %v", worker.Token, err)
 	}
@@ -198,27 +198,6 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 		if err := st.PutDelivery(ctx, worker.Token, *worker.Pending); err != nil {
 			t.Fatalf("put the pending delivery of %s: %v", worker.Token, err)
 		}
-	}
-}
-
-// lingerTree lingers key's tree in the records as its close leaves it: the root done, out of the
-// workflow, with a deadline an hour out. That is the state a re-admission takes a tree back from
-// (admit's readmit). It is written here as finish writes the end of a phase — the record the
-// close would leave, without the close's own rows, whose one worker this subtest has already
-// stopped.
-func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string) {
-	t.Helper()
-	ctx := context.Background()
-	until := time.Now().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		issue, err := records.Issue(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		issue.Phase, issue.Status, issue.DispatchStatus, issue.LingerUntil = phase.Done, "done", "done", &until
-		return records.PutIssue(ctx, tx, *issue)
-	}); err != nil {
-		t.Fatalf("linger the tree of %s: %v", key, err)
 	}
 }
 
@@ -280,13 +259,14 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // reads the way back (startedAgain): the relaunch is a resume of the recorded session, the
 // recorded session is unchanged, and the budgets the earlier run spent are zero again.
 //
-// The third is the one the change could break. Admission's promotion of a re-admitted root
-// writes the member's start as one row, which carries the task and waits for the issue's slot
-// (workflow.StartOrOwe), and the claim it writes it for is still retired. The passes that
-// subtest makes after the promotion therefore meet the repair of a fenced start with that row
-// owed and its claim retired, which is the state the repair must leave alone: the workflow is
-// starting this worker again, and the row is the whole of that start. That subtest makes those
-// passes and reads the row still there, and then reads it delivered.
+// The third is the one the change could break. The return to work of an issue Dispatch took out
+// of Legion's work writes the worker's start as one row, which carries the task of a new phase
+// entry and waits for the issue's slot (workflow.Engine.ReturnToWork), and the claim it writes it
+// for is still retired. The passes that subtest makes after the return therefore meet the repair
+// of a fenced start with that row owed and its claim retired, which is the state the repair must
+// leave alone: the workflow is starting this worker again, and the row is the whole of that
+// start. That subtest makes those passes and reads the row still there, and then reads it
+// delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
@@ -342,12 +322,11 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		startedAgain(t, cfg, rt, kept, before, "the architect's retry of the held phase")
 	})
 
-	t.Run("the promotion of a re-admitted root", func(t *testing.T) {
+	t.Run("the return of a stopped issue", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
-		// Two slots, and a root of another tree holds one of them from here to the end of the
-		// subtest: the re-admitted root takes the other at its promotion, so the member's start row
-		// waits for a slot rather than running the moment the outbox wakes. That wait is what
-		// gives the passes below a state to act on.
+		// Two slots, held by the root and by a root of another tree once the member gives its own
+		// back at its stop: the member's start at its return waits for a slot rather than running
+		// the moment the outbox wakes. That wait is what gives the passes below a state to act on.
 		cfg.AdmissionCap = 2
 		project, err := claim.ProjectToken(cfg.Project)
 		if err != nil {
@@ -371,38 +350,35 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 		before := stopTheWorker(t, pool, rt, d, member, implementer)
 
-		// The tree closes and lingers, which is the state a re-admission takes a tree back from,
-		// and its members give their slots back.
-		lingerTree(t, pool, record.NewStore(), root)
-		passed(t, pool, "after the tree closed")
-		if held := slotHolders(t, pool); !slices.Equal(held, []string{other}) {
-			t.Fatalf("the admission slots are held by %v after the tree closed, want %s alone: a lingering tree's members give their slots back", held, other)
-		}
-
-		// Dispatch takes the tree back. Admission re-admits the root, promotes it into the free
-		// slot and writes the member's start as the one row every start of a phase worker is: it
-		// carries the phase's task and waits for the member's own slot, and so waits for the cap
-		// (admit's startMidPhaseMembers through workflow.StartOrOwe).
+		// Dispatch takes the member out of Legion's work, which stops it where it stands and gives
+		// its slot back, and then into work again: the return starts the worker of the phase it
+		// stands in as the one row every start of a phase worker is, carrying the task of a new
+		// entry and waiting for the member's own slot, and so for the cap.
 		engine := startedAgainEngine(cfg)
 		handlers := []intake.Handler{engine, admit.New(record.NewStore(), engine, cfg.AdmissionCap, cfg.Project, quietLogger())}
-		applyFact(t, pool, "dispatch", "todo-again:"+root, intake.DispatchIssue{Key: root, ResolvedRepo: startedAgainRepo,
-			Seq: 6, Type: "issue.updated", Status: "todo", Title: root, Rank: root, HandedOver: true}, handlers...)
-		// The row the promotion wrote, spelled as startRowsOf spells a start row: the
-		// implementer's, in the phase the member stands in, waiting for the member's own
-		// admission slot.
+		applyFact(t, pool, "dispatch", "backlog:"+member, intake.DispatchIssue{Key: member, ResolvedRepo: startedAgainRepo,
+			Seq: 6, Type: "issue.updated", Status: "backlog", Title: member, Parent: root, Rank: member}, handlers...)
+		passed(t, pool, "after the stop")
+		if held := slotHolders(t, pool); slices.Contains(held, member) {
+			t.Fatalf("the admission slots are held by %v after the stop, want %s's given back", held, member)
+		}
+		applyFact(t, pool, "dispatch", "todo:"+member, intake.DispatchIssue{Key: member, ResolvedRepo: startedAgainRepo,
+			Seq: 7, Type: "issue.updated", Status: "todo", Title: member, Parent: root, Rank: member}, handlers...)
+		// The row the return wrote, spelled as startRowsOf spells a start row: the implementer's,
+		// in the phase the member stands in, waiting for the member's own admission slot.
 		const owed = "implementer implementing needsSlot=true"
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
-			t.Fatalf("after the re-admission %s owes the start rows %v, want %q among them: the promotion writes the member's start as the row that carries its task",
+			t.Fatalf("after the return %s owes the start rows %v, want %q among them: the return writes the member's start as the row that carries its task",
 				member, rows, owed)
 		}
 
-		// Three passes over what the re-admission left, with the member's claim still retired and
-		// its row still waiting for a slot: that is the state the stop rule weighs, and the row
-		// must stand, because the workflow is starting this worker again. The passes read it
-		// still there.
-		passed(t, pool, "after the re-admission")
+		// Three passes over what the return left, with the member's claim still retired and its
+		// row still waiting for a slot: that is the state the stop rule weighs, and the row must
+		// stand, because the workflow is starting this worker again. The passes read it still
+		// there.
+		passed(t, pool, "after the return")
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
-			t.Fatalf("three passes after the re-admission %s owes the start rows %v, want %q still among them: the start the promotion wrote is the way back, not a start the stop outlived",
+			t.Fatalf("three passes after the return %s owes the start rows %v, want %q still among them: the start the return wrote is the way back, not a start the stop outlived",
 				member, rows, owed)
 		}
 
@@ -410,9 +386,9 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// is the whole of the start — the stopped worker comes back and its task reaches it.
 		finish(t, pool, record.NewStore(), other)
 
-		startedAgain(t, cfg, rt, kept, before, "the promotion of the re-admitted root")
+		startedAgain(t, cfg, rt, kept, before, "the return of the stopped issue")
 
-		testwait.Eventually(t, "the task the promotion owed "+string(implementer)+" to be delivered", func() bool {
+		testwait.Eventually(t, "the task the return owed "+string(implementer)+" to be delivered", func() bool {
 			pending := storedClaim(t, cfg, implementer).Pending
 			return pending != nil && pending.Phase == phase.Implementing && pending.Generation == 1
 		})

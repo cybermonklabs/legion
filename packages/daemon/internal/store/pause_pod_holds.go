@@ -337,3 +337,27 @@ func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, tree string
 	}
 	return nil
 }
+
+// endIssuePausePodHoldsTx ends, at at, the hold that stands on the pod of issue under project: the
+// issue's own cleanup has deleted its Sandbox (CleanupReservedIssue), so a hold of its pod holds
+// nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). It ends no hold of another
+// issue, whatever tree either stored. The hold ends under the issue's lock. project is the project
+// token, as the claims table holds it, and a hold's project is matched as endTreePausePodHoldsTx
+// matches it.
+func endIssuePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, issue string, at time.Time) error {
+	rows, err := tx.Query(ctx, `select h.project from project_pause_pod_holds h
+		where lower(h.project) = $1 and h.issue = $2 and h.ended_at is null order by h.project`, project, issue)
+	if err != nil {
+		return fmt.Errorf("read the pod holds of issue %s: %w", issue, err)
+	}
+	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the pod holds of issue %s: %w", issue, err)
+	}
+	for _, held := range projects {
+		if _, err := EndPausePodHoldTx(ctx, tx, held, issue, PausePodHoldDeleted, at); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -32,14 +32,15 @@ func (s silentRun) answer() bool {
 	return SilentPhaseWorker(s.issue, s.root, s.gate, s.role, s.run, s.bound, s.now)
 }
 
-// aSilentImplementer is the rule's true case: the implementer of an issue in implementing, of a
+// aSilentImplementer is the rule's true case: the implementer of an issue in implementing and in
+// Legion's work (in_progress: R20 of dispatch://INFRA-3320 reads each issue's own status), of a
 // tree that runs, whose process is up and between turns, which holds no task, is in no update
-// round, has no supervise row of its own queued, has reported no background work and no
-// reminder still ahead of it, and whose last recorded step is two hours old against a bound of
-// thirty minutes.
+// round, has no supervise row of its own queued, has reported no background work and no reminder
+// still ahead of it, and whose last recorded step is two hours old against a bound of thirty
+// minutes.
 func aSilentImplementer() silentRun {
-	issue := record.Issue{Key: "LEGION-209", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Implementing, Generation: 3}
-	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Admitted, Generation: 3}
+	issue := record.Issue{Key: "LEGION-209", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Implementing, Generation: 3, Status: "in_progress"}
+	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Admitted, Generation: 3, Status: "in_progress"}
 	return silentRun{
 		issue: issue,
 		root:  root,
@@ -97,8 +98,11 @@ func TestASilentPhaseWorkerIsAWorkerUpBetweenTurnsHoldingNoTaskWhoseLastStepPass
 			change: func(s *silentRun) { s.role = claim.RoleTester },
 		},
 		{
-			name:   "the tree lingers after its close, so nothing of it runs",
-			change: func(s *silentRun) { s.root.LingerUntil = &silentNow },
+			// The issue is out of Legion's work, whatever its record's phase (R20 of
+			// dispatch://INFRA-3320): no tree lingers, so this is what stops a phase worker's
+			// silence from being read.
+			name:   "the issue left Legion's work, so nothing of it runs",
+			change: func(s *silentRun) { s.issue.Status = "backlog" },
 		},
 		{
 			name:   "a turn is running",
@@ -173,10 +177,6 @@ func TestASilentPhaseWorkerIsAWorkerUpBetweenTurnsHoldingNoTaskWhoseLastStepPass
 					Op: "release", Tree: s.root.Key, Role: claim.RoleImplementer, Generation: s.issue.Generation,
 				}}}
 			},
-		},
-		{
-			name:   "the claim is recorded in another tree, where its turn is live",
-			change: func(s *silentRun) { s.run.Claim.Tree = "LEGION-300" },
 		},
 		{
 			name:   "the last step is inside the bound",

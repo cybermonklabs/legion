@@ -9,11 +9,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A merged issue's close waits for the issues beneath it and happens once the last of them
-// leaves. The wait is no longer a tree root's alone: openBeneath reads record.Beneath, the
-// descendants of any issue, where the rule it replaced (openBeside) returned nothing for a
-// non-root. So an intermediate parent can now stand in merging after its merge, waiting for a
-// grandchild, and what must follow is the close when that grandchild goes.
+// A merged issue's close waits for each Dispatch child of it that is not done (R24 of
+// dispatch://INFRA-3320), and is queued once the last of them is done. The wait is no tree root's
+// alone: an intermediate parent stands in merging after its merge, waiting for its child, and what
+// must follow is the close's write when that child is done and the parent's done once Dispatch
+// shows it.
 //
 // It matters beyond the one issue: a merged issue in merging is in the workflow, so while it
 // stands there its tree's root cannot be accepted (SIGNOFF_CHILD_IN_WORKFLOW) or closed. The
@@ -23,7 +23,7 @@ import (
 func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
+	engine := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: 48 * time.Hour,
 		Clock: func() time.Time { return now }}, nil)
 	root, child, grandchild := "LEGION-208", "LEGION-209", "LEGION-210"
 	seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -43,16 +43,17 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	apply := applyFacts(t, pool, engine)
 	apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge"})
 	if at := issueAt(t, pool, child); at != phase.Merging {
-		t.Fatalf("%s stands at %s after its merge, want merging while %s is still in the workflow", child, at, grandchild)
+		t.Fatalf("%s stands at %s after its merge, want merging while %s is not done", child, at, grandchild)
 	}
+	assertOutboxCount(t, pool, "dispatch_status", 0)
 
-	// The grandchild leaves, as a person's move of it to done does.
-	apply("grandchild-done", intake.DispatchIssue{Key: grandchild, ResolvedRepo: "sjawhar/legion", Seq: 2,
-		Type: "issue.closed", Status: "done", Title: "grandchild", Parent: child, Rank: "V2"})
-	if at := issueAt(t, pool, grandchild); at != phase.Done {
-		t.Fatalf("%s stands at %s, want done: the fixture's own premise", grandchild, at)
+	// The grandchild is done, as a person's move of it to done makes it; its phase stays (R20).
+	landClose(t, pool, engine, grandchild)
+	if at := issueAt(t, pool, child); at != phase.Merging || storedIssue(t, pool, child).PendingClose == nil {
+		t.Fatalf("%s stands at %s with close %+v once its last child is done, want merging with its close queued", child, at, storedIssue(t, pool, child).PendingClose)
 	}
+	landClose(t, pool, engine, child)
 	if at := issueAt(t, pool, child); at != phase.Done {
-		t.Fatalf("%s stands at %s after the last issue beneath it left, want done: a merged issue closes when the last issue beneath it leaves, and while it stands in merging its root can be neither accepted nor closed", child, at)
+		t.Fatalf("%s stands at %s once Dispatch shows it done, want done", child, at)
 	}
 }

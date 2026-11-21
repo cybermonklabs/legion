@@ -958,7 +958,7 @@
       "text": [
         "dispatch issues was not called: 1 problem",
         "- --all takes every matching issue in one unpaged read, so it cannot be combined with --limit or --offset: name --all on its own, or page with --limit and --offset",
-        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --help, --dry-run",
+        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --json, --no-json, --help, --dry-run",
         "- Example: dispatch issues --project PROJ --limit 250 --offset 250"
       ]
     },

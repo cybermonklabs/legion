@@ -359,6 +359,7 @@ func (r *busyRelaunchLive) seed() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, pane.issue, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", pane.issue, err)
 		}
+		openIssue(t, r.st, r.project, pane.issue, treelifecycle.AuthorityWorkflow)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: pane.token, Project: r.project, Tree: pane.issue, Issue: pane.issue, Role: pane.role,
 			Generation: 1, State: supervise.StateLaunching,

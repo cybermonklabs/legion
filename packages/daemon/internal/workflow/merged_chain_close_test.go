@@ -4,21 +4,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// One departure can end the wait of more than one merged issue above it, and closing the nearest
-// one is itself a departure that may end the next one's. A chain of merged issues therefore
-// closes whole when the last issue beneath it leaves, rather than one step per fact: a merged
-// issue left in merging is in the workflow, holds no admission slot, since merging is past its
-// review (record.KeepsSlot), stands in neither part of the waiting line, and refuses its tree
-// root's sign_off for as long as it stands there.
+// A chain of merged issues closes from the bottom up, each close once Dispatch shows its children
+// done (R24 of dispatch://INFRA-3320): the leaf's done queues the close of the merged issue above
+// it, that issue's done on Dispatch queues the next one's, and nothing above waits for anything
+// else. A merged issue left in merging is in the workflow, holds no admission slot, since merging
+// is past its review (record.KeepsSlot), stands in neither part of the waiting line, and refuses
+// its tree root's sign_off for as long as it stands there.
 func TestAChainOfMergedIssuesClosesWhenTheLastIssueBeneathItLeaves(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
+	engine := New(record.NewStore(), Config{Project: "LEGION", ProductionCheckBound: 48 * time.Hour,
 		Clock: func() time.Time { return now }}, nil)
 	root, child, grandchild, leaf := "LEGION-208", "LEGION-209", "LEGION-210", "LEGION-211"
 	seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -41,17 +40,19 @@ func TestAChainOfMergedIssuesClosesWhenTheLastIssueBeneathItLeaves(t *testing.T)
 		Tree: root, Parent: &grandchildKey, Project: "LEGION", Title: "leaf", Phase: phase.Implementing, Generation: 3,
 		Status: "in_progress", Rank: "V3", LastDispatchSeq: 1})
 
-	applyFacts(t, pool, engine)("leaf-done", intake.DispatchIssue{Key: leaf, ResolvedRepo: "sjawhar/legion", Seq: 2,
-		Type: "issue.closed", Status: "done", Title: "leaf", Parent: grandchild, Rank: "V3"})
+	landed := func(key string) { landClose(t, pool, engine, key) }
+	pending := func(key string) bool { return storedIssue(t, pool, key).PendingClose != nil }
 
-	if at := issueAt(t, pool, leaf); at != phase.Done {
-		t.Fatalf("%s stands at %s, want done: the fixture's own premise", leaf, at)
+	landed(leaf)
+	if !pending(grandchild) || pending(child) {
+		t.Fatalf("closes queued once the leaf is done: %s %t, %s %t; want %s's alone", grandchild, pending(grandchild), child, pending(child), grandchild)
 	}
-	if at := issueAt(t, pool, grandchild); at != phase.Done {
-		t.Fatalf("%s stands at %s, want done: the issue beneath it left", grandchild, at)
+	landed(grandchild)
+	if at := issueAt(t, pool, grandchild); at != phase.Done || !pending(child) {
+		t.Fatalf("%s stands at %s and %s's close queued %t, want %s done and the close of %s queued", grandchild, at, child, pending(child), grandchild, child)
 	}
+	landed(child)
 	if at := issueAt(t, pool, child); at != phase.Done {
-		t.Fatalf("%s stands at %s, want done: closing %s was itself a departure, and %s waited for nothing else",
-			child, at, grandchild, child)
+		t.Fatalf("%s stands at %s once Dispatch shows it done, want done", child, at)
 	}
 }

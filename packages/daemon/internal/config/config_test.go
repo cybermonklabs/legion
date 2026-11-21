@@ -233,7 +233,6 @@ func defaultsFor(port int) Config {
 			Implement: GitHubApp{AppID: "1", PrivateKey: "implement-test-key", Installations: map[string]string{}},
 			Review:    GitHubApp{AppID: "2", PrivateKey: "review-test-key", Installations: map[string]string{}},
 		},
-		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateGrace:       30 * time.Minute,
 		StalledTreeNotice:    6 * time.Hour,
@@ -366,7 +365,6 @@ github_apps:
   review:
     app_id: "22"
     private_key: review-key
-linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
 worker_silence_minutes: 45
@@ -405,8 +403,8 @@ hooks:
 	if cfg.GitHubApps.Review.AppID != "22" || cfg.GitHubApps.Review.PrivateKey != "review-key" {
 		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
 	}
-	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
-		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+	if cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
+		t.Errorf("ProductionCheckBound=%s ReviewRoundCap=%d, want 48h and 5", cfg.ProductionCheckBound, cfg.ReviewRoundCap)
 	}
 	if cfg.WorkerSilence != 45*time.Minute {
 		t.Errorf("WorkerSilence = %s, want the file's 45m", cfg.WorkerSilence)
@@ -901,11 +899,6 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			name: "github app secret is not a single key name",
 			body: minimalFile + "github_apps: {implement: {app_id: \"1\", private_key_secret: \"secrets get KEY\"}, review: {app_id: \"2\", private_key: key}}\n",
 			want: "github_apps.implement.private_key_secret must be a single secretsd key name (no whitespace)",
-		},
-		{
-			name: "linger_hours exceeds the timer bound",
-			body: minimalFile + "linger_hours: 597\n",
-			want: "linger_hours must be at most 596",
 		},
 		{
 			name: "review_round_cap is not positive",
@@ -1753,7 +1746,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "projects", line: "projects: {DEMO: {}}", class: modelled},
 		{key: "gates", line: "gates: {design: off}", class: modelled},
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},
-		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
+		{key: "linger_hours", line: "linger_hours: 72", class: warned, want: wantLingerHoursWarning},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
 		{key: "pod_update_grace_minutes", line: "pod_update_grace_minutes: 30", class: modelled},
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},

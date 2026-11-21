@@ -23,11 +23,12 @@ func launchesSince(rt *fake.Runtime, token claim.Token, after int) []fake.Call {
 }
 
 // A child's architect leaves the workflow with its child and comes back with it. The park_child
-// of the architect above the child (its own write of backlog) takes the child out of the workflow,
-// which suspends every claim of the child (the workflow's leave), the child's architect's among
-// them: the claim stays the child's, suspended by the daemon with the session its agent
-// registered, and its process is stopped once. That architect's rerun_child (its own write of todo
-// on the parked child) starts the child's first phase again, and that start resumes the child's
+// of the architect above the child (its own write of backlog) takes the child out of Legion's work
+// where it stands, its phase kept (R20 of dispatch://INFRA-3320), which suspends every claim of the
+// child (the workflow's leave), the child's architect's among them: the claim stays the child's,
+// suspended by the daemon with the session its agent registered, and its process is stopped once.
+// That architect's rerun_child (its own write of todo on the parked child) starts the child's
+// first phase again, and that start resumes the child's
 // architect's claim in its session: the runtime is asked to resume the process from the session
 // file the claim recorded, and no fresh one is spawned. Its ready tells it the child at the
 // generation the rerun opened.
@@ -45,9 +46,17 @@ func TestAParkedChildsArchitectIsSuspendedAndItsRerunResumesItsSession(t *testin
 
 	rig.written("park", childAt("backlog", 3))
 	rig.drain()
-	if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Done || got.Status != "backlog" {
-		t.Fatalf("the parked child = %s, %s; want it out of the workflow, done and in backlog", got.Phase, got.Status)
+	parkedChild := readIssue(t, rig.pool, doorChild)
+	if parkedChild == nil || parkedChild.Phase != started.Phase || parkedChild.Status != "backlog" {
+		t.Fatalf("the parked child = %+v; want it out of Legion's work in backlog, its phase %s kept", parkedChild, started.Phase)
 	}
+	// park_child's row writes the mark that the architect above parked the child once Dispatch
+	// takes its write (record.Issue.ParkedByArchitect, decision 8 of dispatch://INFRA-4730), and
+	// that mark is what makes rerun_child's todo open a new run rather than return the child to
+	// its phase. The rig writes the child's own status write alone, so it writes the mark as the
+	// row leaves it.
+	parkedChild.ParkedByArchitect = true
+	putOutboxIssue(t, rig.pool, rig.records, *parkedChild)
 	parked := rig.machine(doorChild, claim.RoleArchitect).Claim()
 	if parked.State != supervise.StateSuspended || parked.SuspendedBy != supervise.SuspendedByDaemon ||
 		parked.Session != before.Session || parked.SessionFile != before.SessionFile || parked.Issue != doorChild {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -357,9 +358,9 @@ func (h *harness) launch(issue string, role claim.Role) (claim.Token, string) {
 
 // launchIn is launch for an issue of tree: a sub-architect or a worker on a child. The tree's
 // lifecycle is opened first under the workflow's own authority, as admission's promotion of the
-// root opens it: that row is what says the tree runs (record.TreeLive), so a fixture whose tree
-// must be live opens it the way the daemon does. A test about a tree the operator holds opens
-// its own row under that authority instead.
+// root opens it, and so is the issue's own, which admission opens for every issue it starts and
+// which each claim of the issue binds (store.Store.AdmitClaim). A test about a tree the operator
+// holds opens its own row under that authority instead.
 func (h *harness) launchIn(tree, issue string, role claim.Role) (claim.Token, string) {
 	h.t.Helper()
 	token, err := claim.NewToken(testProject, issue, role)
@@ -368,6 +369,9 @@ func (h *harness) launchIn(tree, issue string, role claim.Role) (claim.Token, st
 	}
 	if _, err := h.store.OpenTreeLifecycle(h.ctx, testProject, tree, treelifecycle.AuthorityWorkflow); err != nil {
 		h.t.Fatalf("open the lifecycle of %s: %v", tree, err)
+	}
+	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, issue, treelifecycle.AuthorityWorkflow); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		h.t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
 	}
 	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
 		Token: token, Project: testProject, Tree: tree, Issue: issue, Role: role, State: supervise.StateQueued,

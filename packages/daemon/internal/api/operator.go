@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -426,8 +427,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, r, "spawn") {
 		return
 	}
+	// An operator's tree is named for the issue it grew from, so the architect of its own issue is
+	// the gate holder's (supervise.Claim.HoldsGate); a workflow start writes the mark again from the
+	// Dispatch chain.
 	c := supervise.Claim{
 		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
+		HoldsGate: claim.IsTreeRoot(req.Issue, req.Tree),
 	}
 	if s.refusedWhilePaused(w, r, "spawn", c) {
 		return
@@ -440,6 +445,16 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 			s.operatorFailure(w, r, "spawn", token, err)
 			return
 		}
+	}
+	// The claim binds its issue's own lifecycle (store.Store.AdmitClaim): the operator opens it
+	// where nothing holds it, and an issue the workflow already holds keeps the workflow's, whose
+	// epoch the claim binds, as a worker the operator spawns into a workflow tree binds that tree's.
+	if _, err := s.trees.OpenIssueLifecycle(ctx, s.project, req.Issue, treelifecycle.AuthorityOperator); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("issue %s is waiting for durable cleanup: %v", req.Issue, err))
+		return
+	} else if err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		s.operatorFailure(w, r, "spawn", token, err)
+		return
 	}
 	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
@@ -737,7 +752,12 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // while the fresh session has started the claim before it gets here and answers success with
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
-// rather than reported as a restart.
+// rather than reported as a restart. So is one that moved the issue to awaiting_children: a
+// Dispatch child of it is open, so the workflow started no phase of it and holds the start
+// instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
+// waits on its children, naming them through the reason the held start keeps, and where the
+// return takes it: a held reviewing back as testing unless its pull request merged during the
+// wait (record.ReturnsAsTestingInstead, R12), and any other held start to that start.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
@@ -773,6 +793,14 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	if after != nil && after.Phase == phase.Held {
 		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), true
+	}
+	if after != nil && after.Phase == phase.AwaitingChildren && after.ChildrenWait != nil {
+		back := "the daemon goes back to that start by itself"
+		if record.ReturnsAsTestingInstead(after.ChildrenWait.Start) {
+			back = "the daemon takes it back by itself as testing, or to that start if its pull request merged during the wait,"
+		}
+		return http.StatusConflict, fmt.Sprintf("%s waits on its open children after the retry of its phase %s, so no phase of it was started for %s: the retry moved it to awaiting_children, holding the start of %s (%s), and %s once no Dispatch child of %s is open",
+			c.Issue, working, token, after.ChildrenWait.Start, after.ChildrenWait.Reason, back, c.Issue), true
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true

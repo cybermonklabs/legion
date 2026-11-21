@@ -1,0 +1,10 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Idempotency-Key: capture-stale-sequence-1795261633
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Sat, 21 Nov 2026 11:47:15 GMT
+Content-Length: 87
+
+{"code":"ISSUE_CHANGED","error":"issue changed since the hand-over read","changed":[]}

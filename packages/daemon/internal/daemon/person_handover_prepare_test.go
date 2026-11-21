@@ -17,10 +17,53 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// chainDispatch answers ListIssues with listed and GetIssue with each issue's detail as Dispatch
+// shows it in issues, refusing a key it shows none of, or one failing names, with Dispatch's
+// trouble. reads counts each key's GetIssue calls.
+type chainDispatch struct {
+	outboxDispatch
+	listed  []dispatch.IssueSummary
+	issues  map[string]dispatch.Issue
+	failing string
+	reads   map[string]int
+}
+
+func (d *chainDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+	return d.listed, nil
+}
+
+func (d *chainDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	if d.reads == nil {
+		d.reads = map[string]int{}
+	}
+	d.reads[key]++
+	issue, ok := d.issues[key]
+	if !ok || key == d.failing {
+		return dispatch.Issue{}, errors.New("Dispatch is restarting")
+	}
+	return issue, nil
+}
+
+// shownUnder is key as Dispatch shows it at status under parent ("" for none), on acme/widgets.
+func shownUnder(key, status, parent string, handed bool) dispatch.Issue {
+	issue := dispatch.Issue{Key: key, Status: status, Title: key, Rank: "B", HandedOver: handed, ResolvedRepo: "acme/widgets", LastSeq: 1}
+	if parent != "" {
+		issue.Parent = &parent
+	}
+	return issue
+}
+
+// recordedOn is a record of key in tree, on acme/widgets at main.
+func recordedOn(key, tree, status string) record.Issue {
+	return record.Issue{Key: key, Tree: tree, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1, Status: status, Rank: "A",
+		HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+}
 
 // eventLogDispatch is chainDispatch with each issue's Dispatch event log, as EventsAfter serves it,
 // in logs; a key it holds no log of is served an empty log, and every read fails with Dispatch's

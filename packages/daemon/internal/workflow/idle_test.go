@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -102,11 +104,6 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		{
 			name:  "the issue has left the workflow",
 			view:  func() pods.IdleView { v := idleChild(); v.Status = "backlog"; return v }(),
-			image: true, want: IdleHoldTreeNotLive,
-		},
-		{
-			name:  "the tree root lingers",
-			view:  func() pods.IdleView { v := idleChild(); v.Root.LingerUntil = &idleNow; return v }(),
 			image: true, want: IdleHoldTreeNotLive,
 		},
 		{
@@ -388,11 +385,6 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedTreeNotLive,
 		},
 		{
-			name:    "the tree lingers after its close",
-			view:    func() pods.IdleView { v := unownedIssue(); v.Root.LingerUntil = &idleNow; return v }(),
-			sandbox: true, want: IdleHoldUnownedTreeNotLive,
-		},
-		{
 			// The pause stopped every role and kept the pod; the resume ended the pause, and no
 			// role of the pod has been ready since.
 			name:    "a pause holds the pod",
@@ -526,7 +518,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 	}
 
 	var decided IdleDecision
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 		decided = IdleRelease(view, now, idlePeriod, true, idleContract)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil

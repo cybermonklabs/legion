@@ -363,6 +363,7 @@ func (r *rolePromptRuleLive) seed() {
 		t.Fatalf("open the lifecycle of %s: %v", r.issue, err)
 	}
 	for _, seeded := range r.seededRoles() {
+		openIssue(t, r.st, r.project, seeded.issue, treelifecycle.AuthorityWorkflow)
 		token := r.token(seeded.issue, seeded.role)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: r.issue, Issue: seeded.issue, Role: seeded.role,

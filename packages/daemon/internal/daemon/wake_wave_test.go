@@ -253,6 +253,7 @@ func waveClaimsFrom(t *testing.T, cfg config.Config, role claim.Role, first, cou
 		if _, err := st.OpenTreeLifecycle(ctx, project, issue, treelifecycle.AuthorityOperator); err != nil {
 			t.Fatalf("admit the tree of %s: %v", token, err)
 		}
+		openIssue(t, st, project, issue, treelifecycle.AuthorityOperator)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", token, err)
 		}

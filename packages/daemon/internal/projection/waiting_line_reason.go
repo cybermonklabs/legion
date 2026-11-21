@@ -78,9 +78,9 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		case record.LineQueuedRoot:
 			rank = "its own Dispatch rank"
 		case record.LineFirstPhase:
-			// The key of the tree root whose rank placed this member, read off the entry's own
-			// issue, which is where the line leaves it (record.LineEntry.RootRank).
-			rank = "the Dispatch rank of its tree root " + entry.Issue.Tree
+			// The key of the top issue whose rank placed this member, which the line leaves on
+			// the entry (record.LineEntry.RootKey).
+			rank = "the Dispatch rank of its top issue " + entry.RootKey
 		}
 		started := "have"
 		if partLength == 1 {

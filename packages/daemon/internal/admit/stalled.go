@@ -18,31 +18,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// quietTrees is the pass's measure of its trees: how long each tree of the project has been
-// still and whether any claim of it is at work (record.QuietTrees), over the records the pass
-// has already read and one read of the claims of the project (record.Store.ProjectClaims). It
-// is one query for the whole pass, like the issues and the slots beside it: a pass that judges
-// every tree of the project may make no read per tree. The claims it read are answered beside
-// the measure, so that R6's reading of a claim at work (workingTrees) is taken over the very
-// rows the measure was taken from and reads them no second time.
+// quietTrees is the pass's measure of its trees: how long each gate root of the project and the
+// issues whose gate root it is have been still and whether any claim of them is at work
+// (record.QuietTrees, over the pass's chains), over the records the pass has already read and
+// one read of the claims of the project (record.Store.ProjectClaims). It is one query for the
+// whole pass, like the issues and the slots beside it: a pass that judges every tree of the
+// project may make no read per tree. The claims it read are answered beside the measure, so that
+// R6's reading of a claim at work (workingTrees) is taken over the very rows the measure was
+// taken from and reads them no second time.
 //
-// issues are the pass's own live records and now the instant the pass measures from, so that
-// every reading of a tree it makes — this one and the record-only one it is filtered with — is
-// taken from one instant. The claim read is keyed by the claim project token, which
-// `claims.project` holds, not by the Dispatch project key the issue records carry.
+// issues are the pass's own live records, chains the pass's reading of Dispatch's chains
+// (record.LineFacts.Chains) and now the instant the pass measures from, so that every reading of
+// a tree it makes — this one and the record-only one it is filtered with — is taken from one
+// instant and one reading of the chains. The claim read is keyed by the claim project token,
+// which `claims.project` holds, not by the Dispatch project key the issue records carry.
 //
 // Where it is called from: tellStalledTrees, after blockers.JudgeLine and the releases,
 // where the pass holds the facts it judges from and has given back every slot it is going to. The
 // measure is behind this method rather than in the pass because the rule that acts on it and
 // the read it needs belong together. The state's projection answers the same question from the
 // same statement over the claims it already holds (projection's quietTrees), so the pass and
-// the state read one statement of the measure and neither keeps a rule of its own. They are
-// handed their own records, though: this is given the project's live ones and the state every
-// record it holds, a done one included, so a tree whose root is done is measured by the state
-// and by no pass of this. Nothing here rests on their agreeing — the rule below tells the
-// controller only of trees this daemon runs (record.RunningRoots), every one of which the live
-// read holds.
-func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, now time.Time) (map[string]record.TreeQuiet, []record.TreeClaim, error) {
+// the state read one statement of the measure and neither keeps a rule of its own. Nothing here
+// rests on their agreeing — the rule below tells the controller only of the gate roots this
+// daemon runs (record.RunningRoots), every one of which the live read holds.
+func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, chains *record.Chains, now time.Time) (map[string]record.TreeQuiet, []record.TreeClaim, error) {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
 		return nil, nil, err
@@ -51,12 +50,14 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 	if err != nil {
 		return nil, nil, err
 	}
-	return record.QuietTrees(issues, claims, now), claims, nil
+	return record.QuietTrees(chains, issues, claims, now), claims, nil
 }
 
 // tellStalledTrees tells the project's controller, once for each stall, of every tree of this
-// daemon's own that has stopped. A tree has stopped when all of this holds: its root is one
-// the daemon runs (record.RunningRoots), it has been quiet for longer than
+// daemon's own that has stopped. A tree is a gate root and the issues in Legion's work whose gate
+// root it is (R15 of dispatch://INFRA-3320, record.TreeMember), read from the pass's chains and
+// never from the stored tree. It has stopped when all of this holds: its gate root is one the
+// daemon runs (record.RunningRoots), it has been quiet for longer than
 // `stalled_tree_notice_hours` (record.TreeQuiet.Quiet, UseStalledTreeNotice), no claim of it
 // is at work as R6 reads it (workingTrees: every state but idle, suspended, failed and retired,
 // save a phase worker the daemon itself names silent), its newest movement stands after the
@@ -154,7 +155,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	now := a.now()
 	// Step 1: the reading that costs no query. A root inside the bound here is inside it under
 	// any claim of its tree, so this is the whole of a working project's pass.
-	recorded := record.QuietTrees(issues, nil, now)
+	recorded := record.QuietTrees(facts.Chains, issues, nil, now)
 	running := record.RunningRoots(issues, facts)
 	candidates := make([]record.Issue, 0, len(running))
 	for _, issue := range issues {
@@ -176,7 +177,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// measure reads nothing for it; the notice still says how long the tree has been quiet, the
 	// pause's time included. Nothing reaches this while the project is paused, because the pass
 	// promotes nothing then.
-	quiet, claims, err := a.quietTrees(ctx, tx, issues, now)
+	quiet, claims, err := a.quietTrees(ctx, tx, issues, facts.Chains, now)
 	if err != nil {
 		return err
 	}
@@ -218,9 +219,9 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if err != nil || !registered {
 		return err
 	}
-	// Step 4: the tree is its root and the issues under it the workflow still runs
+	// Step 4: the tree is its gate root and the issues in Legion's work whose gate root it is
 	// (record.TreeMember), which is the membership the measure counts and the membership the
-	// notice names: a child the record shows as done is no member of either, since a comment on
+	// notice names: an issue the record shows as done is no member of either, since a comment on
 	// its old pull request is no movement of the tree and its phase is nobody's to act on. It is
 	// gathered for the candidate roots above alone, since no other tree of the project is named
 	// by anything this pass writes.
@@ -230,10 +231,11 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	}
 	members := make(map[string][]record.Issue, len(stalled))
 	for _, issue := range issues {
-		if _, tells := telling[issue.Tree]; !tells || !record.TreeMember(issue) {
+		root, stands := record.TreeMember(facts.Chains, issue)
+		if _, tells := telling[root]; !stands || !tells {
 			continue
 		}
-		members[issue.Tree] = append(members[issue.Tree], issue)
+		members[root] = append(members[root], issue)
 	}
 	// Why the daemon does not start each issue of the project now is what the caller hands
 	// over: the walk that built the waiting line this pass judged placed each issue in the line
@@ -394,8 +396,8 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 	memberOf := make(map[string]string, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
-		if record.TreeMember(issue) {
-			memberOf[issue.Key] = issue.Tree
+		if root, stands := record.TreeMember(facts.Chains, issue); stands {
+			memberOf[issue.Key] = root
 		}
 	}
 	working := make(map[string]struct{})
@@ -429,7 +431,7 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 	}
 	silent := make(map[claim.Token]struct{}, len(workers))
 	for _, worker := range workers {
-		gate := facts.Gates[worker.issue.Tree]
+		gate := facts.Gates[worker.root.Key]
 		if workflow.SilentPhaseWorker(worker.issue, worker.root, gate, worker.role, runs[worker.token], a.workerSilence, now) {
 			silent[worker.token] = struct{}{}
 		}
@@ -452,17 +454,18 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // one walk of the record package (record.Waiting) and a second derivation is the fault
 // dispatch://INFRA-2560 was filed for.
 //
-// Four words silence, and they are R5's waits by design as the ladder names them: a tree whose
-// root waits on a person, which only a person's act moves (root_awaiting_person); a tree whose
-// design gate is closed, whose architect is writing the design the work must follow
-// (design_gate); an issue a Dispatch blocked-by link holds (dispatch_blocker); and an issue the
-// children-first rule holds (children_first). R5's fourth wait, "an issue that needs a slot and
-// holds none, whatever holds its start", is no word of the ladder's, because the ladder speaks
-// only of the issues the line left behind: it is the line's own membership, an entry holding no
-// slot (record.LineEntry.Holds), and the first two words are the two ways the daemon keeps such
-// an issue out of the line instead. The test of that wait is the need and not the mechanism:
-// each earlier reading of it named a mechanism and missed a shape that answers to the same
-// cause.
+// Five words silence, and they are R5's waits by design as the ladder names them: a tree whose
+// root waits on a person, which only a person's act moves (root_awaiting_person); a parent that
+// held a phase start because a child of it is still open, which its children's finishing moves
+// (awaiting_children, dispatch://INFRA-3320); a tree whose design gate is closed, whose architect
+// is writing the design the work must follow (design_gate); an issue a Dispatch blocked-by link
+// holds (dispatch_blocker); and an issue the children-first rule holds (children_first). R5's
+// fourth wait, "an issue that needs a slot and holds none, whatever holds its start", is no word
+// of the ladder's, because the ladder speaks only of the issues the line left behind: it is the
+// line's own membership, an entry holding no slot (record.LineEntry.Holds), and
+// root_awaiting_person and design_gate are the two ways the daemon keeps such an issue out of the
+// line instead. The test of that wait is the need and not the mechanism: each earlier reading of
+// it named a mechanism and missed a shape that answers to the same cause.
 //
 // A started issue that gave its row back to wait on another issue (blockers.waitsOf, admit's
 // releaseSlotsForWaits) is that membership too, and so is no word of the ladder's either: it
@@ -484,19 +487,22 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // the capacity this measure exists to recover, while its root, which does hold a slot, is judged
 // by the words and is named when nothing else of the tree moves.
 //
-// The words that do not silence are each a tree's own work or a person's: a tree closed or
-// parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
-// for a person to hand it over (label_off), a root a live tree has not released waits for its
-// architect (ancestry), an issue under an accepted ancestor waits for that ancestor to close
-// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
-// the stall itself (at_work). None of them is the daemon holding work it means to start, which
-// is what a wait by design is.
+// The words that do not silence are each a tree's own work, a person's, or a fault: an issue on a
+// chain the copy cannot show to its top waits for the daemon to read Dispatch again, and a chain
+// that stays unknown is a fault a controller must hear of (chain_unknown); a tree closed or parked
+// waited for a re-admission (tree_closed, tree_parked, which the ladder no longer answers); a root
+// whose label is off waits for a person to hand it over (label_off), an issue under a parent out of
+// work waits for the architect above it to release that parent (ancestry), an issue under an
+// accepted issue waits for that issue to close (accepted_ancestor), and an issue past its review
+// is at work on no slot, whose stillness is the stall itself (at_work). None of them is the daemon
+// holding work it means to start, which is what a wait by design is.
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
 // hide it.
 var silencedTree = map[record.HeldReason]bool{
+	record.HeldChainUnknown:       false,
 	record.HeldTreeClosed:         false,
 	record.HeldTreeParked:         false,
 	record.HeldLabelOff:           false,
@@ -505,6 +511,7 @@ var silencedTree = map[record.HeldReason]bool{
 	record.HeldDesignGate:         true,
 	record.HeldDispatchBlocker:    true,
 	record.HeldChildrenFirst:      true,
+	record.HeldAwaitingChildren:   true,
 	record.HeldAcceptedAncestor:   false,
 	record.HeldAtWork:             false,
 	record.HeldUnclassified:       false,
@@ -517,10 +524,11 @@ func silences(word record.HeldReason) bool { return silencedTree[word] }
 
 // lineHolds is what the walk that built this pass's waiting line said of the project's issues,
 // put by key for the measure (tellStalledTrees): the line's own entries, the issues the slot
-// rows the walk read name, the word of every issue the walk left behind and the children-first
-// waits. None of it is judged here: the line and the words are record.Waiting's two answers
-// through blockers.JudgeLine, the child waits are record.ChildWaits' through the same
-// judgement, and the slots are the pass's own rows.
+// rows the walk read name, the word of every issue the walk left behind, the children-first
+// waits and the started parents' waits. None of it is judged here: the line and the words are
+// record.Waiting's two answers through blockers.JudgeLine, the child waits are
+// record.ChildWaits' through the same judgement and the started parents' are the pass's
+// (record.LineFacts.StartedParentWaits), and the slots are the pass's own rows.
 type lineHolds struct {
 	// line is the waiting line's entries, by issue key. An entry says whether its issue already
 	// holds a slot (record.LineEntry.Holds), which is the one fact of the cap's own hold.
@@ -534,14 +542,19 @@ type lineHolds struct {
 	// ladder's word over one set of facts, so the first row is the one kept, as record.HeldList
 	// keeps it.
 	words map[string]record.HeldReason
-	// gates is the pass's design gates, by root key, which tell a root waiting for its tree to be
-	// opened (record.QueuedRoot) from one the daemon has already started.
-	gates map[string]record.TreeGate
+	// pass is the pass's own facts, which tell a root waiting for its first start
+	// (record.LineFacts.Queued) from one the daemon has already started.
+	pass record.LineFacts
 	// childWaits is the pass's children-first judgement, by parent key
 	// (record.LineFacts.ChildWaits): the open Dispatch children each parent's own first phase
 	// waits for, each with whether the daemon has released it (record.OpenChild.Released), which
 	// waitsOnWorkOutsideItsTree reads.
 	childWaits map[string]record.ChildWait
+	// startedWaits is the pass's judgement of the started parents' open children, by parent key
+	// (record.LineFacts.StartedParentWaits): for a parent in awaiting_children, the open Dispatch
+	// children it waits on, each with whether the daemon has released it, which
+	// waitsOnWorkOutsideItsTree reads as it reads a children-first wait.
+	startedWaits map[string]record.ChildWait
 }
 
 // lineHoldsOf puts by key what the caller handed over. It is built once per pass, at step 4 of
@@ -553,8 +566,8 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 ) lineHolds {
 	holds := lineHolds{line: make(map[string]record.LineEntry, len(line)),
 		holders: make(map[string]struct{}, len(slots)),
-		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates,
-		childWaits: facts.ChildWaits}
+		words:   make(map[string]record.HeldReason, len(dropped)), pass: facts,
+		childWaits: facts.ChildWaits, startedWaits: facts.StartedParentWaits}
 	for _, entry := range line {
 		holds.line[entry.Issue.Key] = entry
 	}
@@ -590,7 +603,11 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     exactly where its word silences (silencedTree). Its slot decides nothing here: a tree's
 //     root at admitted may hold one while its design gate is closed, since a closed gate is no
 //     wait on another issue and a gate that has never opened is its architect at work
-//     (blockers.waitsOf keeps that row), and it waits for that gate all the same;
+//     (blockers.waitsOf keeps that row), and it waits for that gate all the same. A parent
+//     waiting in awaiting_children on its open children, in the workflow, is read the same way
+//     (dispatch://INFRA-3320 R13, which counts the phase as it counts a first phase that waits
+//     on its children): the line leaves it behind, since the phase keeps no slot, and its word
+//     (awaiting_children, or one the ladder reads before it) decides;
 //  4. every other issue does not: a slot holder at work in its phase, an issue past its review
 //     on no slot, a root waiting for its tree to be opened, an issue out of the workflow, and an
 //     issue already started that the line left behind. The holds the ladder names for that last
@@ -604,7 +621,8 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if entry, waits := h.line[issue.Key]; waits {
 		return !entry.Holds
 	}
-	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.gates[issue.Key]) {
+	firstPhase := issue.Phase == phase.Admitted && !h.pass.Queued(issue)
+	if !firstPhase && issue.Phase != phase.AwaitingChildren || !record.InWorkflow(issue) {
 		return false
 	}
 	return silences(h.words[issue.Key])
@@ -653,12 +671,28 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // which nothing but that architect does. Such a waiter is answered false here and read by
 // waitsByDesign as every other wait of the daemon's is, so a project that fails every term of
 // lineCanMove names its tree (the architect's ruling on cybermonklabs/legion#3715).
+//
+// A parent waiting in awaiting_children on its open children is read as that children-first
+// wait is (dispatch://INFRA-3320 R13): it stands in no line, since the phase keeps no slot, and
+// its wait is on its open children as the pass judged them (record.LineFacts.StartedParentWaits),
+// so it is answered true where it has an open child and the daemon has released every one, and
+// false where any is a child nobody released, which leaves it to waitsByDesign. One whose last
+// open child has gone waits on nothing here: the pass takes it back to the start it held.
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
-	entry, stands := h.line[issue.Key]
-	if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
-		return false
+	var open []record.OpenChild
+	if issue.Phase == phase.AwaitingChildren {
+		open = h.startedWaits[issue.Key].Open
+		if len(open) == 0 {
+			return false
+		}
+	} else {
+		entry, stands := h.line[issue.Key]
+		if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
+			return false
+		}
+		open = h.childWaits[issue.Key].Open
 	}
-	for _, child := range h.childWaits[issue.Key].Open {
+	for _, child := range open {
 		if !child.Released {
 			return false
 		}
@@ -751,7 +785,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 		return true
 	}
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, a.cap) {
+		if len(blockers.LineWaitsOn(rows, holds.pass.Chains, entry)) == 0 && capLets(entry, held, a.cap) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

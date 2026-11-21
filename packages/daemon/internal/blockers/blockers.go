@@ -16,11 +16,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -70,9 +68,10 @@ func Load(ctx context.Context, tx pgx.Tx, store record.Store, project string, ke
 
 // Judged is the keys whose rows a judgement of issues and waiting reads (Blocked, and the
 // deciders it stands for): each root of waiting the rule does not exempt (WaitsOn), and each issue
-// a blocker can hold where it stands (Holdable: Holds, and the waiting line's own hold through
-// HeldIssues). Load reads these and what they wait on.
-func Judged(issues, waiting []record.Issue) []string {
+// a blocker can hold where it stands (Holdable over chains, the pass's reading of Dispatch's
+// chains: Holds, and the waiting line's own hold through HeldIssues). Load reads these and what
+// they wait on.
+func Judged(issues, waiting []record.Issue, chains *record.Chains) []string {
 	keys := make([]string, 0, len(waiting))
 	for _, issue := range waiting {
 		if !Exempt(issue) {
@@ -80,7 +79,7 @@ func Judged(issues, waiting []record.Issue) []string {
 		}
 	}
 	for _, issue := range issues {
-		if Holdable(issue) {
+		if Holdable(chains, issue) {
 			keys = append(keys, issue.Key)
 		}
 	}
@@ -113,28 +112,28 @@ func UnfinishedOf(rows map[string]Row, blockedBy []string) []string {
 }
 
 // LineWaitsOn is what one candidate of the waiting line still waits on among the Dispatch
-// issues its mirror row names, under the rule its kind is judged by. A root whose tree is not
-// open yet is judged by WaitsOn, which exempts a tree Legion takes back. An issue whose first
-// phase would start is judged by Holds, which exempts nothing and answers nothing at all for a
-// root: a root at admitted inside a running tree is not held by its links here. Its links are
-// read by the rule for a started issue instead (waitsOf), on every pass, and a blocker not done
-// gives the root's slot back. That holds its first phase too: the root's entry is then
-// record.LineWaitingOnIssue, and this answers its Waits. An issue the daemon started that waits
-// on another issue carries that judgement with it (record.LineEntry.Waits, startedWaits), which
-// is read back here rather than made again: it was made over the rows and the children-first
-// facts of the pass that judged it, and the line's entry is where the pass that promotes it reads
-// it. An issue whose work is already under way — a return, an answered root's resume — waits on
-// nothing here, for that same reason.
+// issues its mirror row names, under the rule its kind is judged by. A root whose first start has
+// still to come is judged by WaitsOn, which exempts a root Legion takes back. An issue whose first
+// phase would start is judged by Holds over chains, the pass's reading of Dispatch's chains, which
+// exempts nothing and answers nothing at all for a root: a root at admitted holding its own gate is
+// not held by its links here. Its links are read by the rule for a started issue instead
+// (waitsOf), on every pass, and a blocker not done gives the root's slot back. That holds its
+// first phase too: the root's entry is then record.LineWaitingOnIssue, and this answers its Waits.
+// An issue the daemon started that waits on another issue carries that judgement with it
+// (record.LineEntry.Waits, startedWaits), which is read back here rather than made again: it was
+// made over the rows and the children-first facts of the pass that judged it, and the line's entry
+// is where the pass that promotes it reads it. An issue whose work is already under way — a
+// return, an answered root's resume — waits on nothing here, for that same reason.
 //
 // It is the one statement of the rule, and both the promotion that skips a candidate (admit's
 // promoteHolds) and the state's own report of what Legion waits for (Blocked) read it, so no
 // issue is reported blocked by a link the promotion starts it in spite of.
-func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
+func LineWaitsOn(rows map[string]Row, chains *record.Chains, entry record.LineEntry) []string {
 	switch entry.Kind {
 	case record.LineQueuedRoot:
 		return WaitsOn(rows, entry.Issue)
 	case record.LineFirstPhase:
-		return Holds(rows, entry.Issue)
+		return Holds(rows, chains, entry.Issue)
 	case record.LineWaitingOnIssue:
 		return entry.Waits
 	default:
@@ -155,13 +154,14 @@ func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
 // never judged, as the decider that would admit it does not judge it either (Exempt): what
 // promotion starts whatever its links say is never reported as waiting on them.
 //
-// more is what a decider outside this package has already judged and rendered, which today is
-// the children-first wait (record.ChildWaitRows): that rule reads the mirror's parent column
-// against the daemon's records rather than an issue's blocked-by links, so it cannot be made
-// here, and it must still reach the one list a reader reads. A key both deciders name keeps one
-// row, with each one's issues in it — the deciders are independent, and an issue can wait on a
-// link and on a child at once.
-func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, more []record.BlockedIssue) []record.BlockedIssue {
+// The waits on a parent's open Dispatch children are judged outside this package and read from
+// facts, the pass's own judgement (ChildRows): the children-first wait and the wait of a parent in
+// awaiting_children. Each rule reads the mirror's parent column against the daemon's records
+// rather than an issue's blocked-by links, so it cannot be made here, and it must still reach the
+// one list a reader reads. A key both deciders name keeps one row, with each one's issues in it —
+// the deciders are independent, and an issue can wait on a link and on a child at once.
+func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, facts record.LineFacts) []record.BlockedIssue {
+	more := ChildRows(issues, facts)
 	blocked := make([]record.BlockedIssue, 0, len(line)+len(more))
 	at := make(map[string]int, len(line)+len(more))
 	add := func(key string, waits []string) {
@@ -177,12 +177,12 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 		blocked = append(blocked, record.BlockedIssue{Issue: key, BlockedBy: waits})
 	}
 	for _, entry := range line {
-		if waits := LineWaitsOn(rows, entry); len(waits) > 0 {
+		if waits := LineWaitsOn(rows, facts.Chains, entry); len(waits) > 0 {
 			add(entry.Issue.Key, waits)
 		}
 	}
 	for _, issue := range issues {
-		if waits := Holds(rows, issue); len(waits) > 0 {
+		if waits := Holds(rows, facts.Chains, issue); len(waits) > 0 {
 			add(issue.Key, waits)
 		}
 	}
@@ -193,29 +193,56 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 	return blocked
 }
 
+// ChildRows is the two waits on a parent's open Dispatch children as the rows Blocked adds to its
+// own, from the one judgement of the pass that the facts carry: the children-first wait of a
+// parent whose own first phase has not started (record.LineFacts.ChildWaits), and the wait of a
+// parent in awaiting_children on its open children (record.LineFacts.StartedParentWaits,
+// dispatch://INFRA-3320 R11). Each is rendered by the one renderer of a children wait
+// (record.ChildWaitRows), so a waiting parent names its open children and a cycle among them
+// names the child and the ancestor its link holds it under.
+//
+// Of the started parents only those in awaiting_children are rows here. That is where an open
+// child holds a started parent: the admission pass moves every other started parent an open
+// child holds into that phase (admit's childrenWaits), and one it leaves where it stands — held,
+// or with its pull request merged — is not waiting on its children. A blocked_by link adds no row
+// to a parent in awaiting_children: such a parent stands in no line (record.Waiting places none,
+// since the phase keeps no slot), so no link of it is judged, and it waits on its children alone
+// until they are finished (R11).
+func ChildRows(issues []record.Issue, facts record.LineFacts) []record.BlockedIssue {
+	rows := record.ChildWaitRows(facts.ChildWaits)
+	if len(facts.StartedParentWaits) == 0 {
+		return rows
+	}
+	waiting := make(map[string]record.ChildWait)
+	for _, issue := range issues {
+		if wait, open := facts.StartedParentWaits[issue.Key]; open && issue.Phase == phase.AwaitingChildren {
+			waiting[issue.Key] = wait
+		}
+	}
+	return append(rows, record.ChildWaitRows(waiting)...)
+}
+
 // Exempt says whether an issue starts whatever its links say, and so is neither held by the
 // promotion skip (WaitsOn) nor reported here. It is the one definition the promotion skip and the
 // state's reading of waiting roots share, so a root one of them exempts can never be reported
 // blocked by the other.
 //
-// Two kinds of issue are exempt. One that carries a run into a tree of its own — a handed-over
-// child, a re-admitted tree — is work already under way, which the promotion never holds by its
-// links (record.Issue.CarriesRun), by whichever door it arrives. Once it holds a slot, the rule
-// for a started issue (waitsOf) reads its links like any other. And a tree Legion takes back
-// after it has finished and lingered starts again at its person's word, though re-admission leaves
-// it carrying no run: that is both halves at once, that it ran and that the tree coming back is its
-// own, which record.Issue.TakenBack holds. The mark is a fact about a run: the workflow writes it
-// as a phase of that run begins, re-admission keeps it when the root's own tree comes back, and
-// every other path that opens a run starts it clean — a child's re-entry into its tree, and a
-// child's hand-over to a root of its own without its run. So no issue is exempt unless the run it
-// is exempt for is the run it arrived with. A root waiting on a person (awaiting_person, answered or
-// not) carries its run (record.Issue.CarriesRun): its links were read when it was first admitted,
-// and it resumes on the slot it holds whatever they say now (waitsOf). Everything else is checked like
-// any other issue: a child that has been released but never started, a waiting root that only left
-// the line and came back, and a child handed over from a finished tree as a root of its own without
-// its run, whether or not it ran there, a done child a person labels as an orphan root among them. A
-// child held at phase.Admitted in its own tree is no candidate here at all: the workflow holds it,
-// and Blocked reports it, by Holds, whatever its mark — and a re-entered child carries none.
+// Two kinds of issue are exempt. One that carries a run (record.Issue.CarriesRun: it stands in a
+// phase past admitted and short of done) is work already under way, which the promotion never
+// holds by its links. Once it holds a slot, the rule for a started issue (waitsOf) reads its links
+// like any other. And an issue whose run has stood in a phase of its own (record.Issue.TakenBack,
+// decision 19 of dispatch://INFRA-4730) starts again whatever its links say, though it waits at
+// admitted. The mark is the issue's own fact of a run (R17 of dispatch://INFRA-3320): the workflow
+// writes it as a phase of that run begins (Engine.transition), a return to work keeps it, since it
+// resumes the same run at a new entry, and a new run clears it (Engine.NewRun), so no issue is
+// exempt unless the run it is exempt for is the run it stands in; a converted hand-over of the
+// release before that carries its run sets it, and no change of parent writes it. A root waiting on
+// a person (awaiting_person, answered or not) carries its run: its links were read when it was
+// first admitted, and it resumes on the slot it holds whatever they say now (waitsOf). Everything
+// else is checked like any other issue: an issue released but never started, a waiting root that
+// only left the line and came back, and an issue whose new run opened (a todo on a closed record).
+// A child of an open parent is no candidate here at all: it waits at admitted for its parent's
+// release (R9), and Blocked reports it, by Holds, whatever its mark.
 func Exempt(issue record.Issue) bool { return issue.CarriesRun() || issue.TakenBack }
 
 // WaitsOn is what issue still waits on, from rows: the issues Dispatch says it is blocked by
@@ -231,40 +258,42 @@ func WaitsOn(rows map[string]Row, issue record.Issue) []string {
 	return Unfinished(rows, issue.Key)
 }
 
-// Holdable says whether a blocker can hold issue where it stands: it is a child of a tree rather
-// than a root of its own, and it waits at phase.Admitted, where workflow.Engine.enterChild or
-// the opening of its tree's gate left it. A root's wait is the waiting line's instead, judged
-// over record.Waiting by the promotion that skips it.
-func Holdable(issue record.Issue) bool {
-	return !claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Admitted
+// Holdable says whether a blocker can hold issue where it stands: it has an issue above it in
+// Legion's work on Dispatch's chain as the copy shows it (record.Chains.Above, R15 of
+// dispatch://INFRA-3320) rather than being a root, and it waits at phase.Admitted, where
+// workflow.Engine.enterChild or the opening of the gates above it left it. A root's wait is the
+// waiting line's instead, judged over record.Waiting by the promotion that skips it.
+func Holdable(chains *record.Chains, issue record.Issue) bool {
+	return issue.Phase == phase.Admitted && len(chains.Above(issue.Key)) > 0
 }
 
 // Holds is what holds issue where it stands: the issues it waits on that are not done
-// (Unfinished) when a blocker can hold it there (Holdable), and nothing otherwise. It exempts
-// nothing: a child held at phase.Admitted is held whatever its mark (Exempt). It is the one
-// statement of the child hold rule — what a held child waits on — which the waiting line's own
-// hold (record.LineFacts.Held, through HeldIssues) and the child half of Blocked both read.
-func Holds(rows map[string]Row, issue record.Issue) []string {
-	if !Holdable(issue) {
+// (Unfinished) when a blocker can hold it there (Holdable over chains), and nothing otherwise. It
+// exempts nothing: an issue held at phase.Admitted is held whatever its mark (Exempt). It is the
+// one statement of the hold of an issue under a parent — what it waits on — which the waiting
+// line's own hold (record.LineFacts.Held, through HeldIssues) and the issue half of Blocked both
+// read.
+func Holds(rows map[string]Row, chains *record.Chains, issue record.Issue) []string {
+	if !Holdable(chains, issue) {
 		return nil
 	}
 	return Unfinished(rows, issue.Key)
 }
 
 // HeldIssues is, for each issue among issues that a blocker holds where it stands, what holds it
-// (Holds), by issue key — what the waiting line takes as record.LineFacts.Held: the line must
-// not offer a slot to an issue whose first phase an unfinished Dispatch issue holds, and it
-// cannot judge that itself, since internal/record may not read this package. An issue nothing
+// (Holds over chains), by issue key — what the waiting line takes as record.LineFacts.Held: the
+// line must not offer a slot to an issue whose first phase an unfinished Dispatch issue holds, and
+// it cannot judge that itself, since internal/record may not read this package. An issue nothing
 // holds is left out of the map rather than carried with an empty list, so a reader that asks
 // only whether the key is there asks the question the line asks. Every caller that reads the
 // line therefore loads the mirror rows first (Load over Judged with no line) and fills the field
 // from here, which JudgeLine does for all of them, so the line, the promotion's own skip, the
 // state's `blocked` and the word the held list gives such an issue
 // (record.HeldDispatchBlocker) all answer from one judgement of one read.
-func HeldIssues(rows map[string]Row, issues []record.Issue) map[string][]string {
+func HeldIssues(rows map[string]Row, chains *record.Chains, issues []record.Issue) map[string][]string {
 	held := make(map[string][]string)
 	for _, issue := range issues {
-		if holds := Holds(rows, issue); len(holds) > 0 {
+		if holds := Holds(rows, chains, issue); len(holds) > 0 {
 			held[issue.Key] = holds
 		}
 	}
@@ -316,18 +345,18 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 //
 // Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
-// holds is what its resume takes back. A tree's own root whose design gate has never opened
-// is its architect writing the design, which is the whole of that tree's work (record.AtWork at
-// phase.Admitted): releasing it would take the slot of the one issue of the tree that is working.
-// And a root that arrived from another tree carrying the row it held there
-// (record.QueuedRoot) keeps that row: it stands in the line as record.LineQueuedRoot, whose own
-// rule exempts a root carrying a run (LineWaitsOn, WaitsOn, Exempt), so a release here would be
-// undone by the promotion of the same pass — and under a full cap not undone at all, leaving a
-// root with the row the line promises it keeps taken away for good. The release and the
-// promotion must read one judgement of such a root, and this is where the release reads it.
-// Exempt is not read here: that rule is the promotion's, about what a candidate may start in
-// spite of its links, and this one is about what a started issue holds a slot for, so an issue
-// carrying a run gives its row back like any other.
+// holds is what its resume takes back. An issue holding its own gate whose design gate has never
+// opened is its architect writing the design, which is the whole of the work under it
+// (record.AtWork at phase.Admitted, over the issue's own gate): releasing it would take the slot
+// of the one issue of that work that is working. And a root that arrived from another tree
+// carrying the row it held there (record.LineFacts.Queued) keeps that row: it stands in the line
+// as record.LineQueuedRoot, whose own rule exempts a root carrying a run (LineWaitsOn, WaitsOn,
+// Exempt), so a release here would be undone by the promotion of the same pass — and under a full
+// cap not undone at all, leaving a root with the row the line promises it keeps taken away for
+// good. The release and the promotion must read one judgement of such a root, and this is where
+// the release reads it. Exempt is not read here: that rule is the promotion's, about what a
+// candidate may start in spite of its links, and this one is about what a started issue holds a
+// slot for, so an issue carrying a run gives its row back like any other.
 func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
 	if !record.KeepsSlot(issue) {
 		return nil
@@ -335,10 +364,10 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if issue.AwaitingPerson() {
 		return nil
 	}
-	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
+	if issue.Phase == phase.Admitted && facts.AtWork(issue) {
 		return nil
 	}
-	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if facts.Queued(issue) {
 		return nil
 	}
 	waits := Unfinished(rows, issue.Key)
@@ -376,14 +405,15 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // not read this package, so the hold is handed to the line as a fact (record.LineFacts.Held,
 // HeldIssues). The children-first wait is handed to it the same way and for a like reason — the
 // line is given facts rather than a transaction, and that judgement reads the Dispatch mirror
-// against the daemon's own records (record.LineFacts.ChildWaits, record.ChildWaitsOf) — and is
-// read again on each judgement rather than stored anywhere, so a mirror row that has gone stale
-// holds a parent for one pass and no longer. The waits of the issues the daemon has started are
-// judged there too (record.LineFacts.Waits, startedWaits), from those same rows and child waits,
-// because the line stands a started issue that waits in its first part and must be told which
-// issues those are; the set of started issues (startedIssues) is judged once here and given to
-// both readings of it. Then the line. Then the rows of the issues the line itself names, which
-// only the line can say.
+// against the daemon's own records, which the read of the facts made in the one read of the
+// children it judged the started parents from (record.LineFacts.ChildWaits,
+// record.ChildWaitsOf) — and is judged again on each read of the facts rather than stored
+// anywhere, so a mirror row that has gone stale holds a parent for one pass and no longer. The
+// waits of the issues the daemon has started are judged there too (record.LineFacts.Waits,
+// startedWaits), from those same rows and child waits, because the line stands a started issue
+// that waits in its first part and must be told which issues those are; the set of started
+// issues (startedIssues) is judged once here and given to both readings of it. Then the line.
+// Then the rows of the issues the line itself names, which only the line can say.
 //
 // rows is whatever the caller has already read, nil on its first judgement; loadMissing reads
 // only the keys it does not hold, so a pass that reads the line twice makes one mirror read in
@@ -395,29 +425,24 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 //
 // The held rows are what the line left behind, with the word for why (record.Waiting's second
 // answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
-// candidate it left behind for a placed one). The pass builds a row at each of its fourteen
-// drop sites on every judgement, whoever asked for the line: the state and the controller's
-// tick read them, and so does the admission pass's stalled-tree measure (admit's
-// tellStalledTrees), which takes the words of this judgement rather than walking the project's
-// issues again; every other caller takes the value and ignores it. now is the caller's
-// own clock, and the one thing it decides is one of those words: the tree_closed word asks
-// whether a root's linger is still running at it (record.Lingering), so that a parked root's
-// member reads tree_parked once that root's linger has run out. It reaches the judgement as
-// record.LineFacts.Now, which the line's own placement reads nowhere.
+// candidate it left behind for a placed one). The pass builds a row at each of its drop sites on
+// every judgement, whoever asked for the line: the state and the controller's tick read them, and
+// so does the admission pass's stalled-tree measure (admit's tellStalledTrees), which takes the
+// words of this judgement rather than walking the project's issues again; every other caller
+// takes the value and ignores it.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
 // here, so no two of them can judge the line from different reads or leave a later hold out of
 // one of the three.
 func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts, rows map[string]Row, now time.Time,
+	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
 ) (map[string]Row, record.LineFacts, []record.LineEntry, []record.HeldIssue, error) {
-	facts.Now = now
 	if rows == nil {
 		rows = map[string]Row{}
 	}
 	started := startedIssues(issues, slots, facts)
-	judged := Judged(issues, nil)
+	judged := Judged(issues, nil, facts.Chains)
 	for _, issue := range issues {
 		if _, begun := started[issue.Key]; begun {
 			judged = append(judged, issue.Key)
@@ -427,13 +452,11 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	if err != nil {
 		return rows, facts, nil, nil, err
 	}
-	facts.Held = HeldIssues(rows, issues)
-	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
-		return rows, facts, nil, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
-	}
+	facts.Held = HeldIssues(rows, facts.Chains, issues)
+	facts.ChildWaits = record.ChildWaitsOf(facts)
 	facts.Waits = startedWaits(rows, issues, started, facts)
 	line, held := record.Waiting(issues, slots, facts)
-	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line)), rows)
+	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line), facts.Chains), rows)
 	return rows, facts, line, held, err
 }
 

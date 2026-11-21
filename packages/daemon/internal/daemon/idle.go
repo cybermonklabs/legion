@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -114,7 +116,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
-	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(ctx context.Context, tx pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 		decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
@@ -122,7 +124,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}
-		return idleReleaseRows(view, decision, now)
+		return idleReleaseRows(ctx, tx, w.records, view, decision, now)
 	})
 	if err != nil {
 		w.log.Warn("idle release: could not decide an issue's pod", "issue", issue, "error", err)
@@ -239,7 +241,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	var decision workflow.IdleDecision
 	var quiet, holding bool
-	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(ctx context.Context, tx pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 		// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
 		// rather than reading the runtime again under the transaction's lock.
 		decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
@@ -249,7 +251,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}
-		return unownedReleaseRows(view, now)
+		return unownedReleaseRows(ctx, tx, w.records, view, now)
 	})
 	if err != nil {
 		w.log.Warn("unowned release: could not decide an issue's pod", "issue", issue, "error", err)
@@ -461,11 +463,15 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored. A Sandbox that owns the issue's kept
 //     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).
-func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
+//
+// Each row carries the fence of the issue's run, phase entry and pod as tx holds them
+// (record.NewFencedRow): a row that runs after the issue was handed a later entry cancels the
+// release rather than acting (the outbox's releaseOutlived).
+func idleReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
 	add := func(payload record.OutboxPayload, boundary bool) error {
-		row, err := record.NewOutboxRow(view.Issue, payload, now)
+		row, err := record.NewFencedRow(ctx, tx, records, view.Issue, payload, now)
 		if err != nil {
 			return fmt.Errorf("encode the %s of %s's release: %w", payload.OutboxKind(), view.Issue, err)
 		}
@@ -508,11 +514,12 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 // The mark says two things about the release beside its rows: SuspendsNoRole, which is what
 // writes issue_releases.kind as `unowned` and leaves the role column empty, so the teardown and
 // the cancel can read what this release did rather than guess it from a missing role; and the
-// generation of the issue the view was read at, as every mark carries.
-func unownedReleaseRows(view pods.IdleView, now time.Time) (store.IdleReleaseMark, error) {
+// generation of the issue the view was read at, as every mark carries. Its row is fenced as the
+// idle release's are.
+func unownedReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view pods.IdleView, now time.Time) (store.IdleReleaseMark, error) {
 	payload := record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation}
-	row, err := record.NewOutboxRow(view.Issue, payload, now)
+	row, err := record.NewFencedRow(ctx, tx, records, view.Issue, payload, now)
 	if err != nil {
 		return store.IdleReleaseMark{}, fmt.Errorf("encode the %s of %s's release: %w",
 			payload.OutboxKind(), view.Issue, err)

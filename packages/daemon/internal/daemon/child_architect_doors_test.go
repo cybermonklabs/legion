@@ -71,7 +71,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	records := record.NewStore()
 	root := record.Issue{Key: doorRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: doorRoot,
 		Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
-	putOutboxIssue(t, pool, records, root)
+	putChainIssue(t, pool, records, root)
 	approved := 1
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: doorRoot, ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: &approved})
@@ -94,7 +94,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 			t.Fatalf("seed the claim %s: %v", c.Token, err)
 		}
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 3, "LEGION", quietLogger())
 	handlers := []intake.Handler{blockers.NewMirror(records, "LEGION"), engine, admission}
 	answers := &workflowRuntime{pool: pool, records: records, handlers: handlers, log: quietLogger()}
@@ -120,11 +120,12 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	}
 }
 
-// put records each issue as the workflow holds it.
+// put records each issue as the workflow holds it, with its row of the copy (putChainIssue), so
+// the issue stands on a known Dispatch chain under the rig's root.
 func (r *childArchitectRig) put(issues ...record.Issue) {
 	r.t.Helper()
 	for _, issue := range issues {
-		putOutboxIssue(r.t, r.pool, r.records, issue)
+		putChainIssue(r.t, r.pool, r.records, issue)
 	}
 }
 
@@ -281,7 +282,8 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 // the rows they write through the real outbox runner, and the architect's launch through its
 // claim's machine: the start creates and spawns the child's architect claim, on the child and in
 // the root's tree, and the first notice published to that architect is its catch-up, naming the
-// child and every issue under it. A child that waits for the issue it is held by gets no architect
+// child and every issue under it in Legion's work, the issues that architect acts on (R18 of
+// dispatch://INFRA-3320). A child that waits for the issue it is held by gets no architect
 // while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 	t.Run("release_children", func(t *testing.T) {
@@ -294,7 +296,9 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.put(rig.member(doorChild, doorRoot, phase.Done, "done", "V"), rig.member(doorGrandchild, doorChild, phase.Done, "done", "W"))
 		rig.written("rerun", childAt("todo", 2))
-		rig.wantChildsArchitectToldItsIssues([]string{doorChild, doorGrandchild})
+		// The grandchild stays done, out of Legion's work, so the child's architect does not act
+		// on it and its catch-up does not name it.
+		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})
 
 	t.Run("a person's todo under a live tree", func(t *testing.T) {
@@ -314,16 +318,16 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 			t.Fatalf("the held child's entry queued %d architect starts, want none until its first phase starts", starts)
 		}
 		rig.drain()
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Admitted {
-			t.Fatalf("the held child stands at %s while %s works, want admitted", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Admitted {
+			t.Fatalf("the held child is recorded as %+v while %s works, want it at admitted", got, doorBlocker)
 		}
 		if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
 			t.Fatal("the held child has an architect claim while it waits, want none until its first phase starts")
 		}
 		rig.apply("blocker-done", intake.DispatchIssue{Key: doorBlocker, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done",
 			Title: doorBlocker, Rank: "Z"})
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Planning {
-			t.Fatalf("the child stands at %s once %s is done, want planning", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Planning {
+			t.Fatalf("the child is recorded as %+v once %s is done, want it in planning", got, doorBlocker)
 		}
 		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})

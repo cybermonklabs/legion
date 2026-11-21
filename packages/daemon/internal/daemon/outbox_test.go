@@ -44,10 +44,7 @@ import (
 )
 
 func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
-	row, err := record.NewOutboxRow("LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
-	if err != nil {
-		t.Fatalf("new outbox row: %v", err)
-	}
+	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
 	row.ID = 42
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "backlog"}}
 	runner := &outbox{log: quietLogger(), dispatch: client}
@@ -104,10 +101,7 @@ func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.
 }
 
 func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
-	row, err := record.NewOutboxRow("LEGION-208", record.MessagePost{Body: "Pull request checks are blocked."}, time.Now())
-	if err != nil {
-		t.Fatalf("new outbox row: %v", err)
-	}
+	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Pull request checks are blocked."}, time.Now())
 	row.ID = 44
 	client := &outboxDispatch{bodies: []string{"Pull request checks are blocked.\n\n<!-- legion-outbox:44 -->"}}
 	runner := &outbox{log: quietLogger(), dispatch: client}
@@ -166,6 +160,11 @@ func (d *outboxDispatch) SetStatus(_ context.Context, _ string, status string) (
 func (d *outboxDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
+
+// ChangeStatus is the status-change route, which no test of this stand-in drives.
+func (d *outboxDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("outboxDispatch takes no status change")
+}
 func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
 	d.handOvers = append(d.handOvers, fmt.Sprintf("%s %s %v", issue.Key, status, issue.Labels))
 	if d.handOverHook != nil {
@@ -210,13 +209,20 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
-// a message's document is its name (record.MessageArtifact). It also takes every role-holder
-// publication and keeps none. Every fake of the client that no test drives through a message's
-// document or a role-holder publication embeds it.
+// artifacts answers none, a document's reviews none, a version of a document Dispatch's 404, and
+// an upload answers the slug Dispatch files the name under, which for a message's document is its
+// name (record.MessageArtifact). It also takes every role-holder publication and keeps none. Every
+// fake of the client that no test drives through a message's document or a role-holder publication
+// embeds it.
 type noArtifacts struct{}
 
-func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	return nil, nil
+}
+func (noArtifacts) Reviews(context.Context, string) ([]dispatch.Review, error) { return nil, nil }
+func (noArtifacts) DocumentVersion(context.Context, string, int) (string, error) {
+	return "", &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+}
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
@@ -236,428 +242,6 @@ func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	client.getErr = errors.New("Dispatch unavailable")
 	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "Dispatch unavailable") {
 		t.Fatalf("status write failure = %v, want Dispatch read failure", err)
-	}
-}
-
-// A hand-over writes its status and the legion label together, in one Dispatch write that keeps
-// the labels the issue carries, and still writes the label where Dispatch already shows the status.
-// An issue that already carries the label takes the plain status write, and one a person moved
-// since the write was queued takes none. The write is fenced on the linger that ended: a root a
-// person set todo again before it runs, re-admitted at its next generation, keeps its child, and so
-// does a child no longer that tree's — neither is written.
-func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
-	const root, child = "LEGION-207", "LEGION-208"
-	until := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	parent := root
-	lingering := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 3, Status: "done", LingerUntil: &until}
-	reopened := lingering
-	reopened.Generation, reopened.LingerUntil, reopened.Phase, reopened.Status = 4, nil, phase.Admitted, "in_progress"
-	member := record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
-	orphaned := member
-	orphaned.Tree = child
-	row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 3), time.Now())
-	for _, tc := range []struct {
-		name                string
-		root, child         record.Issue
-		shown               dispatch.Issue
-		statuses, handOvers []string
-	}{
-		{name: "unlabelled, mid-run", root: lingering, child: member, shown: dispatch.Issue{Key: child, Status: "in_progress", Labels: []string{"repo:x"}},
-			handOvers: []string{"LEGION-208 todo [repo:x]"}},
-		{name: "unlabelled, already todo", root: lingering, child: member, shown: dispatch.Issue{Key: child, Status: "todo"},
-			handOvers: []string{"LEGION-208 todo []"}},
-		{name: "labelled, mid-run", root: lingering, child: member, shown: dispatch.Issue{Key: child, Status: "in_progress", Labels: []string{"Legion"}, HandedOver: true},
-			handOvers: []string{"LEGION-208 todo [Legion]"}},
-		{name: "labelled, already todo", root: lingering, child: member, shown: dispatch.Issue{Key: child, Status: "todo", Labels: []string{"legion"}, HandedOver: true}},
-		{name: "moved by a person", root: lingering, child: member, shown: dispatch.Issue{Key: child, Status: "backlog"}},
-		{name: "root reopened since", root: reopened, child: member, shown: dispatch.Issue{Key: child, Status: "in_progress"}},
-		{name: "child no longer the tree's", root: lingering, child: orphaned, shown: dispatch.Issue{Key: child, Status: "in_progress"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				if err := records.PutIssue(context.Background(), tx, tc.root); err != nil {
-					return err
-				}
-				if err := records.PutIssue(context.Background(), tx, tc.child); err != nil {
-					return err
-				}
-				return records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 3})
-			}); err != nil {
-				t.Fatalf("seed the tree: %v", err)
-			}
-			client := &outboxDispatch{issue: tc.shown}
-			if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), row); err != nil {
-				t.Fatalf("execute the hand-over: %v", err)
-			}
-			if !slices.Equal(client.statuses, tc.statuses) || !slices.Equal(client.handOvers, tc.handOvers) {
-				t.Fatalf("status writes %v and hand-overs %v, want %v and %v", client.statuses, client.handOvers, tc.statuses, tc.handOvers)
-			}
-		})
-	}
-}
-
-// The outbox can verify a hand-over fence, then lose the root to a reopen before its PATCH reaches
-// Dispatch. The daemon event from that late PATCH is still fenced in intake: re-admission cancels
-// the persistent hand-over, so the child stays in the reopened root's tree rather than restarting
-// there or becoming an orphan.
-func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
-	const root, child = "LEGION-207", "LEGION-208"
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(time.Hour)
-	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		for _, put := range []error{
-			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1}),
-			records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-		} {
-			if put != nil {
-				return put
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed hand-over: %v", err)
-	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-	reopen := func() error {
-		_, err := intake.ApplyFact(context.Background(), pool, "dispatch", "root-reopened", intake.DispatchIssue{
-			Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: true,
-		}, engine, admission)
-		return err
-	}
-	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "in_progress"}, handOverHook: reopen}
-	row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
-	if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), row); err != nil {
-		t.Fatalf("write the hand-over: %v", err)
-	}
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "late-handover", intake.DispatchIssue{
-		Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true, DaemonActor: true,
-	}, engine, admission); err != nil {
-		t.Fatalf("consume the late hand-over: %v", err)
-	}
-	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		var err error
-		got, err = records.Issue(context.Background(), tx, child)
-		return err
-	}); err != nil {
-		t.Fatalf("read child: %v", err)
-	}
-	if got.Tree != root || got.Phase != phase.Planning || got.Generation != 1 || got.Status != "in_progress" {
-		t.Fatalf("child after reopen race = %#v, want its live root's planning run", got)
-	}
-}
-
-// When Dispatch already shows both todo and legion, PATCH would make no event. The status executor
-// consumes the durable fence through an intake.Handover fact instead; the child still becomes its
-// own carried-state root and the row finishes.
-func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
-	const root, child = "LEGION-207", "LEGION-208"
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(time.Hour)
-	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		for _, put := range []error{
-			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
-			records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-		} {
-			if put != nil {
-				return put
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed hand-over: %v", err)
-	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "todo", HandedOver: true, Labels: []string{"legion"}}}
-	row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
-	if err := (&outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission}, log: quietLogger()}).execute(context.Background(), row); err != nil {
-		t.Fatalf("consume already-todo hand-over: %v", err)
-	}
-	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		var err error
-		got, err = records.Issue(context.Background(), tx, child)
-		return err
-	}); err != nil {
-		t.Fatalf("read child: %v", err)
-	}
-	if got.Tree != child || got.Generation != 2 || got.Phase != phase.Planning || got.Status != "in_progress" {
-		t.Fatalf("already-todo hand-over child = %#v, want its own carried planning root", got)
-	}
-}
-
-// A hand-over write Dispatch takes is consumed by the outbox at once, with the same intake.Handover
-// fact the already-todo path applies, rather than only by the event the write makes. That event can
-// be lost to a restart: a boot read records the sequence before the live event arrives, and the
-// event then stops at the sequence fence. This holds for both writes a hand-over can make: the PATCH
-// that adds the label to an unlabelled child, and the status write alone for a child a person
-// already labelled, each on the issue's sequence. The fact is idempotent, so the event, when it does
-// come, changes nothing more.
-func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
-	for _, tc := range []struct {
-		name                string
-		shown               dispatch.Issue
-		handOvers, statuses int
-	}{
-		{name: "unlabelled: the hand-over PATCH", shown: dispatch.Issue{Key: "LEGION-208", Status: "in_progress", LastSeq: 4}, handOvers: 1},
-		{name: "already labelled: the hand-over's status write", shown: dispatch.Issue{Key: "LEGION-208", Status: "in_progress", Labels: []string{"legion"}, HandedOver: true, LastSeq: 4}, handOvers: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			const root, child = "LEGION-207", "LEGION-208"
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			until := time.Now().Add(time.Hour)
-			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				for _, put := range []error{
-					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
-					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-				} {
-					if put != nil {
-						return put
-					}
-				}
-				return nil
-			}); err != nil {
-				t.Fatalf("seed hand-over: %v", err)
-			}
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-			client := &outboxDispatch{issue: tc.shown}
-			row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
-			if err := (&outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission}, log: quietLogger()}).execute(context.Background(), row); err != nil {
-				t.Fatalf("write the hand-over: %v", err)
-			}
-			if len(client.handOvers) != tc.handOvers || len(client.statuses) != tc.statuses {
-				t.Fatalf("hand-over PATCHes %v and status writes %v, want %d and %d", client.handOvers, client.statuses, tc.handOvers, tc.statuses)
-			}
-			read := func() *record.Issue {
-				t.Helper()
-				var got *record.Issue
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-					var err error
-					got, err = records.Issue(context.Background(), tx, child)
-					return err
-				}); err != nil {
-					t.Fatalf("read child: %v", err)
-				}
-				return got
-			}
-			if got := read(); got.Tree != child || got.Generation != 2 || got.Phase != phase.Planning || got.Status != "in_progress" {
-				t.Fatalf("child after its hand-over write = %#v, want its own carried planning root without waiting for the event", got)
-			}
-			// The write's own event, arriving afterward, changes nothing more.
-			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "handover-event", intake.DispatchIssue{
-				Key: child, ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated", Status: "todo", Title: child, Parent: root, Rank: "B", HandedOver: true, DaemonActor: true,
-			}, engine, admission); err != nil {
-				t.Fatalf("apply the hand-over's event: %v", err)
-			}
-			if got := read(); got.Tree != child || got.Generation != 2 || got.Phase != phase.Planning || got.Status != "in_progress" {
-				t.Fatalf("child after the hand-over's event = %#v, want it unchanged", got)
-			}
-		})
-	}
-}
-
-// A person's status move after the executor read the issue is caught by Dispatch's expected
-// sequence under its row lock, on either hand-over write: the PATCH that adds the label, and the
-// status write for a child a person already labelled. The outbox keeps the row for that transient
-// conflict, then observes the person's status and drops the hand-over fence without overwriting it.
-func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		labels []string
-	}{
-		{name: "unlabelled: the hand-over PATCH"},
-		{name: "already labelled: the hand-over's status write", labels: []string{"legion"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			const root, child = "LEGION-207", "LEGION-208"
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			now := time.Now()
-			until := now.Add(time.Hour)
-			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				for _, put := range []error{
-					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "B"}),
-					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-				} {
-					if put != nil {
-						return put
-					}
-				}
-				row, err := record.NewOutboxRow(child, record.HandOverStatusWrite("todo", "testing", root, 1), now)
-				if err != nil {
-					return err
-				}
-				return records.Enqueue(context.Background(), tx, row)
-			}); err != nil {
-				t.Fatalf("seed hand-over: %v", err)
-			}
-			client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "testing", Labels: tc.labels, HandedOver: tc.labels != nil, LastSeq: 7}}
-			client.handOverHook = func() error {
-				client.issue.Status, client.issue.LastSeq = "backlog", 8
-				return &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
-			}
-			runner := &outbox{pool: pool, records: records, dispatchProject: "LEGION", dispatch: client, now: func() time.Time { return now }, log: quietLogger()}
-			if err := runner.RunOnce(context.Background()); err != nil {
-				t.Fatalf("the sequence conflict is retried, not a tick failure: %v", err)
-			}
-			if rows := outboxRows(t, pool); rows != 1 {
-				t.Fatalf("rows after the sequence conflict = %d, want the hand-over retained", rows)
-			}
-			client.handOverHook = nil
-			runner.now = func() time.Time { return now.Add(time.Minute) }
-			if err := runner.RunOnce(context.Background()); err != nil {
-				t.Fatalf("observe the person's move: %v", err)
-			}
-			if rows := outboxRows(t, pool); rows != 0 {
-				t.Fatalf("rows after the person's move = %d, want the hand-over finished", rows)
-			}
-			if len(client.handOvers) != 1 || len(client.statuses) != 0 {
-				t.Fatalf("hand-over writes %v and unconditional status writes %v, want the one conditional attempt alone", client.handOvers, client.statuses)
-			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				handover, err := records.Handover(context.Background(), tx, child)
-				if err != nil || handover != nil {
-					t.Fatalf("hand-over fence after the person move = %#v, %v, want none", handover, err)
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
-// A hand-over row only ever removes its own fence. A row from an earlier linger (a root that came
-// back, then closed and lingered out again) still in the outbox meets the newer linger's fence on
-// the same child. Whether Dispatch shows a person's move, or the newer fence is itself cancelled
-// (its own row's to clear), the stale row finishes without deleting the newer fence.
-func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
-	const root, child = "LEGION-207", "LEGION-208"
-	for _, tc := range []struct {
-		name      string
-		shown     dispatch.Issue
-		cancelled bool
-	}{
-		{name: "a person moved the child", shown: dispatch.Issue{Key: child, Status: "backlog"}},
-		{name: "the newer fence is cancelled", shown: dispatch.Issue{Key: child, Status: "in_progress"}, cancelled: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			until := time.Now().Add(time.Hour)
-			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				for _, put := range []error{
-					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}),
-					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
-					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 2}),
-					func() error {
-						if !tc.cancelled {
-							return nil
-						}
-						return records.CancelTreeHandovers(context.Background(), tx, root, 2)
-					}(),
-				} {
-					if put != nil {
-						return put
-					}
-				}
-				return nil
-			}); err != nil {
-				t.Fatalf("seed the newer linger's fence: %v", err)
-			}
-			client := &outboxDispatch{issue: tc.shown}
-			stale := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
-			if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), stale); err != nil {
-				t.Fatalf("execute the stale hand-over row: %v", err)
-			}
-			if len(client.handOvers) != 0 || len(client.statuses) != 0 {
-				t.Fatalf("stale row wrote hand-overs %v and statuses %v, want none", client.handOvers, client.statuses)
-			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-				fence, err := records.Handover(context.Background(), tx, child)
-				if err != nil || fence == nil || fence.Generation != 2 || fence.Cancelled != tc.cancelled {
-					t.Fatalf("newer linger's fence after the stale row = %#v, %v; want it left at generation 2 (cancelled %t)", fence, err, tc.cancelled)
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
-// A hand-over Dispatch refuses permanently (the child is gone from Dispatch) never lands, so no
-// admission ever consumes its fence. The refused row is finished as any refused status write is,
-// and its fence goes with it in the same transaction: left behind, the fence would name the child's
-// own tree as its Sandbox's home for good, and the orphan sweep would keep that Sandbox forever.
-func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
-	const root, child = "LEGION-207", "LEGION-208"
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	st, err := store.Open(ctx, pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	t.Cleanup(st.Close)
-	until := time.Now().Add(time.Hour)
-	parent := root
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		for _, put := range []error{
-			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 3, Status: "done", LingerUntil: &until}),
-			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}),
-			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 3}),
-		} {
-			if put != nil {
-				return put
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed the hand-over: %v", err)
-	}
-	if home, err := st.IssueSandboxHome(ctx, "legion", child); err != nil || home != child {
-		t.Fatalf("the child's Sandbox home while its hand-over is pending = %q, %v; want %s", home, err, child)
-	}
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 3), time.Now()))
-	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "in_progress"}, handOverHook: func() error {
-		return &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue not found"}
-	}}
-	runner := &outbox{pool: pool, records: records, dispatchProject: "LEGION", dispatch: client, now: time.Now, log: quietLogger()}
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if len(client.handOvers) != 1 || outboxRows(t, pool) != 0 {
-		t.Fatalf("hand-over writes %v, %d rows left; want the one refused write and its row finished", client.handOvers, outboxRows(t, pool))
-	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		fence, err := records.Handover(ctx, tx, child)
-		if err != nil || fence != nil {
-			t.Fatalf("the fence after its refused hand-over = %#v, %v; want none", fence, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if home, err := st.IssueSandboxHome(ctx, "legion", child); err != nil || home == child {
-		t.Fatalf("the child's Sandbox home after its refused hand-over = %q, %v; want it no longer its own tree", home, err)
 	}
 }
 
@@ -743,9 +327,10 @@ func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	}
 }
 
-// artifactDispatch is outboxDispatch with the issue's documents: the slugs the artifact read
-// answers (slugsErr in their place when set), each upload it took, and what an upload answers:
-// uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch would.
+// artifactDispatch is outboxDispatch with the issue's documents: the slugs of those the artifact
+// read answers (slugsErr in their place when set), each upload it took, and what an upload
+// answers: uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch
+// would.
 type artifactDispatch struct {
 	*outboxDispatch
 	slugs     []string
@@ -755,8 +340,15 @@ type artifactDispatch struct {
 	filedAs   string
 }
 
-func (d *artifactDispatch) ArtifactSlugs(context.Context, string) ([]string, error) {
-	return d.slugs, d.slugsErr
+func (d *artifactDispatch) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	if d.slugsErr != nil {
+		return nil, d.slugsErr
+	}
+	artifacts := make([]dispatch.Artifact, len(d.slugs))
+	for i, slug := range d.slugs {
+		artifacts[i] = dispatch.Artifact{Slug: slug}
+	}
+	return artifacts, nil
 }
 func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content string) (string, error) {
 	d.uploads = append(d.uploads, record.MessageArtifact{Name: name, Content: content})
@@ -1122,7 +714,8 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 }
 
 // A controller notice row goes to the controller topic of the daemon's own project, the one its
-// controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is.
+// controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is,
+// with the run and the phase entry its row was queued at (record.Fence).
 func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	row.ID = 57
@@ -1137,15 +730,17 @@ func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 	if got := publisher.keys(); fmt.Sprint(got) != "[legion-outbox:57]" {
 		t.Fatalf("controller notice keys = %v, want the row's own key", got)
 	}
-	if got, want := publisher.payloads()[0], (record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}); !reflect.DeepEqual(got, want) {
+	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Generation: record.FirstFence.Generation, Entry: record.FirstFence.Entry}
+	if got := publisher.payloads()[0]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("controller notice payload = %+v, want the notice %+v", got, want)
 	}
 }
 
+// A publish the listener fails is the notice's failure, returned for the row's backoff.
 func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-2", Title: "Root", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
+	putChainIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-2", Title: "Root", Phase: phase.Planning, Generation: 1, Status: "in_progress", HoldsGate: true})
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
 	publisher := &outboxPublisher{err: errors.New("listener unavailable")}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -1431,71 +1026,6 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 	}
 }
 
-func TestOutboxLingerAppliesExpirationAndReturnsHandlerFailure(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	handler := &outboxFactHandler{}
-	row := mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 7}, time.Now())
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", handlers: []intake.Handler{handler}}
-
-	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("execute linger close: %v", err)
-	}
-	if got := handler.facts(); len(got) != 1 || got[0] != (intake.LingerExpired{Issue: "LEGION-208", Generation: 7}) {
-		t.Fatalf("linger facts = %#v, want expiration", got)
-	}
-
-	runner.handlers = []intake.Handler{&outboxFactHandler{err: errors.New("record unavailable")}}
-	failingRow := mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 8}, time.Now())
-	if err := runner.execute(context.Background(), failingRow); err == nil || !strings.Contains(err.Error(), "record unavailable") {
-		t.Fatalf("linger failure = %v, want handler failure", err)
-	}
-}
-
-func TestOutboxWorkspaceRemovalUsesDeterministicLocationAndReturnsFailure(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	// A workspace removal is the expiry of the tree's linger, so the tree lingers when it runs.
-	until := time.Now().Add(-time.Minute)
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, issue)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	row := mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: issue.Generation}, time.Now())
-	var removed workspace.Workspace
-	var runner *outbox
-	runner = &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, project: "legion", log: quietLogger(),
-		stateDir: t.TempDir(),
-		remove: func(_ context.Context, got workspace.Workspace, store sync.Locker) error {
-			removed = got
-			// The removal is handed its repository's store lock, the one its provisions are, not
-			// held: workspace.Remove takes it, and lets it go before it deletes the workspace's files.
-			shared, release := runner.provisions.stores.take(got.Clone)
-			defer release()
-			if store != sync.Locker(shared) {
-				t.Errorf("the removal was handed store lock %p, want its repository's %p", store, shared)
-			} else if !shared.TryLock() {
-				t.Error("the removal was handed its repository's store lock held, want it free for workspace.Remove to take")
-			} else {
-				shared.Unlock()
-			}
-			return nil
-		},
-	}
-
-	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("execute workspace removal: %v", err)
-	}
-	if want, _ := workspace.Location(runner.stateDir, ghrepo.MustParse(issue.Repo), row.Issue); removed != want {
-		t.Fatalf("removed workspace = %#v, want %#v", removed, want)
-	}
-
-	runner.remove = func(context.Context, workspace.Workspace, sync.Locker) error { return errors.New("remove failed") }
-	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "remove failed") {
-		t.Fatalf("workspace removal failure = %v, want remove failure", err)
-	}
-}
-
 func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1549,60 +1079,17 @@ func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *tes
 	if len(runtime.CallsOf("Resume")) != 1 {
 		t.Fatalf("resume calls = %d, want one", len(runtime.CallsOf("Resume")))
 	}
-	// A tree's close is the expiry of its linger.
-	until := time.Now().Add(-time.Minute)
-	issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
+	// The issue's close as done (R24 of dispatch://INFRA-3320) retires its own claims, each session
+	// kept for a reopen: no tree's close ends them any more.
+	issue.Phase, issue.Status = phase.Done, "done"
 	putOutboxIssue(t, pool, records, issue)
-	if err := runner.execute(context.Background(), mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RolePlanner, Generation: issue.Generation, Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("close the planner's tree: %v", err)
+	closed := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: claim.RolePlanner, Generation: issue.Generation}, time.Now())
+	closed.ID = 59
+	if err := runner.execute(context.Background(), closed); err != nil {
+		t.Fatalf("close the planner's issue: %v", err)
 	}
 	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("claim state after its tree's close = %s, want retired", got)
-	}
-}
-
-// A start queued before its tree closed, backing off, reaches its claim after the close's suspend.
-// Linger holds the member where it stood, so the start finishes without resuming the worker, and
-// records no start, so the close's suspend still applies if it runs later. Once re-admission ends
-// the linger, the same start resumes the worker.
-func TestAStartOnALingeringTreeResumesNothing(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"}
-	putOutboxIssue(t, pool, records, child)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	token, err := claim.NewToken("legion", child.Key, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key, Role: claim.RoleTester, Generation: 1,
-		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_tester", SessionFile: "/sessions/tester.jsonl"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), log: quietLogger(), now: time.Now}
-	start := mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing, Task: "Carry on testing."}, time.Now())
-	start.ID = 57
-
-	if err := runner.execute(ctx, start); err != nil {
-		t.Fatalf("start on the lingering tree = %v, want finished without acting", err)
-	}
-	if got := machine.Claim(); got.State != supervise.StateSuspended || got.LastStartRow != 0 || len(rt.CallsOf("Resume")) != 0 {
-		t.Fatalf("tester after a start on the lingering tree = %s with last start %d and %d resumes, want suspended, no start recorded, none",
-			got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
-	}
-	root.LingerUntil = nil
-	putOutboxIssue(t, pool, records, root)
-	if err := runner.execute(ctx, start); err != nil {
-		t.Fatalf("start once the tree runs again: %v", err)
-	}
-	if got := machine.Claim(); got.LastStartRow != 57 || len(rt.CallsOf("Resume")) != 1 {
-		t.Fatalf("tester once the tree runs again = %s with last start %d and %d resumes, want resumed by row 57", got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
+		t.Fatalf("claim state after its issue's close = %s, want retired", got)
 	}
 }
 
@@ -1652,10 +1139,10 @@ func TestAResumeStartGivesAClaimHoldingThePhasesTaskThatTaskOnce(t *testing.T) {
 		hold func(t *testing.T, machine *supervise.Machine, token claim.Token, rt *fake.Runtime)
 	}{
 		{name: "failed", hold: failTheClaim},
-		{name: "retired by the tree's close", hold: func(t *testing.T, machine *supervise.Machine, token claim.Token, rt *fake.Runtime) {
+		{name: "retired by the issue's close", hold: func(t *testing.T, machine *supervise.Machine, token claim.Token, rt *fake.Runtime) {
 			failTheClaim(t, machine, token, rt)
-			if err := machine.Handle(context.Background(), supervise.RequestTreeClose{Claim: token}); err != nil {
-				t.Fatalf("close the failed claim's tree: %v", err)
+			if err := machine.Handle(context.Background(), supervise.RequestIssueClose{Claim: token}); err != nil {
+				t.Fatalf("close the failed claim's issue: %v", err)
 			}
 		}},
 		{name: "booting", hold: func(*testing.T, *supervise.Machine, claim.Token, *fake.Runtime) {}},
@@ -1846,197 +1333,6 @@ func TestAResumeStartHoldsBackItsTaskForTheTurnTheClaimIsWorking(t *testing.T) {
 	}
 }
 
-// A tree's close and its workspace removal belong to the linger they expired. A row still backing
-// off when re-admission ends the linger (a release the runtime refused) finishes without acting:
-// it neither retires the claim the tree's new run relaunched, with the task it holds, nor removes
-// the workspace that run works in.
-func TestALingerExpiryRowAfterReadmissionActsOnNothing(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
-	putOutboxIssue(t, pool, records, issue)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	removals := 0
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removals++; return nil },
-	}
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-		Task: "Carry on testing.", ResumeTask: true}, time.Now())); err != nil {
-		t.Fatalf("the new run's start: %v", err)
-	}
-	token, err := claim.NewToken("legion", issue.Key, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine, _ := sup.Machine(token)
-
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1, Linger: 1}, time.Now())); err != nil {
-		t.Fatalf("the late tree close = %v, want it finished without acting", err)
-	}
-	if got := machine.Claim(); got.State != supervise.StateLaunching || got.Pending == nil || len(rt.CallsOf("Release")) != 0 {
-		t.Fatalf("tester after the late tree close = %s holding %+v with %d releases, want launching with its task, none", got.State, got.Pending, len(rt.CallsOf("Release")))
-	}
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: 1}, time.Now())); err != nil {
-		t.Fatalf("the late workspace removal = %v, want it finished without acting", err)
-	}
-	if removals != 0 {
-		t.Fatalf("workspace removals after re-admission = %d, want none", removals)
-	}
-}
-
-// A child keeps its generation across re-admission, so a linger's expiry rows name the root
-// generation whose linger they expire. When the re-admitted tree is closed again, a row the first
-// linger's expiry wrote, still backing off, acts on nothing in the second linger: it neither
-// retires the relaunched worker nor removes its workspace. The second linger's own rows do.
-func TestAnEarlierLingersRowsActOnNothingInALaterLinger(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(2 * time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 4, Status: "done", Rank: "U", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"}
-	putOutboxIssue(t, pool, records, child)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	token, err := claim.NewToken("legion", child.Key, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key, Role: claim.RoleTester, State: supervise.StateQueued}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	removals := 0
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removals++; return nil },
-	}
-	closeOf := func(linger uint64) record.OutboxRow {
-		return mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleTester, Generation: child.Generation, Linger: linger}, time.Now())
-	}
-	removalOf := func(linger uint64) record.OutboxRow {
-		return mustOutboxRow(t, child.Key, record.WorkspaceRemove{Linger: linger}, time.Now())
-	}
-
-	for _, row := range []record.OutboxRow{closeOf(3), removalOf(3)} {
-		if err := runner.execute(ctx, row); err != nil {
-			t.Fatalf("the first linger's %s row in the second linger = %v, want it finished without acting", row.Kind, err)
-		}
-	}
-	if got := machine.Claim().State; got != supervise.StateQueued || removals != 0 || len(rt.CallsOf("Release")) != 0 {
-		t.Fatalf("after the first linger's rows: tester %s, %d removals, %d releases; want it untouched", got, removals, len(rt.CallsOf("Release")))
-	}
-	for _, row := range []record.OutboxRow{closeOf(4), removalOf(4)} {
-		if err := runner.execute(ctx, row); err != nil {
-			t.Fatalf("the second linger's %s row: %v", row.Kind, err)
-		}
-	}
-	if got := machine.Claim().State; got != supervise.StateRetired || removals != 1 {
-		t.Fatalf("after the second linger's rows: tester %s, %d removals; want retired and the workspace removed", got, removals)
-	}
-}
-
-// A queued root that never ran joins the live tree it is made a child of. A workspace removal its
-// own former tree's linger queued, still backing off, names that tree, and finishes without acting
-// even when its new tree lingers at the same root generation: the adopted work goes on in its
-// workspace. A removal its new tree's linger queued removes it.
-func TestAWorkspaceRemovalOfATreeTheIssueLeftActsOnNothing(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(2 * time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 4, Status: "done", Rank: "U", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	adopted := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "adopted", Phase: phase.Planning, Generation: 5, Status: "in_progress", Rank: "V"}
-	putOutboxIssue(t, pool, records, adopted)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	removals := 0
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removals++; return nil },
-	}
-
-	if err := runner.execute(ctx, mustOutboxRow(t, adopted.Key, record.WorkspaceRemove{Linger: root.Generation, Tree: adopted.Key}, time.Now())); err != nil {
-		t.Fatalf("the former tree's removal = %v, want it finished without acting", err)
-	}
-	if removals != 0 {
-		t.Fatalf("workspace removals after the former tree's row = %d, want none", removals)
-	}
-	if err := runner.execute(ctx, mustOutboxRow(t, adopted.Key, record.WorkspaceRemove{Linger: root.Generation, Tree: root.Key}, time.Now())); err != nil {
-		t.Fatalf("the new tree's removal: %v", err)
-	}
-	if removals != 1 {
-		t.Fatalf("workspace removals after the new tree's row = %d, want the workspace removed", removals)
-	}
-}
-
-// A linger's workspace removal waits until the close has retired every claim of the issue. A
-// worker whose release the runtime refused still runs in that workspace. The close reserved the
-// tree's cleanup before its release failed, so the tree's re-admission waits for that cleanup: the
-// removal of the ended linger then finishes without acting, and the retried close retires the
-// worker and confirms the cleanup, after which the tree's next run relaunches the retired worker
-// and provisions its workspace again.
-func TestAWorkspaceIsRemovedOnlyOnceTheCloseRetiredEveryClaim(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(-time.Minute)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"}
-	putOutboxIssue(t, pool, records, child)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	token, err := claim.NewToken("legion", child.Key, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key, Role: claim.RoleTester, State: supervise.StateQueued}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
-		t.Fatalf("launch the tester: %v", err)
-	}
-	rt.FailReleaseOf(token, errors.New("the pane did not exit"))
-	removals := 0
-	trees := outboxTreeStore(t, pool, root.Key)
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: trees, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removals++; return nil },
-	}
-	closeRow := mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Linger: 3}, time.Now())
-	removal := mustOutboxRow(t, child.Key, record.WorkspaceRemove{Linger: 3}, time.Now())
-
-	if err := runner.execute(ctx, closeRow); err == nil {
-		t.Fatal("the close with the release refused = nil, want the refusal so the row retries")
-	}
-	if err := runner.execute(ctx, removal); err == nil || removals != 0 {
-		t.Fatalf("the removal with the tester still %s = %v after %d removals, want it waiting for the close", machine.Claim().State, err, removals)
-	}
-	root.Generation, root.Phase, root.Status, root.LingerUntil = 4, phase.Admitted, "in_progress", nil
-	putOutboxIssue(t, pool, records, root)
-	if _, err := trees.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
-		t.Fatalf("re-admission while the close's cleanup is reserved = %v, want the reservation's wait", err)
-	}
-	if err := runner.execute(ctx, removal); err != nil || removals != 0 {
-		t.Fatalf("the ended linger's removal = %v after %d removals, want it finished without acting", err, removals)
-	}
-	rt.FailReleaseOf(token, nil)
-	if err := runner.execute(ctx, closeRow); err != nil {
-		t.Fatalf("the reserved close retried after re-admission: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("tester after the reserved close's retry = %s, want retired", got)
-	}
-	if opened, err := trees.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil || opened.Epoch != 2 {
-		t.Fatalf("re-admission once the cleanup confirmed = %+v, %v; want the tree's epoch 2", opened, err)
-	}
-}
-
 // The architect's retry of a held phase writes a start carrying the retry task. The relaunched
 // claim still holds the task it was started with, so the retry task waits behind it and its row
 // is retried until that task's turn is over. That turn can finish the phase: the implementer
@@ -2048,8 +1344,9 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress"}
-	putOutboxIssue(t, pool, records, issue)
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", HoldsGate: true}
+	// Its copy row too, so the notices of its moves are routed on a chain the copy shows.
+	putChainIssue(t, pool, records, issue)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 114, Branch: "legion/LEGION-208", HeadSHA: "f8f30933", Failing: []string{}, State: record.PullRequestOpen})
 	}); err != nil {
@@ -2606,11 +1903,13 @@ func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 }
 
 // openTree opens tree's lifecycle under the workflow's authority, as admission's promotion of a
-// root does in the transaction that admits it. That row, and not a slot, is what says a tree runs
-// (record.TreeLive) now that a slot counts one issue at work rather than one tree, so every
-// fixture that seeds a running tree opens it as well as granting whatever slots its issues hold.
-// project is the Dispatch project key its issues are recorded under; the lifecycle is keyed by
-// the claim token of it, as every claim and runtime key is.
+// root does in the transaction that admits it, and the root's own issue lifecycle beside it, which
+// that promotion opens too and each claim of the root binds (store.Store.AdmitClaim). The tree's
+// row, and not a slot, is what says a tree runs (record.TreeLive) now that a slot counts one issue
+// at work rather than one tree, so every fixture that seeds a running tree opens it as well as
+// granting whatever slots its issues hold. project is the Dispatch project key its issues are
+// recorded under; the lifecycles are keyed by the claim token of it, as every claim and runtime
+// key is.
 func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -2621,19 +1920,40 @@ func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 }
 
 // openTreeTx is openTree inside a transaction the caller owns, for a fixture that seeds a tree's
-// record, its slots and its lifecycle in one write as the promotion does.
+// record, its slots and its lifecycles in one write as the promotion does.
 func openTreeTx(ctx context.Context, tx pgx.Tx, project, tree string) error {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return fmt.Errorf("project token of %s: %w", project, err)
 	}
-	_, err = record.NewStore().OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow)
-	return err
+	if _, err := record.NewStore().OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow); err != nil {
+		return err
+	}
+	return openIssueTx(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow)
+}
+
+// openIssueTx opens issue's own lifecycle under authority inside a transaction the caller owns, as
+// admission opens it for each issue it starts and the operator's spawn for the issue it spawns:
+// each claim of the issue binds it (store.Store.AdmitClaim). project is the claim token of the
+// issue's project. A lifecycle the other authority already holds open is left as it stands.
+func openIssueTx(ctx context.Context, tx pgx.Tx, project, issue string, authority treelifecycle.Authority) error {
+	if _, err := record.NewStore().OpenIssueLifecycle(ctx, tx, project, issue, authority); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		return fmt.Errorf("open the lifecycle of issue %s: %w", issue, err)
+	}
+	return nil
+}
+
+// openIssue is openIssueTx in a transaction of its own, through st.
+func openIssue(t *testing.T, st *store.Store, project, issue string, authority treelifecycle.Authority) {
+	t.Helper()
+	if _, err := st.OpenIssueLifecycle(context.Background(), project, issue, authority); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
+	}
 }
 
 // outboxTreeStore is the daemon's store on pool, the outbox's tree barrier as production wires it
-// (newOutbox's trees), with each root's tree lifecycle opened as admission opens it: every workflow
-// tree the daemon runs was admitted.
+// (newOutbox's trees), with each root's tree lifecycle and its own issue lifecycle opened as
+// admission opens them: every workflow tree the daemon runs was admitted.
 func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
@@ -2646,6 +1966,7 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 		if _, err := st.OpenTreeLifecycle(ctx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("admit the tree of %s: %v", root, err)
 		}
+		openIssue(t, st, "legion", root, treelifecycle.AuthorityWorkflow)
 	}
 	return st
 }
@@ -2874,157 +2195,9 @@ func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *
 	return sup, rt
 }
 
-// A closed tree set back to todo runs again. Its linger expiry retired every claim and removed the
-// workspaces; admission re-admits the root, and the architect's start must provision the workspace
-// again and relaunch the kept session. Before, the start met a retired claim and finished having
-// done nothing: the tree held a slot, in_progress, with no architect.
-func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 3, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
-	// The record is written twice: the architect's start below is a start of the tree while it ran,
-	// and a start of a closed issue starts nothing, so the root stands in the workflow for it and
-	// takes its closed shape only afterwards.
-	putOutboxIssue(t, pool, records, root)
-	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
-	provisioned, removed := 0, 0
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "legion", quietLogger())
-	runner := &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		githubAPI: newBranchGitHub(t, nil, branchExists).url,
-		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
-		now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			provisioned++
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removed++; return nil },
-	}
-
-	// The tree's architect ran on a session before the tree closed.
-	if err := runner.execute(ctx, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation}, time.Now())); err != nil {
-		t.Fatalf("start the architect: %v", err)
-	}
-	token, err := claim.NewToken("legion", root.Key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("claim token: %v", err)
-	}
-	machine, _ := sup.Machine(token)
-	if err := machine.Handle(ctx, supervise.RequestRegister{Claim: token, Generation: machine.Claim().Generation, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"}); err != nil {
-		t.Fatalf("register the architect: %v", err)
-	}
-
-	// The tree closes and lingers, then its linger expires: every claim stops and the workspace goes.
-	until := time.Now().Add(-time.Minute)
-	root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
-	putOutboxIssue(t, pool, records, root)
-	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger:LEGION-208:3", intake.LingerExpired{Issue: root.Key, Generation: 3}, engine, admission); err != nil {
-		t.Fatalf("apply linger expiry: %v", err)
-	}
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the linger effects: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateRetired || removed != 1 {
-		t.Fatalf("after linger expiry the architect is %s with %d workspace removals, want retired and one", got, removed)
-	}
-
-	// The human sets the closed root back to todo.
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
-		t.Fatalf("apply the todo: %v", err)
-	}
-	// The first run creates the re-admitted root's branch, which its architect's start waits for;
-	// the second runs that start.
-	for range 2 {
-		if err := runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run the re-admission effects: %v", err)
-		}
-	}
-	got := machine.Claim()
-	if got.State != supervise.StateLaunching || provisioned != 2 {
-		t.Fatalf("re-admitted architect is %s after %d provisions, want launching on a provisioned workspace", got.State, provisioned)
-	}
-	resumes := runtime.CallsOf("Resume")
-	if len(resumes) != 1 || resumes[0].Spec.ResumeSessionFile != "/tmp/architect.jsonl" {
-		t.Fatalf("resume calls = %+v, want the kept session relaunched once", resumes)
-	}
-}
-
-// A tree's workspace removal serves the generation whose linger expired. One still waiting out its
-// backoff when the tree is re-admitted finishes without acting: the workspace there now is the next
-// generation's, just provisioned for the relaunched architect. That holds even when the re-admitted
-// generation has closed and lingers in turn before the old removal retries (its backoff can reach
-// 64 seconds): the tree lingers again, but the removal serves the earlier generation.
-func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(-time.Minute)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 5}
-	putOutboxIssue(t, pool, records, root)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "legion", quietLogger())
-	clock := time.Now().Add(time.Hour)
-	removals, busy := 0, true
-	runner := &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
-		now: func() time.Time { return clock }, log: quietLogger(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error {
-			removals++
-			if busy {
-				return errors.New("jj workspace forget: the repository is locked")
-			}
-			return nil
-		},
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger:LEGION-208:3", intake.LingerExpired{Issue: root.Key, Generation: 3}, engine, admission); err != nil {
-		t.Fatalf("apply linger expiry: %v", err)
-	}
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the linger effects: %v", err)
-	}
-	if removals != 1 || workspaceRemovals(t, pool) != 1 {
-		t.Fatalf("after a failed removal: %d attempts, %d rows, want one attempt and its row waiting", removals, workspaceRemovals(t, pool))
-	}
-
-	busy = false
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
-		t.Fatalf("apply the todo: %v", err)
-	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		readmitted, err := records.Issue(ctx, tx, root.Key)
-		if err != nil || readmitted == nil {
-			return err
-		}
-		if readmitted.Generation != 4 {
-			t.Errorf("re-admitted generation = %d, want 4", readmitted.Generation)
-		}
-		lingering := time.Now().Add(time.Hour)
-		readmitted.Phase, readmitted.Status, readmitted.LingerUntil = phase.Done, "done", &lingering
-		return records.PutIssue(ctx, tx, *readmitted)
-	}); err != nil {
-		t.Fatalf("close the re-admitted generation: %v", err)
-	}
-	clock = clock.Add(2 * time.Minute)
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the re-admission effects: %v", err)
-	}
-	if removals != 1 || workspaceRemovals(t, pool) != 0 {
-		t.Fatalf("after re-admission: %d removal attempts, %d rows, want the first generation's row finished without removing", removals, workspaceRemovals(t, pool))
-	}
-}
-
 // Under a runtime that provisions each claim's workspace in its own pod (C4), the daemon provisions
-// none and removes none: a start spawns the claim with no workspace on the host, a retired claim's
-// relaunch provisions nothing, and a tree's removal row finishes without acting.
+// none and removes none: a start spawns the claim with no workspace on the host, and a retired
+// claim's relaunch provisions nothing.
 func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -3048,19 +2221,10 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, start, time.Now())); err != nil {
 		t.Fatalf("start the architect: %v", err)
 	}
-	// The tree's linger expires: its close and its workspace removal run while it lingers.
-	until := time.Now().Add(-time.Minute)
-	issue.LingerUntil = &until
-	putOutboxIssue(t, pool, records, issue)
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation, Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("close the tree: %v", err)
+	// The issue's close retires the claim, and a new run's start relaunches it.
+	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}, time.Now())); err != nil {
+		t.Fatalf("close the issue: %v", err)
 	}
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("remove the workspace: %v", err)
-	}
-	// Re-admission ends the linger, and the retired architect is relaunched.
-	issue.LingerUntil = nil
-	putOutboxIssue(t, pool, records, issue)
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, start, time.Now())); err != nil {
 		t.Fatalf("relaunch the retired architect: %v", err)
 	}
@@ -3075,23 +2239,16 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	}
 }
 
-func workspaceRemovals(t *testing.T, pool *store.Pool) int {
-	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'workspace_remove'`).Scan(&count); err != nil {
-		t.Fatalf("count workspace removal rows: %v", err)
-	}
-	return count
-}
-
-// A re-admission starts the root's architect again. The linger suspended it, so the start normally
-// resumes it and the resume's ready tells it its tree. It is still running in two cases: its claim
-// was mid-launch when the linger's suspend ran, which the machine ignores while launching, so it
-// came up during the linger and was told nothing; or the re-admission's start ran before the
-// linger's suspend. Then the start finds it working and only records itself: no ready follows, and
-// without a catch-up the architect would sit through the new generation untold. The start tells
-// it, as a ready would, for the launch that runs. A start that launches the claim tells nothing:
-// its ready will.
+// A new run of an issue (decision 8 of dispatch://INFRA-4730: a todo on a record at phase done, the
+// reopen of a merged issue, the rerun of a parked child) starts its architect again. The stop or
+// the close before it suspended or retired that claim, so the start normally resumes it and the
+// resume's ready tells it its issue. It is still running in two cases: its claim was mid-launch
+// when the stop's suspend ran, which the machine ignores while launching, so it came up while the
+// issue was out of work and was told nothing; or the new run's start ran before the stop's
+// suspend. Then the start finds it working and only records itself: no ready follows, and without
+// a catch-up the architect would sit through the new generation untold. The start tells it, as a
+// ready would, for the launch that runs. A start that launches the claim tells nothing: its ready
+// will.
 func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -3151,7 +2308,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 		t.Fatalf("start the running architect for generation 2: %v", err)
 	}
 	told := catchUpReasons()
-	want := fmt.Sprintf("the tree of LEGION-208 at generation 2 as the daemon records it now; start or resume it as your role says launch=%d", launch)
+	want := fmt.Sprintf("the issues under LEGION-208, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says launch=%d", launch)
 	if len(told) != 1 || told[0] != want || machine.Claim().State != supervise.StateReady {
 		t.Fatalf("after the generation 2 start, catch-ups %q with the architect %s; want one, %q, and the architect left running", told, machine.Claim().State, want)
 	}
@@ -3174,21 +2331,19 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 // refusal permanent, and both Dispatch kinds take that reading (permanentRefusal): each row is
 // finished with its architect's notice written in the finish's own transaction. Before, one
 // dispatch_message row of a closed issue failed ISSUE_CLOSED once a minute for days with nobody
-// told. The issue's tree has finished here, which is how a Dispatch issue usually comes to be
-// closed, so neither notice reaches anyone either: the architect stopped with the tree
-// (stoppedWithTree), and each notice is finished undelivered with its own line rather than
-// published. So a closed issue costs the outbox one attempt per row and leaves it empty.
+// told. Each notice then reaches the architect that owns the issue, once (R18 of
+// dispatch://INFRA-3320). So a closed issue costs the outbox one attempt per row and leaves it
+// empty.
 func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
-	// The root LEGION-1 lingers (its tree has finished) and its architect is suspended with it,
-	// the pair stoppedWithTree reads. LEGION-2's notices are that root architect's, since
-	// LEGION-2 has no sub-architect of its own running.
-	noticeTree(t, pool, records, true)
+	// LEGION-2 has no sub-architect of its own, so its notices are those of the architect of
+	// LEGION-1, the issue above it on its Dispatch chain, which holds its role.
+	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	const body = "READY #42 at head\n\nthe rest of the packet"
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.MessagePost{Body: body}, now))
 	// The status write carries no reason, so it makes the one Dispatch call its status is. Every
@@ -3354,24 +2509,21 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 		}
 	}
 
-	// The notices the finishes wrote run on the next drain, and reach nobody: the architect that
-	// owns them stopped with the tree that finished, so each is finished undelivered with its own
-	// line rather than published.
+	// The notices the finishes wrote run on the next drain, and each reaches LEGION-1's architect
+	// once, the refused message's and the refused status write's.
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the outbox notices: %v", err)
 	}
-	if attempts, delivered := publisher.snapshot(); attempts != 0 || len(delivered) != 0 {
-		t.Fatalf("published %d notices (%+v), want none to an architect stopped with its finished tree", attempts, delivered)
+	told := map[string]int{}
+	_, delivered := publisher.snapshot()
+	for _, published := range delivered {
+		if published.topic != architectTopic(t, "LEGION-1") {
+			t.Fatalf("a refusal's notice was published to %s, want LEGION-1's architect: %+v", published.topic, published)
+		}
+		told[published.payload.(record.Notice).Reason]++
 	}
-	const undelivered = "outbox notice finished undelivered: its architect stopped with its finished tree"
-	told := map[int64]bool{}
-	lines := loggedLines(t, logs.String(), undelivered)
-	for _, line := range lines {
-		told[rowOf(line)] = true
-	}
-	if len(lines) != 2 || !told[messageNotice.id] || !told[statusNotice.id] {
-		t.Fatalf("logged %q for rows %v, want it once for the refused message's notice %d and once for the status write's %d: %s",
-			undelivered, told, messageNotice.id, statusNotice.id, logs.String())
+	if len(delivered) != 2 || told[messageNotice.notice.Reason] != 1 || told[statusNotice.notice.Reason] != 1 {
+		t.Fatalf("published %+v, want the refused message's notice and the refused status write's, each once to LEGION-1's architect", delivered)
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)

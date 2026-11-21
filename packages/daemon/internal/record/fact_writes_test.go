@@ -8,16 +8,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The end rule of a step's run reads three inputs the store writes - the issue's record, its pull
-// request and its hand-over fence - and the fact's settle reads the runs of each issue its
-// transaction wrote one of them for (IssuesWritten). So each writer of those inputs keeps its
+// The end rule of a step's run reads two inputs the store writes - the issue's record and its pull
+// request - and the fact's settle reads the runs of each issue its transaction wrote one of them
+// for (IssuesWritten). So each writer of those inputs keeps its
 // issue, once, in the order of its first write, in a ctx that keeps writes (WithIssueWrites); a
 // writer that kept none would leave the run its write ends unended. A ctx that keeps no writes
 // keeps nothing, which is the control.
 func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
-	keys := []string{"LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"}
+	keys := []string{"LEGION-301", "LEGION-302"}
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, key := range keys {
 			must(t, store.PutIssue(t.Context(), tx, issueFixture(key)))
@@ -28,9 +28,6 @@ func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 		must(t, store.PutIssue(ctx, tx, issueFixture(keys[0])))
 		must(t, store.PutPullRequest(ctx, tx, PullRequest{Issue: keys[1], Repo: "sjawhar/legion", Number: 1302, Branch: "legion/" + keys[1],
 			HeadSHA: "b1", State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}}))
-		must(t, store.PutHandover(ctx, tx, Handover{Issue: keys[2], Tree: keys[2], Generation: 1}))
-		must(t, store.DeleteHandover(ctx, tx, keys[3]))
-		must(t, store.DeleteHandoverAt(ctx, tx, keys[4], keys[4], 1))
 		must(t, store.PutIssue(ctx, tx, issueFixture(keys[0])))
 	}
 	inTx(t, st, func(tx pgx.Tx) {

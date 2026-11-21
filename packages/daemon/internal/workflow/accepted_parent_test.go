@@ -36,8 +36,9 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent's head proves its children's merged work, so accepting it first would
-// send a head to the merge queue that does not carry that work.
+// of them leaves. A parent is accepted once its checks pass on a base commit that carries its
+// children's merges, so accepting it first would send a head to the merge queue that no check ran
+// with that work.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -72,11 +73,15 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 }
 
 // leave moves key to at with the Dispatch status it leaves on, as a close or a person's park
-// leaves it.
+// leaves it: the record, and the copy of Dispatch's issues the reading of that move writes
+// (blockers.Mirror), which the open-children rule reads.
 func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), "update issues set phase = $2, status = $3 where key = $1", key, string(at), status); err != nil {
 		t.Fatalf("take %s out of the workflow: %v", key, err)
+	}
+	if _, err := pool.Exec(context.Background(), "update dispatch_issues set status = $2 where key = $1", key, status); err != nil {
+		t.Fatalf("move the copy's row of %s to %s: %v", key, status, err)
 	}
 }
 
@@ -107,7 +112,7 @@ func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *t
 	// The hold stands, and is now the nearer ancestor's: the sign-off put LEGION-209 in retro,
 	// so LEGION-300 waits for it as well as for the merged root above it. It is still in the
 	// workflow for every other reading.
-	if got := record.AcceptedAncestor(*issueRecord(t, pool, "LEGION-300"), treeByKey(t, pool, "LEGION-208")); got != "LEGION-209" {
+	if got := record.AcceptedAncestor(projectChains(t, pool, "LEGION-300"), "LEGION-300"); got != "LEGION-209" {
 		t.Fatalf("the accepted ancestor of LEGION-300 = %q, want the issue just accepted above it, LEGION-209", got)
 	}
 	if !record.InWorkflow(*issueRecord(t, pool, "LEGION-300")) {
@@ -115,25 +120,23 @@ func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *t
 	}
 }
 
-// treeByKey is every recorded member of tree, by key.
-func treeByKey(t *testing.T, pool *pgxpool.Pool, tree string) map[string]record.Issue {
+// projectChains is the Dispatch chains of the test project with keys named (record.ReadChains),
+// as a decision of the daemon reads them.
+func projectChains(t *testing.T, pool *pgxpool.Pool, keys ...string) *record.Chains {
 	t.Helper()
-	byKey := map[string]record.Issue{}
+	var chains *record.Chains
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		members, err := record.NewStore().TreeIssues(context.Background(), tx, tree)
-		if err != nil {
-			return err
-		}
-		for _, member := range members {
-			byKey[member.Key] = member
-		}
-		return nil
+		var err error
+		chains, err = record.ReadChains(context.Background(), tx, record.NewStore(), "LEGION", keys)
+		return err
 	})
-	return byKey
+	return chains
 }
 
-// A6. close_root is refused the same way and with the same code: the close lingers the whole
-// tree, which would stop every issue beneath mid-turn.
+// A6. close_root is refused the same way and with the same code while an issue beneath is in the
+// workflow, and after R8's codes while a Dispatch child of it is not done (R24 of
+// dispatch://INFRA-3320: CHILDREN_NOT_DONE), a child on the backlog included; once the child is
+// done the close is queued, and the root keeps its phase until Dispatch shows it done.
 func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -156,42 +159,45 @@ func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertPhase(t, pool, phase.Admitted)
 
 	leave(t, pool, "LEGION-209", phase.Admitted, "backlog")
-	if result := closeNow("close-accepted"); result.Refusal != nil {
-		t.Fatalf("close_root once the issue beneath left = %+v, want it accepted", result.Refusal)
+	result = closeNow("close-backlog")
+	if result.Refusal == nil || result.Refusal.Code != "CHILDREN_NOT_DONE" || !strings.Contains(result.Refusal.Message, "LEGION-209 (backlog)") {
+		t.Fatalf("close_root with a child on the backlog = %+v, want 409 CHILDREN_NOT_DONE naming LEGION-209 (backlog)", result.Refusal)
 	}
-	assertPhase(t, pool, phase.Done)
+	assertOutboxCount(t, pool, "dispatch_status", 0)
+
+	leave(t, pool, "LEGION-209", phase.Done, "done")
+	if result := closeNow("close-accepted"); result.Refusal != nil {
+		t.Fatalf("close_root once the child is done = %+v, want it accepted", result.Refusal)
+	}
+	assertPhase(t, pool, phase.Admitted)
+	assertOutboxCount(t, pool, "dispatch_status", 1)
 }
 
-// A6. A person's move of an issue to todo beneath an ancestor the daemon has already accepted is
-// recorded and held at admitted, and the architect is told why. The chain is walked past a
-// parent already done, so a grandchild under a done parent is held by whichever issue above it
-// is still merging.
-func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
+// A6 on the Dispatch chain. A person's move of an issue to todo under a parent that is done,
+// beneath an ancestor the daemon has already accepted (merging), records nothing and tells nobody:
+// its parent is out of Legion's work while an issue above it is in it, so the issue is that
+// issue's unreleased work, held where it stands (R19 of dispatch://INFRA-3320, `ancestry`). The
+// chain is walked past the done parent, so the accepted ancestor above it is still found
+// (AcceptedAncestorIn); the line's hold of such an issue is record's
+// TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent.
+func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldUnrecorded(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedTreeLifecycle(t, pool, "LEGION-208")
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Done, "done")
+	// The daemon's copy takes the event before the engine reads it (the daemon's handler order).
+	mirrorChild(t, pool, "LEGION-300", "LEGION-209", "todo", 3)
 
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
 		intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 			Status: "todo", Title: "grandchild", Parent: "LEGION-209", Rank: "Z"})
 
-	held := *issueRecord(t, pool, "LEGION-300")
-	if held.Tree != "LEGION-208" || held.Phase != phase.Admitted {
-		t.Fatalf("the person's todo = %#v, want it recorded in LEGION-208's tree at admitted", held)
+	if held := issueRecord(t, pool, "LEGION-300"); held != nil {
+		t.Fatalf("the person's todo = %#v, want nothing recorded: its parent is out of Legion's work and an issue above it is in it", held)
 	}
-	if got := record.AcceptedAncestor(held, treeByKey(t, pool, "LEGION-208")); got != "LEGION-208" {
+	if got := record.AcceptedAncestorIn(projectChains(t, pool, "LEGION-300", "LEGION-209"), "LEGION-300", "LEGION-209"); got != "LEGION-208" {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want LEGION-208, found by walking past the done parent", got)
 	}
-	var reason string
-	if err := pool.QueryRow(context.Background(),
-		"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
-		t.Fatalf("read the child-status notice: %v", err)
-	}
-	for _, want := range []string{"LEGION-300", "LEGION-208", "admitted"} {
-		if !strings.Contains(reason, want) {
-			t.Fatalf("the child-status notice %q does not say %q", reason, want)
-		}
-	}
+	assertOutboxCount(t, pool, "notice", 0)
 }

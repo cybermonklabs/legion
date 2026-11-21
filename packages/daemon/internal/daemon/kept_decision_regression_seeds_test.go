@@ -50,8 +50,9 @@ var keptShortRegressionSeeds = []int64{1, 4, 7, 8, 14, 19, 21, 22, 25, 27, 29, 3
 // found it, so a regression in the kept-decision machinery is caught by a named test rather than
 // by whichever sweep happens to draw that seed again. The invariant and the oracle are the
 // property test's own (TestKeptDecisionsReachTheCurrentArchitectOnce): a person's decision reaches
-// the architect of the tree its issue stands in exactly once, at most one telling more goes to the
-// tree it left, carried by a row composed before the hand-over, and nothing is left kept.
+// the architect of the root it was made on exactly once, and nothing is left kept. The model no
+// longer moves an issue between trees (R15 of dispatch://INFRA-3320), so a seed found at a
+// hand-over now drives the schedules the model has left.
 //
 // The default property test keeps the bounds it has, so it stays a minute's work; these seeds are
 // the ones worth paying for every time.

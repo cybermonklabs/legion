@@ -70,32 +70,26 @@ func recordedStatus(t *testing.T, pool *pgxpool.Pool, key string) string {
 	return status
 }
 
-// A root waiting for a slot can stand in a workflow phase of its own: a re-admission leaves the
-// phase a hand-over carried (admit's readmit), and the root waits in the line as `todo` until a
-// slot reaches it. Only a `todo` root is in that line (record.line), so a status correction of its
-// phase would take it out and no slot would ever reach it: the boot leaves such a root, and every
-// issue of a tree that holds no slot or lingers, exactly as it stands.
-func TestTheBootCorrectsNoStatusOfATreeThatHoldsNoSlot(t *testing.T) {
+// A root waiting in the line for its first start can stand in a workflow phase of its own: a
+// hand-over of the release before carried it in at its generation (record.CarriedIn), and it waits
+// in the line as `todo` until a slot reaches it. Only a `todo` root is in that line (record.line),
+// so a status correction of its phase would take it out and no slot would ever reach it: the boot
+// leaves such a root, and every issue whose gate root it is, exactly as it stands, since that tree
+// runs nothing yet (record.TreeRuns).
+func TestTheBootCorrectsNoStatusOfATreeWaitingForItsFirstStart(t *testing.T) {
 	pool := migratedPool(t)
 	seedBootTree(t, pool)
-	// The waiting root: handed over in implementing, carrying the phase of its old tree, recorded
-	// todo, which is what Dispatch shows and what keeps it in the line. HandedOverFrom is the
-	// arrival itself (record.ran): a root carrying a phase of the tree it left queues for a slot
-	// of its own, and the promotion that opens its tree clears the mark.
+	// The waiting root: carried in in implementing at generation 2, recorded todo, which is what
+	// Dispatch shows and what keeps it in the line.
 	seedIssue(t, pool, record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-300", Project: "LEGION", Title: "a root waiting for a slot with a carried phase",
 		Phase: phase.Implementing, Generation: 2, Status: "todo", DispatchStatus: "todo", Rank: "Y", HandedOver: true,
-		HandedOverFrom: "LEGION-200"})
+		CarriedGeneration: 2})
 	// A child of that waiting root waits with it, and is corrected by no boot either.
 	seedIssue(t, pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-300", Project: "LEGION", Title: "a child of the waiting root", Parent: new("LEGION-300"),
 		Phase: phase.Planning, Generation: 2, Status: "todo", DispatchStatus: "todo", Rank: "Z"})
-	// A lingering root's tree runs nothing: its statuses are its close's to write.
-	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-310", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-310", Project: "LEGION", Title: "a lingering root", Phase: phase.Testing, Generation: 1,
-		Status: "todo", DispatchStatus: "todo", Rank: "ZA", HandedOver: true, LingerUntil: &until})
-	// The child of the live tree is corrected all the same, so the skip is the tree's and not a
+	// The child of the running tree is corrected all the same, so the skip is the tree's and not a
 	// correction switched off.
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "a child the old daemon started", Parent: new("LEGION-208"),
@@ -103,9 +97,9 @@ func TestTheBootCorrectsNoStatusOfATreeThatHoldsNoSlot(t *testing.T) {
 
 	applyMirrored(t, pool, testEngine(config.DesignGateRootIssues, nil), "boot", intake.DaemonBooted{})
 
-	for _, key := range []string{"LEGION-300", "LEGION-301", "LEGION-310"} {
+	for _, key := range []string{"LEGION-300", "LEGION-301"} {
 		if got := statusWrites(t, pool, key); len(got) != 0 {
-			t.Errorf("the boot queued %+v for %s, want nothing: its tree holds no slot", got, key)
+			t.Errorf("the boot queued %+v for %s, want nothing: its tree waits for its first start", got, key)
 		}
 		if got := recordedStatus(t, pool, key); got != "todo" {
 			t.Errorf("the record of %s = %q, want the todo it stood at: a write would take a waiting root out of the line", key, got)

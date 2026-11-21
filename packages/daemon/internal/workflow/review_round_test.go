@@ -121,9 +121,9 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "the promotion's start", rows: both, raises: true,
 			walk: func(t *testing.T, noCommit bool) (*pgxpool.Pool, string) {
 				if noCommit {
-					// A re-admission clears the generation, the commit with it.
+					// A new run clears the generation, the commit with it.
 					pool, engine, _ := reviewedChild(t)
-					readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
+					clearsTheGeneration(t, pool, engine, engine.now().Add(time.Hour))
 					outboxRan(t, pool)
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
 					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
@@ -213,10 +213,10 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "the resume of an entry whose stored task is empty", rows: []string{withNone}, noEntry: true,
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, engine, _ := reviewedChild(t)
-				readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
+				clearsTheGeneration(t, pool, engine, engine.now().Add(time.Hour))
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				if row.EntryTask != "" {
-					t.Fatalf("after the re-admission the reviewer's row stores the task %q, want none", row.EntryTask)
+					t.Fatalf("after the clear the reviewer's row stores the task %q, want none", row.EntryTask)
 				}
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {

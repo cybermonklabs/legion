@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -330,6 +331,217 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	}
 }
 
+// The status-change client against a real Dispatch built from this tree. Which Dispatch it is
+// the test reads from the routes Dispatch lists (servesStatusChange), not from the client's own
+// answer. One built before the route (INFRA-4731) answers the call with its router's 404, which
+// the client reads as dispatch.NoRoute, the answer the outbox's status row waits on. One that
+// serves the route answers each call R24's options make, which the client reads, with its
+// parent-status rule off and again on (readEachStatusChangeAnswer).
+func TestTheStatusChangeClientReadsEachAnswerOfTheRealDispatch(t *testing.T) {
+	ruleOff := startScratchDispatchOn(t, scratchDispatchOptions{env: []string{parentStatusRule + "=off"}})
+	if !servesStatusChange(t, ruleOff.base) {
+		issue := createScratchDispatchIssue(t, ruleOff.base)
+		_, err := dispatch.New(ruleOff.base, ruleOff.token).ChangeStatus(context.Background(), issue,
+			dispatch.StatusChange{Status: "backlog", UnlinkChildren: true, IdempotencyKey: "status-change-no-route"})
+		if !dispatch.NoRoute(err) {
+			t.Fatalf("a status change against a Dispatch that lists no such route = %v, want its router's 404 (dispatch.NoRoute)", err)
+		}
+		return
+	}
+	t.Run("rule off", func(t *testing.T) { readEachStatusChangeAnswer(t, ruleOff, false) })
+	t.Run("rule on", func(t *testing.T) {
+		ruleOn := startScratchDispatchOn(t, scratchDispatchOptions{env: []string{parentStatusRule + "=on"}})
+		readEachStatusChangeAnswer(t, ruleOn, true)
+	})
+}
+
+// parentStatusRule is Dispatch's setting that turns its refusal of a write breaking R24's rule on
+// (`on`) or off (unset or `off`). A Dispatch from before the rule reads nothing of it.
+const parentStatusRule = "DISPATCH_PARENT_STATUS_RULE"
+
+// readEachStatusChangeAnswer calls the status-change route of d, a Dispatch that serves it, once
+// for each answer the client reads, each call on issues of its own: a parent at work with a child
+// at work under it, or a child under a parent on the backlog. ruleOn is d's parentStatusRule. A
+// dry run answers as the call would with the rule on, whatever the setting.
+func readEachStatusChangeAnswer(t *testing.T, d *scratchDispatch, ruleOn bool) {
+	t.Helper()
+	ctx := context.Background()
+	client := dispatch.New(d.base, d.token)
+	createScratchDispatchIssue(t, d.base)
+	calls := 0
+	change := func(key string, call dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+		calls++
+		call.IdempotencyKey = fmt.Sprintf("status-change-%d", calls)
+		return client.ChangeStatus(ctx, key, call)
+	}
+	read := func(key string) dispatch.Issue {
+		t.Helper()
+		issue, err := client.GetIssue(ctx, key)
+		if err != nil {
+			t.Fatalf("read %s: %v", key, err)
+		}
+		return issue
+	}
+	move := func(key, status string) {
+		t.Helper()
+		if _, err := client.SetStatus(ctx, key, status); err != nil {
+			t.Fatalf("move %s to %s: %v", key, status, err)
+		}
+	}
+	// atWork is a parent and a child under it, both in_progress, as Dispatch then shows them.
+	atWork := func(name string) (dispatch.Issue, dispatch.Issue) {
+		t.Helper()
+		parent := createScratchDispatchIssueUnder(t, d.base, name+": the parent", "")
+		child := createScratchDispatchIssueUnder(t, d.base, name+": the child", parent)
+		move(parent, "in_progress")
+		move(child, "in_progress")
+		return read(parent), read(child)
+	}
+	// underBacklog is a child at triage under a parent on the backlog, as Dispatch then shows them.
+	underBacklog := func(name string) (dispatch.Issue, dispatch.Issue) {
+		t.Helper()
+		parent := createScratchDispatchIssueUnder(t, d.base, name+": the parent", "")
+		move(parent, "backlog")
+		child := createScratchDispatchIssueUnder(t, d.base, name+": the child", parent)
+		return read(parent), read(child)
+	}
+
+	// No option: the dry run names the child that holds the rule; the call itself is refused the
+	// same way with the rule on, and taken with it off.
+	parent, child := atWork("no option")
+	_, err := change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq, DryRun: true})
+	assertParentStatusConflict(t, err, dispatch.ConflictIssue{Key: child.Key, Status: "in_progress"})
+	result, err := change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq})
+	if ruleOn {
+		assertParentStatusConflict(t, err, dispatch.ConflictIssue{Key: child.Key, Status: "in_progress"})
+		if after := read(parent.Key); after.Status != "in_progress" || after.LastSeq != parent.LastSeq {
+			t.Fatalf("%s after the refused call = %s at %d, want it untouched at in_progress and %d", parent.Key, after.Status, after.LastSeq, parent.LastSeq)
+		}
+	} else {
+		if err != nil {
+			t.Fatalf("a move with no option with the rule off = %v, want it taken", err)
+		}
+		assertEntries(t, result.Changed, parent.Key+" backlog parent=none written")
+	}
+
+	// A stale sequence: 409 ISSUE_CHANGED, read as the PATCH's is, and nothing written.
+	parent, child = atWork("options")
+	_, err = change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq - 1, IncludeChildren: true})
+	var refusal *dispatch.Error
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "ISSUE_CHANGED" || len(refusal.Changed) != 0 {
+		t.Fatalf("a call at a stale sequence = %#v (%v), want 409 ISSUE_CHANGED with no step committed", refusal, err)
+	}
+	if _, permanent := dispatch.PermanentRefusal(err); permanent {
+		t.Fatalf("PermanentRefusal(%v) = permanent, want a stale read the caller reads again", err)
+	}
+	if after := read(child.Key); after.Status != "in_progress" || after.LastSeq != child.LastSeq {
+		t.Fatalf("%s after the stale call = %s at %d, want it untouched", child.Key, after.Status, after.LastSeq)
+	}
+
+	// A dry run with include_children: what each step would leave, deepest first and the named
+	// issue last, each at the sequence it stands at, and nothing written.
+	result, err = change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq, IncludeChildren: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	assertEntries(t, result.Changed, child.Key+" backlog parent="+parent.Key+" not written", parent.Key+" backlog parent=none not written")
+	if result.Changed[0].PreviousLastSeq != child.LastSeq || result.Changed[1].PreviousLastSeq != parent.LastSeq {
+		t.Fatalf("the dry run's entries = %#v, want each at the sequence it stands at (%d, %d)", result.Changed, child.LastSeq, parent.LastSeq)
+	}
+	if after := read(parent.Key); after.Status != "in_progress" || after.LastSeq != parent.LastSeq {
+		t.Fatalf("%s after the dry run = %s at %d, want it untouched", parent.Key, after.Status, after.LastSeq)
+	}
+
+	// include_children: the child's step, then the named issue's, each with the issue as its step
+	// left it; the child's step adds its child.status event to the named issue first.
+	result, err = change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq, IncludeChildren: true})
+	if err != nil {
+		t.Fatalf("include_children: %v", err)
+	}
+	assertEntries(t, result.Changed, child.Key+" backlog parent="+parent.Key+" written", parent.Key+" backlog parent=none written")
+	childEntry, parentEntry := result.Changed[0], result.Changed[1]
+	if childEntry.PreviousLastSeq != child.LastSeq || childEntry.Issue.LastSeq <= childEntry.PreviousLastSeq ||
+		parentEntry.PreviousLastSeq <= parent.LastSeq || parentEntry.Issue.LastSeq <= parentEntry.PreviousLastSeq {
+		t.Fatalf("include_children's entries = %#v, want the child's from %d and the parent's from past %d, each moved on by its step", result.Changed, child.LastSeq, parent.LastSeq)
+	}
+	if result.Issue.Key != parent.Key || result.Issue.Status != "backlog" || result.Issue.LastSeq != parentEntry.Issue.LastSeq {
+		t.Fatalf("include_children's issue = %#v, want %s at backlog as its own step left it", result.Issue, parent.Key)
+	}
+
+	// unlink_children: the child, unlinked and left at its status, then the named issue.
+	parent, child = atWork("unlink")
+	result, err = change(parent.Key, dispatch.StatusChange{Status: "backlog", ExpectedSequence: parent.LastSeq, UnlinkChildren: true})
+	if err != nil {
+		t.Fatalf("unlink_children: %v", err)
+	}
+	assertEntries(t, result.Changed, child.Key+" in_progress parent=none written", parent.Key+" backlog parent=none written")
+	if result.Changed[0].PreviousLastSeq != child.LastSeq || result.Changed[0].Issue.Parent != nil {
+		t.Fatalf("unlink_children's entry of %s = %#v, want it unlinked from %d", child.Key, result.Changed[0], child.LastSeq)
+	}
+
+	// A child into work under a parent on the backlog: refused with the rule on and taken with it
+	// off; with include_parent, the parent's step first, then the child's.
+	parent, child = underBacklog("no include_parent")
+	result, err = change(child.Key, dispatch.StatusChange{Status: "todo", ExpectedSequence: child.LastSeq})
+	if ruleOn {
+		assertParentStatusConflict(t, err, dispatch.ConflictIssue{Key: parent.Key, Status: "backlog"})
+	} else {
+		if err != nil {
+			t.Fatalf("a child's todo under a parent on the backlog with the rule off = %v, want it taken", err)
+		}
+		assertEntries(t, result.Changed, child.Key+" todo parent="+parent.Key+" written")
+	}
+	parent, child = underBacklog("include_parent")
+	result, err = change(child.Key, dispatch.StatusChange{Status: "todo", ExpectedSequence: child.LastSeq, IncludeParent: true})
+	if err != nil {
+		t.Fatalf("include_parent: %v", err)
+	}
+	assertEntries(t, result.Changed, parent.Key+" in_progress parent=none written", child.Key+" todo parent="+parent.Key+" written")
+	if result.Changed[0].PreviousLastSeq != parent.LastSeq {
+		t.Fatalf("include_parent's entry of %s = %#v, want it from %d", parent.Key, result.Changed[0], parent.LastSeq)
+	}
+}
+
+// assertParentStatusConflict holds err to Dispatch's 409 PARENT_STATUS_CONFLICT naming exactly
+// want, with no step committed, which no caller drops as permanent.
+func assertParentStatusConflict(t *testing.T, err error, want ...dispatch.ConflictIssue) {
+	t.Helper()
+	var refusal *dispatch.Error
+	if !dispatch.ParentStatusConflict(err) || !errors.As(err, &refusal) {
+		t.Fatalf("status change = %v, want 409 PARENT_STATUS_CONFLICT", err)
+	}
+	if !reflect.DeepEqual(refusal.Issues, want) || len(refusal.Changed) != 0 {
+		t.Fatalf("PARENT_STATUS_CONFLICT = %#v, want it to name %#v with no step committed", refusal, want)
+	}
+	if _, permanent := dispatch.PermanentRefusal(err); permanent {
+		t.Fatalf("PermanentRefusal(%v) = permanent, want a refusal its caller decides on", err)
+	}
+}
+
+// assertEntries holds a status change's entries, in order, to want, each as `<key> <status>
+// parent=<parent or none> written`, or `not written` for an entry with no issue (a dry run's).
+// A written entry's issue is the same issue at the entry's status and parent.
+func assertEntries(t *testing.T, entries []dispatch.StatusChangeEntry, want ...string) {
+	t.Helper()
+	var got []string
+	for _, entry := range entries {
+		parent, written := "none", "not written"
+		if entry.Parent != nil {
+			parent = *entry.Parent
+		}
+		if issue := entry.Issue; issue != nil {
+			written = "written"
+			if issue.Key != entry.Key || issue.Status != entry.Status || !reflect.DeepEqual(issue.Parent, entry.Parent) {
+				t.Fatalf("entry %#v carries %#v, want the same issue at its status and parent", entry, issue)
+			}
+		}
+		got = append(got, entry.Key+" "+entry.Status+" parent="+parent+" "+written)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changed = %q, want %q", got, want)
+	}
+}
+
 // messageCreatedEvent is the issue's message.created event as Dispatch serves it: the body the
 // event carries, and whether Dispatch says that body is only the first part of the message's.
 func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bool) {
@@ -406,6 +618,11 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
+	// env is each further setting the server runs with, as NAME=value. Dispatch's parent-status
+	// rule (DISPATCH_PARENT_STATUS_RULE) is on unless env names it, as it is in production once the
+	// rule rolls out (decision 23 of dispatch://INFRA-4730). A Dispatch whose settings table does
+	// not name a setting reads nothing of it.
+	env []string
 }
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
@@ -422,6 +639,7 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
+	env      []string
 	port     int
 	base     string
 	command  *exec.Cmd
@@ -442,11 +660,15 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
 	}
+	env := options.env
+	if !slices.ContainsFunc(env, func(setting string) bool { return strings.HasPrefix(setting, parentStatusRule+"=") }) {
+		env = append(slices.Clone(env), parentStatusRule+"=on")
+	}
 	d := &scratchDispatch{
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log,
+		log: options.log, env: env,
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -507,6 +729,7 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
+	command.Env = append(command.Env, d.env...)
 	command.ExtraFiles = []*os.File{held}
 	output := &syncBuffer{}
 	command.Stdout = output
@@ -594,34 +817,41 @@ func (d *scratchDispatch) stop() {
 	}
 }
 
+// kill ends the running server with SIGKILL, as a node's loss ends a process mid-call: nothing of
+// it runs on, and a request key it held stays in flight until its lease lapses.
+func (d *scratchDispatch) kill() {
+	d.t.Helper()
+	command := d.command
+	d.command = nil
+	if err := command.Process.Kill(); err != nil {
+		d.t.Fatalf("kill scratch Dispatch: %v", err)
+	}
+	<-d.exited
+}
+
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
-	request := func(path string, body any) *http.Response {
-		t.Helper()
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("encode %s: %v", path, err)
-		}
-		req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(encoded))
-		if err != nil {
-			t.Fatalf("create %s request: %v", path, err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Dispatch-User", "smoke")
-		response, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("POST %s: %v", path, err)
-		}
-		return response
-	}
-	project := request("/api/v1/projects", map[string]string{"key": "LEGION", "name": "Scratch Legion"})
+	project := asScratchPerson(t, http.MethodPost, baseURL+"/api/v1/projects", map[string]string{"key": "LEGION", "name": "Scratch Legion"})
+	project.Body.Close()
 	if project.StatusCode != http.StatusCreated {
-		project.Body.Close()
 		t.Fatalf("create scratch project = %s", project.Status)
 	}
-	project.Body.Close()
-	issue := request("/api/v1/issues", map[string]string{"project": "LEGION", "title": "Crash-safe outbox message"})
+	return createScratchDispatchIssueUnder(t, baseURL, "Crash-safe outbox message", "")
+}
+
+// createScratchDispatchIssueUnder files an issue titled title in the project
+// createScratchDispatchIssue made, under the issue parent, or under none when parent is empty,
+// and returns its key. Dispatch files it at triage. The create is forced past Dispatch's
+// near-copy gate (409 POSSIBLE_DUPLICATE), which refuses a title that shares its words with an
+// issue the project holds: a test that files a parent and a child for each of its cases names
+// them alike on purpose.
+func createScratchDispatchIssueUnder(t *testing.T, baseURL, title, parent string) string {
+	t.Helper()
+	body := map[string]any{"project": "LEGION", "title": title, "force": true}
+	if parent != "" {
+		body["parent"] = parent
+	}
+	issue := asScratchPerson(t, http.MethodPost, baseURL+"/api/v1/issues", body)
 	defer issue.Body.Close()
 	if issue.StatusCode != http.StatusCreated {
 		t.Fatalf("create scratch issue = %s", issue.Status)
@@ -636,4 +866,59 @@ func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 		t.Fatal("scratch Dispatch created an issue without a key")
 	}
 	return created.Key
+}
+
+// asScratchPerson sends body to url as the person smoke, whom the scratch server's trusted
+// identity header names, and returns the answer for the caller to read and close.
+func asScratchPerson(t *testing.T, method, url string, body any) *http.Response {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode %s %s: %v", method, url, err)
+	}
+	req, err := http.NewRequest(method, url, bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("create %s %s request: %v", method, url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Dispatch-User", "smoke")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	return response
+}
+
+// servesStatusChange is whether the Dispatch at baseURL serves the status-change route, read from
+// the list of every route it serves (GET /api/v1) rather than from the route's own answer, so a
+// test of the client tells the two Dispatches apart without the client: one built before the
+// route (INFRA-4731) lists none and answers it with its router's 404.
+func servesStatusChange(t *testing.T, baseURL string) bool {
+	t.Helper()
+	response, err := pollClient.Get(baseURL + "/api/v1")
+	if err != nil {
+		t.Fatalf("read scratch Dispatch's routes: %v", err)
+	}
+	defer response.Body.Close()
+	var index struct {
+		Routes []struct {
+			Method string `json:"method"`
+			Path   string `json:"path"`
+		} `json:"routes"`
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("read scratch Dispatch's routes = %s", response.Status)
+	}
+	if err := json.NewDecoder(response.Body).Decode(&index); err != nil {
+		t.Fatalf("decode scratch Dispatch's routes: %v", err)
+	}
+	if len(index.Routes) == 0 {
+		t.Fatal("scratch Dispatch lists no route at all, so its list cannot say whether it serves the status change")
+	}
+	for _, route := range index.Routes {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/issues/{key}/status-change" {
+			return true
+		}
+	}
+	return false
 }

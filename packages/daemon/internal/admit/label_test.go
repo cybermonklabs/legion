@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -196,7 +195,7 @@ func TestTheWaitingLineRanksOnlyLabeledRootsInDispatchOrder(t *testing.T) {
 func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 
 	apply(t, pool, admission, "root", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: handed}, engine)
 	apply(t, pool, admission, "child", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-1", Rank: "B"}, engine)
@@ -235,26 +234,20 @@ func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing
 }
 
 // The boot read applies the same rule as the stream: an unlabeled todo root is not recorded, a
-// labeled one is admitted, a waiting root whose label was taken off while the daemon was down leaves
-// the line, and a lingering root set back to todo without the label is not re-admitted.
+// labeled one is admitted, and a waiting root whose label was taken off while the daemon was down
+// leaves the line.
 func TestReconcileAdmitsOnlyLabeledRoots(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	seedWaiting(t, pool, "LEGION-GONE", "0")
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "1", LingerUntil: &until, HandedOver: true})
 
 	reconcile(t, pool, admission, []dispatch.IssueSummary{
 		{Key: "LEGION-GONE", ResolvedRepo: "acme/widgets", Title: "LEGION-GONE", Status: "todo", Rank: "0"},
-		{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "1"},
 		{Key: "LEGION-OTHER", ResolvedRepo: "acme/widgets", Title: "someone else's", Status: "todo", Rank: "A", HandedOver: false},
 		{Key: "LEGION-MINE", ResolvedRepo: "acme/widgets", Title: "handed over", Status: "todo", Rank: "B", HandedOver: true},
 	})
 	if got := maybeIssue(t, pool, "LEGION-OTHER"); got != nil {
 		t.Fatalf("unlabeled LEGION-OTHER was recorded: %#v", got)
-	}
-	if got := issue(t, pool, "LEGION-LINGER"); got.Generation != 3 || got.LingerUntil == nil {
-		t.Fatalf("unlabeled lingering root = %#v, want generation 3, still lingering", got)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-MINE", Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, nil)
@@ -310,168 +303,5 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 	}
 	if lines := personHandoverLines(t, &logged, "LEGION-311", "listing"); lines != 0 {
 		t.Fatalf("a session's label was logged as a person's handover; admission logged:\n%s", logged.String())
-	}
-}
-
-// A lingering root set back to todo without the label is not re-admitted: its generation stands and
-// its tree keeps lingering, so the linger still closes it. The label, added while the root stays in
-// todo, re-admits it.
-func TestReadmissionWaitsForTheLabel(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	until := fixedNow.Add(time.Hour)
-	lingering := record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true}
-	putIssue(t, pool, lingering)
-
-	apply(t, pool, admission, "todo-unlabeled", intake.DispatchIssue{Key: lingering.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: lingering.Title, Rank: lingering.Rank}, engine)
-	if got := issue(t, pool, lingering.Key); got.Generation != 3 || got.LingerUntil == nil || got.Phase != phase.Done {
-		t.Fatalf("root set to todo without the label = %#v, want generation 3, done, still lingering", got)
-	}
-	assertSlots(t, pool, nil)
-	assertEffects(t, pool, nil)
-
-	apply(t, pool, admission, "labeled", intake.DispatchIssue{Key: lingering.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: lingering.Title, Rank: lingering.Rank, HandedOver: handed}, engine)
-	if got := issue(t, pool, lingering.Key); got.Generation != 4 || got.LingerUntil != nil || got.Phase != phase.Admitted {
-		t.Fatalf("root once labeled = %#v, want generation 4, admitted, no linger", got)
-	}
-	assertSlots(t, pool, []record.Slot{{Issue: lingering.Key, Index: 0, AdmittedAt: fixedNow}})
-}
-
-// A child of a lingering tree set back to todo is an orphan, admitted as a root of its own once it
-// carries the label. Without the label it stays its old tree's, and the label, added while it stays
-// in todo, admits it then. A child waiting in a live tree gains nothing from the label: it runs under
-// its tree, as before.
-func TestALabelAddedToAReopenedChildOfALingeringTreeAdmitsItAsAnOrphan(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		lingering bool
-	}{
-		{name: "lingering tree", lingering: true},
-		{name: "live tree"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-			const root, child = "LEGION-1", "LEGION-2"
-			seedSlotted(t, pool, root, "A")
-			parent := root
-			inTx(t, pool, func(tx pgx.Tx) {
-				records, ctx := record.NewStore(), context.Background()
-				rootIssue, err := records.Issue(ctx, tx, root)
-				if err != nil {
-					t.Fatalf("read root: %v", err)
-				}
-				childIssue := record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: "child", Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", LastDispatchSeq: 2}
-				if tc.lingering {
-					until := fixedNow.Add(time.Hour)
-					rootIssue.Phase, rootIssue.Status, rootIssue.LingerUntil = phase.Done, "done", &until
-					childIssue.Phase, childIssue.Status = phase.Done, "done"
-					if err := records.ReleaseSlot(ctx, tx, root); err != nil {
-						t.Fatalf("release root slot: %v", err)
-					}
-				}
-				for _, put := range []error{records.PutIssue(ctx, tx, *rootIssue), records.PutIssue(ctx, tx, childIssue)} {
-					if put != nil {
-						t.Fatalf("seed: %v", put)
-					}
-				}
-			})
-
-			if tc.lingering {
-				apply(t, pool, admission, "reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B"}, engine)
-				if got := issue(t, pool, child); got.Tree != root {
-					t.Fatalf("child reopened without the label = %#v, want it kept in %s's tree", got, root)
-				}
-				assertSlots(t, pool, nil)
-			}
-			apply(t, pool, admission, "labeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B", HandedOver: handed}, engine)
-			got := issue(t, pool, child)
-			if !tc.lingering {
-				if got.Tree != root {
-					t.Fatalf("labeled child of a live tree = %#v, want it kept in %s's tree", got, root)
-				}
-				assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
-				return
-			}
-			if got.Tree != child || got.Phase != phase.Admitted {
-				t.Fatalf("labeled orphan = %#v, want its own admitted root", got)
-			}
-			assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
-		})
-	}
-}
-
-// A child of a lingering tree reopened without the label is recorded todo with its old phase left
-// at done, and stays there: nothing re-enters it until its root is re-admitted. The root's
-// re-admission, once labeled, is what makes the tree live again, and it must re-enter this child
-// too, not only the ones a live tree's own todo observation reaches — the child keeps its old
-// tree's key, not become an orphan root of its own, since it never carried the label itself.
-func TestReadmissionReentersAChildStrandedTodoWithoutTheLabel(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	const root, child = "LEGION-LINGER", "LEGION-2"
-	until := fixedNow.Add(time.Hour)
-	parent := root
-	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering", Tree: root, Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true})
-	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "child", Tree: root, Parent: &parent, Phase: phase.Done, Generation: 2, Status: "done", Rank: "B", LastDispatchSeq: 1})
-
-	apply(t, pool, admission, "child-reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B"}, engine)
-	if got := issue(t, pool, child); got.Tree != root || got.Phase != phase.Done || got.Status != "todo" {
-		t.Fatalf("child reopened without the label = %#v, want it left todo, phase done, in %s's tree", got, root)
-	}
-
-	apply(t, pool, admission, "root-readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "lingering", Rank: "A", HandedOver: handed}, engine)
-
-	got := issue(t, pool, child)
-	if got.Tree != root {
-		t.Fatalf("child after the root's re-admission = %#v, want it kept in %s's tree, not its own", got, root)
-	}
-	if got.Phase != phase.Admitted || got.Generation != 3 {
-		t.Fatalf("child after the root's re-admission = %#v, want phase admitted, generation 3", got)
-	}
-	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
-}
-
-// A child stranded while its root merely waits, not lingers — the root's label taken off drops its
-// tree from live, and a reopen of the child without its own label is declined the same way — is
-// re-entered once the root's label returns and the root is actually promoted, the same path that
-// re-enters one stranded under a re-admitted lingering root: promote's reenterStrandedChildren does
-// not care why the tree was not live before, only that the candidate it is promoting now makes it so.
-func TestPromotingAWaitingRootReentersAChildStrandedWhileItsLabelWasOff(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
-	const root, child = "LEGION-WAIT", "LEGION-CHILD"
-	parent := root
-	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: root, Tree: root, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
-	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "child", Tree: root, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "C", LastDispatchSeq: 1})
-
-	// The root's label is taken off: it drops from the waiting line, and its tree is no longer live.
-	apply(t, pool, admission, "root-unlabeled", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root, Rank: "B"}, engine)
-	assertWaiting(t, pool, nil)
-
-	// The child is reopened without its own label while the tree is not live: declined, not an
-	// orphan, and left stranded exactly as a lingering tree's would be.
-	apply(t, pool, admission, "child-reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "C"}, engine)
-	if got := issue(t, pool, child); got.Tree != root || got.Phase != phase.Done || got.Status != "todo" {
-		t.Fatalf("child reopened without the label while its root's tree is not live = %#v, want it left todo, phase done, in %s's tree", got, root)
-	}
-
-	// The root's label comes back, but the root still holds no slot: the child is not yet re-entered.
-	apply(t, pool, admission, "root-relabeled", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)
-	if got := issue(t, pool, child); got.Phase != phase.Done {
-		t.Fatalf("child before its root is promoted = %#v, want it still phase done", got)
-	}
-
-	// The active slot frees, the waiting root is promoted, and its stranded child is re-entered too.
-	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-ACTIVE", Rank: "A"}, engine)
-	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
-	got := issue(t, pool, child)
-	if got.Tree != root || got.Phase != phase.Admitted || got.Generation != 2 {
-		t.Fatalf("child after its root is promoted = %#v, want phase admitted, generation 2, kept in %s's tree", got, root)
 	}
 }

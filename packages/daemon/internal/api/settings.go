@@ -73,8 +73,10 @@ type Settings struct {
 	Gates    GatesSettings              `json:"gates"`
 	// GitHubApps is absent while the file configures none.
 	GitHubApps *GitHubAppsSettings `json:"github_apps,omitempty"`
-	// LingerHours and ProductionCheckHours are `linger_hours` and `production_check_hours` as the
-	// file takes them, decimal numbers of hours.
+	// LingerHours is `linger_hours`, which no tree has any more: it reads 0 under every contract
+	// and stays in the state so the state's shape stays as older readers know it (decision 18 of
+	// dispatch://INFRA-4730). ProductionCheckHours is `production_check_hours` as the file takes
+	// it, a decimal number of hours.
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
@@ -554,7 +556,6 @@ func SettingsOf(cfg config.Config) Settings {
 		DispatchURL:                             endpointOf(cfg.DispatchURL),
 		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
-		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
 		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),

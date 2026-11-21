@@ -208,6 +208,8 @@ func seedSilentPhaseWorker(t *testing.T, pool *store.Pool, key string, lastStep 
 		Title: key, Tree: key, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A",
 		HandedOver: true, LastDispatchSeq: 1,
 	})
+	// Its row of the copy, so the root stands on a known Dispatch chain (R16 of dispatch://INFRA-3320).
+	seedTickMirror(t, pool, key, "in_progress", 1)
 	project, err := claim.ProjectToken("CAPTURE")
 	if err != nil {
 		t.Fatal(err)

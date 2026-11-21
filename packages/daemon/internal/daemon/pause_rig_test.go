@@ -844,13 +844,12 @@ func (r *pauseDaemonRig) count(sql string, args ...any) int {
 // that read it (dueNow).
 func (r *pauseDaemonRig) enqueue(issue string, payload record.OutboxPayload) int64 {
 	r.t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, r.dueNow())
-	if err != nil {
-		r.t.Fatalf("build the outbox row of %s: %v", issue, err)
-	}
 	var id int64
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
+		row, err := record.NewFencedRow(r.ctx, tx, r.records, issue, payload, r.dueNow())
+		if err != nil {
+			return err
+		}
 		id, err = r.records.EnqueueID(r.ctx, tx, row)
 		return err
 	}); err != nil {

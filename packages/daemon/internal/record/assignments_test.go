@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // treeLifecyclesToken is the project tree_lifecycles is keyed by in these tests: the normalized
@@ -142,16 +141,12 @@ func TestAnExperimentAssignmentIsWrittenOnceAndReadBack(t *testing.T) {
 	})
 }
 
-// The hand-over settles the assignments of a child handed over as a tree of its own. Out of a tree
-// the daemon had opened it copies every tree-unit row of the old tree's root verbatim — arm, mode
-// and the original instant — under the carried mark, and settles at no variant, no mode and no
-// instant each experiment declared at the hand-over that the old tree held no such row for, so
-// that experiment is never drawn for the child later. An issue-unit row of the old root is that
-// root's own answer and is not copied: the child held no row of its own for that experiment and
-// ran in no arm of it, and the hand-over settles it at no variant like any other experiment the
-// tree it left answered nothing for. Out of a tree nothing ever opened it writes nothing at all,
-// and a row the child already holds is never written over.
-func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
+// An issue at its first start takes, for each tree-unit experiment, the row of the nearest issue
+// above it that holds one (CarryAssignments over Chains.Above's order), verbatim — arm, mode and
+// the original instant — under the carried mark. An issue-unit row above is that issue's own
+// answer and is not copied. An experiment none above holds is left to the issue's own draw, and a
+// row the issue already holds is never written over.
+func TestTheNearestAssignedIssueAboveGivesTheTreeAssignments(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -159,7 +154,7 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 	later := drawnAt.Add(time.Hour)
 
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, key := range []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6"} {
+		for _, key := range []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"} {
 			putRoot(t, ctx, records, tx, key)
 		}
 		read := func(key string) []string {
@@ -168,109 +163,57 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 			must(t, err)
 			return assignmentsAs(assignments)
 		}
-		// The trees the carries below read: LEGION-1 was opened, LEGION-6 never was.
-		for _, tree := range []string{"LEGION-1"} {
-			if _, err := treelifecycle.Open(ctx, tx, treeLifecyclesToken, tree, treelifecycle.AuthorityWorkflow); err != nil {
-				t.Fatalf("open the tree %s: %v", tree, err)
-			}
-		}
-		// The old tree's own draw: one tree experiment at an arm, one at none, and an issue
-		// experiment drawn for the old root itself, which is that one issue's answer and no part
-		// of what the tree hands over.
+		// The farther issue above holds memory and review-depth, and an issue experiment of its
+		// own; the nearer one holds memory alone, at another arm.
 		if _, err := records.PutAssignments(ctx, tx, "LEGION-1", []Assignment{
 			{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt},
 			{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt},
 			{Experiment: "handoff-note", Unit: "issue", Variant: "long", Mode: "random", DrawnAt: &drawnAt},
 		}); err != nil {
-			t.Fatalf("draw the old tree's experiments: %v", err)
+			t.Fatalf("draw the farther issue's experiments: %v", err)
 		}
-		// The experiments declared at the hand-over: the two tree experiments the old tree drew,
-		// one younger than that tree, which it holds no row for, and the issue experiment its
-		// root was drawn for.
-		declared := []DeclaredExperiment{
-			{Experiment: "memory", Unit: "tree"},
-			{Experiment: "review-depth", Unit: "tree"},
-			{Experiment: "plan-length", Unit: "tree"},
-			{Experiment: "handoff-note", Unit: "issue"},
+		if _, err := records.PutAssignments(ctx, tx, "LEGION-2", []Assignment{
+			{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &later},
+		}); err != nil {
+			t.Fatalf("draw the nearer issue's experiment: %v", err)
 		}
 
-		// The copy is verbatim, the original instant included; the younger experiment is settled
-		// at no variant, and so is the issue experiment, whose row of the old root is the old
-		// root's own and is copied onto no one. Carried either way, so no draw writes over it.
-		carried, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-2", "LEGION-1", declared)
+		carried, err := records.CarryAssignments(ctx, tx, "LEGION-3", []string{"LEGION-2", "LEGION-1"})
 		must(t, err)
-		if carried != 4 {
-			t.Fatalf("the hand-over wrote %d rows, want the old tree's two tree rows copied and the other two settled", carried)
+		if carried != 2 {
+			t.Fatalf("the carry wrote %d rows, want memory from the nearer issue and review-depth from the farther", carried)
 		}
 		want := []string{
-			assignedAs(Assignment{Experiment: "handoff-note", Unit: "issue", Carried: true}),
-			assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt, Carried: true}),
-			assignedAs(Assignment{Experiment: "plan-length", Unit: "tree", Carried: true}),
+			assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &later, Carried: true}),
 			assignedAs(Assignment{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt, Carried: true}),
 		}
-		if got := read("LEGION-2"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the handed-over root holds %v, want %v", got, want)
-		}
-		// What the hand-over settled, the child's own first draw writes nothing over.
-		drew, err := records.PutAssignments(ctx, tx, "LEGION-2", []Assignment{
-			{Experiment: "plan-length", Unit: "tree", Variant: "short", Mode: "random", DrawnAt: &later},
-		})
-		must(t, err)
-		if drew != 0 {
-			t.Fatalf("the first draw of a settled root wrote %d rows, want its hand-over's answer kept", drew)
-		}
-		if got := read("LEGION-2"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("after its own first draw the settled root holds %v, want %v", got, want)
+		if got := read("LEGION-3"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the started issue holds %v, want %v", got, want)
 		}
 
-		// A child out of a tree nothing ever opened carries nothing, not even the settled rows:
-		// its own first draw answers for it.
-		empty, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-3", "LEGION-6", declared)
+		// Nothing above: nothing carried, the issue's own draw answers for it.
+		empty, err := records.CarryAssignments(ctx, tx, "LEGION-4", nil)
 		must(t, err)
-		if empty != 0 {
-			t.Fatalf("a hand-over out of a tree nothing ever opened wrote %d rows, want nothing written", empty)
-		}
-		if got := read("LEGION-3"); len(got) != 0 {
-			t.Fatalf("a child out of a tree nothing ever opened holds %v, want no assignment", got)
-		}
-		own, err := records.PutAssignments(ctx, tx, "LEGION-3", []Assignment{
-			{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &later},
-		})
-		must(t, err)
-		if own != 1 {
-			t.Fatalf("the first draw of a child out of an unopened tree wrote %d rows, want its own draw recorded", own)
+		if empty != 0 || len(read("LEGION-4")) != 0 {
+			t.Fatalf("a carry with nothing above wrote %d rows and left %v, want nothing", empty, read("LEGION-4"))
 		}
 
-		// A lifecycle row of another project's tree of the same key is no tree of this project's.
-		if _, err := treelifecycle.Open(ctx, tx, "acmewidgets", "LEGION-6", treelifecycle.AuthorityWorkflow); err != nil {
-			t.Fatalf("open another project's tree LEGION-6: %v", err)
-		}
-		elsewhere, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-4", "LEGION-6", declared)
-		must(t, err)
-		if elsewhere != 0 {
-			t.Fatalf("a hand-over reading another project's lifecycle row wrote %d rows, want nothing written", elsewhere)
-		}
-
-		// A row the child already holds is never written over, by the copy or by the settling.
-		kept := assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "off", DrawnAt: &later})
+		// A row the issue already holds is never written over.
+		kept := assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "on", DrawnAt: &later})
 		if _, err := records.PutAssignments(ctx, tx, "LEGION-5", []Assignment{
-			{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "off", DrawnAt: &later},
+			{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "on", DrawnAt: &later},
 		}); err != nil {
-			t.Fatalf("draw the child's own memory arm: %v", err)
+			t.Fatalf("draw the issue's own memory arm: %v", err)
 		}
-		over, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-5", "LEGION-1", declared)
+		over, err := records.CarryAssignments(ctx, tx, "LEGION-5", []string{"LEGION-2", "LEGION-1"})
 		must(t, err)
-		if over != 3 {
-			t.Fatalf("the hand-over onto a root that already holds a row wrote %d rows, want the three it holds none for", over)
+		if over != 1 {
+			t.Fatalf("the carry onto an issue that already holds a row wrote %d rows, want the one it holds none for", over)
 		}
-		wantKept := []string{
-			assignedAs(Assignment{Experiment: "handoff-note", Unit: "issue", Carried: true}),
-			kept,
-			assignedAs(Assignment{Experiment: "plan-length", Unit: "tree", Carried: true}),
-			assignedAs(Assignment{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt, Carried: true}),
-		}
+		wantKept := []string{kept,
+			assignedAs(Assignment{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt, Carried: true})}
 		if got := read("LEGION-5"); !reflect.DeepEqual(got, wantKept) {
-			t.Fatalf("after a carry onto a root that already drew it holds %v, want its own row kept: %v", got, wantKept)
+			t.Fatalf("after a carry onto an issue that already drew it holds %v, want its own row kept: %v", got, wantKept)
 		}
 	})
 }

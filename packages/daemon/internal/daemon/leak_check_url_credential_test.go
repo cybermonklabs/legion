@@ -71,6 +71,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", issue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", issue, err)
 	}
+	openIssue(t, st, "legion", issue, treelifecycle.AuthorityWorkflow)
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, redact.HandlerOptions(nil)))
 	rt := fake.NewRuntime()

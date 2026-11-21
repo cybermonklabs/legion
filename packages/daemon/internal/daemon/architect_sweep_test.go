@@ -60,6 +60,9 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
+		// Its row of the copy, so the root stands on a known Dispatch chain and holds its own
+		// design gate there (record.Chains.HoldsOwnGate).
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
@@ -220,6 +223,7 @@ func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: queued}); err != nil {
 			return err
 		}

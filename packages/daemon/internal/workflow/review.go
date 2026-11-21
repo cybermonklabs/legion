@@ -510,9 +510,13 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // a role holder with a message. A role named twice, the implementer holding the phase, is told
 // once, and a phase no worker holds names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
-// suspended there, so the settlement is recorded and nobody is told.
+// the same conclusions tells nobody again, and so does a settlement that stands for no head. An
+// issue out of Legion's work (record.InLegionsWork) stands where its stop left it, every role of
+// it suspended, so the settlement is recorded and nobody is told. A parent waiting in
+// awaiting_children is told nothing either, and neither is the architect that owns it: no role
+// works the parent while it waits, and its next testing round runs the checks on its head merged
+// with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
+// message goes out.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -529,11 +533,11 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	if err != nil || issue == nil || issue.Phase == phase.AwaitingChildren {
 		return err
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(*issue) {
+		return nil
 	}
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
@@ -568,23 +572,21 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
-// walk from issue itself, as the outbox routes a notice of issue's phase, over the architect
-// claims of issue's tree this transaction reads (record.ReadOwnerWalk). That is issue's own
-// architect while its claim holds its role, else the nearest one above it whose claim does, else
-// the tree root's. A tree root is its own without a read.
+// walk from issue itself on the Dispatch chain, as the outbox routes a notice of issue's phase,
+// over the architect claims this transaction reads (record.ReadOwnerWalk, R18 of
+// dispatch://INFRA-3320). That is issue's own architect while its claim holds its role, else the
+// nearest one above it in Legion's work whose claim does, else its gate root's. Where the walk
+// meets a chain the copy cannot show to its top, it is issue's own, where the walk starts: the
+// issues above the gap are not known until the daemon reads Dispatch again.
 func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return issue.Tree, nil
-	}
-	project, err := claim.ProjectToken(issue.Project)
+	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, issue.Project, []string{issue.Key})
 	if err != nil {
 		return "", err
 	}
-	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, project, issue.Tree)
-	if err != nil {
-		return "", err
+	if owner := walk.Owner(issue.Key, false); owner != "" {
+		return owner, nil
 	}
-	return walk.Owner(issue, false), nil
+	return issue.Key, nil
 }
 
 // answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,
@@ -1215,9 +1217,9 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
 // again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
-// architect asks the decision on. Linger holds a member of a closed tree where it stood
-// (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
-// runs again.
+// architect asks the decision on. An issue out of Legion's work stands where its stop left it
+// (record.InLegionsWork), and leaves no mark: nothing was told, so the head is told when the issue
+// returns to work.
 //
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
@@ -1226,8 +1228,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return false, err
+		if !record.InLegionsWork(issue) {
+			return false, nil
 		}
 		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
 	case roundApproved:
@@ -1241,8 +1243,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if r.stuckAs(before) {
 			return false, nil
 		}
-		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-			return false, err
+		if !record.InLegionsWork(issue) {
+			return false, nil
 		}
 		reviewer, err := reviewerToken(issue)
 		if err != nil {
@@ -1264,8 +1266,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // It is deduped against the mark the last notice left on the reviewer's decision (told), which
 // outlives the answers GitHub gives in between: the state is read back from GitHub every time,
 // and `blocked`, `unknown`, `blocked` is one finding told once. The mark is written with the
-// notice, so a notice linger holds (record.TreeLingers) leaves none and the head is told when
-// the tree runs again.
+// notice, so a notice held for an issue out of Legion's work (record.InLegionsWork) leaves none
+// and the head is told when the issue returns to work.
 //
 // The reviewer's own message is a role message (record.RoleMessage, the way the daemon reaches a
 // role holder with something to read): the reviewer approved that head and would otherwise watch
@@ -1276,8 +1278,8 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if told(row, r) {
 		return nil
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(issue) {
+		return nil
 	}
 	reviewer, err := reviewerToken(issue)
 	if err != nil {
@@ -1432,7 +1434,12 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // raises is the completion key's alone. Everything is written in the move's own transaction, so
 // a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
 // move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, pr *record.PullRequest) error {
+//
+// waiting is whether the move's start is held because a Dispatch child of the issue is open, so
+// the issue goes to awaiting_children instead (dispatch://INFRA-3320 R10): the pass and the pair
+// are counted as for any move back, and no hook fires, since no role of the issue has a phase to
+// put its prompt in front of. The count stands, and the next count a hook reaches fires it.
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, pr *record.PullRequest, waiting bool) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
@@ -1447,6 +1454,9 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, 
 	row.BackwardMoves[phase.Pair(from, to)]++
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
+	}
+	if waiting {
+		return nil
 	}
 	return e.fireWorkBackHooks(ctx, tx, issue, from, to, row.BackwardMoves, pr)
 }
@@ -1479,7 +1489,12 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, 
 //
 // Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
 // every other write of that transaction is, and is returned rather than swallowed.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
+//
+// waitingOn is the issue's open Dispatch children where they hold the start this request for
+// changes would make, so the issue goes to awaiting_children instead (dispatch://INFRA-3320 R10),
+// and empty otherwise. The round counts as any other, and the cap's message names the issue as
+// waiting on those children rather than as started.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, waitingOn []record.OpenChild) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
@@ -1502,6 +1517,10 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
 			e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
+		if len(waitingOn) > 0 {
+			message += fmt.Sprintf(" %s waits on its open Dispatch children in awaiting_children, so no implementing round started: %s.",
+				issue, openChildNames(waitingOn))
+		}
 		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 			return err
 		}

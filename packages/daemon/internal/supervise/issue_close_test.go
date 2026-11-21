@@ -95,17 +95,17 @@ func TestAnIssueCloseWhoseReleaseFailsKeepsTheClaimForTheRetry(t *testing.T) {
 	}
 }
 
-// A claim a tree close already retired keeps its session for a re-admission to resume, and the
-// issue's close reaching it has nothing left to do: it asks the runtime nothing and writes
-// nothing, since the session it would once have dropped is the session a reopen resumes. A second
+// A claim an issue close already retired keeps its session for a new run to resume, and a second
+// close of the issue reaching it has nothing left to do: it asks the runtime nothing and writes
+// nothing, since the session it would once have dropped is the session a reopen resumes. A third
 // close finds the same.
 func TestAnIssueCloseOfARetiredClaimKeepsItsSessionAndWritesNothing(t *testing.T) {
 	h := closingHarness(t)
 	h.reach(StateIdle)
-	h.must(RequestTreeClose{Claim: testToken})
+	h.must(RequestIssueClose{Claim: testToken})
 	h.wantState(StateRetired)
 	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
-		t.Fatalf("claim %+v after the tree close, want its session kept", c)
+		t.Fatalf("claim %+v after the first close, want its session kept", c)
 	}
 	calls := len(h.rt.Calls())
 	puts := len(h.store.history())

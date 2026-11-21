@@ -223,13 +223,13 @@ func TestRegisterAnswers500AndNoSecretWhenTheStoreRefusesTheWrite(t *testing.T) 
 }
 
 // A request the claim's state does not allow is refused with the machine's reason: a retired
-// claim — here a root its tree's close retired — registers nothing.
+// claim — here a root its issue's close retired — registers nothing.
 func TestRegisterOnARetiredClaimIsRefusedWithTheMachinesReason(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
 	m, _ := h.supervisor.Machine(token)
-	if err := m.Handle(h.ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
-		t.Fatalf("stop: %v", err)
+	if err := m.Handle(h.ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 
 	wantRefusal(t, h.register(boot, "ses_architect"), http.StatusConflict,

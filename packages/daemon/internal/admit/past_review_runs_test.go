@@ -296,7 +296,7 @@ func TestTheRepairReachesAWorkerPastReview(t *testing.T) {
 			why: "an issue at work that holds no row waits in the line for one, and a repair that started its worker would put it to work on a row the cap never gave"},
 	}
 	for _, row := range rows {
-		seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1, false)
+		seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1)
 		// A worker the daemon suspended holds no task it still works, and its claim was queued no
 		// task of the entry its phases row names, which is the state this repair exists for.
 		token := putWorkerClaim(t, pool, row.root, row.key, row.role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)

@@ -70,6 +70,7 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
+	openIssue(t, st, "legion", issue.Key, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	sup.deps.ClaimActivity = st.ClaimActivity
@@ -248,7 +249,7 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 			}
 			rig.run()
 			held, last := rig.claim().Pending, rig.claim().LastReady
-			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue, false) || held.Phase != phase.Testing {
 				t.Fatalf("after the come-back the tester holds %+v, want the testing phase's resume task", held)
 			}
 			if held.DeliveredAt.IsZero() || held.DeliveredAt.Before(last) || held.DeliveredAt.Sub(last) > taskWithinOfReady {

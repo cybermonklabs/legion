@@ -51,9 +51,9 @@ type DispatchIssue struct {
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
 	Labels []string
-	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells its
-	// own status write from a user or an untyped actor: a pending hand-over fence is consumed only
-	// by its daemon-authored todo event.
+	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells the
+	// daemon's own status write from a user or an untyped actor: the event of a write the daemon
+	// made is the daemon talking to itself, which moves no issue (workflow's dispatchIssue).
 	ActorSession string
 	DaemonActor  bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
@@ -79,20 +79,6 @@ type DispatchIssue struct {
 	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
-	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
-	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
-	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
-	// labelled todo of an unrecorded issue or a recorded root under a parent, recorded or not;
-	// empty for any other fact. Admission records it, and keeps such a root out of its waiting line
-	// while any live root is on it (record.Waiting).
-	Ancestry []string
-	// Reread is the Ancestry read again, when an event of an issue the workflow does not record, or
-	// a fresh event of a recorded issue whose Dispatch parent differs from its record's, is
-	// prepared, of every labelled todo root whose recorded Ancestry holds the issue's key, keyed by
-	// that root, for each one the read changes (nil for none now): a person may have moved that
-	// very issue, and the root under it has no event of its own. Nil when none changes. Admission
-	// writes each before anything else it applies; the workflow reads none of it.
-	Reread map[string][]string
 	// ClaimedBy is who the observation shows holding the issue's Dispatch claim, `<kind>:<id>`, or
 	// "" for nobody, and ClaimKnown says the observation showed the claim at all: an event retained
 	// from a Dispatch that did not yet send it, or an event or read whose claim names no actor
@@ -100,14 +86,15 @@ type DispatchIssue struct {
 	// at the observation's Seq, behind the claim's own fence (record.PutDispatchClaim).
 	ClaimedBy  string
 	ClaimKnown bool
-	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
-	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
-	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
+	// Observed is a fact made from Dispatch's view of an issue, not from one event, so no actor is
+	// known to have written its state (ObservedIssue). It reaches a handler as a plain observation
+	// only while the workflow does not record the issue when it applies, and only while no later
 	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
-	// (release_children, or another delivery, recording it meanwhile), or nothing when Delivered is
-	// nil, so a state the view shows never reaches a record without the actor of the event that
-	// wrote it.
+	// (release_children, or another delivery, recording it meanwhile), or, when Delivered is nil,
+	// the view itself with Observed still set, which the copy of Dispatch's issues takes as a
+	// reading (blockers.Mirror) and which the workflow and admission decide nothing on: a state the
+	// view shows never reaches a record without the actor of the event that wrote it.
 	Observed bool
 	// Delivered is the event an Observed fact was prepared in place of, as it was delivered, or the
 	// event a route's own status write made (api's recordOwnStatusWrite); nil for a view prepared in
@@ -151,7 +138,8 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
 // Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
-// release_children's todo child and an unrecorded issue's admission event are applied from it.
+// release_children's todo child, its read of a child the daemon records already (a reading of the
+// copy alone, settleObserved) and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
@@ -188,47 +176,6 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
 }
-
-// Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
-// with the legion label, so PATCH would make no event. Admission validates the durable fence.
-type Handover struct {
-	Issue      string
-	Tree       string
-	Generation uint64
-}
-
-func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
-
-// ChildAdoption is an architect's release of children recorded outside its tree Tree, the root
-// key its grant names: each a root that queued in admission before a person made it a child of
-// Tree, under the Dispatch parent the release read. Admission adopts every one into Tree or, when
-// any cannot join it (workflow's AdoptionRefusal, or Tree is not live), refuses the whole fact and
-// writes nothing.
-type ChildAdoption struct {
-	Tree     string
-	Children []AdoptedChild
-}
-
-// AdoptedChild is one child a ChildAdoption moves into its tree, as the release's own Dispatch
-// read showed it: its Dispatch parent, the status and the keys it waits on, and the sequence
-// Dispatch had run to at that read. The daemon's copy of those links can be older than the read
-// — a person's re-parent and link are one edit of Dispatch, whose event the consumer may not have
-// delivered — and an adopted root is already recorded, so no observation of it applies to correct
-// the copy (settleObserved). The read therefore travels with the fact: the mirror takes it
-// (blockers.Mirror) before the adoption judges the child, as a reading of the parent, the status
-// and the blockers at Seq, each of which it changes only where the copy holds it from an older
-// reading or from none, leaving the labels and the rank, which the read does not carry, as the
-// copy holds them; and the workflow holds the child on it as well as on the copy's row (workflow's
-// enterChild).
-type AdoptedChild struct {
-	Issue     string
-	Parent    string
-	Status    string
-	BlockedBy []string
-	Seq       int64
-}
-
-func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
 
@@ -320,6 +267,86 @@ type GateAboveDispatch struct {
 
 func (f GateAboveDispatch) namedIssue() (string, bool) { return f.Read.Key, true }
 
+// BasisReview is one review of an ancestor's document that a seed read from Dispatch for a step on
+// that ancestor's approval (dispatch://INFRA-3320, R1 and R3): where Dispatch recorded it in the
+// ancestor's event log (Mark: its time, and its sequence where the read gave one: the review list
+// gives none, so only the review the document's approval shows carries it), who gave it (Actor),
+// and the reason it gave (dispatch.Review.Reason), "" for none.
+type BasisReview struct {
+	Mark   record.EventMark
+	Actor  dispatch.Actor
+	Reason string
+}
+
+// PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
+// document a root's step waits on, closed, at the version the step names: the root (Issue), its
+// step, its own document (ArtifactID) and the generation that registered the step; the
+// ancestor's document, the version and the approval request the step waits on; and what the read
+// found. Approval is the first review of that version, where it is a person's approval, nil
+// otherwise. Changes is a changes request on that version: after such an approval, the newest
+// one; with none, the first review of that version, where it is a changes request. LatestVersion
+// is the document's latest version, and RequestOpen says the request still stands open.
+// AncestorStatus and AncestorHandedOver are what Dispatch shows of the ancestor's issue, read as
+// register_gate reads it and only where the read found such an approval, which alone opens the
+// step: its status, and whether it carries dispatch.LegionLabel (dispatch.Issue.HandedOver). The
+// approval opens the step only on an ancestor that still meets R1's first condition.
+//
+// It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
+// root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
+// own gate as well. The workflow applies it only to a step of that generation still pending on
+// that request, so a read of a wait that has ended or opened since changes nothing.
+type PendingBasisRead struct {
+	Issue              string
+	Step               record.DesignStep
+	Generation         uint64
+	ArtifactID         string
+	BasisArtifactID    string
+	BasisVersion       int
+	Ask                string
+	Approval           *BasisReview
+	Changes            *BasisReview
+	LatestVersion      int
+	RequestOpen        bool
+	AncestorStatus     string
+	AncestorHandedOver bool
+}
+
+func (f PendingBasisRead) namedIssue() (string, bool) { return f.Issue, true }
+
+// BasisChangesRead is the gate seed's read (record.GateSeed) of the ancestor's document a root's
+// step stands open on: a person's changes request on the version the step's basis names, which
+// Dispatch recorded after the approval the step opened on (Changes). Nothing done to the
+// ancestor's document moves an open step (R3), so the workflow only tells it, as the live event of
+// that review tells it (basis-changes-requested, once per review), and only for a step of that
+// generation standing open on that same basis. The root is Issue, and Step its step.
+type BasisChangesRead struct {
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	BasisArtifactID string
+	BasisVersion    int
+	Changes         BasisReview
+}
+
+func (f BasisChangesRead) namedIssue() (string, bool) { return f.Issue, true }
+
+// ReparentRead is the re-parent seed's read (record.ReparentSeed) of the new Dispatch parent of an
+// issue in Legion's work whose parent changed (R18 of dispatch://INFRA-3320): the issue, the seed
+// as the engine queued it, and BasisVersion, the version of the new parent's primary document that
+// R1's path can rest the issue on (R1 and R2): the document's latest version, where a person
+// approved that version, the parent carries the legion label, Dispatch shows it neither retro nor
+// done, and that version marks requirement blocks. It is 0 where any of those fails, or where the
+// issue has no new parent. The workflow queues one reparented notice for each distinct architect
+// among the issue's own, the one above it before and the one above it now, and names R1's path
+// only where BasisVersion is set.
+type ReparentRead struct {
+	Issue        string
+	Seed         record.ReparentSeed
+	BasisVersion int
+}
+
+func (f ReparentRead) namedIssue() (string, bool) { return f.Issue, true }
+
 // DispatchAskOpened is an ask a session or a person opened on an issue, with its kind (Kind:
 // record.AskQuestion, record.AskApproval, or "" for a kind this daemon does not know, such as an
 // event retained from before Dispatch had the two), the document an approval request asks a person
@@ -355,26 +382,37 @@ func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
 //
-// Decline is the person's decline to answer, set where the close carries a resolution of the one
-// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
-// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
-// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
-// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
-// as Dispatch recorded it.
+// Decline is the person's decline to answer, set where the close carries a resolution of that
+// kind (ResolutionDeclined) and nil for every other close: an answer, a close whose payload
+// carries no resolution, and a resolution kind this daemon does not know, which is no defect to
+// report — Dispatch resolves asks for several reasons and the daemon acts on two of them. It
+// carries the person's own note and Dispatch's own words apart (record.AskDecline), each as
+// Dispatch recorded it.
+//
+// Withdrawn says the close is the withdrawal Dispatch records on each open ask of an issue that
+// is set done (ResolutionWithdrawn), whose ask.resolved events come before the issue's own
+// issue.closed: what closed the ask is the issue's close, which a reader names as that
+// (workflow's endPendingOnRequest) rather than as a resolution by the actor who closed the issue.
 type DispatchAskClosed struct {
-	Key      string
-	Ask      string
-	Kind     string
-	Artifact string
-	State    string
-	Decline  *record.AskDecline
-	Actor    dispatch.Actor
-	Mark     record.EventMark
+	Key       string
+	Ask       string
+	Kind      string
+	Artifact  string
+	State     string
+	Decline   *record.AskDecline
+	Withdrawn bool
+	Actor     dispatch.Actor
+	Mark      record.EventMark
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer
 // (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
 const ResolutionDeclined = "declined"
+
+// ResolutionWithdrawn is the resolution kind Dispatch records on each open ask of an issue whose
+// close (a move to done) withdrew it (DispatchAskClosed.Withdrawn). Only Dispatch's server writes
+// it: its resolve route refuses the kind.
+const ResolutionWithdrawn = "withdrawn"
 
 func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 
@@ -985,8 +1023,14 @@ type HandoffComplete struct {
 	// issue's own current generation and phase, and refuses a completion it can attribute to no run
 	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
-	Summary    string
-	Verdict    string
+	// Entry is the phase entry of the role's phases row the route held this completion to (api's
+	// entryFence, record.PhaseRow.Entry), 0 where that row named none. The workflow holds the
+	// completion to it again where it commits (workflow's handoff): a return to work raises the
+	// entry (R20 of dispatch://INFRA-3320), so a completion that passed the route's check before a
+	// stop and commits after the return is refused HANDOFF_STALE_ENTRY, whatever head it names.
+	Entry   int64
+	Summary string
+	Verdict string
 	// Commit is the commit the completion reports: for the planner, the implementer's implementing
 	// round, the tester and the reviewer the head their handoff record names, empty where a
 	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
@@ -1014,12 +1058,16 @@ type HandoffComplete struct {
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 
-// BackwardMove asks the workflow to return to an earlier phase.
+// BackwardMove asks the workflow to return to an earlier phase. Architect is the caller's
+// architect claim token where an architect asked for the move, "" where the issue's own phase
+// worker did: the workflow holds an architect's move to the ownership rule again on the Dispatch
+// chain it reads where the fact commits (workflow's architectCallRefusal).
 type BackwardMove struct {
 	Issue     string
 	Requester claim.Role
 	To        phase.Phase
 	Reason    string
+	Architect claim.Token
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1035,11 +1083,14 @@ const (
 // RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
 // answered as it did, which a retry writes into the task the restarted role is given and into
 // the daemon's own log line for the release; it is empty for a response that names none, which
-// leaves the daemon's own words in both.
+// leaves the daemon's own words in both. Architect is the caller's architect claim token, "" for
+// the operator's retry of a failed root architect, which no architect sends (workflow's
+// architectCallRefusal).
 type RetryOrEscalate struct {
-	Issue    string
-	Decision RetryOrEscalateDecision
-	Reason   string
+	Issue     string
+	Decision  RetryOrEscalateDecision
+	Reason    string
+	Architect claim.Token
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1063,8 +1114,12 @@ type RestartPhase struct {
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
-// SignOff records the architect's post-production-check approval.
-type SignOff struct{ Issue string }
+// SignOff records the architect's post-production-check approval. Architect is the caller's
+// architect claim token (workflow's architectCallRefusal).
+type SignOff struct {
+	Issue     string
+	Architect claim.Token
+}
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 
@@ -1087,6 +1142,26 @@ func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 // (dispatch.Approval.LatestReviewer), zero with neither: the notice the registration sends names
 // that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
 // parkDecision).
+//
+// Basis is the ancestor's approval the registration rests the step on, or, while its Pending is
+// set, the ancestor's open approval request the step waits on (dispatch://INFRA-3320, R1), as
+// register_gate checked it against Dispatch: the ancestor and its document for the step, the
+// version, where Dispatch recorded the person's approval in the ancestor's event log and who gave
+// it (both zero while pending), the ancestor's requirement references the root's checks serve, the
+// architect's reason and the architect session that registered it. Its RegisteredAt is zero: the
+// daemon's own time of the registration is the engine's to stamp as it applies the fact. Basis is
+// nil for a registration with no basis, and for one whose basis a person's approval of the root's
+// own document at the version registered made needless.
+//
+// ViewOf is the view fact of a registration of the spec step (R4): the ancestor whose requirement
+// blocks the root's documents read as a view on, the nearest reviewed ancestor that marks
+// requirement blocks (api's viewOf), "" where there is none or the root is no view on it. A
+// registration of another step reads no view and carries "".
+//
+// Architect is the caller's architect claim token, "" for a registration the workflow makes
+// itself (a person's handover registering its gate): the workflow holds the caller to the
+// ownership rule again on the Dispatch chain it reads where the fact commits (workflow's
+// architectCallRefusal).
 type GateRegistered struct {
 	Issue string
 	// Step is the design-gate step this registration records, which register_gate resolved
@@ -1105,15 +1180,20 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	Basis                   *record.GateBasis
+	ViewOf                  string
+	Architect               claim.Token
 }
 
 func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
-// CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
-// the reason it gives: a human decided no change at the design gate, or the issue is moot.
+// CloseRoot is a root's architect ending its run before its first phase starts, with the reason it
+// gives: a human decided no change at the design gate, or the issue is moot. Architect is the
+// caller's architect claim token (workflow's architectCallRefusal).
 type CloseRoot struct {
-	Issue  string
-	Reason string
+	Issue     string
+	Reason    string
+	Architect claim.Token
 }
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
@@ -1123,6 +1203,57 @@ func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
 func (f CloseRoot) Message() string {
 	return "Closed by its architect before its first phase: " + f.Reason
 }
+
+// CloseChild is an architect closing, with the reason it gives, an issue under its own on the
+// Dispatch chain that the daemon holds no record of: one filed and never released, which no
+// phase of Legion's ran (R24 and R26 of dispatch://INFRA-3320). Architect is the caller's
+// architect claim token (workflow's closeChild).
+type CloseChild struct {
+	Issue     string
+	Reason    string
+	Architect claim.Token
+}
+
+func (f CloseChild) namedIssue() (string, bool) { return f.Issue, true }
+
+// Message is what the close posts on the issue: that the architect above it closed it, and the
+// reason it gave.
+func (f CloseChild) Message() string {
+	return "Closed by the architect above it: " + f.Reason
+}
+
+// CloseRefused is Dispatch's refusal of a close the daemon queued (record.Issue.PendingClose)
+// because a child of the issue is not done (PARENT_STATUS_CONFLICT, R24 of
+// dispatch://INFRA-3320): the run (Generation) and the phase entry (Entry) the close row was
+// queued at, and the issues Dispatch's refusal named, each with the status Dispatch gave it
+// ("KEY (status)"), or the bare key where it gave none. Its one sender is the outbox's status
+// executor, which reads the refusal off a close row (the daemon's (*outbox).status).
+type CloseRefused struct {
+	Issue      string
+	Generation uint64
+	Entry      int64
+	Children   []string
+}
+
+func (f CloseRefused) namedIssue() (string, bool) { return f.Issue, true }
+
+// StatusRefused is Dispatch's refusal, with PARENT_STATUS_CONFLICT, of a status write the daemon
+// queued that is no close (decision 12 of dispatch://INFRA-4730; a refused close is CloseRefused):
+// the run (Generation) and the phase entry (Entry) the row was queued at, the status it wrote
+// (Status), the issues Dispatch's refusal named, each as "KEY (status)", and whether the
+// controller asked for the write (Controller, its set_status), whom the refusal is told to rather
+// than the issue's architect. The record counted the write before its echo (R16 of
+// dispatch://INFRA-3320), so the fact undoes it. Its one sender is the outbox's status executor.
+type StatusRefused struct {
+	Issue      string
+	Generation uint64
+	Entry      int64
+	Status     string
+	Issues     []string
+	Controller bool
+}
+
+func (f StatusRefused) namedIssue() (string, bool) { return f.Issue, true }
 
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
 // the supervisor has one, so workflow notices can say what failed after a daemon restart. Death is
@@ -1311,14 +1442,6 @@ type CatchUpApplied struct {
 }
 
 func (f CatchUpApplied) namedIssue() (string, bool) { return f.Issue, true }
-
-// LingerExpired records the generation whose post-close linger elapsed.
-type LingerExpired struct {
-	Issue      string
-	Generation uint64
-}
-
-func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
 
 // DaemonBooted records a boot of the daemon: every stored claim has its machine again, and the
 // boot replayed what its claims' terminal states owe the workflow. Boot is the boot's record id
@@ -1534,18 +1657,25 @@ type Refusal struct {
 	Message string
 }
 
-// ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of
-// tree, when it is asked to join want: it is that tree's, not want's. A release of children and
-// the workflow's adoption both answer it.
-func ChildInOtherTree(key, tree, want string) *Refusal {
-	return &Refusal{Status: 409, Code: "CHILD_IN_OTHER_TREE", Message: fmt.Sprintf("%s runs in the tree of %s, not %s", key, tree, want)}
-}
-
-// ChildNotAdoptable is the 409 CHILD_NOT_ADOPTABLE refusal of key, a recorded root, when it is
-// asked to join the tree of tree and cannot, for reason. The workflow's adoption and a release of
-// children both answer it.
-func ChildNotAdoptable(key, tree, reason string) *Refusal {
-	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
+// ChainUnknown is the 409 CHAIN_UNKNOWN refusal of a call on key, whose Dispatch chain the
+// daemon's copy cannot show to its top (record.Chain.Known, R16 of dispatch://INFRA-3320), so who
+// may act on key is not known: its message names the issue and the link the copy lacks or the key
+// that repeats, and says that the daemon reads Dispatch again (decision 4 of
+// dispatch://INFRA-4730). The workflow answers it where an architect's call commits, and the API
+// before it.
+func ChainUnknown(key string, chain record.Chain) *Refusal {
+	var why string
+	switch chain.Cause {
+	case record.ChainMissingRow:
+		why = fmt.Sprintf("the daemon's copy of Dispatch holds no row of %s, on the chain of %s", chain.At, key)
+	case record.ChainRepeats:
+		why = fmt.Sprintf("the Dispatch chain of %s reaches %s twice", key, chain.At)
+	case record.ChainTooLong:
+		why = fmt.Sprintf("the Dispatch chain of %s runs past %d links at %s", key, record.MaxChainLinks, chain.At)
+	default:
+		why = fmt.Sprintf("the daemon has not read the Dispatch chain of %s past %s", key, chain.At)
+	}
+	return &Refusal{Status: 409, Code: "CHAIN_UNKNOWN", Message: fmt.Sprintf("%s, so who may act on %s is not known; the daemon reads Dispatch again, and the call can be made again once the chain is known", why, key)}
 }
 
 // NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
@@ -1601,7 +1731,9 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer), and a Dispatch event it delivered moves its issue's
+// cursor there too (recordSeen), once every handler has run, so a record the fact writes first is
+// moved with it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1651,6 +1783,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, err
 	}
 	if !fresh {
+		if err := recordSeen(ctx, tx); err != nil {
+			return Result{}, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return Result{}, err
 		}
@@ -1667,18 +1802,14 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
 	ctx, settle := OpenSettlers(ctx, handlers...)
-	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
-		if err != nil {
-			return Result{}, err
-		}
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
-		}
-		result.Unspent = result.Unspent || candidate.Unspent
+	result, err := ApplyHandlers(ctx, tx, fact, handlers)
+	if err != nil {
+		return Result{}, err
 	}
 	if err := settle(ctx, tx); err != nil {
+		return Result{}, err
+	}
+	if err := recordSeen(ctx, tx); err != nil {
 		return Result{}, err
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
@@ -1698,6 +1829,26 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	}
 	committed = true
 	committedHooks()
+	return result, nil
+}
+
+// ApplyHandlers runs handlers on fact in order, inside the caller's transaction, and combines what
+// they answer: the first refusal any of them gives, every handler run whatever an earlier one
+// refused, and whether any left the fact unspent. The first error stops the run and is the whole
+// answer. It is ApplyFact's one combination of its handlers, which a handler made of handlers
+// (the daemon's test seam that drops a consumed event) answers with as well.
+func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler) (Result, error) {
+	var result Result
+	for _, handler := range handlers {
+		applied, err := handler.Apply(ctx, tx, fact)
+		if err != nil {
+			return Result{}, err
+		}
+		if result.Refusal == nil {
+			result.Refusal = applied.Refusal
+		}
+		result.Unspent = result.Unspent || applied.Unspent
+	}
 	return result, nil
 }
 
@@ -1740,10 +1891,12 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
-// issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone,
-// or nothing when it was prepared in place of none. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// issue of its key, and once one is recorded the event it was prepared in place of (Delivered), or,
+// when it was prepared in place of none, the view itself with Observed still set: a reading of
+// Dispatch, which the copy of Dispatch's issues takes as any reading (blockers.Mirror), as
+// release_children's read of a child the daemon records reaches it, and on which the workflow and
+// admission decide nothing, since no actor is known to have written its state. Every other fact
+// applies as it is.
 //
 // A view older than an event of the issue the daemon has already applied (the mirror, which every
 // applied issue event writes first, holds a later sequence) applies nothing while the issue is
@@ -1771,11 +1924,9 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		issue.Observed, issue.Delivered = false, nil
 		return issue, true, nil
 	case issue.Delivered == nil:
-		return nil, false, nil
+		return issue, true, nil
 	default:
-		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
-		return delivered, true, nil
+		return *issue.Delivered, true, nil
 	}
 }
 

@@ -36,37 +36,38 @@ type heldFixture struct {
 // for that word and state over its row's heldBy, which each fixture writes out in full: the walk
 // compares the served sentence with that literal text, never with heldSentences itself, so a
 // change to a row's text fails that row here. Each fixture is one this package already proves
-// the word of (held_test.go, held_triaged_root_test.go); a blocked one adds a Dispatch link that
-// holds the issue, or, for a root whose label is off and for the root of an ancestry hold, an
-// open Dispatch child under it, which the children-first rule holds it for (the ancestry root's
-// gate opened as well, since that rule reads only the children of a root under an open gate).
+// the word of (held_test.go, held_unrecorded_root_test.go); a blocked one adds a Dispatch link
+// that holds the issue, or, for a root whose label is off, an open Dispatch child under it, which
+// the children-first rule holds it for. A parent in awaiting_children stands in
+// `admission.blocked` with its open children (blockers.ChildRows), and outside it once its last
+// open child has gone.
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
-// the test: an entry added to the table is given a fixture here. at_work is the one exception:
-// the issues that read it stand past their review and are not held (record.HeldAtWork), one
-// whose tree runs is served no answer (atWorkPastReview), and no fixture here builds the member of
-// a tree that runs nothing that the entry is served to.
+// the test: an entry added to the table is given a fixture here. Three words are the exceptions:
+// at_work, since the issues that read it stand past their review and are not held
+// (record.HeldAtWork), one whose gate root runs is served no answer (atWorkPastReview), and no
+// fixture here builds an issue that reads it and is served the entry; and tree_closed and
+// tree_parked, which the ladder no longer gives (R21 of dispatch://INFRA-3320: an issue under a
+// done or parked parent with nothing above it in work is a root) and which stay in the vocabulary
+// for a reader of an older state.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
-	// The Dispatch link a blocked fixture adds: LEGION-101 waits on LEGION-900, which is open.
-	link := []record.DispatchIssueRow{
-		{Key: "LEGION-101", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}},
-		{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
-	}
-	linked := func(store projectionStore) projectionStore {
-		store.mirror = link
+	// The Dispatch link a blocked fixture adds: LEGION-101, under the parent named, waits on
+	// LEGION-900, which is open.
+	linked := func(store projectionStore, parent string) projectionStore {
+		store.mirror = []record.DispatchIssueRow{
+			{Key: "LEGION-101", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: parent},
+			{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
+		}
 		return store
 	}
 
-	// A member of a tree whose root has finished.
-	closedTree := projectionStore{issues: []record.Issue{treeRoot("LEGION-100", "done", phase.Done),
-		treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)}}
-	// A member of a tree whose root a person parked in backlog, its linger run out.
-	expired := projectedAt.Add(-time.Hour)
-	parkedRoot := treeRoot("LEGION-100", "backlog", phase.Admitted)
-	parkedRoot.LingerUntil = &expired
-	parkedTree := projectionStore{issues: []record.Issue{parkedRoot,
+	// An issue under a root whose own Dispatch parent the copy holds no row of: its chain is
+	// unknown at that parent.
+	unreadRoot := treeRoot("LEGION-100", "todo", phase.Admitted)
+	unreadRoot.Parent = record.ParentOf("LEGION-99")
+	unknownChain := projectionStore{issues: []record.Issue{unreadRoot,
 		treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)}}
 	// A root whose label is off.
 	unlabelled := treeRoot("LEGION-100", "todo", phase.Admitted)
@@ -75,110 +76,116 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)}}
 	labelOffWithChild := labelOff
 	labelOffWithChild.mirror = []record.DispatchIssueRow{{Key: "LEGION-101", Project: "LEGION", Status: "todo", Parent: "LEGION-100"}}
-	// A root whose Dispatch chain reaches a live root waiting for its tree to be opened.
-	underLive := treeRoot("LEGION-101", "todo", phase.Admitted)
-	underLive.Parent, underLive.Ancestry = record.ParentOf("LEGION-100"), []string{"LEGION-100"}
-	ancestry := projectionStore{issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted), underLive}}
-	// The children-first rule reads the Dispatch children of a root under an open gate alone
-	// (record.ChildrenFirstCandidates), so the blocked fixture opens the root's gate as well.
-	ancestryWithChild := ancestry
-	ancestryWithChild.gates = map[string]map[record.DesignStep]record.DesignGate{"LEGION-101": openGate("LEGION-101", opened)}
-	ancestryWithChild.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"}}
-	// A member of a tree whose root handed work to a person, holding the slot its wait keeps
-	// under an open gate.
+	// An issue whose parent is on the backlog under a root in Legion's work.
+	ancestry := projectionStore{issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+		treeMember("LEGION-102", "LEGION-100", "LEGION-100", "backlog", phase.Admitted),
+		treeMember("LEGION-101", "LEGION-100", "LEGION-102", "todo", phase.Admitted)}}
+	// An issue under a root that handed work to a person, holding the slot its wait keeps under
+	// an open gate.
 	askingRoot := treeRoot("LEGION-100", "in_progress", phase.AwaitingPerson)
 	askingRoot.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}}
 	awaitingPerson := projectionStore{
-		issues:     []record.Issue{askingRoot, treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
-		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
-		lifecycles: []string{"LEGION-100"},
-		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		issues: []record.Issue{askingRoot, treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
+		slots:  []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		gates:  map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
-	// A member of a running tree whose design gate stands shut.
+	// An issue under a root whose design gate stands shut.
 	shutTree := projectionStore{
 		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
-		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
-		lifecycles: []string{"LEGION-100"},
-		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": shutGate("LEGION-100")},
+		slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": shutGate("LEGION-100")},
 	}
-	// An issue beneath an ancestor the daemon has accepted, in a running tree under an open
-	// gate, with the rows the admission pass leaves such a tree. The ancestor, LEGION-101, stands
-	// in merging, which holds no slot (record.KeepsSlot), so it holds no row. Dispatch names it a
+	// An issue beneath an ancestor the daemon has accepted, under a root at admitted under an
+	// open gate, with the rows the admission pass leaves. The ancestor, LEGION-101, stands in
+	// merging, which holds no slot (record.KeepsSlot), so it holds no row. Dispatch names it a
 	// child of the root, and it is open, so the root's own first phase at admitted waits for it
 	// (the children-first wait): the root gave its row back for that wait and carries the mark of
-	// the release (ReleasedForWaitAt), as LEGION-170 does in held_test.go. No issue of the tree
-	// holds a row.
+	// the release (ReleasedForWaitAt), as LEGION-170 does in held_test.go. No issue holds a row.
 	releasedRoot := treeRoot("LEGION-100", "todo", phase.Admitted)
 	releasedRoot.ReleasedForWaitAt = &opened
 	acceptedAncestor := projectionStore{
 		issues: []record.Issue{releasedRoot,
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "needs_review", phase.Merging),
 			treeMember("LEGION-102", "LEGION-100", "LEGION-101", "todo", phase.Admitted)},
-		lifecycles: []string{"LEGION-100"},
-		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
-		mirror: []record.DispatchIssueRow{
-			{Key: "LEGION-101", Project: "LEGION", Status: "needs_review", Parent: "LEGION-100"},
-			{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"},
-		},
-	}
-	// A member of a tree whose root stands out of the workflow at triage, at phase done and
-	// under a gate a person approved, so no word above unclassified is true of it.
-	unclassified := projectionStore{
-		issues: []record.Issue{treeRoot("LEGION-100", "triage", phase.Done),
-			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// An issue at work under a root at work that holds no slot and that the line does not place,
+	// so no word above unclassified is true of it.
+	unclassified := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "in_progress", phase.Implementing),
+			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.Implementing)},
+		slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+	}
+	// A sub-parent that held a phase start because a child of it is still open, under a root
+	// under an open gate. It stands in awaiting_children, so it holds no slot and reads held; its
+	// held-by is its open children, as the started parents' judgement reads them
+	// (record.LineFacts.StartedParentWaits): here LEGION-102, which Dispatch shows open at todo
+	// under it. The state places such a parent in admission.blocked with those children
+	// (blockers.ChildRows), so it is walked under blocked. The unlisted fixture is the same parent
+	// once its last open child has gone, here done, which no row of blocked names: it stands there
+	// until the admission pass takes it back to the start it held, and its held row names nothing.
+	// The root holds no row: its own first phase waits for its open child LEGION-101 (the
+	// children-first wait), and the pass takes the row of such a waiter back.
+	awaitingChildren := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.AwaitingChildren)},
+		gates:  map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		mirror: []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"}},
+	}
+	childrenFinished := awaitingChildren
+	childrenFinished.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "done", Parent: "LEGION-101"}}
 
 	byRoot := []string{"LEGION-100"}
+	const (
+		unknownSentence = "Its Dispatch chain is unknown: the daemon's copy of Dispatch's issues cannot show it to its top at LEGION-99 " +
+			"(a row the copy lacks, a loop or more than 32 links), and the daemon starts nothing of it while the chain is unknown."
+		labelOffSentence = "No issue above it is in Legion's work and its record says the legion label is off, so nothing hands it to the daemon."
+		ancestrySentence = "Its Dispatch parent is not in Legion's work, and LEGION-100, above that parent, is: it stands as LEGION-100's unreleased work."
+		awaitingSentence = "Its top issue, LEGION-100, has handed work to a person, and the daemon starts nothing under it before that issue resumes."
+		gateSentence     = "A design gate it waits for stands shut: LEGION-100 waits for a person's approval of each gated step's document " +
+			"at its current version, and the daemon starts nothing under it until it opens."
+	)
 	fixtures := map[heldEntry]heldFixture{
-		{record.HeldTreeClosed, api.WhyBlocked}: {linked(closedTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
-		{record.HeldTreeClosed, api.WhyUnlisted}: {closedTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
-		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
-		{record.HeldTreeParked, api.WhyUnlisted}: {parkedTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
+		{record.HeldChainUnknown, api.WhyBlocked}: {linked(unknownChain, "LEGION-100"),
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-99"}}, unknownSentence},
+		{record.HeldChainUnknown, api.WhyUnlisted}: {unknownChain,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldChainUnknown, HeldBy: []string{"LEGION-99"}}, unknownSentence},
 		{record.HeldLabelOff, api.WhyBlocked}: {labelOffWithChild,
-			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
-			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff}, labelOffSentence},
 		{record.HeldLabelOff, api.WhyUnlisted}: {labelOff,
-			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
-			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
-		{record.HeldAncestry, api.WhyBlocked}: {ancestryWithChild,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot},
-			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff}, labelOffSentence},
+		{record.HeldAncestry, api.WhyBlocked}: {linked(ancestry, "LEGION-102"),
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot}, ancestrySentence},
 		{record.HeldAncestry, api.WhyUnlisted}: {ancestry,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot},
-			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
-		{record.HeldRootAwaitingPerson, api.WhyBlocked}: {linked(awaitingPerson),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root, LEGION-100, has handed work to a person, and the daemon starts no issue of that tree before that root resumes."},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot}, ancestrySentence},
+		{record.HeldRootAwaitingPerson, api.WhyBlocked}: {linked(awaitingPerson, "LEGION-100"),
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot}, awaitingSentence},
 		{record.HeldRootAwaitingPerson, api.WhyUnlisted}: {awaitingPerson,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root, LEGION-100, has handed work to a person, and the daemon starts no issue of that tree before that root resumes."},
-		{record.HeldDesignGate, api.WhyBlocked}: {linked(shutTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot}, awaitingSentence},
+		{record.HeldDesignGate, api.WhyBlocked}: {linked(shutTree, "LEGION-100"),
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}, gateSentence},
 		{record.HeldDesignGate, api.WhyUnlisted}: {shutTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}, gateSentence},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
+		{record.HeldAwaitingChildren, api.WhyBlocked}: {awaitingChildren,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-102"}},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
+		{record.HeldAwaitingChildren, api.WhyUnlisted}: {childrenFinished,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},
 	}
+	unwalked := []record.HeldReason{record.HeldAtWork, record.HeldTreeClosed, record.HeldTreeParked}
 
 	for word, entry := range heldSentences {
 		for _, state := range entry.states {
-			if _, walked := fixtures[heldEntry{word, state}]; !walked && word != record.HeldAtWork {
+			if _, walked := fixtures[heldEntry{word, state}]; !walked && !slices.Contains(unwalked, word) {
 				t.Errorf("heldSentences serves %s under %s, and no fixture here walks that entry", word, state)
 			}
 		}
@@ -305,7 +312,7 @@ func TestABlockedIssueWhoseWordIsDispatchBlockerReadsItsLinks(t *testing.T) {
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour))},
 		mirror: []record.DispatchIssueRow{
-			{Key: "LEGION-101", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}},
+			{Key: "LEGION-101", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: "LEGION-100"},
 			{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
 		},
 	}
@@ -315,16 +322,17 @@ func TestABlockedIssueWhoseWordIsDispatchBlockerReadsItsLinks(t *testing.T) {
 		api.WhyView{State: api.WhyBlocked, Reason: "It waits on LEGION-900, which is not done."})
 }
 
-// A child whose own blocked_by link holds it under an issue above it in its tree reads the
-// cycle sentence whatever its held word, because nothing else in the state says that the issue
-// it waits on is waiting for it; `admission.held` still names its held word beside it. The
-// child is a tree of its own under a shut design gate, so its word is design_gate, which
-// heldSentences serves under `blocked`; its Dispatch parent is a root under an open gate, which
-// is what makes the children-first rule read the children under it and name the cycle.
+// A child whose own blocked_by link holds it under an issue above it reads the cycle sentence
+// whatever its held word, because nothing else in the state says that the issue it waits on is
+// waiting for it; `admission.held` still names its held word beside it. The child ran as a root
+// and holds its own gate (record.Issue.HoldsGate), which stands shut, so its word is design_gate,
+// which heldSentences serves under `blocked`; its Dispatch parent is a root under an open gate,
+// which is what makes the children-first rule read the children under it and name the cycle.
 func TestABlockedChildInACycleReadsTheCycleWhateverItsHeldWord(t *testing.T) {
+	child := treeRoot("LEGION-101", "todo", phase.Admitted)
+	child.HoldsGate = true
 	store := projectionStore{
-		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
-			treeRoot("LEGION-101", "todo", phase.Admitted)},
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted), child},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour)),
 			"LEGION-101": shutGate("LEGION-101")},
