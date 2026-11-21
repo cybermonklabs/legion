@@ -77,21 +77,25 @@ const failAlways = 1 << 30
 // token and moves the expiry, "invalid_grant" refuses it, "unavailable" answers 503,
 // "rate_limited" answers the broker's 429 invalid_request with Retry-After 1).
 type fakeBroker struct {
-	mu                 sync.Mutex
-	srv                *httptest.Server
-	enrolled           map[string]string    // enrollment id -> thumbprint
-	byTP               map[string]string    // thumbprint -> enrollment id
-	runtimeIDToID      map[string]string    // runtime_id -> the currently live enrollment id for it
-	leaseExpiry        map[string]time.Time // enrollment id -> its current lease expiry
-	posts              []map[string]any
-	deletes            []string
-	renews             int
-	conflicts          int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
-	failFirst          int           // 503 this many enroll calls first
-	revokeFirstDelay   time.Duration // sleep this long before the first DELETE actually removes its row
-	revokeFailFirst    int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
-	revokeAttempts     int           // every DELETE this fake received, failed or not
-	lease              time.Duration // lease length the fake grants; 900 s unless a test shortens it
+	mu               sync.Mutex
+	srv              *httptest.Server
+	enrolled         map[string]string    // enrollment id -> thumbprint
+	byTP             map[string]string    // thumbprint -> enrollment id
+	runtimeIDToID    map[string]string    // runtime_id -> the currently live enrollment id for it
+	leaseExpiry      map[string]time.Time // enrollment id -> its current lease expiry
+	posts            []map[string]any
+	deletes          []string
+	renews           int
+	conflicts        int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
+	failFirst        int           // 503 this many enroll calls first
+	revokeFirstDelay time.Duration // sleep this long before the first DELETE actually removes its row
+	revokeFailFirst  int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
+	revokeAttempts   int           // every DELETE this fake received, failed or not
+	lease            time.Duration // lease length the fake grants; 900 s unless a test shortens it
+	// holdLeases serves a renew however long after its lease it comes, so a lease ends only when
+	// the row ends it (deleting the enrollment), never at a time: a row that shortens lease to
+	// have the helper renew soon then waits on the renew, which a loaded machine sends late.
+	holdLeases         bool
 	seen               map[string]bool
 	revokeForbidden    map[string]bool
 	revokeNotEnrolling map[string]bool
@@ -366,7 +370,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		// The enrollment row itself survives its own lease — a renew past that stored expiry is
 		// refused, but nothing about the enrollment is deleted; only Revoke deletes it.
-		if exp, ok := f.leaseExpiry[id]; ok && !time.Now().Before(exp) {
+		if exp, ok := f.leaseExpiry[id]; ok && !f.holdLeases && !time.Now().Before(exp) {
 			writeJSON(w, 401, map[string]string{"code": "ENROLLMENT_NOT_LIVE", "error": "enrollment is not live"})
 			return
 		}

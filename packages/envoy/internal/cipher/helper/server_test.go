@@ -460,42 +460,37 @@ func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 
 func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	r := startRig(t, "")
-	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms). Poll
-	// for the first renew instead of guessing how long that takes under load — enrollment
-	// alone has been observed to take longer than a fixed 300 ms wait under a starved
-	// scheduler. Production leases are 900 s → one renew per 300 s.
+	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms) rather than
+	// at production's 300 s of a 900 s lease. The fake holds every lease it grants until this row
+	// ends it (holdLeases), so the renew is a fact the row waits on, however late a loaded machine
+	// sends it, never a race against the lease's clock; and the enrollment is waited on as the
+	// registry records it, not through register's own bounded wait.
 	r.fake.mu.Lock()
 	r.fake.lease = 150 * time.Millisecond
+	r.fake.holdLeases = true
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
-	renewDeadline := time.Now().Add(5 * time.Second)
-	var renews int
-	for time.Now().Before(renewDeadline) {
+	if reg := r.call(t, Request{Op: "register"}); !reg.OK {
+		t.Fatalf("register: %+v", reg)
+	}
+	enrollment := func() string { return r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID }
+	testwait.Eventually(t, "the session enrolled", func() bool { return enrollment() != "" })
+	first := enrollment()
+	testwait.Eventually(t, "the helper renews the lease", func() bool {
 		r.fake.mu.Lock()
-		renews = r.fake.renews
-		r.fake.mu.Unlock()
-		if renews > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if renews == 0 {
-		t.Fatal("the helper renews the lease")
-	}
-	// The broker forgets the enrollment (lease lapsed during an outage): renew is 401, the
-	// helper enrolls again and gets a new enrollment for the same runtime_id.
+		defer r.fake.mu.Unlock()
+		return r.fake.renews > 0
+	})
+	// The row ends the lease itself: the broker forgets the enrollment (its lease lapsed during
+	// an outage), so the next renew is 401, and the helper enrolls again and gets a new
+	// enrollment for the same runtime_id.
 	r.fake.mu.Lock()
-	delete(r.fake.enrolled, reg.EnrollmentID)
+	delete(r.fake.enrolled, first)
 	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("a refused renew must re-enroll")
+	testwait.Eventually(t, "a refused renew re-enrolls", func() bool {
+		id := enrollment()
+		return id != "" && id != first
+	})
 }
 
 func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
