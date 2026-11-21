@@ -1476,6 +1476,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       "aria-pressed",
       "true"
     );
+    await expectOpeningLanded(page);
     await focusThePage(page);
 
     // e puts the caret in the title, where every key is text: "sp0" is typed there, and Escape
@@ -3131,6 +3132,8 @@ test("a change request sent from the header leaves the focus in the header", asy
       ],
     ] as const) {
       await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+      // no opening focus: `open` presses the control or focuses it before any key (a reader's
+      // act or a script's focus), and either ends the page's opening.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(

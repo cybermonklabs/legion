@@ -2355,6 +2355,8 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     // What a child's row holds: its title as its words, how it stands, what blocks it, who
     // holds it, and its key as the tag, which opens the child's own page.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    // no opening focus: this load reads the children's rows, and the next read of the focus comes
+    // after the next load, below.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
     for (const key of seeded.children.keys) {
@@ -2414,6 +2416,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
       };
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}/children`);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `/children does not focus the group's first row at ${at}`,
@@ -2426,6 +2429,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
       await toSecondChild();
 
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
       await toChildren("from the issue's address");
       await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
@@ -2750,6 +2754,7 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     ): Promise<void> => {
       await page.setViewportSize(size);
       await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the reply's address does not focus its row${at}`,
@@ -3494,6 +3499,7 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectTreeDrawn(page);
+    await expectOpeningLanded(page);
     // The page lands on the question that waits on the reader once its read answers, which
     // would take the focus back from a row focused before then.
     const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
@@ -3566,6 +3572,7 @@ test("Tab from the focused row stops on its code block and its table, then leave
   await phase(browser, seedWideCode, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.wide}`);
     await expectTreeDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), {
         message: "the comment's address did not put the focus on its row",
@@ -3976,6 +3983,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
       .toBe(seeded.first);
