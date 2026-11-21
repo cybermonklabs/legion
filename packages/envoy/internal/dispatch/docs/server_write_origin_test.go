@@ -19,19 +19,16 @@ import (
 // origin holds its update (writtenApply.written), and only a browser is ever closed. Each row's
 // write is a published live write's update or a catch-up's batch of rows, carrying a paragraph of
 // 512 KiB the room took in an earlier catch-up and one struct or one delete range under a client
-// the room has never seen, which parks. Once it has applied, the test has let go of the update and
-// the room has taken its next write of the same kind, of one keystroke, a weak pointer to the
-// update's bytes is nil after a collection. Before the room forgot the origin, the record held it,
-// and the update with it, for as long as what the write parked stayed parked; the live heap the
-// test logs, read before the update is made and after the next write, shows what it held.
+// the room has never seen, which parks. Once it has applied and its rows are stored, and the test
+// has let go of the update, a weak pointer to the update's bytes is nil after a collection. Before
+// the room forgot the origin, the record held it, and the update with it, for as long as what the
+// write parked stayed parked; the live heap the test logs, read before the update is made and
+// after the apply, shows what it held.
 //
-// The next write is part of the measure because ygo's Doc.OnUpdate unsubscribe leaves the
-// subscription it removes in the slot of the observer list it vacates (crdt/doc.go:1876 in
-// theorem-labs/ygo v1.55.1-theorem.12). Each of these writes subscribes a closure that picks out
-// its own commit and holds its origin (applyRemoteBatch, applyCaptured), a publish's inside the one
-// ygo's Server.Apply subscribes, so the closure stays reachable from the room's document until
-// later subscriptions take the slots the write left, which the room's next write of the same kind
-// does.
+// The pointer is read right after the apply. Each of these writes subscribes a closure that picks
+// out its own commit and holds its origin (applyRemoteBatch, applyCaptured), and before
+// theorem-labs/ygo v1.55.1-theorem.13 an unsubscribe left the closure in the slot of the observer
+// list it vacated, so the room kept the update reachable until a later subscription took the slot.
 func TestAServerWriteThatParksLeavesTheRoomNoReferenceToItsUpdate(t *testing.T) {
 	const client = 7_600_003
 	for _, write := range []struct {
@@ -80,15 +77,13 @@ func TestAServerWriteThatParksLeavesTheRoomNoReferenceToItsUpdate(t *testing.T) 
 				if _, open, err := service.applyRemoteBatch(artifactID, room, held); !open || err != nil {
 					t.Fatalf("the catch-up of the paragraph answered open %t, %v", open, err)
 				}
-				nextWrite := func() {
-					t.Helper()
-					write.apply(t, service, artifactID, room, docstest.Transact(writer, func(txn *crdt.Transaction) {
-						texts := paragraphTextsOf(txn.GetXmlFragment(fragmentName))
-						texts[len(texts)-1].Insert(txn, 0, "q", nil)
-					}))
-					waitForLandedAppends(t, service, artifactID)
-				}
-				nextWrite()
+				// One write of the same kind first, so the heap read before the update already
+				// holds what the room builds on its first write of that kind.
+				write.apply(t, service, artifactID, room, docstest.Transact(writer, func(txn *crdt.Transaction) {
+					texts := paragraphTextsOf(txn.GetXmlFragment(fragmentName))
+					texts[len(texts)-1].Insert(txn, 0, "q", nil)
+				}))
+				waitForLandedAppends(t, service, artifactID)
 
 				before := liveHeap()
 				update, err := crdt.MergeUpdatesV1(held, parks.frame)
@@ -102,12 +97,12 @@ func TestAServerWriteThatParksLeavesTheRoomNoReferenceToItsUpdate(t *testing.T) 
 				if got := parks.parked(room.PendingStats()); got != 1 {
 					t.Fatalf("after %s the room parks %+v, want %s", write.name, room.PendingStats(), parks.name)
 				}
-				nextWrite()
+				waitForLandedAppends(t, service, artifactID)
 				after := liveHeap()
-				t.Logf("%s of %d bytes that parks %s: the live heap went from %d bytes before the update was made to %d after the room's next write, %+d",
+				t.Logf("%s of %d bytes that parks %s: the live heap went from %d bytes before the update was made to %d after its apply, %+d",
 					write.name, size, parks.name, before, after, int64(after)-int64(before))
 				if written.Value() != nil {
-					t.Errorf("after %s that parked %s, and the room's next write, the room still holds the write's %d-byte update: the room's record of who parked what keeps the write's origin",
+					t.Errorf("after %s that parked %s, the room still holds the write's %d-byte update",
 						write.name, parks.name, size)
 				}
 				runtime.KeepAlive(held)

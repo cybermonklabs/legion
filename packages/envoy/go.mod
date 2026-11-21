@@ -296,4 +296,10 @@ require (
 // the room calls after each server write's apply (applyServerWrite), and the WebSocket server for
 // each peer that leaves its room. The tag is on ee46210f, the head of
 // release/v1.55.1/2026-11-20.2.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.12
+// v1.55.1-theorem.13 makes each removal from a list a document, a type, a persistence or a client
+// keeps clear the slot it vacates (slices.Delete), so an unsubscribed callback, and what its
+// closure captured, no longer stays reachable from the backing array: before it, the closure each
+// server write subscribes (applyRemoteBatch, applyCaptured) kept the write's update reachable from
+// the room until a later subscription took the slot. The tag is on 4b19472d, the head of
+// release/v1.55.1/2026-11-20.3.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.13
