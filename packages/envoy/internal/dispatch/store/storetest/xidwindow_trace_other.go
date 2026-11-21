@@ -21,8 +21,6 @@ func (*xidTrace) stop() {}
 
 func (*xidTrace) read() (*xidTraceReading, error) { return &xidTraceReading{}, nil }
 
-// goStates reads no state, and so no sleep on the runtime's handoff of a P either: this build
-// takes no trace.
 func (*xidTraceReading) goStates(int, time.Time, time.Time) (xidGoStates, bool) {
 	return xidGoStates{}, false
 }

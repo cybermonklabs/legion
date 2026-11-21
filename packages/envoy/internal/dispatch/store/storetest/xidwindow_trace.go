@@ -220,24 +220,9 @@ type xidThreadRun struct {
 	g  exptrace.GoID
 }
 
-// xidCount is a count that holds from a moment of the trace on.
-type xidCount struct {
-	at exptrace.Time
-	n  int
-}
-
-// xidProcEvent is a P starting or stopping on a thread, at a moment of the trace.
-type xidProcEvent struct {
-	at     exptrace.Time
-	proc   exptrace.ProcID
-	thread int
-}
-
 // xidTraceReading is the execution trace read back: each goroutine's state changes in time order,
 // each thread's goroutines in the order they started running on it, how far the trace reaches,
-// and the tie between the trace's clock and the process's; and, for the runtime's handoff of a P
-// to a locked goroutine's thread (handedOff), how many goroutines were running or in a system
-// call, the process's GOMAXPROCS, and each P's starts and stops.
+// and the tie between the trace's clock and the process's.
 type xidTraceReading struct {
 	changes  map[exptrace.GoID][]xidGoStateChange
 	runs     map[int][]xidThreadRun
@@ -249,16 +234,6 @@ type xidTraceReading struct {
 	syncs []exptrace.Time
 	// last is the latest event's moment: the trace says nothing of any goroutine after it.
 	last exptrace.Time
-	// states is each goroutine's latest state, and wanting how many of them are running, in a
-	// system call or runnable, each of which holds a P or waits for one; load is wanting from each
-	// moment it changed on, and procs the GOMAXPROCS the trace reported from each moment on.
-	states  map[exptrace.GoID]exptrace.GoState
-	wanting int
-	load    []xidCount
-	procs   []xidCount
-	// starts are the Ps each thread started, and stops the threads each P stopped on, in time order.
-	starts map[int][]xidProcEvent
-	stops  map[exptrace.ProcID][]xidProcEvent
 }
 
 // stop stops the tracer. It stops the world to stop, so Measure stops it once the operation has
@@ -305,10 +280,6 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 			}
 		case exptrace.EventStateTransition:
 			reading.transition(event.StateTransition(), event.Time(), event.Thread())
-		case exptrace.EventMetric:
-			if metric := event.Metric(); metric.Name == "/sched/gomaxprocs:threads" {
-				reading.procs = append(reading.procs, xidCount{at: event.Time(), n: int(metric.Value.Uint64())})
-			}
 		}
 	}
 	if !snapped {
@@ -317,56 +288,21 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 	return reading, nil
 }
 
-// transition records one state transition of the trace, at, on thread. For a goroutine: its new
-// state, its start on thread when it starts running there, and the count of goroutines running or
-// in a system call. A transition from a state to that same state changes nothing and is passed
-// over: at each generation's start the trace writes every goroutine's status as a transition from
-// the state it was already in (x/exp/trace's order.go). For a P: its start on a thread and its stop
-// on one, which show the runtime handing a P to a locked goroutine's thread (handedOff).
+// transition records one goroutine state transition of the trace, at, on thread: the goroutine's
+// new state, and its start on thread when it starts running there. A transition from a state to
+// that same state changes nothing and is passed over: at each generation's start the trace writes
+// every goroutine's status as a transition from the state it was already in (x/exp/trace's
+// order.go). A P's transitions are not read: the trace cannot show that an idle P was free to run
+// a goroutine, since the runtime hands a P to a locked goroutine's thread (startlockedm) through a
+// stop that reads as idle until that thread starts it, so no wait for a P is laid to the machine
+// on a P's account (xidRuntimeWaitProblem).
 func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrace.Time, thread exptrace.ThreadID) {
 	r.last = max(r.last, at)
-	switch change.Resource.Kind {
-	case exptrace.ResourceProc:
-		from, to := change.Proc()
-		if from == to || thread == exptrace.NoThread {
-			return
-		}
-		event := xidProcEvent{at: at, proc: change.Resource.Proc(), thread: int(thread)}
-		switch {
-		case to == exptrace.ProcRunning:
-			if r.starts == nil {
-				r.starts = map[int][]xidProcEvent{}
-			}
-			r.starts[event.thread] = append(r.starts[event.thread], event)
-		case from == exptrace.ProcRunning:
-			if r.stops == nil {
-				r.stops = map[exptrace.ProcID][]xidProcEvent{}
-			}
-			r.stops[event.proc] = append(r.stops[event.proc], event)
-		}
-		return
-	case exptrace.ResourceGoroutine:
-	default:
+	if change.Resource.Kind != exptrace.ResourceGoroutine {
 		return
 	}
 	g := change.Resource.Goroutine()
 	from, to := change.Goroutine()
-	if r.states == nil {
-		r.states = map[exptrace.GoID]exptrace.GoState{}
-	}
-	previous, seen := r.states[g]
-	if from == to && seen {
-		return
-	}
-	r.states[g] = to
-	if wants, wanted := xidWantsAP(to), seen && xidWantsAP(previous); wants != wanted {
-		if wants {
-			r.wanting++
-		} else {
-			r.wanting--
-		}
-		r.load = append(r.load, xidCount{at: at, n: r.wanting})
-	}
 	if from == to {
 		return
 	}
@@ -374,12 +310,6 @@ func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrac
 	if to == exptrace.GoRunning && thread != exptrace.NoThread {
 		r.runs[int(thread)] = append(r.runs[int(thread)], xidThreadRun{at: at, g: g})
 	}
-}
-
-// xidWantsAP says whether a goroutine in state holds a P or waits for one: running, in a system
-// call whose P the runtime may not have taken back, or runnable.
-func xidWantsAP(state exptrace.GoState) bool {
-	return state == exptrace.GoRunning || state == exptrace.GoSyscall || state == exptrace.GoRunnable
 }
 
 // pastEnd is how much of the stretch up to moment lies past the trace's last event, where the
@@ -434,9 +364,6 @@ func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates,
 		switch change.state {
 		case exptrace.GoRunnable:
 			states.Runnable += segmentEnd.Sub(segmentStart)
-			if i+1 < len(changes) {
-				states.HandedOff += r.handedOff(thread, change.at, changes[i+1].at, segmentStart, segmentEnd)
-			}
 		case exptrace.GoWaiting:
 			states.Waiting += segmentEnd.Sub(segmentStart)
 		case exptrace.GoSyscall:
@@ -444,84 +371,4 @@ func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates,
 		}
 	}
 	return states, true
-}
-
-// handedOff is the part of a runnable stretch of the goroutine locked to thread, from runnable to
-// running, within lo to hi, during which the trace proves that thread slept on the runtime's
-// handoff and not on the code (xidGoStates.HandedOff).
-//
-// A locked goroutine the runtime preempts, or whose system call returns to no P, goes on the
-// runtime's global queue, and its thread gives up its P and sleeps (stoplockedm) until another
-// thread finds the goroutine and hands it a P (startlockedm): that thread stops the P - a stop the
-// trace shows on it - and wakes the locked thread, which starts the P - a start the trace shows on
-// it - and runs the goroutine. From the runnable moment to that other thread's stop, the locked
-// thread ran nothing of the code; on a loaded machine the other thread's own wait for a CPU is
-// all of it, and the locked thread's clocks read it as a sleep (XidGap.Made). It is laid to the
-// machine only where the trace shows the handoff - the start on thread of a P whose latest stop
-// before it was on another thread, after the goroutine went runnable - and only where, for the
-// whole stretch to that stop, fewer goroutines other than this one were running, in a system call
-// or runnable than the process had Ps: then every goroutine of the code that wanted a P could have
-// one, none queued, and this one's wait was not behind them. Running and in-system-call goroutines
-// alone are not enough: the runtime moves its Ps between goroutines all the time, so even where
-// the code's goroutines queue for every P, at no moment do all the Ps run one, and a forcing of 577
-// of them at 72 Ps had the locked thread's 212.9 ms sleep laid to the machine (2026-11-21). The
-// count is of goroutines, not of the Ps' states, since a P handed to a locked thread reads as
-// idle until that thread starts it. From the stop to the start, the woken thread waits for a CPU,
-// which its run_delay already counts; and anything the trace does not show is the code's.
-func (r *xidTraceReading) handedOff(thread int, runnable, running, lo, hi exptrace.Time) time.Duration {
-	starts := r.starts[thread]
-	next := slices.IndexFunc(starts, func(start xidProcEvent) bool { return start.at >= runnable })
-	if next < 0 || starts[next].at > running {
-		return 0
-	}
-	start := starts[next]
-	stops := r.stops[start.proc]
-	before := slices.IndexFunc(stops, func(stop xidProcEvent) bool { return stop.at > start.at }) - 1
-	if before == -2 {
-		before = len(stops) - 1
-	}
-	if before < 0 || stops[before].thread == thread || stops[before].at < runnable {
-		return 0
-	}
-	from, to := max(runnable, lo), min(stops[before].at, hi)
-	if to <= from || xidPeak(r.load, from, to)-1 >= xidLeast(r.procs, from, to) {
-		return 0
-	}
-	return to.Sub(from)
-}
-
-// xidPeak is the most series held over from to to, and xidLeast the least: its value at from - the
-// latest at or before it, zero where there is none - and every value it took after, up to to.
-func xidPeak(series []xidCount, from, to exptrace.Time) int {
-	peak := 0
-	for _, count := range xidOver(series, from, to) {
-		peak = max(peak, count.n)
-	}
-	return peak
-}
-
-func xidLeast(series []xidCount, from, to exptrace.Time) int {
-	over := xidOver(series, from, to)
-	if len(over) == 0 || over[0].at > from {
-		return 0
-	}
-	least := over[0].n
-	for _, count := range over[1:] {
-		least = min(least, count.n)
-	}
-	return least
-}
-
-// xidOver is the part of series that holds over from to to: its latest value at or before from,
-// where there is one, and every later one up to to.
-func xidOver(series []xidCount, from, to exptrace.Time) []xidCount {
-	first := slices.IndexFunc(series, func(count xidCount) bool { return count.at > from })
-	if first < 0 {
-		first = len(series)
-	}
-	last := slices.IndexFunc(series, func(count xidCount) bool { return count.at > to })
-	if last < 0 {
-		last = len(series)
-	}
-	return series[max(first-1, 0):last]
 }
