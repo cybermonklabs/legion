@@ -2347,6 +2347,8 @@ SCRIPT_TEST_GATES = [
                                   "release-section's gh calls, which the stub gh answers"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:922 runs it for `version`, and the version cases read its refusals"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
+        (".github/workflows/release-envoy-listener.yaml",
+         "release-push.test.sh's Determine latest case reads release_publish's step out of it and runs its image read"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [

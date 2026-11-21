@@ -620,6 +620,7 @@ release_push_test: &release_push_test
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/release-bump.sh'
   - '.github/workflows/release.yaml'
+  - '.github/workflows/release-envoy-listener.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test
   - *ci_router

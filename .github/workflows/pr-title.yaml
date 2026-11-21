@@ -95,6 +95,8 @@ jobs:
   pr-title:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       contents: read
       issues: read
@@ -124,6 +126,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"

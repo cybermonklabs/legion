@@ -720,7 +720,10 @@ jobs:
               rm -f "$error_file"
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown|not found' "$error_file"; then
+            # No image only on buildx's own line for a tag the registry does not hold, as the last
+            # line, for this reference: `ERROR: <image>:<tag>: not found`. A refusal of another
+            # request that ends in "404 Not Found" (a token endpoint's) is no answer about the tag.
+            if [ "$(tail -n 1 "$error_file")" = "ERROR: $IMAGE:$sha: not found" ]; then
               rm -f "$error_file"
               return 1
             fi

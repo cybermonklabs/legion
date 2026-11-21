@@ -40,6 +40,10 @@ fi
 #   spend-for    seconds: the first route request spends the budget for that long, writing the
 #                epoch it is spent until to spent-until (absent: the budget is whole).
 #   always-spent present: every route is refused, the reset passed or not.
+#   secondary    `<status> <retry-after seconds|none>`: route requests are refused for a secondary
+#                rate limit with that status and that retry-after header (none: no header), the
+#                first one alone, or every one while `secondary-always` is present; the core
+#                budget stays whole.
 #   answer       what a route answers once the budget is back: 200 or 404.
 #   body         the body of a 200.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers.
@@ -93,6 +97,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "reset": spent_until if spent else int(now) + 3600}
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
+        elif (path != "/rate_limit" and read("secondary")
+              and (not read("secondary-done") or os.path.exists(os.path.join(state, "secondary-always")))):
+            with open(os.path.join(state, "secondary-done"), "w") as handle:
+                handle.write("1")
+            status, retry_after = read("secondary").split()
+            self.answer(int(status), {
+                "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+                "status": status},
+                [] if retry_after == "none" else [("retry-after", retry_after)])
         elif spent:
             self.answer(403, {"message": "API rate limit exceeded for installation ID 1.",
                               "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
@@ -205,7 +219,8 @@ check "logs exactly one line about the wait" "$(is "$(warnings)" 1)"
 check "which names the reset" "$(contains "$err" "^::warning::the API budget is spent until $(utc "$reset");")"
 check "and the job's limit it waits within" "$(contains "$err" "within this job's limit at ")"
 check "and fails nothing" "$(is "$(errors)" 0)"
-check "gh's own words for the refusal stay in the log" "$(contains "$err" 'API rate limit exceeded for installation ID 1')"
+check "gh's own words for the refusal stay in the log, once: the answered call printed none" \
+  "$(is "$(grep -c 'API rate limit exceeded for installation ID 1' <<<"$err")" 1)"
 
 # A case that must not wait spends the budget for a minute or more, so a wait would take that
 # long, and holds the case to under 30 s, which leaves gh room to start on a loaded machine.
@@ -353,6 +368,79 @@ github never 404
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
+
+# A secondary rate limit spends no budget: GitHub's answer names how long to wait in a retry-after
+# header, and its documentation says to wait at least a minute where the answer names none.
+# secondary <status> <retry-after|none> [always]: this case's GitHub refuses the first route call
+# (every route call, with `always`) for a secondary rate limit.
+secondary() {
+  echo "$1 $2" > "$work/state/secondary"
+  [ "${3:-}" != always ] || touch "$work/state/secondary-always"
+}
+
+echo "case: a secondary rate limit's retry-after is waited out"
+github never
+secondary 429 3
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "exits 0" "$(is "$status" 0)"
+check "prints the answer of the call after the wait" "$(is "$out" '{"title":"t"}')"
+check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+check "reads no rate limit, since no budget is spent" "$(is "$(calls /rate_limit)" 0)"
+check "waits the 3 s GitHub asked for" \
+  "$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(($(nth_at /repos/o/r/pulls/1 1) + 3))")"
+check "logs exactly one line about the wait, naming the retry-after" \
+  "$(is "$(grep -c "^::warning::GitHub's secondary rate limit asks this call to wait 3 s (its retry-after)" <<<"$err")" 1)"
+check "and the job's limit it waits within" "$(contains "$err" "within this job's limit at ")"
+check "gh's own words for the refusal stay in the log, once" \
+  "$(is "$(grep -c 'secondary rate limit.* (HTTP 429)$' <<<"$err")" 1)"
+check "and none of gh's request trace does" "$(is "$(contains "$err" '^\* Request\|^< \|^> ')" false)"
+
+echo "case: a secondary rate limit with no retry-after takes GitHub's one-minute minimum"
+# A minute and the margin do not fit in a one-minute limit, so the case fails at once rather than
+# waiting the minute; the error is where the 60 s shows.
+github never
+secondary 403 none
+drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "fails" "$(is "$status" 75)"
+check "with no sleep" "$(below "$seconds" 30)"
+check "naming the 60 s minimum and the limit" \
+  "$(contains "$err" "^::error::GitHub's secondary rate limit asks this call to wait 60 s (GitHub's documented minimum, as the answer named no retry-after), until .*, past this job's limit at ")"
+
+echo "case: a secondary rate limit whose retry-after falls past the limit fails by name at once"
+github never
+secondary 403 3600
+drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "fails" "$(is "$status" 75)"
+check "with no sleep" "$(below "$seconds" 30)"
+check "calls once" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
+check "naming the retry-after and the limit" \
+  "$(contains "$err" "^::error::GitHub's secondary rate limit asks this call to wait 3600 s (its retry-after), until .*, past this job's limit at ")"
+
+echo "case: a secondary rate limit that refuses again after the wait fails by name"
+github never
+secondary 403 2 always
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "fails" "$(is "$status" 75)"
+check "after waiting once" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+check "naming it" "$(contains "$err" "^::error::GitHub refused this call for its rate limit again after the wait")"
+
+echo "case: a wrapped command's secondary rate limit takes the minimum, its headers unread"
+# The helper reads the headers of gh's own answers alone: a command it does not run as gh itself
+# (the browser lane's bash wrapper) has none it can read.
+github never
+secondary 403 3
+drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset bash -c "gh api repos/o/r/pulls/1"'
+check "fails" "$(is "$status" 75)"
+check "naming the 60 s minimum" "$(contains "$err" "wait 60 s (GitHub's documented minimum, as the answer named no retry-after)")"
+
+echo "case: gh_read takes a secondary rate limit through the wait too"
+github never
+secondary 403 2
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+check "exits 0" "$(is "$status" 0)"
+check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+check "the second call made after the wait, not by the ladder at once" \
+  "$(contains "$err" "^::warning::GitHub's secondary rate limit asks this call to wait 2 s (its retry-after)")"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then

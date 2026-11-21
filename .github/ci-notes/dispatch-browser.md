@@ -1147,12 +1147,12 @@ bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, a
 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
 that step carries. The rule's two-minute floor does not bind.
 
-A spent API budget is not in that bound: gh-read.sh's gh_wait_reset waits for its reset only
-when the reset falls at least 30 s before this step's limit and the job's, which the step's
-env passes as STEP_TIMEOUT_MINUTES and JOB_TIMEOUT_MINUTES, and otherwise fails the step at
-once, naming the reset and the limit. So the wait never outlives either budget, and the
-budgets need no room for it: a step that would have to wait past them fails by name instead,
-and a re-run after the reset reads the jobs again.
+A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
+waits for GitHub to answer again only when that falls at least 30 s before this step's limit and
+the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
+STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So the
+wait never outlives either budget, and the budgets need no room for it: a step that would have to
+wait past them fails by name instead, and a re-run after the reset reads the jobs again.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading

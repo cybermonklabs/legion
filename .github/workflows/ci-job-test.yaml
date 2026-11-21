@@ -281,6 +281,8 @@ jobs:
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
     # the hour.
     timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

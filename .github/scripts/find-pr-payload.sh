@@ -19,7 +19,7 @@
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
 #   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
 #                      through gh-read.sh's gh_wait_reset, which waits out a spent API budget
-#                      within the step's JOB_TIMEOUT_MINUTES and fails by name past it.
+#                      within the job's JOB_TIMEOUT_MINUTES and fails by name past it.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #

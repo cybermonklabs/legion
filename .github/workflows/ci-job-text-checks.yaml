@@ -77,6 +77,8 @@ jobs:
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.
     timeout-minutes: 15
+    env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

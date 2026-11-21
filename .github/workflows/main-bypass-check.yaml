@@ -51,6 +51,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # The checkout, two API reads at the push's head, and at most one dispatch.
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
     # nothing here needs another scope. The checkout needs no `contents: read`, because this
     # repository is public and GitHub serves a public repository's git data to any valid token,
@@ -85,7 +87,6 @@ jobs:
           # compares every migration it held with main's tip (ci.yaml's migration-base input), so
           # an edit any commit of the push made is judged, not only the head's.
           BASE_SHA: ${{ github.event.before }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           # Every call below waits out a spent API budget within this job's limit, and fails by
           # name past it.

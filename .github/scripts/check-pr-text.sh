@@ -35,7 +35,7 @@
 # event names rather than whatever head the pull request has by the time a route is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
 # The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY), each call through gh-read.sh's
-# gh_wait_reset, which waits out a spent API budget within the JOB_TIMEOUT_MINUTES both steps that
+# gh_wait_reset, which waits out a spent API budget within the JOB_TIMEOUT_MINUTES both jobs that
 # run this script set, and fails by name past it. The title, body and branch name come
 # from the pull request route as the pull request has them now, not from the payload: ci.yaml's
 # `pr-title` job checks at a push and can finish long after a later edit's pr-title.yaml run, and

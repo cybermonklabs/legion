@@ -64,6 +64,7 @@ jobs:
     # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -853,6 +853,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -880,7 +882,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
           GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"
@@ -891,6 +892,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
@@ -904,7 +907,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: .github/scripts/cancel-started-act.sh
 
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
@@ -961,6 +963,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       checks: write
     steps:
@@ -996,7 +1000,6 @@ jobs:
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: .github/scripts/ci-ok.sh
 
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
@@ -1007,5 +1010,4 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}
           CONCLUSION: ${{ job.status }}
-          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: .github/scripts/ci-ok-reconcile.sh

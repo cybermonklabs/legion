@@ -489,6 +489,8 @@ jobs:
         arch: [x64, arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
@@ -506,7 +508,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           KEEP: ${{ needs.envoy-infra.outputs[format('key-{0}', matrix.arch)] }}
           REF: ${{ github.ref }}
-          JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           set -euo pipefail
           # Each call waits out a spent API budget within this job's limit, and fails by name

@@ -46,6 +46,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

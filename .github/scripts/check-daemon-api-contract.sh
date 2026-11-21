@@ -68,7 +68,7 @@
 # — for each that changes it. A file list GitHub cut short says nothing about the paths it left
 # out, so that pull request's file is read as well rather than guessed at, and a read that fails
 # refuses the change and names itself. Each `gh api` runs through gh-read.sh's gh_wait_reset,
-# which waits out a spent API budget within the step's JOB_TIMEOUT_MINUTES and fails by name past
+# which waits out a spent API budget within the job's JOB_TIMEOUT_MINUTES and fails by name past
 # it; its own lines reach the step's log as they happen, and gh's words reach the refusal.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh

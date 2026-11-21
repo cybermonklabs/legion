@@ -59,6 +59,8 @@ jobs:
     # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
     # cannot hold a runner, and it is above the minute the timeline read can wait.
     timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
     # scope: the checkout and the GraphQL read are of a public repository, which GitHub serves to
     # any valid token — the same ground on which ci.yaml's `cancel-started` holds `actions: write`
@@ -77,7 +79,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           # Every call below waits out a spent API budget within this job's limit, and fails by
           # name past it.

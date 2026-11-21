@@ -26,10 +26,18 @@
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
 #      repository's workflow as one call. ci.yaml calls 43 today, so 45 leaves room for two more
-#      calls and none for a surprise.
+#      calls and none for a surprise;
+#   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
+#      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
+#      `env:` sets STEP_TIMEOUT_MINUTES to anything but that step's own timeout-minutes.
+#      .github/scripts/gh-read.sh waits for a spent API budget within those two numbers, measured
+#      from the job's start and the step's, and GitHub cancels the job at its timeout-minutes, so a
+#      larger number would let the wait outlive the job, and a smaller one would fail by name a wait
+#      the job had time for. The values are compared as written, so an expression must be the same
+#      expression.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
-# two faults.
+# faults.
 #
 # Scope: every file whose parent directory is .github/workflows and whose suffix is .yaml or .yml.
 # Any other file of that directory is passed over. Files are discovered by listing that directory,
@@ -217,6 +225,60 @@ def unique_callees(start: Path) -> list[str]:
     return list(called)
 
 
+def scalar(node: object) -> str | None:
+    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
+
+
+def check_timeout_variables(path: Path, root: object) -> None:
+    """Rule 6 of the header: each JOB_TIMEOUT_MINUTES a job or its steps set is the job's
+    timeout-minutes, and each STEP_TIMEOUT_MINUTES a step sets is that step's."""
+    jobs = mapping_get(root, "jobs")
+    if not isinstance(jobs, yaml.MappingNode):
+        return
+    why = (
+        " .github/scripts/gh-read.sh waits for a spent API budget within this number, measured from "
+        "the job's start (STEP_TIMEOUT_MINUTES: the step's), and GitHub cancels the job at its "
+        "timeout-minutes: a larger number lets the wait outlive the job, and a smaller one fails "
+        "by name a wait the job had time for. Write the two as one number."
+    )
+
+    def refuse(where: object, who: str, name: str, value: str, limit: str) -> None:
+        line = where.start_mark.line + 1
+        problem(path, f"{path}:{line}: {who} sets {name} to {value}, but {limit}." + why, line=line)
+
+    for job_name, job in jobs.value:
+        if not isinstance(job, yaml.MappingNode):
+            continue
+        job_id = scalar(job_name)
+        timeout = mapping_get(job, "timeout-minutes")
+        if timeout is None:
+            job_limit, job_said = "360", "its timeout-minutes is 360 (GitHub's default, as the job sets none)"
+        else:
+            job_limit = scalar(timeout)
+            job_said = f"its timeout-minutes is {job_limit} (line {timeout.start_mark.line + 1})"
+        value = mapping_get(mapping_get(job, "env"), "JOB_TIMEOUT_MINUTES")
+        if value is not None and scalar(value) != job_limit:
+            refuse(value, f"job {job_id}", "JOB_TIMEOUT_MINUTES", scalar(value), job_said)
+        steps = mapping_get(job, "steps")
+        if not isinstance(steps, yaml.SequenceNode):
+            continue
+        for index, step in enumerate(steps.value, start=1):
+            env = mapping_get(step, "env")
+            value = mapping_get(env, "JOB_TIMEOUT_MINUTES")
+            if value is not None and scalar(value) != job_limit:
+                refuse(value, f"job {job_id}", "JOB_TIMEOUT_MINUTES", scalar(value), job_said)
+            value = mapping_get(env, "STEP_TIMEOUT_MINUTES")
+            if value is None:
+                continue
+            own = mapping_get(step, "timeout-minutes")
+            if own is None:
+                refuse(value, f"step {index} of job {job_id}", "STEP_TIMEOUT_MINUTES", scalar(value),
+                       "the step sets no timeout-minutes")
+            elif scalar(value) != scalar(own):
+                refuse(value, f"step {index} of job {job_id}", "STEP_TIMEOUT_MINUTES", scalar(value),
+                       f"its timeout-minutes is {scalar(own)} (line {own.start_mark.line + 1})")
+
+
 for path in targets:
     size = path.stat().st_size
     if size > GITHUB_CAP:
@@ -255,6 +317,7 @@ for path in targets:
         continue
 
     check_folded_keys(path, node)
+    check_timeout_variables(path, node)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -277,7 +340,8 @@ if problems:
 
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
-    f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, and call "
-    f"at most {CALL_LIMIT} unique reusable workflows"
+    f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
+    f"at most {CALL_LIMIT} unique reusable workflows, and set JOB_TIMEOUT_MINUTES and "
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for"
 )
 PY
