@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync/atomic"
 )
 
 // elementVersions is what the manifest says of one element: from which schema version a build
@@ -51,14 +52,16 @@ func (e Element) String() string {
 	}
 }
 
-// Versions is e's since and creatable_since in this build's manifest, each 1 where the manifest
+// Versions is e's since and creatable_since in the installed manifest, each 1 where the manifest
 // says none, and false when the manifest does not declare e.
 func (e Element) Versions() (BlockElementVersions, bool) {
-	versions, declared := active.versions[e]
+	versions, declared := active.Load().versions[e]
 	return versions, declared
 }
 
-// compiledManifest is a manifest decoded, checked and indexed.
+// compiledManifest is a manifest decoded, checked and indexed. It is built whole, off to the
+// side, and published by storing one pointer (install), so nothing in it is written after it is
+// stored.
 type compiledManifest struct {
 	schema      BlockSchema
 	types       map[string]BlockTypeSchema
@@ -72,40 +75,220 @@ type compiledManifest struct {
 	// attributes' names, sorted.
 	linkKinds         []string
 	pointerAttributes map[string][]string
+	// admitted maps each typed block a type's parents name to the types it admits after its own
+	// content (BlockTypeSchema.Parents), and placed holds each type that names parents: such a
+	// type is in no node group (isBlockNodeType), so it stands only where a parent admits it.
+	admitted map[string]map[string]bool
+	placed   map[string]bool
 	// maxSince is the highest since among the declared elements: no document's DocumentSince
 	// is higher.
 	maxSince int
+	// json is the manifest as GET /api/v1/schema/blocks serves it (SchemaJSON), held as compiled
+	// so a reader takes the whole manifest in one load rather than encoding it again per request.
+	json []byte
 }
 
-// active is the manifest this build reads by: the embedded one, or another one a test installs
-// (UseManifestForTest).
-var active compiledManifest
+// active holds the installed manifest, the one this process reads and writes by: the embedded
+// one, the store's once the server has read it (Install), or another one a test installs
+// (UseManifestForTest). A reinstall stores one pointer, so it never writes a map another
+// goroutine is reading (the store-driven reinstall, pmdoc/schemanodes). Every reader loads it
+// once and takes no lock.
+var active atomic.Pointer[compiledManifest]
+
+// embedded is this binary's own manifest, the one blocks.json declares. Its version is the
+// highest this build handles (BuiltSchemaVersion), and its nodes and marks are the ones the
+// store's manifest is installed with (Install).
+var embedded *compiledManifest
 
 func init() {
 	compiled, err := compileManifest(blockSchemaJSON)
 	if err != nil {
 		panic(fmt.Sprintf("pmdoc: embedded block schema: %v", err))
 	}
+	embedded = compiled
 	compiled.install()
 }
 
-func (m compiledManifest) install() {
-	active = m
+// install makes m the installed manifest.
+func (m *compiledManifest) install() {
+	active.Store(m)
 }
 
-func compileManifest(raw []byte) (compiledManifest, error) {
+// Install makes value, read from the node store, the installed manifest. The store holds the
+// typed blocks alone: the nodes and marks of the Proof schema are this build's own, the ones its
+// parser and renderer know, so value is installed with the embedded manifest's. A value whose
+// version is above the embedded one is a store a newer build migrated: it is installed at this
+// build's own version, with the elements whose since is at or below that version and nothing
+// else (asOfVersion), and the process keeps serving, as every build does while two builds serve
+// one database: a document holding an element it does not know answers DOC_NEWER_CONTENT, and a
+// write never adds an element it may not create. A value compileManifest refuses installs
+// nothing, and the process keeps the manifest it has.
+func Install(value BlockSchema) error {
+	if built := embedded.schema.Version; value.Version > built {
+		value = asOfVersion(value, built)
+	}
+	value.Nodes, value.Marks = embeddedElements()
+	// The value is compiled from its encoding, which is also what SchemaJSON serves, so the
+	// manifest compileManifest normalizes in place shares no slice with value's caller.
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode block schema: %w", err)
+	}
+	compiled, err := compileManifest(encoded)
+	if err != nil {
+		return fmt.Errorf("block schema: %w", err)
+	}
+	compiled.install()
+	return nil
+}
+
+// asOfVersion is value as a build of version reads it: at that version, holding each typed
+// block, attribute and enum choice whose since is at or below it, and no target of a `block[]`
+// attribute that names a typed block it leaves out. A since the store leaves out is 1, as
+// normalizeVersions reads it. An element it keeps keeps its creatable_since, so one this build
+// reads but may not create yet stays one it does not create. It writes nothing of value's own:
+// every slice and map it changes is a new one.
+//
+// Two of the store's own values cannot stand once the elements they name are gone, and each is
+// answered here rather than left to the validation that would refuse the whole manifest and
+// fail the boot with it (Install, cmd/dispatch's main). An enum default the store moved to a
+// choice added later reads as this build's own default for that attribute
+// (enumDefaultThisBuildReads). A `block[]` attribute every target of which names a typed block
+// this build leaves out goes altogether: an empty target set means "any block"
+// (CheckBlockPointers), so keeping it would let an older build accept at any block the pointers
+// a newer one holds to a type it does not know. An enum attribute every choice of which is newer
+// than this build goes the same way: an enum with no choice is one validateAttributeSchema
+// refuses, which would fail the boot, and no value of it is one this build could read. So does a
+// type every parent of which this build leaves out (BlockTypeSchema.Parents): a type naming no
+// parent stands wherever a block does, which a newer build never let it.
+func asOfVersion(value BlockSchema, version int) BlockSchema {
+	reads := func(since int) bool { return max(since, 1) <= version }
+	dropped := make(map[string]bool)
+	types := make([]BlockTypeSchema, 0, len(value.Types))
+	for _, typ := range value.Types {
+		if !reads(typ.Since) {
+			dropped[typ.Name] = true
+			continue
+		}
+		types = append(types, typ)
+	}
+	// A type left with no parent drops out, which may leave another type naming it with none.
+	isDropped := func(name string) bool { return dropped[name] }
+	for changed := true; changed; {
+		changed = false
+		for index := range types {
+			typ := &types[index]
+			if !slices.ContainsFunc(typ.Parents, isDropped) {
+				continue
+			}
+			typ.Parents = slices.DeleteFunc(slices.Clone(typ.Parents), isDropped)
+			if len(typ.Parents) == 0 {
+				dropped[typ.Name], changed = true, true
+			}
+		}
+		types = slices.DeleteFunc(types, func(typ BlockTypeSchema) bool { return dropped[typ.Name] })
+	}
+	for index := range types {
+		typ := &types[index]
+		attributes := make(BlockAttributes, 0, len(typ.Attributes))
+		for _, attribute := range typ.Attributes {
+			attr := attribute.BlockAttributeSchema
+			if !reads(attr.Since) {
+				continue
+			}
+			if len(attr.Choices) > 0 {
+				choices := make([]string, 0, len(attr.Choices))
+				var versions map[string]BlockElementVersions
+				for _, choice := range attr.Choices {
+					held, given := attr.ChoiceVersions[choice]
+					if !reads(held.Since) {
+						continue
+					}
+					choices = append(choices, choice)
+					if given {
+						if versions == nil {
+							versions = make(map[string]BlockElementVersions, len(attr.ChoiceVersions))
+						}
+						versions[choice] = held
+					}
+				}
+				attr.Choices, attr.ChoiceVersions = choices, versions
+				if len(choices) == 0 {
+					continue
+				}
+			}
+			if attr.Kind == BlockAttributeEnum {
+				attr.Default = enumDefaultThisBuildReads(typ.Name, attribute.Name, attr)
+			}
+			if len(attr.Targets) > 0 {
+				attr.Targets = slices.DeleteFunc(slices.Clone(attr.Targets), func(target string) bool { return dropped[target] })
+				if len(attr.Targets) == 0 {
+					continue
+				}
+			}
+			attributes = append(attributes, BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attr})
+		}
+		typ.Attributes = attributes
+	}
+	value.Types = types
+	value.Version = version
+	return value
+}
+
+// enumDefaultThisBuildReads is the default of the enum attribute named attribute of typed block
+// typeName, as a build reading only the choices attr still holds takes it: the store's own
+// default while that is one of them, and this build's own default for that attribute otherwise,
+// which is a choice this build was compiled against. An attribute this build does not declare,
+// and one whose own default is no choice the store still holds, keeps none: an attribute with
+// no default is left out of a block that does not hold it (writtenDefault), which is what a
+// build that cannot name a value has to do.
+func enumDefaultThisBuildReads(typeName, attribute string, attr BlockAttributeSchema) any {
+	held, named := attr.Default.(string)
+	if !named || slices.Contains(attr.Choices, held) {
+		return attr.Default
+	}
+	own, declared := embedded.types[typeName].Attributes.Lookup(attribute)
+	if !declared {
+		return nil
+	}
+	if text, names := own.Default.(string); names && slices.Contains(attr.Choices, text) {
+		return own.Default
+	}
+	return nil
+}
+
+// embeddedElements is the nodes and marks the embedded manifest declares, as blocks.json writes
+// them: compileManifest writes 1 for every version an element leaves out, which the served
+// manifest leaves out as the file does.
+func embeddedElements() (nodes, marks []BlockSchemaElement) {
+	var declared BlockSchema
+	if err := json.Unmarshal(embedded.json, &declared); err != nil {
+		panic(fmt.Sprintf("pmdoc: decode embedded block schema: %v", err))
+	}
+	return declared.Nodes, declared.Marks
+}
+
+// BuiltSchemaVersion is the highest schema version this binary handles: the version of the file
+// it embeds, and the version it installs a newer store at (Install).
+func BuiltSchemaVersion() int {
+	return embedded.schema.Version
+}
+
+// compileManifest compiles raw, a manifest in blocks.json's format, which it also keeps as the
+// bytes SchemaJSON serves.
+func compileManifest(raw []byte) (*compiledManifest, error) {
 	var value BlockSchema
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return compiledManifest{}, fmt.Errorf("decode: %w", err)
+		return nil, fmt.Errorf("decode: %w", err)
 	}
 	if err := normalizeSchemaDefaults(&value); err != nil {
-		return compiledManifest{}, fmt.Errorf("normalize: %w", err)
+		return nil, fmt.Errorf("normalize: %w", err)
 	}
 	normalizeVersions(&value)
 	if err := validateBlockSchema(value); err != nil {
-		return compiledManifest{}, fmt.Errorf("invalid: %w", err)
+		return nil, fmt.Errorf("invalid: %w", err)
 	}
-	compiled := compiledManifest{
+	compiled := &compiledManifest{
 		schema:            value,
 		types:             make(map[string]BlockTypeSchema, len(value.Types)),
 		nodes:             make(map[string]bool, len(value.Nodes)),
@@ -113,6 +296,9 @@ func compileManifest(raw []byte) (compiledManifest, error) {
 		versions:          make(map[Element]BlockElementVersions),
 		uncreatable:       make(map[Element]bool),
 		pointerAttributes: map[string][]string{},
+		admitted:          map[string]map[string]bool{},
+		placed:            map[string]bool{},
+		json:              raw,
 	}
 	linkKinds := map[string]struct{}{}
 	declare := func(element Element, versions BlockElementVersions) error {
@@ -133,30 +319,37 @@ func compileManifest(raw []byte) (compiledManifest, error) {
 	}
 	for _, node := range value.Nodes {
 		if node.Name == "" {
-			return compiledManifest{}, fmt.Errorf("invalid: a node has no name")
+			return nil, fmt.Errorf("invalid: a node has no name")
 		}
 		if err := declare(Element{Kind: NodeElement, Name: node.Name}, elementVersions(node.Since, node.CreatableSince)); err != nil {
-			return compiledManifest{}, err
+			return nil, err
 		}
 		compiled.nodes[node.Name] = true
 	}
 	for _, mark := range value.Marks {
 		if mark.Name == "" {
-			return compiledManifest{}, fmt.Errorf("invalid: a mark has no name")
+			return nil, fmt.Errorf("invalid: a mark has no name")
 		}
 		if err := declare(Element{Kind: MarkElement, Name: mark.Name}, elementVersions(mark.Since, mark.CreatableSince)); err != nil {
-			return compiledManifest{}, err
+			return nil, err
 		}
 		compiled.marks[mark.Name] = true
 	}
 	for _, typ := range value.Types {
 		if compiled.nodes[typ.Name] {
-			return compiledManifest{}, fmt.Errorf("invalid: type %q is also a node", typ.Name)
+			return nil, fmt.Errorf("invalid: type %q is also a node", typ.Name)
 		}
 		if err := declare(Element{Kind: TypedBlockElement, Name: typ.Name}, elementVersions(typ.Since, typ.CreatableSince)); err != nil {
-			return compiledManifest{}, err
+			return nil, err
 		}
 		compiled.types[typ.Name] = typ
+		for _, parent := range typ.Parents {
+			if compiled.admitted[parent] == nil {
+				compiled.admitted[parent] = map[string]bool{}
+			}
+			compiled.admitted[parent][typ.Name] = true
+			compiled.placed[typ.Name] = true
+		}
 		var pointers []string
 		for _, attribute := range typ.Attributes {
 			name, attr := attribute.Name, attribute.BlockAttributeSchema
@@ -165,22 +358,22 @@ func compileManifest(raw []byte) (compiledManifest, error) {
 				pointers = append(pointers, name)
 			}
 			if err := declare(Element{Kind: AttributeElement, Block: typ.Name, Name: name}, elementVersions(attr.Since, attr.CreatableSince)); err != nil {
-				return compiledManifest{}, err
+				return nil, err
 			}
 			for choice := range attr.ChoiceVersions {
 				if !slices.Contains(attr.Choices, choice) {
-					return compiledManifest{}, fmt.Errorf("invalid: type %q attribute %q gives versions to %q, which is not one of its choices", typ.Name, name, choice)
+					return nil, fmt.Errorf("invalid: type %q attribute %q gives versions to %q, which is not one of its choices", typ.Name, name, choice)
 				}
 			}
 			for _, choice := range attr.Choices {
 				if err := declare(Element{Kind: ChoiceElement, Block: typ.Name, Attribute: name, Name: choice}, attr.ChoiceVersions[choice]); err != nil {
-					return compiledManifest{}, err
+					return nil, err
 				}
 			}
 			// A write gives a new block an attribute's default (defaultAttributes), so a default
 			// value a build may not create would be created with every block that takes it.
 			if fallback, ok := attr.Default.(string); ok && attr.Kind == BlockAttributeEnum && attr.ChoiceVersions[fallback].CreatableSince > attr.CreatableSince {
-				return compiledManifest{}, fmt.Errorf("invalid: type %q attribute %q default %q is creatable later than the attribute", typ.Name, name, fallback)
+				return nil, fmt.Errorf("invalid: type %q attribute %q default %q is creatable later than the attribute", typ.Name, name, fallback)
 			}
 		}
 		if len(pointers) > 0 {
@@ -190,10 +383,10 @@ func compileManifest(raw []byte) (compiledManifest, error) {
 	}
 	compiled.linkKinds = slices.Sorted(maps.Keys(linkKinds))
 	if len(compiled.nodes) == 0 {
-		return compiledManifest{}, fmt.Errorf("invalid: must declare its nodes")
+		return nil, fmt.Errorf("invalid: must declare its nodes")
 	}
 	if len(compiled.marks) == 0 {
-		return compiledManifest{}, fmt.Errorf("invalid: must declare its marks")
+		return nil, fmt.Errorf("invalid: must declare its marks")
 	}
 	return compiled, nil
 }
@@ -253,24 +446,24 @@ func validateElementVersions(element Element, versions BlockElementVersions, ver
 	return nil
 }
 
-// SchemaVersion returns V, this build's schema version: the version a client presents during
-// document admission. This build reads every element whose since is V or less, and creates every
-// element whose creatable_since is V or less.
+// SchemaVersion returns V, the installed manifest's schema version: the version a client presents
+// during document admission. This build reads every element whose since is V or less, and
+// creates every element whose creatable_since is V or less.
 func SchemaVersion() int {
-	return active.schema.Version
+	return active.Load().schema.Version
 }
 
 // SchemaCreatable returns R, the highest since among the elements this build may create: a build
 // whose SchemaVersion is R or more reads everything this build writes.
 func SchemaCreatable() int {
-	return active.creatable
+	return active.Load().creatable
 }
 
 // creatable reports whether this build may create element: false only for an element its manifest
 // declares with a creatable_since above SchemaVersion. It reports true for an element the manifest
 // does not declare; its one caller, writtenDefault, asks it only of a declared attribute.
 func creatable(element Element) bool {
-	return !active.uncreatable[element]
+	return !active.Load().uncreatable[element]
 }
 
 // DocumentSince returns D, the highest since among the declared elements doc holds: a client
@@ -281,25 +474,26 @@ func DocumentSince(doc *Node) int {
 	if doc == nil {
 		return 0
 	}
+	manifest := active.Load()
 	highest := 0
-	eachElement([]*Node{doc}, func(element Element) bool {
-		if versions, declared := element.Versions(); declared {
+	manifest.eachElement([]*Node{doc}, func(element Element) bool {
+		if versions, declared := manifest.versions[element]; declared {
 			highest = max(highest, versions.Since)
 		}
-		return highest < active.maxSince
+		return highest < manifest.maxSince
 	})
 	return highest
 }
 
-// eachElement calls yield with each manifest element nodes hold, in document order, until yield
+// eachElement calls yield with each element of m that nodes hold, in document order, until yield
 // returns false: each node, mark and typed block, each attribute a typed block holds a value for,
 // and each enum attribute's value. It reports whether yield never returned false.
-func eachElement(nodes []*Node, yield func(Element) bool) bool {
+func (m *compiledManifest) eachElement(nodes []*Node, yield func(Element) bool) bool {
 	for _, node := range nodes {
 		if node == nil {
 			continue
 		}
-		if typ, typed := typedBlock(node.Type); typed {
+		if typ, typed := m.types[node.Type]; typed {
 			if !yield(Element{Kind: TypedBlockElement, Name: node.Type}) {
 				return false
 			}
@@ -324,7 +518,7 @@ func eachElement(nodes []*Node, yield func(Element) bool) bool {
 				return false
 			}
 		}
-		if !eachElement(node.Children, yield) {
+		if !m.eachElement(node.Children, yield) {
 			return false
 		}
 	}
@@ -339,9 +533,10 @@ func unknownBeside(doc *Node, err error) error {
 	if errors.Is(err, ErrUnknownElement) {
 		return err
 	}
+	manifest := active.Load()
 	var unknown Element
-	if eachElement([]*Node{doc}, func(element Element) bool {
-		_, declared := element.Versions()
+	if manifest.eachElement([]*Node{doc}, func(element Element) bool {
+		_, declared := manifest.versions[element]
 		unknown = element
 		return declared
 	}) {
@@ -360,13 +555,14 @@ func unknownBeside(doc *Node, err error) error {
 // is not created by the write, which keeps what a newer build wrote and edits beside it. held is
 // called only when nodes hold such an element.
 func refuseUncreatable(nodes []*Node, held func() *Node) error {
-	if len(active.uncreatable) == 0 {
+	manifest := active.Load()
+	if len(manifest.uncreatable) == 0 {
 		return nil
 	}
 	var made []Element
 	seen := make(map[Element]bool)
-	eachElement(nodes, func(element Element) bool {
-		if active.uncreatable[element] && !seen[element] {
+	manifest.eachElement(nodes, func(element Element) bool {
+		if manifest.uncreatable[element] && !seen[element] {
 			seen[element] = true
 			made = append(made, element)
 		}
@@ -378,7 +574,7 @@ func refuseUncreatable(nodes []*Node, held func() *Node) error {
 	present := make(map[Element]bool, len(made))
 	if held != nil {
 		if source := held(); source != nil {
-			eachElement([]*Node{source}, func(element Element) bool {
+			manifest.eachElement([]*Node{source}, func(element Element) bool {
 				if seen[element] {
 					present[element] = true
 				}

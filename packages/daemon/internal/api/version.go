@@ -2978,4 +2978,52 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 204: the `decisions` design-gate step is gone, since a person's
+// decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
+// that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
+// `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
+// gate (`GATE_STEP_NOT_CONFIGURED`); each `gatedSteps[].step` of `GET /legion/v1/state` and each
+// entry of `designGateSteps` on `POST /legion/v1/controller/secret` is one of the same two. The
+// plugin narrows with it: `legionDesignStep` (`packages/contracts/src/legion-api.ts`) takes the two
+// names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
+// and the kept approvals an earlier release wrote of the step stay in the store, which no reader
+// of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
+// A plugin of 202 reads that state as before, since it parses the three names, and the boot gate
+// and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
+// refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
+// file before it pins an image of this release.
+// (This change took 161 at the forward merge of 2026-11-18, which brought main in at 0b2769e553
+// and 152, 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160, and
+// 176 at the forward merge of 2026-11-19 that brought main in at 5f3d552e37 and 168. At the
+// forward merge of 2026-11-20 that brings main in at c7e1cbd532, main declares 178 (the entry
+// above), and 176 is declared by #4030, #4180, #4182, #4193, #4251, #4259, #4261, #4269 and #4290
+// beside this change, so it takes 182, the lowest number above main's 178 that no open pull
+// request declares, in a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the
+// 243 open pull requests, made between 2026-11-20T01:06:37Z and 01:12:42Z: 169 #4273 and #4543,
+// 170 #4495, 171 #2230 and #4065, 172 #3659, 173 #4493, 174 #3993, 175 #3712, #4432 and #4539, 176
+// #4030, #4173 (this change, before this merge), #4180, #4182, #4193, #4251, #4259, #4261, #4269
+// and #4290, 177 #4017, 178 #3831, #4552 and #4554, 179 #4392 and #4540, 180 #4049 and #4175, 181
+// #4553, and nothing above 181. That is a reading and never the rule: read main's own number and
+// every open head again at the next forward merge rather than from this line.)
+// (At the later forward merge of 2026-11-20 that brings main in at 1c7c825367, main declares 188,
+// the entry before this one, and this change takes 192 in place of 182: the lowest number above
+// main's 188 that no open pull request declares, in a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 264 open pull requests, made between 2026-11-20T10:32:14Z and
+// 10:44:17Z: 189 #3831, #4592 and #4596, 190 #4493 and #4578, 191 #4495, and nothing above 191.)
+// (At the forward merge of 2026-11-20 that brings main in at a4cd4949fce7, main declares 189, the
+// entry before this one, and 192 is declared by seven open pull requests, so this change takes
+// the number 196, the lowest above main's 189 that no open pull request declares, in a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 283 open pull requests, made
+// between 2026-11-20T16:04:34Z and 16:14:35Z: 189 #4592, #4596 and #4611, 190 #4578, 191 #2230,
+// #4049, #4495 and #4573, 192 #3993, #4175, #4182, #4193, #4273, #4392 and #4580, 193 #3659,
+// #3712, #4065, #4432, #4539 and #4553, 194 #3831 and #4030, 195 #4493 and #4590, and nothing
+// above 195.)
+// (At the forward merge of 2026-11-21 that brings legion/INFRA-1149 in at f0d08bf24f, which holds
+// main at f3e26096c7, main declares 202, the entry before this one, and this change takes 204 in
+// place of 196: the lowest number above main's 202 that no open pull request declares, in a
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 358 pull requests
+// open during the reading, made between 2026-11-21T06:38:03Z and 07:20:32Z: 203 #4175 and
+// #4661, 205 #3712, #4539 and #4573, 207 #3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590,
+// #4592 and #4596, 208 #2230 and #4611, 209 #4049, #4540, #4553 and #4580, and nothing above 209.)
+const DaemonAPIVersion = 204

@@ -154,17 +154,17 @@ func TestAnAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 
 // The carry answers an open approval request in the transaction that writes the version
 // (docs.answerApprovalAsk): the request's answer `at` is that transaction's time, its
-// ask.answered event's created_at.
+// ask.answered event's created_at. The carry here is the restore's, of the version undoing the
+// agent's edit.
 func TestACarriedApprovalAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry on the database clock", "Context\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-	asks := insertDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveAsk, 2, map[string]string{"wave": "How many regions take the first wave?"})
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
 	request := requestApproval(t, handler, issue.PrimaryArtifactID)
 
-	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
-	requireCarriedReview(t, handler, issue.PrimaryArtifactID, 3, 1, &request.ID)
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context, revised", "Context", 3)
+	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
 	answered := readBlockAsk(t, handler, request.ID)
 	if answered.State != "answered" || answered.Answer == nil {
 		t.Fatalf("request after the carry = state %q answer %#v, want answered", answered.State, answered.Answer)

@@ -142,12 +142,14 @@ export const issueFields = {
   updated_at: z.string(),
   closed_at: z.string().nullable(),
   primary_artifact_id: z.string(),
-  /** The issue's Verification document, the one created as `verification.md`, its Plan, the one
-   *  created as `plan.md`, and its decisions document, the one created as `decisions.md`
-   *  (`Artifact.role`); `""` when the issue holds none. Absent from a Dispatch older than
-   *  document roles, and `decisions_artifact_id` from one older than the design gate's steps. */
+  /** The issue's Verification document, the one created as `verification.md`, and its Plan, the
+   *  one created as `plan.md` (`Artifact.role`); `""` when the issue holds none. Absent from a
+   *  Dispatch older than document roles. */
   verification_artifact_id: z.string().optional(),
   plan_artifact_id: z.string().optional(),
+  /** The id of the issue's decisions document while it stands, `""` once the decisions step
+   *  retires it. No reader of this build reads it; a page of the release before does. */
+  // kept for one release: compat-objects
   decisions_artifact_id: z.string().optional(),
   last_seq: z.number().int(),
 };

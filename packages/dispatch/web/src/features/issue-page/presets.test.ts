@@ -229,10 +229,11 @@ test("a waiting decision outside the review list is not counted as to review", (
   });
 });
 
-// R2, R9: the Decisions filter draws a person's answer as the decision and the section of
-// decisions.md that restates it as no entry, so its count holds the answer and not the section.
-// A decision under a question nobody answered restates nothing, and is counted.
-test("the Decisions count leaves out a section that restates a person's answer", () => {
+// R2, R9: a person's decision is the answered question itself, so no decision node restates it,
+// and a decision under an answered question is an agent's own that settles it: the Decisions
+// count holds the answer and that decision each as an entry, as it holds a decision under a
+// question nobody answered and one under the issue.
+test("the Decisions count holds an agent's decision under an answered question as its own entry", () => {
   const answer = {
     at: "2026-11-14T08:00:00Z",
     by: { id: "alice", kind: "user" as const },
@@ -244,7 +245,7 @@ test("the Decisions count leaves out a section that restates a person's answer",
     node("ask-2", "ask", [node("decision-2", "decision")], { question: true, state: "open" }),
     node("decision-3", "decision"),
   ]);
-  expect(filterSignals(root, "").decisions).toEqual({ count: 4 });
+  expect(filterSignals(root, "").decisions).toEqual({ count: 5 });
 });
 
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the

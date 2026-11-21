@@ -782,7 +782,8 @@ test("a press in the document takes over once the document has reported an empty
   // The spec's margin reads the issue's decisions, which this issue has none of.
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
-    document: `dispatch://${issue.key}/artifact/decisions-md`,
+    document: null,
+    entries: [],
     open_questions: [],
   });
   const view = renderLandingWithReport();

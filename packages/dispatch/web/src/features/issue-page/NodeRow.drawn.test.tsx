@@ -8,15 +8,25 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueChild } from "../../api/types";
+import type { Agent, Decision, DisplayTree, IssueChild } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { useAgentText } from "../refs/AgentName";
+import { agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
-import type { NodeChip, TreeNode } from "./issue-tree";
+import {
+  AGENT,
+  decision,
+  decisionsRead,
+  issueDetails,
+  KEY,
+  SPEC_SLUG,
+} from "./decisions-filter/decisions-fixtures";
+import { buildIssueTree, type NodeChip, type TreeNode } from "./issue-tree";
+import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -27,13 +37,16 @@ import {
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   type GapKind,
+  GLYPH_NAMES,
+  GLYPH_TOKENS,
+  isReader,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
-import { addressesAsShortForms } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -217,6 +230,127 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   });
 });
 
+/** One row of the tree as `ConversationRows` draws it, its body open: the node as the tree model
+ *  built it, its author named by the page's one rule for naming one (`AgentText.author`). */
+function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <NodeRow
+      author={{
+        kind: authorKind(drawn.author),
+        name: agentText.author(drawn.author),
+        reader: isReader(drawn.author, undefined),
+      }}
+      body
+      context={false}
+      focused={false}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => {}}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop={false}
+    />
+  );
+}
+
+// R9: an agent's decision is drawn with who decided it as the decisions read's entry for it
+// records (`DecisionEntry.decided_by`), which the read's `decisions` member does not carry. The
+// session that wrote it is named by the title the page's sessions read gives it, as any agent's
+// is: its role's word on the row and its whole title in the opened body (ruling 6). A session no
+// registry lists any longer is named by the title it stamped on what it wrote, which the entry
+// carries (`decided_by.title`), in the same two places. A decision whose entry names nobody draws
+// no author on its row, and its opened body says "Author unknown" (ruling 5).
+test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
+  const title = "Legion architect · CORE-1";
+  const storedTitle = "Legion planner · CORE-1";
+  const named = decision("d-named");
+  const unnamed = decision("d-unnamed");
+  const stored = decision("d-stored");
+  const read = decisionsRead([named, unnamed, stored]);
+  const root = buildIssueTree({
+    decisions: {
+      ...read,
+      entries: (read.entries ?? []).map((entry) => {
+        if (entry.ref === unnamed.ref) return { ...entry, decided_by: null };
+        if (entry.ref !== stored.ref) return entry;
+        return {
+          ...entry,
+          decided_by: { id: "session-gone", kind: "session", title: storedTitle },
+        };
+      }),
+    },
+    issue: issueDetails(),
+  });
+  const registered: Agent = {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: AGENT.id,
+    state: "live",
+    title,
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(agentsQuery().queryKey, [registered]);
+  const drawn = (made: Decision) => {
+    const id = blockNodeId(SPEC_SLUG, made.block_id);
+    const shown = root.children.find((child) => child.id === id);
+    if (shown === undefined) throw new Error(`the tree draws no decision ${id}`);
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <TreeRow node={shown} />
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      const text = (selector: string) =>
+        view.container.querySelector(selector)?.textContent ?? null;
+      return {
+        body: text("[data-node-body] [data-node-author]"),
+        kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
+        row: text("[data-node-margin] [data-node-author]"),
+        title: text("[data-node-author-title]"),
+        type: view.container.querySelector("[data-node-row]")?.getAttribute("data-node-type"),
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn(named)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "architect",
+    title,
+    type: "decision",
+  });
+  expect(drawn(unnamed)).toEqual({
+    body: CONTROL_LABELS.unknown_author,
+    kind: "unknown",
+    row: null,
+    title: null,
+    type: "decision",
+  });
+  expect(drawn(stored)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "planner",
+    title: storedTitle,
+    type: "decision",
+  });
+});
+
 // A view that edits rows in place passes `editable`, and the row element itself carries
 // `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
 test("a row carries data-editable where its view passes editable, and none by default", () => {
@@ -313,6 +447,57 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
     tag: NODE_TYPE_NAMES.requirement,
     token: "requirement",
   });
+});
+
+// R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or
+// the decision it reads - so its row draws its kind as one tag, its word and a shape no other
+// kind draws; and it is always an agent's words, so its bullet and its tag take an agent's quiet
+// grey, never the colour of the question or the decision it reads, and it never reads as the
+// person's decision itself.
+test("a reading row draws its own word and shape, in an agent's grey", () => {
+  const drawn = (type: NodeType) => {
+    const view = renderRow(node({ id: `spec#b-${type}`, text: "Keep the rail.", type }));
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        agentBullet: dot?.classList.contains(pageKindBullet.agent) ?? null,
+        agentTag: tag?.classList.contains(pageKindTag.agent) ?? null,
+        shape: tag?.querySelector("svg path")?.getAttribute("d") ?? null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  const reading = drawn("reading");
+  expect(reading).toMatchObject({
+    agentBullet: true,
+    agentTag: true,
+    tag: NODE_TYPE_NAMES.reading,
+    token: "reading",
+  });
+  // The negative controls: the question and the decision a reading reads draw their own colours,
+  // and no other shape the page draws - a kind's, a state's or an author's - is the reading's.
+  for (const type of ["ask", "decision"] as const) {
+    expect(drawn(type), `the ${type} drew an agent's grey`).toMatchObject({
+      agentBullet: false,
+      agentTag: false,
+    });
+  }
+  const shapes = Object.keys(GLYPH_NAMES)
+    .filter((token) => token !== GLYPH_TOKENS.types.reading)
+    .map((token) => {
+      const view = render(<NodeGlyph token={token} />);
+      try {
+        return view.container.querySelector("path")?.getAttribute("d") ?? null;
+      } finally {
+        view.unmount();
+      }
+    });
+  expect(shapes.length).toBeGreaterThan(0);
+  expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
 });
 
 // R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
@@ -421,7 +606,7 @@ test("an answered ask draws the answer in its own row, word for word", () => {
 test("a decision the model marks unsure says so in one word", () => {
   const unsure = (marked: boolean) => {
     const view = renderRow(
-      node({ id: "decisions-md#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
+      node({ id: "spec#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
     );
     try {
       return view.container.querySelector("[data-node-unsure]")?.textContent ?? null;
@@ -576,7 +761,7 @@ const MARKED_DRAWN = {
 // paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
-    id: "decisions-md#b-d1",
+    id: "spec#b-d1",
     text: MARKED,
     tree: displayTree(MARKED),
     type: "decision",
@@ -700,15 +885,15 @@ test("out of the tab order, a focused row's code block and table keep their tab 
   }
 });
 
-// Part G's R4, the tester's F20: a decision's text holds the source of a typed block its section
-// quotes, and the row draws the block's words but none of its source lines, whether it draws the
-// text as stored or from its reading.
+// Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
+// own block, and the row draws the block's words but none of its source lines, whether it draws
+// the text as stored or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
     const view = renderRow(
       node({
-        id: "decisions-md#b-d1",
+        id: "spec#b-d1",
         text,
         type: "decision",
         ...(tree === undefined ? {} : { tree }),
@@ -767,7 +952,7 @@ test("a chip names its target by its first words and never by an address", () =>
           ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
         },
       ],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
@@ -852,7 +1037,7 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   const view = renderRow(
     node({
       chips: [ambiguous],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),

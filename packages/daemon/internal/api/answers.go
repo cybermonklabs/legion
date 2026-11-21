@@ -48,11 +48,12 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// one of the two alone would describe a shape at a contract no entry declares. 202 is
+// repositoriesLiveContract rather than its number for the same reason: it is dispatch://INFRA-4401's
+// contract, and a renumber of that change moves the constant and this list with it. 204, this
+// daemon's own, is dispatch://INFRA-1150's: the `decisions` design step is gone, which narrows a
+// shape an older reader parses wider and so needs no serving down.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, 204}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -580,9 +581,13 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 
 // designSteps is every step of a deployment's design gate, and gatedStepStatuses every place an
 // issue can stand in one. Both are recorded at gatedStepsContract, the contract `gatedSteps`
-// arrived at.
+// arrived at. `decisions` is no step any more (record.DesignSteps: decisions are nodes of the spec,
+// and a gate row or a queued publication naming the step is left out), so no answer of this daemon
+// carries it; it stays recorded because a value, once a contract admits it, stays admitted (each
+// contract's record in contract-shapes.json holds it), and this build's reader of the view still
+// parses it (packages/contracts' legionGatedStepView reads GATED_STEPS).
 var designSteps = valuesFrom(gatedStepsContract,
-	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
+	record.DesignStep("decisions"), record.DesignStepCriteria, record.DesignStepSpec)
 var gatedStepStatuses = valuesFrom(gatedStepsContract,
 	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
 

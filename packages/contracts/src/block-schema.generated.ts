@@ -50,6 +50,13 @@ export interface BlockTypeSchema {
    */
   readonly attributes: Readonly<Record<string, BlockAttributeSchema>>;
   /**
+   * Parents is the typed blocks a block of this type stands in, and nowhere else: each of them admits
+   * any number of this type's blocks after its own content, so its content rule reads as its own with
+   * `<name>*` appended, and a type that names parents is in no node group, so no other content admits
+   * it. Absent or empty, the type is in the block group and stands wherever a block does.
+   */
+  readonly parents?: readonly string[];
+  /**
    * Since is the schema version from which a build reads the typed block; 1 when the manifest names
    * none.
    */
@@ -80,6 +87,12 @@ export interface BlockAttributeSchema {
    * never carries it.
    */
   readonly server?: boolean;
+  /**
+   * Markdown is whether a typed block's markdown carries the attribute, true when the manifest names
+   * none. An attribute it is false for is never written into markdown, and markdown that names it is
+   * read as if it did not: the value lives on the block's node, where the server writes it.
+   */
+  readonly markdown?: boolean;
   /**
    * Targets limits a `block[]` attribute to blocks of the named types (a typed block the schema
    * declares, or a built-in block the link graph holds); absent or empty, it points at any block. No
@@ -162,7 +175,8 @@ export type BlockContentRule = "paragraph+" | "block+" | "paragraph+ bullet_list
 /**
  * BlockAttributeKind is the kind of value a typed block attribute holds. A `block[]` attribute
  * points at blocks: canonical block references (parseBlockPointerValue in @legion/contracts'
- * dispatch-block-ref.ts), each making an edge of the attribute's name.
+ * dispatch-block-ref.ts), each making an edge of the attribute's name. An `ask` attribute names one
+ * ask of the block's own issue, as `dispatch://<ISSUE>/ask/<id>`, never a part of one.
  */
 export type BlockAttributeKind =
   | "string"
@@ -171,4 +185,5 @@ export type BlockAttributeKind =
   | "string[]"
   | "block[]"
   | "actor"
-  | "timestamp";
+  | "timestamp"
+  | "ask";

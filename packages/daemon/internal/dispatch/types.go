@@ -68,9 +68,9 @@ type Client interface {
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
-// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, and ArtifactID the
-// document that step's gate recorded. The step is a string here rather than the record's own
-// type, because this package names Dispatch's wire shapes and imports no record of the daemon's.
+// takes and answers it: Step is `criteria` or `spec`, and ArtifactID the document that step's gate
+// recorded. The step is a string here rather than the record's own type, because this package
+// names Dispatch's wire shapes and imports no record of the daemon's.
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
@@ -264,7 +264,7 @@ func (a Actor) Name() string {
 	return a.Kind + ":" + a.ID
 }
 
-// SettlementActor is Dispatch's document settlement, which closes an ask whose decision block left
+// SettlementActor is Dispatch's document settlement, which closes an ask whose ask block left
 // its document in its own name (Dispatch's docs.SettlementActor).
 var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 
@@ -278,10 +278,9 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
-// Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
-// finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
-// Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
-// none) and Slug the name Dispatch filed it under.
+// Primary and Role are what the document is on its issue, which is how a design-gate step finds
+// the document it binds to (api's gateRegister): Primary is the issue's primary document, and Role
+// the part it plays beside it (ArtifactRoleVerification, or "" for none).
 type Approval struct {
 	IssueKey      string
 	State         string
@@ -295,18 +294,14 @@ type Approval struct {
 	By            Actor
 	Primary       bool
 	Role          string
-	Slug          string
 }
 
-// ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
-// document playing on its issue (model.Artifact.Role), and DecisionsSlug and VerificationSlug the
-// names it files those two documents under, which a reference to either names
-// (workflow's stepRef). No mechanism shares a value between this module and Dispatch's, so the
-// spellings change together.
+// ArtifactRoleVerification is the part Dispatch records a Verification document playing on its
+// issue (model.Artifact.Role), and VerificationSlug the name it files that document under, which a
+// reference to it names (workflow's stepRef). No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 const (
 	ArtifactRoleVerification = "verification"
-	ArtifactRoleDecisions    = "decisions"
-	DecisionsSlug            = "decisions-md"
 	VerificationSlug         = "verification-md"
 )
 

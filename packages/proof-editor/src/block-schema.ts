@@ -11,7 +11,7 @@ import { $nodeSchema } from '@milkdown/kit/utils';
 import { DOMParser, type DOMOutputSpec, type Fragment, type Node as ProseMirrorNode, type Schema } from '@milkdown/kit/prose/model';
 import type { MarkdownNode as ParsedMarkdownNode, NodeSchema } from '@milkdown/kit/transformer';
 
-import { parseBlockPointers } from './block-pointers.js';
+import { askReferenceProblem, otherIssueRefusal, parseBlockPointers } from './block-pointers.js';
 import { withBlockIdSpec } from './editor/schema/block-ids.js';
 import { withDomAttributes } from './editor/schema/dom-attributes.js';
 import { maxDirectiveNesting } from './directive-container.js';
@@ -145,6 +145,32 @@ export function validateBlockSchema(schema: BlockSchema): void {
       }
     }
   }
+  for (const type of schema.types) {
+    const parents = type.parents ?? [];
+    for (const [index, parent] of parents.entries()) {
+      if (!names.has(parent)) throw new Error(`typed block ${JSON.stringify(type.name)} names the parent ${JSON.stringify(parent)}, which is no type the schema declares`);
+      if (parent === type.name) throw new Error(`typed block ${JSON.stringify(type.name)} names itself as its parent`);
+      if (parents.indexOf(parent) !== index) throw new Error(`typed block ${JSON.stringify(type.name)} names the parent ${JSON.stringify(parent)} twice`);
+    }
+  }
+}
+
+/**
+ * The typed blocks `schema` declares that a block of `parent` admits after its own content: each
+ * type whose `parents` name it, in the schema's order (pmdoc's TypedContent). A type naming
+ * parents is in no node group, so it stands only there.
+ */
+export function admittedAfterContent(schema: BlockSchema, parent: string): string[] {
+  return schema.types.filter((type) => type.parents?.includes(parent) === true).map((type) => type.name);
+}
+
+/**
+ * The ProseMirror content expression of `type`: its own content rule, then any number of each
+ * type it admits after that content (`admittedAfterContent`), so `ask`'s `paragraph+ bullet_list?`
+ * reads `paragraph+ bullet_list? reading*`.
+ */
+export function typedBlockContent(type: BlockTypeSchema, admitted: readonly string[]): string {
+  return [type.content, ...admitted.map((name) => `${name}*`)].join(' ');
 }
 
 function parseAttribute(typeName: string, name: string, attribute: BlockAttributeSchema, value: string): string | boolean | string[] {
@@ -153,6 +179,11 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
     case 'actor':
     case 'timestamp':
       return value;
+    case 'ask': {
+      const problem = askReferenceProblem(value);
+      if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
+      return value;
+    }
     case 'bool':
       if (value !== 'true' && value !== 'false') throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be true or false`);
       return value === 'true';
@@ -179,19 +210,32 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
 }
 
 /**
- * A block that names no value for an attribute holds its default, unless an editor of schema
- * version `version` may not create the attribute yet: that one is left out, so the editor never
- * writes it.
+ * The value a block that names none holds for `attribute`, in an editor of schema version
+ * `version`, as the document service's writtenDefault reads it: the attribute's default, with two
+ * exceptions that hold none. A server attribute: the server writes it into a block or nobody does,
+ * and a block it is not written into - an ask's `state` once the fleet keeps an answer on the ask's
+ * node alone - is read without it, so an edit inside the block never writes a value for it into the
+ * live document (y-prosemirror writes every attribute the editor's node holds into the shared one;
+ * a node the editor creates, as a paste does, carries it as null, which the server reads as absent:
+ * pmdoc's nullReadsAbsent). And an attribute this editor may not create yet, which is left out so
+ * the editor never writes it.
  */
-function schemaAttrs(type: BlockTypeSchema, version: number): Record<string, { default?: string | boolean | readonly string[] }> {
-  return Object.fromEntries(Object.entries(type.attributes).map(([name, attribute]) => [name, { default: creatable(version, attribute) ? attribute.default : undefined }]));
+function writtenDefault(attribute: BlockAttributeSchema, version: number): string | boolean | readonly string[] | undefined {
+  return attribute.server || !creatable(version, attribute) ? undefined : attribute.default;
 }
 
+/** A block that names no value for an attribute holds its written default (`writtenDefault`). */
+function schemaAttrs(type: BlockTypeSchema, version: number): Record<string, { default?: string | boolean | readonly string[] }> {
+  return Object.fromEntries(Object.entries(type.attributes).map(([name, attribute]) => [name, { default: writtenDefault(attribute, version) }]));
+}
+
+// An attribute whose `markdown` field is false (pmdoc `InMarkdown`) is never written into markdown,
+// and markdown that names it is read as if it did not, since its value lives on the block's node.
 function directiveAttrs(type: BlockTypeSchema, attrs: Record<string, string> | undefined, version: number): Record<string, string | boolean | readonly string[] | undefined> {
   const parsed: Record<string, string | boolean | readonly string[] | undefined> = {};
   for (const [name, attribute] of Object.entries(type.attributes)) {
-    const value = attrs?.[name];
-    parsed[name] = value === undefined ? (creatable(version, attribute) ? attribute.default : undefined) : parseAttribute(type.name, name, attribute, value);
+    const value = attribute.markdown === false ? undefined : attrs?.[name];
+    parsed[name] = value === undefined ? writtenDefault(attribute, version) : parseAttribute(type.name, name, attribute, value);
   }
   for (const name of Object.keys(attrs ?? {})) {
     if (name !== 'id' && name !== 'className' && !(name in type.attributes)) {
@@ -219,7 +263,7 @@ function markdownAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<str
   attributes.id = blockId;
   for (const [name, definition] of Object.entries(type.attributes)) {
     const value = node.attrs[name];
-    if (value === undefined) continue;
+    if (value === undefined || definition.markdown === false) continue;
     attributes[name] = attributeText(definition, value);
   }
   return attributes;
@@ -233,7 +277,11 @@ function domAttributeName(name: string): string {
 /**
  * A typed block's client-owned attributes as DOM attributes, so the block's HTML - a copy on the
  * clipboard - carries them back. A server-owned attribute is the server's to set, and a copy of a
- * block is a new block, so none is written.
+ * block is a new block, so none is written. A server-owned value a browser puts in the live
+ * document anyway is never what the server records: a decision's author is the credential of the
+ * write that first stored it, and settlement overwrites a decision's `decided_by`, `kept_by` and
+ * `kept_text_sum` in the live document with what the store holds, taking out one it holds none
+ * of (the document service's reconcileDecisionBlocks).
  */
 function domAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<string, string> {
   const attributes: Record<string, string> = {};
@@ -249,9 +297,13 @@ function domAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<string, 
  * The client-owned attributes a typed block's section carries, parsed as its markdown would be;
  * the others keep their defaults. A section whose attribute the schema refuses, or holds a value an
  * editor of schema version `version` may not write yet, is not read as the typed block at all (the
- * rule does not match), since this editor never writes one.
+ * rule does not match), since this editor never writes one. So is one naming something of another
+ * issue than the document's, `documentRef` (`otherIssueRefusal`), which the document service
+ * refuses on every write that takes markdown and records no tie of on a browser's write: a paste -
+ * HTML, or plain text, which the editor reads through this rule too - builds no block a write of
+ * the document would be refused for.
  */
-function parsedDomAttrs(type: BlockTypeSchema, dom: HTMLElement, version: number): Record<string, unknown> | false {
+function parsedDomAttrs(type: BlockTypeSchema, dom: HTMLElement, version: number, documentRef: string | undefined): Record<string, unknown> | false {
   const attributes: Record<string, unknown> = {};
   for (const [name, definition] of Object.entries(type.attributes)) {
     if (definition.server) continue;
@@ -264,23 +316,36 @@ function parsedDomAttrs(type: BlockTypeSchema, dom: HTMLElement, version: number
     }
     if (!creatableValue(version, definition, attributes[name])) return false;
   }
+  if (otherIssueRefusal(type, attributes, documentRef) !== undefined) return false;
   return attributes;
+}
+
+/** What the spec of one typed block reads off the rest of the schema and the open document. */
+export interface TypedBlockSpecContext {
+  /** The typed blocks this one admits after its own content (`admittedAfterContent`). */
+  readonly admitted?: readonly string[];
+  /** The open document's unversioned reference, which a paste is held to (`parsedDomAttrs`). */
+  readonly documentRef?: string;
 }
 
 /**
  * The ProseMirror node spec of the typed block `type`, drawn by `renderBlock` when given, for an
  * editor of schema version `version`: a block it makes holds no attribute it may not create yet.
+ * Its content is its own rule and then the types it admits after it (`typedBlockContent`), and a
+ * type that names parents (`type.parents`) is in no node group, so it stands only there; the spec
+ * carries those parents for the editor's other readers of content (`relaxAskContentCheck`).
  */
-export function typedBlockSpec(type: BlockTypeSchema, renderBlock?: HostBlockRenderer, version = Number.POSITIVE_INFINITY): NodeSchema {
+export function typedBlockSpec(type: BlockTypeSchema, renderBlock?: HostBlockRenderer, version = Number.POSITIVE_INFINITY, context: TypedBlockSpecContext = {}): NodeSchema {
+  const placed = (type.parents?.length ?? 0) > 0;
   return withBlockIdSpec({
     attrs: schemaAttrs(type, version),
-    content: type.content,
-    group: 'block',
+    content: typedBlockContent(type, context.admitted ?? []),
+    ...(placed ? { parents: type.parents } : { group: 'block' }),
     defining: true,
     isolating: true,
     parseDOM: [{
       tag: `section[data-proof-block-type="${type.name}"]`,
-      getAttrs: (dom) => parsedDomAttrs(type, dom, version),
+      getAttrs: (dom) => parsedDomAttrs(type, dom, version, context.documentRef),
       contentElement: (dom) => dom.querySelector('[data-proof-block-content]') ?? dom,
     }],
     toDOM: (node) => withDomAttributes(renderBlock?.(node, type) ?? [
@@ -314,9 +379,13 @@ export function typedBlockSpec(type: BlockTypeSchema, renderBlock?: HostBlockRen
   });
 }
 
-export function blockSchemaPlugins(schema: BlockSchema, renderBlock?: HostBlockRenderer) {
+/** The typed blocks of `schema` as editor plugins, a paste held to the document `documentRef`. */
+export function blockSchemaPlugins(schema: BlockSchema, renderBlock?: HostBlockRenderer, documentRef?: string) {
   validateBlockSchema(schema);
-  return schema.types.map((type) => $nodeSchema(type.name, () => typedBlockSpec(type, renderBlock, schema.version)));
+  return schema.types.map((type) => $nodeSchema(type.name, () => typedBlockSpec(type, renderBlock, schema.version, {
+    admitted: admittedAfterContent(schema, type.name),
+    documentRef,
+  })));
 }
 
 /** Why the schema refuses the container directive `node`, as `visit` throws it, or undefined when it is accepted. */

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -370,21 +371,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
-	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
-	// wrote while the issue was closed reads and renders those versions, document work that must
-	// not run once the issue's update below has given the transaction its id, and it plans the
-	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
-	// and events queue after the document writes and before everything the patch queues below,
-	// which is where its writes run in the write phase.
-	var closingAsks, reopenedAsks []model.Ask
+	// are queued, not made, so the advice's queries still hold no transaction id. The close plans
+	// each ask's withdrawal here too, reading each ask's row and node before the issue's update
+	// below gives the transaction its id, and queues it after that update (recordWithdrawnAsksTx).
+	// The reopen's second half runs here too (recordRestoredAsksTx): its follow of the versions a
+	// settlement wrote while the issue was closed reads and renders those versions, document work
+	// that must not run once the issue's update below has given the transaction its id, and it
+	// plans the restored asks' parts before the follow plans the parts of the request it moves.
+	// Its writes and events queue after the document writes and before everything the patch
+	// queues below, which is where its writes run in the write phase.
+	var closingAsks withdrawal
+	var reopened restoredAsks
 	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
-			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
+		if reopened, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopened, actor)
 		}
 	}
 	if err != nil {
@@ -408,8 +412,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		afterRow.labels = labels
 	}
 	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
-		excluded: askIDs(closingAsks),
-		opened:   askIDs(reopenedAsks),
+		excluded: askIDs(closingAsks.asks),
+		opened:   askIDs(reopened.asks),
 	})
 	// The write phase: the statements from here on run back to back.
 	if changed {
@@ -534,7 +538,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(ledger, key, closingAsks, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -599,8 +603,51 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
+	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the issue as changed by that run when it changed a field of
+	// it (spec requirement r-interaction), as changedFields, which compares every field
+	// this route writes, says; a write that sent only values the issue already held appends its
+	// event with nothing changed and names no change. Nothing else this route writes reaches the
+	// store, so it writes the issue's node as the create and the backfill write it
+	// (graphstore.IssueNode), made by the issue's creator at its created_at, the two columns of the
+	// issue's row the backfill reads them from (graphcensus/projects_backfill.go's objectKinds),
+	// and names it changed now by its writer (graphstore.PlanChangedForRun, which plans nothing for
+	// no run).
+	// The node write is queued here, after every row and document write the patch queued above,
+	// and what it states right after the issue's own event (graphstore.QueueCaused over
+	// graphstore.LatestEvent), as the create's is.
+	var issueNode graphstore.Uncaused
+	if len(changedFields) > 0 {
+		issueNode, err = graphstore.PlanChangedForRun(r.Context(), time.Now().UTC(), actor, func() (graphstore.Node, error) {
+			// The backfill decodes created_by into a model.Actor, so a stored JSON null is the
+			// zero actor there, and here.
+			var creator model.Actor
+			if before.CreatedBy != nil {
+				creator = *before.CreatedBy
+			}
+			return graphstore.IssueNode(key, before.Project, creator, before.CreatedAt), nil
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

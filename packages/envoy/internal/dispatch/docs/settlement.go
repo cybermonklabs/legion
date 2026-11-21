@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -171,7 +173,15 @@ func skipUnreadableSettlement(room string, err error) bool {
 // reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
+//
+// A settlement is made for no run of the command bar (store.WithRun): it saves what the room's
+// writers left in it, whoever they were, so it carries no run even when a request's context starts
+// it - an issue's close settles its documents first on the closer's (api's
+// settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
+// timer's settlement on a background context appends none: its write phase's batch is built for
+// that context (store.NewWriteBatch), which carries no run.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent = store.WithRun(parent, "")
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless parent has ended, the document has been removed or
@@ -246,6 +256,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// too, so a close this process has not heard of yet is read here, and no close commits until
 	// this settlement's transaction ends.
 	settle.owner, settle.issueClosed = owner, !open
+	if err := lockSettlementFence(ctx, tx, room); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// The owner is read under its lock in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
@@ -271,6 +284,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 	_, outcome := settle.commitVersion(ctx)
 	return outcome
+}
+
+// lockSettlementFence queues the take of the document's document_block_versions row `for no key
+// update`, the revision fence's row (R23 of this change), as the settlement's first write: right
+// after its owner lock, and ahead of every statement the settlement queues, so the write phase
+// takes the row before anything else it writes. Whether a settlement writes a version is decided
+// only in commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and
+// followed each one for a session author, which writes that session's node (asks.Follow); the
+// version's own fence - the version row's trigger (document_block_versions_owe, migration 0122)
+// and refs.BlockIndexing's own - comes after that node. The lock order written on
+// api/inbox_read.go's markInboxReadThreads has a writer under the fence take its row before any
+// node, tuple or projection row it writes, so every settlement takes it here, since any of them
+// may write a version. Those later takes of the same row in this transaction wait on nothing.
+// Every document holds the row from its first version on; a document with none has no row, and
+// the insert of its first version makes it. The take is queued rather than run, as every write of
+// the settlement is: a row lock assigns the transaction its id, which the read phase holds none
+// of.
+func lockSettlementFence(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, fmt.Sprintf("take the revision fence of document %s", artifactID), `
+		select 1 from document_block_versions where artifact_id = $1 for no key update
+	`, artifactID)
 }
 
 // take is what the settlement takes of its room before it opens a transaction: the room warmed
@@ -530,8 +564,9 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 }
 
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
-// what each block's row and the document owe each other, and holds its check blocks to the four
-// rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
+// what each block's row and the document owe each other, holds its check blocks to the four
+// rules (reconcileCICheckBlocks) and its decisions' server-owned attributes to what the store
+// holds (reconcileDecisionBlocks): the repairs to write into the room, the events to append, and
 // the copies to arm. On a closed issue the reconciliation changes no ask (reconcileAskBlocks), and
 // each event it appends - a block.repaired or a block.invalid, of an ask block or a check block -
 // is the settlement's own (SettlementActor), not the person whose edit the version saves: a
@@ -540,11 +575,17 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if st.issueClosed {
@@ -643,19 +684,63 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // events, after those the version write appended, which the settlement publishes once it commits.
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event) error {
+//
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the settlement opened and its author's follow. Their appends are queued
+// right after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
 	sink := eventSink(ctx)
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		for _, planned := range events {
+		for index, planned := range events {
 			if err := st.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned), sink); err != nil {
 				return err
 			}
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
+			for _, stated := range caused[index] {
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
+			}
+		}
+		return nil
+	})
+}
+
+// stateCopiesAndReadability plans the copied_from of the nodes of the document's ask blocks
+// (claimCopies) and the readability of the asks whose blocks this settlement read
+// (stateInvalidReasons), both in the name the version carries (versionActor) at at, and queues
+// their statements under cause as one step (write): the version's event, which the step follows
+// right after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that
+// writes no version. It runs once the version's blocks are planned, so the copies read the nodes
+// the block index leaves (heldBlockIndex).
+func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Time, cause int64) error {
+	who := st.credit.versionActor()
+	copies, err := st.reconciliation.claimCopies(ctx, st.tx, st.room, who, at)
+	if err != nil {
+		return err
+	}
+	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, who, at)
+	if err != nil {
+		return err
+	}
+	if copies == nil && readability == nil {
+		return nil
+	}
+	return write(ctx, st.tx, func(b *store.WriteBatch) error {
+		if copies != nil {
+			if err := copies(b, cause); err != nil {
+				return err
+			}
+		}
+		if readability != nil {
+			return readability(b, cause)
 		}
 		return nil
 	})
@@ -743,6 +828,21 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
+	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
+	// looks for text in it. Typing a room took before the retirement closed it is still stored -
+	// this settlement commits the updates it read, as every settlement does - and logged, so it is
+	// kept rather than dropped, but no version of the retired document holds it.
+	if versioning {
+		retired, err := documentRetired(ctx, tx, room)
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
+		if retired {
+			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+				"room", room, "latest_version", st.latest.Number)
+			versioning = false
+		}
+	}
 	settledVersion := st.latest.Number
 	if versioning {
 		settledVersion++
@@ -779,15 +879,29 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// The copies among the document's ask blocks and the readability of the asks whose blocks
+	// this settlement read are stated in the name the version itself carries (versionActor), at
+	// one time (stateCopiesAndReadability).
+	at := time.Now().UTC()
 	if versioning {
 		var keptEditor *model.Actor
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
+		// A person's edit in the room that took an answered ask's block out of the document is
+		// that person's removal, which the version's index pass states on the ask's node, as the
+		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// reconciled tree held no block of can be one, or any where the version is a later read.
+		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
+			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+				return settleDone, st.abandon(err)
+			}
+		}
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			settled:          &st.reconciliation.sources,
 			closedIssue:      st.issueClosed,
 			settlement:       true,
 			keptEditor:       keptEditor,
@@ -834,12 +948,42 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
 		}
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}); err != nil {
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only once the event's insert has
+		// run, so it is stated right after it (appendEvents).
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
+			return settleDone, st.abandon(err)
+		}
+		// The copies and the readability, once the version's blocks are planned, under that same
+		// event, right after it.
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.LatestEvent); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
+	// An ask this settlement opened has its row and node only in this write phase, so a version
+	// written before them stated none of its block's shaped ties; a settlement that writes a
+	// version states them in that version's index, and one that writes none writes them here,
+	// after the rows, before the ask.opened that names the targets they moved is appended.
+	if !versioning {
+		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
+	// The nodes and the follows of the asks this settlement opened, their blocks' ties, and what
+	// each answer state it wrote states on its ask's node wait for the events that record them,
+	// each stated right after its own (causedByEvent).
+	caused, err := st.reconciliation.causedByEvent(st.reconciliation.events)
+	if err != nil {
 		return settleDone, st.abandon(err)
+	}
+	if err := st.appendEvents(ctx, st.reconciliation.events, caused); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	// A settlement that writes no version states the copies and the readability under no event.
+	if !versioning {
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.NoEvent); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
 	// The write phase: every statement this settlement decided on, in the order it made them.
 	if err := ledger.runQueue(ctx, nil); err != nil {

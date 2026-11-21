@@ -154,8 +154,9 @@ func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
 // names the version the carry's own reason gives rather than the version the row is pinned to. A
 // carry can follow a carry, so this drives two in a row: alice approves version 1, the agent
 // changes the spec and undoes the change, which carries her approval to version 3 naming version
-// 1, and does it again, which carries that carry to version 5 naming version 3. The newest carry
-// names version 3, and that is what the advice must carry.
+// 1, and does it again, which carries that carry to version 5. The newest carry's reason names
+// version 1, the version alice approved, and then version 3, whose text version 5 holds
+// (docs' restoreCarriedReason), and the version it names first is what the advice must carry.
 func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "STANDCARRY", "Carried twice", restoreSpec)
@@ -166,14 +167,14 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), nil)
 	agentEdit(t, handler, issue.PrimaryArtifactID, 4, replaceOp("behind a flag.", "behind a flag and a canary."))
 	agentEdit(t, handler, issue.PrimaryArtifactID, 5, replaceOp("behind a flag and a canary.", "behind a flag."))
-	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 5, 3, restoreSentence(3), nil)
+	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 5, 3, restoreCarriedSentence(1, 3), nil)
 
 	review := askStandingReview(t, handler, issue.Key)
 	if review == nil {
 		t.Fatal("the question's advice named no review; want the approval carried to version 5")
 	}
-	if review.CarriedFromVersion != 3 {
-		t.Fatalf("standing review = %#v, want a carry naming version 3, the version the newest carry's reason gives", review)
+	if review.CarriedFromVersion != 1 {
+		t.Fatalf("standing review = %#v, want a carry naming version 1, the version the newest carry's reason gives first", review)
 	}
 	if review.By != "alice" || review.State != "approved" || review.Version != 5 {
 		t.Fatalf("standing review = %#v, want alice's approval pinned to version 5", review)

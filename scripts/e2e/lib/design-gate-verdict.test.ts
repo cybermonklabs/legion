@@ -96,14 +96,18 @@ const approval = (version: number, createdAt: string, state: string) => ({
   created_at: createdAt,
   state,
 });
-// A spec version as Dispatch stores it: the block, when the version holds it, carries its id and
-// its state in its attributes.
-const specAt = (number: number, state: "open" | "answered" | null): Version => {
+// A spec version as Dispatch stores it: the block, when the version holds it, carries its id in its
+// attributes. A version the release before wrote records the block's state there too ("open" or
+// "answered"); one this release writes records none ("unstated"), since a person's answer is held
+// on the block's ask alone.
+const specAt = (number: number, state: "open" | "answered" | "unstated" | null): Version => {
   const attributes =
     state === "open"
-      ? 'state="open"'
-      : 'state="answered" answered_by="alice" answered_at="2026-09-30T10:05:00.123456789Z" selected="[&#x22;Docs&#x22;]"';
-  const blockText = `\n:::ask{#block-1 urgency="med" multiple="false" ${attributes}}\nWhere does the smoke file go?\n\n- Root: under smoke/.\n- Docs: under docs/smoke/.\n:::\n`;
+      ? ' state="open"'
+      : state === "answered"
+        ? ' state="answered" answered_by="alice" answered_at="2026-09-30T10:05:00.123456789Z" selected="[&#x22;Docs&#x22;]"'
+        : "";
+  const blockText = `\n:::ask{#block-1 urgency="med" multiple="false"${attributes}}\nWhere does the smoke file go?\n\n- Root: under smoke/.\n- Docs: under docs/smoke/.\n:::\n`;
   return {
     number,
     markdown: `## The smoke file\n\nWhere it goes is the human's choice.\n${state === null ? "" : blockText}`,
@@ -247,6 +251,61 @@ describe("design-gate-verdict.jq", () => {
         [specAt(5, "open")]
       ).early
     ).toEqual(["version 5: Where does the smoke file go?"]);
+  });
+
+  // A version this release writes records no state on the block of an open ask, so the block's ask
+  // says whether the block was still open at the request: its answer and its resolution came after
+  // it, or never.
+  // The human replied in the request's thread before Dispatch indexed the block, so the answer-time
+  // rule passes the request and only the version rule can catch it.
+  test("a version that records no block state holds a block open while its ask held no answer and no resolution at the request", () => {
+    const request = { ...approval(5, "2026-09-30T10:00:00.1Z", "open"), id: "approval-5" };
+    const events = [
+      { type: "ask.opened", created_at: request.created_at, payload: request },
+      {
+        type: "comment.created",
+        created_at: "2026-09-30T10:00:01Z",
+        actor: { kind: "user", id: "alice" },
+        payload: { id: "comment-1", ask_id: "approval-5" },
+      },
+    ];
+    const early = ["version 5: Where does the smoke file go?"];
+    const answeredLater = {
+      ...block,
+      created_at: "2026-09-30T10:00:02.1Z",
+      answer: { at: "2026-09-30T10:03:00Z" },
+    };
+    const neverAnswered = { ...answeredLater, answer: null };
+    const retractedLater = {
+      ...neverAnswered,
+      resolution: { kind: "retracted", at: "2026-09-30T10:03:00Z" },
+    };
+    for (const ask of [answeredLater, neverAnswered, retractedLater]) {
+      expect(verdict([ask, request], [specAt(5, "unstated")], 5, events).early).toEqual(early);
+    }
+  });
+
+  test("a version that records no block state does not hold open a block whose ask was answered or resolved before the request", () => {
+    const resolvedEarlier = {
+      ...block,
+      answer: null,
+      resolution: { kind: "resolved", at: "2026-09-30T10:05:00Z" },
+    };
+    for (const ask of [block, resolvedEarlier]) {
+      expect(
+        verdict([ask, approval(5, "2026-09-30T10:06:00Z", "answered")], [specAt(5, "unstated")])
+          .early
+      ).toEqual([]);
+    }
+  });
+
+  // The version-3 request came after the human answered the block, but named a version the
+  // release before wrote, which records the block open.
+  test("a block a version the release before wrote records open is open, though its ask was answered before the request", () => {
+    expect(
+      verdict([block, approval(3, "2026-09-30T10:06:00Z", "answered")], [specAt(3, "open")], 3)
+        .early
+    ).toEqual(["version 3: Where does the smoke file go?"]);
   });
 
   // A request made before a choice became an ask block is early once a human answers that choice.

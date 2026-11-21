@@ -28,12 +28,27 @@ Any other row refuses the boot, and nothing applies:
 a database that ran another branch's or an earlier commit's migration, or an edit of one, is reset (dropped, created empty and migrated by the server), and a file edited or renamed on purpose gets the replaces line the refusal names, after the ones it has.
 `../../../cmd/dispatch/README.md` ("A recorded version under another file") has the refusal word for word.
 
+**A table past the census limit still takes a new index.**
+`pgmigrate.CensusTableLimit` is 1 GiB of `pg_total_relation_size`, and the census refuses an ordinary migration that touches a table above it, unless every statement of it that touches the table is a bounded write: an insert of at most `pgmigrate.BoundedWriteRows` (1,000) literal rows, or an update of at most that many rows by their primary key (`../../../cmd/dispatch/README.md`, "Pre-deploy census"), which is how a later migration seeds rows into `graph_tuples` or `graph_nodes`.
+The concurrent mode above is the way through: `pgmigrate/census.go`'s `ConcurrentIndex` flag exempts a marked migration from the size limit by name, so a log that has grown past the limit is indexed by a migration whose whole body is one statement, in the shape `20261102233630_embeddings_window_owner.up.sql` uses:
+a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
+`graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration:
+`20261116172615_graph_nodes_proposed_index` is one, a partial index of the nodes at `proposed`, and `20261116232634_going_requests_ends_at_index` builds `going_requests_ends_at` the same way, because `going_requests` keeps every run of the command bar now and a plain build would hold off every question asked while it reads the table.
+Each has a `.down.sql`, the `DROP INDEX CONCURRENTLY` an operator runs by hand outside a transaction; nothing depends on either index, so rolling back past one is an image rollback alone.
+An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
+
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
 A change is therefore expand-then-contract across two releases:
 the expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes, while the migration that drops, renames or narrows ships no earlier than the next release, once no running build reads the old shape.
 No migration is an exception:
 a change that cannot be written that way is split into releases that can, so no release stops every server process.
+The node and tuple store's migrations of lenses and runs of the command bar expand alone:
+`20261116123354_lens_catalogue` and `20261116123355_lens_catalogue_further_kinds` write type nodes and catalogue nodes with their tuples, `20261116081010_block_pointer_targets_present` and `20261117042519_block_moved_to_lens` restate a function that answers every call the release before makes as it did, and `20261117020856_graph_edges_asks_and_store_class` and `20261121104002_graph_edges_store_class_last`, the view's last restatement, restate `graph_edges` with every arm the release before reads.
+No migration writes a run's node: the census refuses an ordinary migration that touches a table past `pgmigrate.CensusTableLimit`, and `going_requests` keeps every run, so `envoy-dispatch backfill-graph-store` writes the interaction node and `frame` values of each run recorded before this release, row by row, once the roll that brings it is done.
+During a roll the release before records a run with no node, appends its frames with no `frame` value and no lock on the node, and deletes a run an hour old.
+A frame of this release takes the run's interaction node row `for no key update` before the run's `going_requests` row, the order the erase of a run takes them in; a run with none gets its node from its row first, under that row, and no frame waits on a node's row while it holds the run's (`api/going.go`'s `lockGoingRun`).
+The `going_events_terminal` index and the frame's `on conflict do nothing` settle a frame both releases write at one sequence, and `backfill-graph-store` mends what the release before wrote.
 The same rule holds for everything else the two builds share (request bodies and routes, query values, socket frames, response members, stored documents, NATS stream and consumer settings and subjects, messages, and settings), and the two-build test checks it (`go test -tags twobuild ./cmd/dispatch`).
 **Messages:** envelope and payload members are additive, and every consumer ignores a member it does not know;
 a consumer ignores an event type or `kind` it does not know, and acks it;

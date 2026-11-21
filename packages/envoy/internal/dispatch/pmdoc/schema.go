@@ -15,6 +15,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// A change to blocks.json ships with a store migration that writes the node of each type or
+// attribute it adds or alters, moves every block type's supertag node to the file's new version,
+// and appends each value it states as a value tuple at the source_event sentinel 0, as
+// 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
+// not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
+// build made for the new version installs the old one. A new type migration runs once: written
+// after the store's backfill, it writes under the migration census's bounded-write rule and cannot
+// run twice unchanged, so only the type migrations before the backfill (typeMigrations in
+// cmd/dispatch/supertag_nodes_test.go) run a second time, and a new one joins no list there.
+//
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
 
@@ -26,25 +36,28 @@ var blockSchemaJSON []byte
 // element of it - a node, a mark, a typed block, a typed block's attribute, an enum attribute's
 // choice - may say from which schema version a build reads it (since) and from which a build may
 // create it (creatable_since); both are 1 when it says neither. This build reads every element
-// its manifest declares and creates those whose creatable_since is at most Version
-// (SchemaVersion).
+// the installed manifest declares and creates those whose creatable_since is at most Version
+// (SchemaVersion). The installed manifest is the store's once the server has read it (Install):
+// the typed blocks the store's supertag nodes declare, beside this build's own nodes and marks.
+// blocks.json is what those nodes were seeded from, and what is installed until then.
 
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
 // (model.GraphEdgeKinds).
 func LinkKinds() []string {
-	return slices.Clone(active.linkKinds)
+	return slices.Clone(active.Load().linkKinds)
 }
 
 // HasLinkKinds reports whether the manifest declares any `block[]` attribute (LinkKinds is not
 // empty).
 func HasLinkKinds() bool {
-	return len(active.linkKinds) > 0
+	return len(active.Load().linkKinds) > 0
 }
 
-// SchemaJSON returns a copy of the canonical server-owned block schema JSON.
+// SchemaJSON returns a copy of the installed block schema as JSON: what the store's nodes built,
+// or the embedded file where nothing has been installed over it.
 func SchemaJSON() []byte {
-	return append([]byte(nil), blockSchemaJSON...)
+	return append([]byte(nil), active.Load().json...)
 }
 
 // IsTypedBlock reports whether name is a typed block the schema declares.
@@ -53,14 +66,24 @@ func IsTypedBlock(name string) bool {
 	return ok
 }
 
+// BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
+// in declaration order, and false for a type it does not declare. The block index reads a
+// decision's from it to tell a tie its caller writes from one the server derives (refs'
+// DecisionFacts): the schema's `server` flag is what says whose a value is.
+func BlockTypeAttributes(name string) (BlockAttributes, bool) {
+	typ, ok := typedBlock(name)
+	return typ.Attributes, ok
+}
+
 func typedBlock(name string) (BlockTypeSchema, bool) {
-	typ, ok := active.types[name]
+	typ, ok := active.Load().types[name]
 	return typ, ok
 }
 
 func typedBlockNames() []string {
-	names := make([]string, 0, len(active.schema.Types))
-	for _, typ := range active.schema.Types {
+	types := active.Load().schema.Types
+	names := make([]string, 0, len(types))
+	for _, typ := range types {
 		names = append(names, typ.Name)
 	}
 	sort.Strings(names)
@@ -109,7 +132,8 @@ func validateBlockSchema(value BlockSchema) error {
 			}
 		}
 	}
-	// A target names a type of the whole schema, so it is checked once every name is known.
+	// A target names a type of the whole schema, so it is checked once every name is known, and so
+	// is a parent.
 	for _, typ := range value.Types {
 		for _, attr := range typ.Attributes {
 			for _, target := range attr.Targets {
@@ -118,6 +142,28 @@ func validateBlockSchema(value BlockSchema) error {
 				}
 			}
 		}
+		if err := validateParents(typ, seenTypes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateParents refuses a type's parents (BlockTypeSchema.Parents) that no block could stand
+// in: a name the schema declares no type of, the type itself, and a name given twice.
+func validateParents(typ BlockTypeSchema, declared map[string]struct{}) error {
+	seen := make(map[string]struct{}, len(typ.Parents))
+	for _, parent := range typ.Parents {
+		if _, typed := declared[parent]; !typed {
+			return fmt.Errorf("type %q names the parent %q, which is no type the schema declares", typ.Name, parent)
+		}
+		if parent == typ.Name {
+			return fmt.Errorf("type %q names itself as its parent", typ.Name)
+		}
+		if _, repeated := seen[parent]; repeated {
+			return fmt.Errorf("type %q names the parent %q twice", typ.Name, parent)
+		}
+		seen[parent] = struct{}{}
 	}
 	return nil
 }
@@ -182,7 +228,7 @@ var linkKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeBool, BlockAttributeEnum, BlockAttributeStringList,
-		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp:
+		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk:
 	default:
 		return fmt.Errorf("type %q attribute %q has unknown kind %q", typeName, name, attr.Kind)
 	}
@@ -275,6 +321,29 @@ func validateAttributeValue(attr BlockAttributeSchema, value any) error {
 			return fmt.Errorf("must be an array of block references, got %T", value)
 		}
 		return validateBlockPointerValues(items)
+	case BlockAttributeAsk:
+		reference, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("must be an ask reference, got %T", value)
+		}
+		return validateAskReference(reference)
+	}
+	return nil
+}
+
+// validateAskReference refuses the value of an `ask` attribute unless it is one ask of an issue,
+// written whole as every writer writes an ask's address (`dispatch://<ISSUE>/ask/<id>`), with
+// nothing before or after it. A part of an ask (`dispatch://<ISSUE>/ask/<id>#b-<block>`) is
+// refused with a reason of its own: it names a block of the ask's text, not the ask a decision
+// settles. Whether the ask is one of the block's own issue only the store can say, so that is no
+// rule of the schema's.
+func validateAskReference(value string) error {
+	ref, ok := text.ParseRef(value, "")
+	if ok && ref.Kind == "block" && ref.Item == "ask" {
+		return fmt.Errorf("%q is a part of an ask: an ask attribute names the ask itself, dispatch://<ISSUE>/ask/<id>", value)
+	}
+	if !ok || ref.Kind != "ask" || ref.IssueKey == "" || "dispatch://"+ref.IssueKey+"/ask/"+ref.ID != value {
+		return fmt.Errorf("%q is not an ask of an issue as Dispatch writes one: dispatch://<ISSUE>/ask/<id>", value)
 	}
 	return nil
 }
@@ -334,7 +403,7 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 		return nil, fmt.Errorf("must be encoded as a string, got %T", raw)
 	}
 	switch attr.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk:
 		if err := validateAttributeValue(attr, text); err != nil {
 			return nil, err
 		}
@@ -403,12 +472,36 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // default, and false when it has none or when this build may not create the attribute yet. A
 // block an earlier build wrote, before the attribute existed, reads with that default (readElement,
 // renderTypedAttributes), as the browser editor reads it. An attribute this build cannot create is
-// left out, so that no write of this build adds it.
+// left out, so that no write of this build adds it. A server attribute has no written default
+// either: the server writes it into a block or nobody does, and a block it is not written into -
+// an open ask's, whose `state` no write keeps once the fleet is one build (docs' keptAskState) -
+// is read, taken at an agent's boundary (StripServerOwnedAttrs) and rendered without it. That is
+// why an open ask keeps no `state`: an ask an agent's upload or `doc-edit` adds is stored in the
+// route's version before settlement opens it, so a `state="open"` written then would cost a
+// version of its own, whose only change is that attribute; an ask a browser adds has no version
+// until settlement, whose one version would carry both the block and its state.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
-	if attr.Default == nil || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+	if !hasWrittenDefault(typ, attr) {
 		return nil, false
 	}
 	return cloneSchemaValue(attr.Default), true
+}
+
+// hasWrittenDefault reports whether typ's attribute attr has a written default (writtenDefault).
+func hasWrittenDefault(typ BlockTypeSchema, attr BlockAttribute) bool {
+	return attr.Default != nil && !attr.Server && creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name})
+}
+
+// nullReadsAbsent reports whether value, what a block of typ holds for its attribute attr, is a
+// null that reads as the block not holding attr: a null where attr has no written default
+// (writtenDefault). The browser editor gives such an attribute no default either - a server
+// attribute, which the server writes into a block or nobody does, and one it may not create yet -
+// so its node holds it as undefined, which y-prosemirror writes into the live document whenever it
+// makes the node, as a paste does, and a read of the live document reads as null (readElement).
+// So an ask block a browser pasted holds `state` null, although the attribute's default is
+// `open`. A null where attr has a written default is no value of it, and is refused.
+func nullReadsAbsent(typ BlockTypeSchema, attr BlockAttribute, value any) bool {
+	return value == nil && !hasWrittenDefault(typ, attr)
 }
 
 // withWrittenDefaults is attrs, a typed block's attributes as a stored tree holds them, with the
@@ -444,21 +537,29 @@ func TypedBlockAttributes(node *Node) []model.BlockAttributeValue {
 	return values
 }
 
+// InMarkdown reports whether a typed block's markdown carries the attribute: its `markdown` field,
+// true where the manifest names none. One it is false for is never rendered (typedAttributeValues),
+// and markdown that names it is read as if it did not (typedDirectiveRefusal), since its value
+// lives on the block's node, where the server writes it.
+func (a BlockAttributeSchema) InMarkdown() bool {
+	return a.Markdown == nil || *a.Markdown
+}
+
 // typedAttributeValues is a typed block's declared attributes, their written values and the kind
 // its type declares each under, in declaration order, leaving out one the block does not hold and
-// one the markdown never carries.
+// one the markdown never carries (InMarkdown).
 func typedAttributeValues(n *Node, typ BlockTypeSchema) ([]model.BlockAttributeValue, error) {
 	values := make([]model.BlockAttributeValue, 0, len(typ.Attributes))
 	for _, attribute := range typ.Attributes {
 		name, definition := attribute.Name, attribute.BlockAttributeSchema
-		if name == "invalid" && definition.Server {
+		if !definition.InMarkdown() {
 			continue
 		}
 		value, present := n.Attrs[name]
 		if !present {
 			value, present = writtenDefault(typ, attribute)
 		}
-		if !present || (value == nil && definition.Default == nil) {
+		if !present || nullReadsAbsent(typ, attribute, value) {
 			continue
 		}
 		encoded, err := encodeTypedAttribute(n.Type, name, definition, value)
@@ -501,7 +602,7 @@ func renderTypedAttributes(n *Node, typ BlockTypeSchema) (string, []model.BlockA
 // quoting; it refuses a value whose kind is not the one the type declares.
 func encodeTypedAttribute(blockType, name string, definition BlockAttributeSchema, value any) (string, error) {
 	switch definition.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk:
 		text, ok := value.(string)
 		if !ok {
 			return "", fmt.Errorf("%w: typed block %q attribute %q must be a string", ErrSchema, blockType, name)

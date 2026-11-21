@@ -650,9 +650,9 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 //
 // Every sentence about the gate names step's own document (record.DesignStep.Document), which is
 // the document gate holds and the one whose version it prints: under a deployment that gates the
-// decisions or the criteria step first, the step in question is not the spec, and a task saying
-// "your spec" would send the architect to the wrong document. The READY refusal names a step's
-// document the same way (Engine.handoff).
+// criteria step first, the step in question is not the spec, and a task saying "your spec" would
+// send the architect to the wrong document. The READY refusal names a step's document the same
+// way (Engine.handoff).
 func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gate *record.DesignGate, asks []record.RootAsk, armed bool) string {
 	document := step.Document()
 	gateOpen := gate != nil && classify.DesignGateOpen(*gate)
@@ -683,7 +683,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByVersion:
 		fmt.Fprintf(&task, "A newer version of your %s on %s, %s, handed the approval request back to you. Read it and the request's thread.", document, key, waiting.AnsweredDetail)
 	case record.AnsweredByRetraction:
-		fmt.Fprintf(&task, "Your ask %s on %s was retracted when its decision block left the spec, so no person will answer it. "+
+		fmt.Fprintf(&task, "Your ask %s on %s was retracted when its ask block left the spec, so no person will answer it. "+
 			"Read the spec as it stands; if you still need the decision, ask again.", waiting.Ask, key)
 	case record.AnsweredByClosed:
 		fmt.Fprintf(&task, "Your ask %s on %s was closed by %s, so no person will answer it. Read its thread; if you still need the decision, ask again.",

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // The test hooks let a test of several server processes (cmd/dispatch's multiprocess suite) see
@@ -109,6 +111,38 @@ func (s *Service) ResidentRooms() []string {
 	rooms := s.srv.Rooms()
 	slices.Sort(rooms)
 	return rooms
+}
+
+// AskBlockAttributes is, for each ask block of the live document artifactID, by block id, every
+// attribute but the id the block holds in the live tree (loadTree): the tree a socket's browser
+// edits, which no rendering filters, so an attribute the server writes there - `invalid`, and the
+// ones the roll window keeps in step while another build serves (rollWindowAskAttributes) - and
+// one a browser put on the block both read here. A block repeating an earlier block's id is left
+// out. A document with no stored state holds none.
+func (s *Service) AskBlockAttributes(ctx context.Context, artifactID string) (map[string]map[string]any, error) {
+	if s.hooks == nil {
+		return nil, ErrTestHooksOff
+	}
+	tree, _, err := s.loadTree(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	blocks := map[string]map[string]any{}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		if _, repeated := blocks[id]; node.Type != "ask" || repeated {
+			return true
+		}
+		attributes := make(map[string]any, len(node.Attrs))
+		for name, value := range node.Attrs {
+			if name != pmdoc.BlockIDAttr {
+				attributes[name] = value
+			}
+		}
+		blocks[id] = attributes
+		return true
+	})
+	return blocks, nil
 }
 
 // RoomCounters reads what this process did with artifactID's rooms and owed settlement since it

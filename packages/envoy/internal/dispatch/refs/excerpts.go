@@ -218,12 +218,29 @@ func excerptColumns(excerpts map[Target]model.GraphExcerpt) (kinds, ids, blockID
 // reconciliation does once, in the first pass each process runs. Every build since 0092 records
 // its excerpts in each version write, so no build a deploy replaces leaves one now.
 // It reads refs through refs_to alone.
-func StoredExcerpts(ctx context.Context, q Queryer, toKind, toID string) (map[string]model.GraphExcerpt, error) {
+//
+// It answers for who: a citing document who may not see stores no excerpt here, and nor does a
+// mention whose excerpt is a block who may not see, so its text is never answered and the route
+// shows the document's name as it does for a mention with no excerpt. The citing document is
+// read by its uuid through artifacts' primary key, since the store keys it by ref_key.
+//
+// The node is compared as values Postgres reads once, before the read, `(select $1::text)` and
+// `(select $2::text)`, for the reason an inbound read of the graph compares its far end so
+// (readEdgeRows): the plan made for the node in hand is then the plan made for any node, and
+// Postgres keeps it from the sixth execution on. Bound as $1 and $2, the plan made for a node
+// outside the most common values of refs.to_id was costed below the generic plan, whose estimate
+// is the average over every node, so the read of such a node was planned again on every
+// execution: 0.9 to 1.6 ms of planning against 0.3 ms to run, over the read-cost corpus, for a node
+// that missed that list by the luck of the sample (check c-read-cost).
+func StoredExcerpts(ctx context.Context, q Queryer, who model.Actor, toKind, toID string) (map[string]model.GraphExcerpt, error) {
 	rows, err := q.Query(ctx, `
-		select from_id, coalesce(excerpt_block_id, ''), excerpt_text from refs
-		where to_kind = $1 and to_id = $2 and from_kind = 'artifact'
-		  and excerpt_text is not null and excerpt_version is not null
-	`, toKind, toID)
+		select r.from_id, coalesce(r.excerpt_block_id, ''), r.excerpt_text from refs r
+		join artifacts a on a.id = r.from_id::uuid
+		where r.to_kind = (select $1::text) and r.to_id = (select $2::text) and r.from_kind = 'artifact'
+		  and r.excerpt_text is not null and r.excerpt_version is not null
+		  and `+VisibleKind("artifact", "a.ref_key", "$3")+`
+		  and `+VisibleKind("block", `a.ref_key || '#' || r.excerpt_block_id`, "$3")+`
+	`, toKind, toID, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read reference excerpts: %w", err)
 	}

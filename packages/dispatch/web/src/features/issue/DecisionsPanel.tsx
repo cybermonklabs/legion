@@ -6,10 +6,9 @@ import { api } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
-  Decision,
+  DecisionEntry,
   DecisionLink,
   DisplayTree,
-  IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -27,16 +26,37 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { issueDecisionsQuery } from "../doc/spec-marks";
+import { decisionBlockId, decisionDocumentId } from "../issue-page/decision-review";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
+import { markdownClassName } from "../refs/markdown-engine";
+import {
+  buildIssuePath,
+  buildReferencePath,
+  documentItemPath,
+  parseDispatchReference,
+} from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { ownTree, ownWords, wordsOf } from "./decision-text";
 
-/** The word that opens the paragraph the server reads as a decision's doubt
- *  (`api/decisions.go`'s `unsurePrefix`). */
+/** The word that opens a paragraph a decision's words give as its doubt, which the card draws
+ *  with the unsure accent. */
 const UNSURE_PREFIX = "Unsure:";
+
+/** A decision as the cards below draw one (`entryDecision`): its name, the block it is, the asks
+ *  it answers and the spec nodes it shaped beside the entry's own words, sum and standing. */
+type DrawnDecision = Pick<
+  DecisionEntry,
+  "kept" | "kind" | "ref" | "replaced" | "text" | "text_sha256" | "text_tree" | "waiting_review"
+> & {
+  readonly asks: readonly string[];
+  readonly block_id: string;
+  readonly heading: string;
+  readonly links: readonly DecisionLink[];
+};
 
 /** One block of a decision's text below its heading, as a view draws one: the block's own text,
  *  the server's reading with that block alone in it where the answer carried one, and whether
@@ -57,43 +77,15 @@ interface DecisionBlock {
   readonly references: string;
   readonly tree: DisplayTree | undefined;
   readonly unsure: boolean;
+  /** Whether the block is drawn as the plain words it holds rather than as markdown: the one
+   *  block of an answer that chose options and wrote nothing (`entryBlocks`). */
+  readonly plain?: true;
 }
 
-/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
- *  against, since a quote names the document's text and never its markdown. The server writes
- *  one space wherever two text runs are not adjacent in the document's own positions
- *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
- *  them: the break inside a wrapped line, or the end of one list item and the start of the
- *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
- *  this walk crosses opens the space the server wrote. */
-function wordsOf(node: DisplayTree): string {
-  let words = "";
-  let apart = false;
-  const read = (current: DisplayTree): void => {
-    if (typeof current.text === "string") {
-      words += apart && words !== "" ? ` ${current.text}` : current.text;
-      apart = false;
-      return;
-    }
-    // The node's own open position, and its close once its children are read; a leaf that is no
-    // text, a hard break among them, takes the one position it is.
-    apart = true;
-    const content = current.content;
-    if (Array.isArray(content)) {
-      for (const child of content as DisplayTree[]) {
-        read(child);
-      }
-      apart = true;
-    }
-  };
-  read(node);
-  return words;
-}
-
-/** Whether a block is the decision's doubt, as the server marks one: a paragraph whose markdown
- *  starts `Unsure:` and nothing else (`api/decisions.go`'s `decisionSections`). In the reading
- *  of such a paragraph the word stands in a first child that is plain text, since a mark over
- *  it - strong, a code span, a link - would have written its own characters first. */
+/** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
+ *  nothing else. In the reading of such a paragraph the word stands in a first child that is
+ *  plain text, since a mark over it - strong, a code span, a link - would have written its own
+ *  characters first. */
 function isUnsureBlock(node: DisplayTree): boolean {
   if (node.type !== "paragraph" || !Array.isArray(node.content)) {
     return false;
@@ -133,7 +125,7 @@ function markdownBlocks(text: string): DecisionBlock[] {
  *  have been split into, already divided, so the browser splits nothing and parses nothing. A
  *  heading is the decision's own, drawn by the card above its text, or one written inside it,
  *  which the markdown split dropped too. */
-function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
+function readDecisionBlocks(decision: DrawnDecision): readonly DecisionBlock[] {
   const tree = decision.text_tree;
   const content = tree?.content;
   if (tree === undefined || !Array.isArray(content)) {
@@ -151,6 +143,63 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
       tree: { ...tree, content: [node] },
       unsure: isUnsureBlock(node),
     }));
+}
+
+/** A decision's name: the words of the first heading its content holds, else none. */
+function headingOf(tree: DisplayTree | undefined, text: string): string {
+  const content = tree?.content;
+  if (tree !== undefined && Array.isArray(content)) {
+    const heading = (content as DisplayTree[]).find((node) => node.type === "heading");
+    return heading === undefined ? "" : wordsOf(heading);
+  }
+  const line = text.split("\n").find((written) => written.startsWith("#"));
+  return line === undefined ? "" : line.replace(/^#+\s*/, "").trim();
+}
+
+/** An entry as the cards below draw a decision: an ask by its question, with the person's answer
+ *  as its text and the server's reading of that answer as its tree (`answer_tree`), or the
+ *  labels they chose where they wrote no words of their own; an agent's decision by its own
+ *  content, with the asks its `from_ask` settles. Its block is the one the read names for it
+ *  (`decisionBlockId`), and an ask on the issue itself, which stands in no block, is named by its
+ *  node. */
+function entryDecision(entry: DecisionEntry): DrawnDecision {
+  const ask = entry.node.kind === "ask";
+  const tree = ask ? entry.answer_tree : ownTree(entry.text_tree);
+  const text = ask ? (entry.answer ?? (entry.selected ?? []).join(", ")) : ownWords(entry.text);
+  return {
+    asks: ask ? [entry.node.id] : (entry.from_ask ?? []),
+    block_id: decisionBlockId(entry) ?? entry.node.id,
+    heading: entry.question ?? headingOf(tree, text),
+    kept: entry.kept,
+    kind: entry.kind,
+    links: entry.shaped ?? [],
+    ref: entry.ref,
+    replaced: entry.replaced,
+    text,
+    text_sha256: entry.text_sha256,
+    text_tree: tree,
+    waiting_review: entry.waiting_review,
+  };
+}
+
+/** The blocks of an entry's text below its heading, from the tree the server read that text into
+ *  (`readDecisionBlocks`). An ask answered by the options chosen alone is the one entry whose
+ *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
+ *  it, and it is drawn as the plain words it is, as the Answers page draws a chosen label,
+ *  rather than parsed. */
+function entryBlocks(entry: DecisionEntry, decision: DrawnDecision): readonly DecisionBlock[] {
+  if (entry.node.kind !== "ask" || entry.answer !== null) return readDecisionBlocks(decision);
+  if (decision.text === "") return [];
+  return [
+    { plain: true, references: decision.text, text: decision.text, tree: undefined, unsure: false },
+  ];
+}
+
+/** The in-app path of the node a dispatch:// address names - the node that holds an entry, which
+ *  is not always the spec - or undefined for one no route opens. */
+function nodePath(ref: string): string | undefined {
+  const route = parseDispatchReference(ref);
+  return route === undefined ? undefined : buildReferencePath(route);
 }
 
 /** The path that opens the issue's spec at `blockId`: through the spec's own document route when
@@ -230,7 +279,7 @@ function ChangeComposer({
   onDone,
   quote,
 }: {
-  decision: Decision;
+  decision: DrawnDecision;
   documentId: string;
   issueKey: string;
   onDone: () => void;
@@ -242,7 +291,7 @@ function ChangeComposer({
     inline: true,
     label: () => `Change to ${decision.heading}`,
     method: "POST",
-    // The decisions document belongs to an issue, and a comment on an issue's document is the
+    // The decision's document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
     write: (input: { body: string; quote: string }, bounds) =>
@@ -322,19 +371,35 @@ function DecisionCard({
   /** The blocks of this decision's text below its heading, read by the caller that also quotes
    *  the first of them (`readDecisionBlocks`). */
   blocks: readonly DecisionBlock[];
-  decision: Decision;
-  /** The issue's `decisions.md`, the document this text is written in, which its `#id`s name a
-   *  question block of; undefined until the issue's documents are read. */
+  decision: DrawnDecision;
+  /** The document the decision is written in, the one its node stands in, which its `#id`s name
+   *  a question block of; undefined for an ask on the issue itself. */
   documentId: string | undefined;
   issueKey: string;
   spec: Artifact | undefined;
 }): ReactNode {
   const source = textSourceOf("artifact", documentId);
+  // The name links the node that holds the decision, which is not always the spec.
+  const path = nodePath(decision.ref);
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
-      <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>{decision.heading}</h3>
+      <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>
+        {path === undefined ? (
+          decision.heading
+        ) : (
+          <Link className={`${linkText} ${linkHoverText}`} to={path}>
+            {decision.heading}
+          </Link>
+        )}
+      </h3>
       {blocks.map((block, index) =>
-        block.unsure ? (
+        block.plain ? (
+          // The labels an answer chose, drawn as a body's paragraph draws its words.
+          // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
+          <div className={`${markdownClassName} max-w-none`} key={index}>
+            <p>{block.text}</p>
+          </div>
+        ) : block.unsure ? (
           <div
             className={`border-l-2 pl-2 ${decisionUnsureAccent}`}
             data-testid="decision-unsure"
@@ -383,7 +448,7 @@ function WaitingDecision({
   spec,
 }: {
   blocks: readonly DecisionBlock[];
-  decision: Decision;
+  decision: DrawnDecision;
   documentId: string | undefined;
   isClosed: boolean;
   issueKey: string;
@@ -416,12 +481,10 @@ function WaitingDecision({
           : {
               ...view,
               // The Keep is of the text this card showed, which the server took, so it applies
-              // to the row that still holds that text. A decision's changed version is the
-              // greatest of the blocks it holds now and does not move when a block leaves it, so
-              // a row whose text changed since can carry the version the Keep was taken at.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
+              // to the entry of this node that still holds that text.
+              entries: (view.entries ?? []).map((row) =>
+                row.ref === decision.ref && row.text_sha256 === decision.text_sha256
+                  ? { ...row, kept, kept_by: kept.kept_by, waiting_review: false }
                   : row
               ),
             }
@@ -486,23 +549,13 @@ function WaitingDecision({
   );
 }
 
-function OpenQuestion({
-  ask,
-  issueKey,
-  spec,
-}: {
-  ask: IssueAskRow;
-  issueKey: string;
-  spec: Artifact | undefined;
-}): ReactNode {
+function OpenQuestion({ entry, issueKey }: { entry: DecisionEntry; issueKey: string }): ReactNode {
   const path =
-    ask.block_id === undefined || ask.block_id === null
-      ? buildIssuePath({ id: ask.id, key: issueKey, kind: "ask" })
-      : specBlockPath(issueKey, spec, ask.block_id);
+    nodePath(entry.ref) ?? buildIssuePath({ id: entry.node.id, key: issueKey, kind: "ask" });
   return (
     <li className={`rounded-lg border p-3 ${card}`}>
       <Link className={`text-sm ${linkText} ${linkHoverText}`} to={path}>
-        {ask.question}
+        {entry.question}
       </Link>
     </li>
   );
@@ -510,7 +563,8 @@ function OpenQuestion({
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  `GET /api/v1/issues/{key}/decisions`. Each decision links the spec blocks it shaped. */
+ *  the entries of `GET /api/v1/issues/{key}/decisions`. Each decision links the node that holds
+ *  it and the spec blocks it shaped. */
 export function DecisionsPanel({
   artifacts,
   isClosed,
@@ -520,22 +574,28 @@ export function DecisionsPanel({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const view = useQuery({
-    queryFn: () => api.getIssueDecisions(issueKey),
-    queryKey: ["decisions", issueKey],
-  });
+  const view = useQuery(issueDecisionsQuery(issueKey, true));
+  const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
   // Each decision beside the blocks of its text, read once per answer: a card draws them and
   // the Change composer quotes the first of them, so a block is a new object only when the
   // decisions were read again and a repaint of the tab repaints no body it already drew. The
-  // three lists below are this one reading filtered, never three readings of it.
-  const rows = useMemo(
-    () =>
-      (view.data?.decisions ?? []).map((decision) => ({
-        blocks: readDecisionBlocks(decision),
-        decision,
-      })),
-    [view.data?.decisions]
-  );
+  // three lists below are this one reading filtered, never three readings of it. An ask is a
+  // decision once a person answered it; an open one is a question, and a declined one decided
+  // nothing. Each is written in the document the read names for it, or, where it names none, the
+  // one its own address names a block of (`decisionDocumentId`).
+  const rows = useMemo(() => {
+    const documents = { artifacts, key: issueKey, primary_artifact_id: spec?.id ?? "" };
+    return (view.data?.entries ?? [])
+      .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
+      .map((entry) => {
+        const decision = entryDecision(entry);
+        // A decision a server of the release before answered names no document of its own
+        // (`withEntries`): its address is its section's heading block in the decisions document.
+        // kept for one release: compat-objects
+        const documentId = entry.document?.artifact_id ?? decisionDocumentId(documents, entry);
+        return { blocks: entryBlocks(entry, decision), decision, documentId };
+      });
+  }, [artifacts, issueKey, spec?.id, view.data?.entries]);
   if (view.isPending) {
     return <LoadingSkeleton label="Decisions loading" />;
   }
@@ -548,11 +608,8 @@ export function DecisionsPanel({
       />
     );
   }
-  const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
-  const documentId = artifacts.find(
-    (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
-  )?.id;
-  const questions = view.data.open_questions ?? [];
+  const entries = view.data.entries ?? [];
+  const questions = entries.filter((entry) => entry.answer_state === "open");
   const waiting = rows.filter((row) => row.decision.waiting_review);
   // Yours: the ones a person decided, and the agent's that the reader kept — a Keep takes a
   // decision out of "Waiting for your review", and a decision nothing holds would leave the tab.
@@ -562,47 +619,47 @@ export function DecisionsPanel({
   const replaced = rows.filter((row) => row.decision.replaced);
   return (
     <div className="space-y-4">
-      {view.data.document === null ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>This issue has no decisions.md yet.</p>
+      {entries.length === 0 ? (
+        <p className={`text-sm ${textMutedOnSurface}`}>This issue has no decisions yet.</p>
       ) : null}
       <Section empty="No open questions." title="Open questions">
-        {questions.map((ask) => (
-          <OpenQuestion ask={ask} issueKey={issueKey} key={ask.id} spec={spec} />
+        {questions.map((entry) => (
+          <OpenQuestion entry={entry} issueKey={issueKey} key={entry.ref} />
         ))}
       </Section>
       <Section empty="Nothing waits for your review." title="Waiting for your review">
-        {waiting.map(({ blocks, decision }) => (
+        {waiting.map(({ blocks, decision, documentId }) => (
           <WaitingDecision
             blocks={blocks}
             decision={decision}
             documentId={documentId}
             isClosed={isClosed}
             issueKey={issueKey}
-            key={decision.block_id}
+            key={decision.ref}
             spec={spec}
           />
         ))}
       </Section>
       <Section empty="No decisions of yours." title="Your decisions">
-        {mine.map(({ blocks, decision }) => (
+        {mine.map(({ blocks, decision, documentId }) => (
           <DecisionCard
             blocks={blocks}
             decision={decision}
             documentId={documentId}
             issueKey={issueKey}
-            key={decision.block_id}
+            key={decision.ref}
             spec={spec}
           />
         ))}
       </Section>
       <Section empty="No replaced decisions." title="Replaced">
-        {replaced.map(({ blocks, decision }) => (
+        {replaced.map(({ blocks, decision, documentId }) => (
           <DecisionCard
             blocks={blocks}
             decision={decision}
             documentId={documentId}
             issueKey={issueKey}
-            key={decision.block_id}
+            key={decision.ref}
             spec={spec}
           />
         ))}

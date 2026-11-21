@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `DESIGN_GATE_STEPS` is `criteria` and `spec`; `GATED_STEPS` and `DocumentRoleSchema` still read `decisions` from a server of the release before. The Decisions read's schema gains `entries`, whose `decided_by` is a `DecisionDecider` with an optional session `title`; `decisions_artifact_id` stays optional. The tool descriptions say ask block for a question to a person and `decision` block for an agent's decision.
+time: 2026-11-17T17:20:07.000000000Z
+custom:
+    Issue: pr4173

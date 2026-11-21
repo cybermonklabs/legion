@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -115,7 +118,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		delivered:    delivered,
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(ctx, deps, single, want)
+	_, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
@@ -123,8 +126,8 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
-	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
-	single.destinationsOf, single.mentionPending = list, mentionPending
+	to, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
@@ -477,8 +480,15 @@ func TestRunSkipsAnUnfollowedSession(t *testing.T) {
 	seedIssue(t, database, "T-1", nil)
 	askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: "session-asker"}, "Ship it?")
 	seedFollower(t, database, askID, "session-replier")
-	if removed, err := asks.Unfollow(context.Background(), database.Pool, askID, "session-asker"); err != nil || !removed {
-		t.Fatalf("unfollow: removed=%t err=%v", removed, err)
+	unfollow, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the unfollow: %v", err)
+	}
+	if unfollowed, err := asks.Unfollow(context.Background(), unfollow, askID, "session-asker", model.Actor{Kind: "session", ID: "session-asker"}, time.Now()); err != nil || !unfollowed.Removed {
+		t.Fatalf("unfollow: removed=%t err=%v", unfollowed.Removed, err)
+	}
+	if err := unfollow.Commit(context.Background()); err != nil {
+		t.Fatalf("commit the unfollow: %v", err)
 	}
 	event := appendEvent(t, database, broker, model.Event{
 		IssueKey: new("T-1"),
@@ -1916,16 +1926,40 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 	`, issueKey, authorJSON, question).Scan(&id); err != nil {
 		t.Fatalf("create ask: %v", err)
 	}
-	if err := asks.FollowAuthor(context.Background(), database.Pool, id, author); err != nil {
-		t.Fatalf("follow ask: %v", err)
+	if author.Kind != "session" || author.ID == "" {
+		return id
 	}
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
+		return err
+	})
 	return id
 }
 
 func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) {
 	t.Helper()
-	if _, err := asks.Follow(context.Background(), database.Pool, askID, sessionID); err != nil {
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
+			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+		return err
+	})
+}
+
+// inFollowTransaction runs follow in a transaction of its own and commits it: a follow writes
+// its session's node beside the follower row, and the store writes only inside a transaction.
+func inFollowTransaction(t *testing.T, database *store.Store, follow func(pgx.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the follow: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := follow(tx); err != nil {
 		t.Fatalf("follow ask: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the follow: %v", err)
 	}
 }
 

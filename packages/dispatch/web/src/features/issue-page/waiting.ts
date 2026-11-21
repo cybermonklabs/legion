@@ -24,8 +24,9 @@ import type { DocumentBlocks } from "./issue-tree";
  *
  * A decision the reader asked to change waits on its agent and is not counted
  * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
- * documents the page has read (`undefined` where it has read none), which name the decision a
- * Change was written under, as the tree reads them.
+ * documents the page has read (`undefined` where it has read none), which name the decision whose
+ * block holds the block a Change was written in, as the tree reads them. A person's decision is
+ * the answered ask, which waits for no review and is never counted here.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -41,7 +42,7 @@ export interface WaitingOnReader {
 }
 
 export function waitingOnReader(
-  issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
@@ -63,11 +64,12 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  const changes = decisionChanges(decisions, comments, issue.artifacts, documents);
+  const changes = decisionChanges(decisions, comments, issue, documents);
+  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.decisions ?? []).filter((decision) =>
+      : (decisions?.entries ?? []).filter((decision) =>
           inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };

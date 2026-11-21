@@ -196,6 +196,35 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
+/** Every document's live text (`["artifact", id, "text"]`) that holds a copy of an ask on another
+ *  document: an entry of its `asks` naming the source (`copied_from`), or, from a Dispatch of the
+ *  release before, which sends no `asks`, a `copied_from` on an ask block's opening line. A
+ *  project document's page reads a copy's source from that text (`liveAskOf`), since no route
+ *  lists a project's asks, and an answer, a resolution or a reopening of the source changes no
+ *  byte of the copy's document, so no event of that document refreshes it. Of any document, since
+ *  the key names the document by id alone; a text that holds no copy is not read again. */
+const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) => {
+    if (query.queryKey.length !== 3 || query.queryKey[2] !== "text") return false;
+    if (typeof data !== "object" || data === null) return false;
+    if ("asks" in data && Array.isArray(data.asks)) {
+      return data.asks.some(
+        (entry: unknown) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "copied_from" in entry &&
+          typeof entry.copied_from === "string"
+      );
+    }
+    return (
+      "markdown" in data &&
+      typeof data.markdown === "string" &&
+      data.markdown.includes("copied_from=")
+    );
+  },
+};
+
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
  *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
  *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
@@ -936,6 +965,15 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   }
   if (isAskEvent(event)) {
     appendAskReads(targets, event);
+    // A copy of the ask on another of the project's documents reads its source's state from that
+    // document's live text.
+    if (
+      event.type === "ask.answered" ||
+      event.type === "ask.resolved" ||
+      event.type === "ask.opened"
+    ) {
+      targets.push(LIVE_TEXTS_RENDERING_COPIES);
+    }
   }
   if (isCommentLikeEvent(event)) {
     appendCommentReads(targets, event);
@@ -1167,10 +1205,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     if (event.type === "artifact.version") {
       targets.push({ queryKey: ["artifact", event.payload.artifact_id] });
-      // The Decisions view reads two of the issue's documents - its decisions.md for the
-      // decisions and its spec for each link's target - and the event names its document by
-      // name alone, which does not say which the spec is, so every version of the issue
-      // refreshes it. The query exists only while that tab is open.
+      // The Decisions view reads every document of the issue - each one's decision blocks and
+      // the spec nodes they shaped - and the event names its document by name alone, so every
+      // version of the issue refreshes it. The query exists only while that tab is open.
       targets.push({ exact: true, queryKey: ["decisions", key] });
     } else {
       // An uploaded document is an `attached_to` edge into its issue.

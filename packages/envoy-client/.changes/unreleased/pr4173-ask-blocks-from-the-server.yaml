@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `dispatch request-approval` judges an ask block a version of this release writes by the server's read of its ask, and a copy by its source; its refusal no longer says an answer writes a version. `dispatch://KEY/decisions` and a pasted Decisions URL read as the issue. Printed labels say ask block for a question to a person. `dispatch doc-read` prints the text as the server answers it, which uploads back unchanged, and one trailer line beside `Document token:` for each answer the server's `asks` names. `dispatch doc-edit`'s insert takes `into: "block:<id>"` and writes inside that block.
+time: 2026-11-17T17:20:07.000000000Z
+custom:
+    Issue: pr4173

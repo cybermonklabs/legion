@@ -30,7 +30,7 @@ const crossProjectQuestion = "Which cache do we drop first when the backlog grow
 const crossProjectIssueSpec = "Weekly planning notes."
 
 // crossProjectQueryTexts is every text one of the five writes embeds for crossProjectQuestion.
-// An ask create, a new decision block and both forms of the related route embed the question
+// An ask create, a new ask block and both forms of the related route embed the question
 // alone; an issue create embeds its title, a newline and its document as it was stored, which
 // this maps in each shape the store may hold it (with and without the trailing newline), so the
 // create's vector is the query's whatever the serializer writes.
@@ -233,7 +233,7 @@ func askWindowsHold(t *testing.T, database *store.Store, askID, phrase string) b
 
 // A question write offers the answered question of another project, and a write that is not a
 // question offers none. The five forms the check runs in are all here: an ask create, a new
-// decision block and the POST form of the related route are questions to a person; an issue
+// ask block and the POST form of the related route are questions to a person; an issue
 // create and the GET form are not.
 //
 // Each form's answer also says it searched by meaning and keywords and lists the asking
@@ -338,7 +338,7 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 		t.Fatalf("the issue create offered %+v, want no answered question of another project", filed.OtherProjects)
 	}
 
-	// A new decision block.
+	// A new ask block.
 	checks, present := decisionBlockChecksOf(t, editDocument(t, handler, hostArtifact,
 		insertAtEnd(":::ask{#evict}\n"+crossProjectQuestion+"\n:::")))
 	if !present || len(checks) != 1 || checks[0].Suggestions == nil {
@@ -346,9 +346,9 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 	}
 	block := checks[0].Suggestions
 	if ids := crossProjectItemIDs(block.OtherProjects); !slices.Equal(ids, []string{offered}) {
-		t.Fatalf("the decision block offered %v, want %s", ids, offered)
+		t.Fatalf("the ask block offered %v, want %s", ids, offered)
 	}
-	t.Logf("measured: the ask create, the decision block and the POST form each offered the ask %s of XOTH at cosine 0.90; "+
+	t.Logf("measured: the ask create, the ask block and the POST form each offered the ask %s of XOTH at cosine 0.90; "+
 		"the issue create and the GET form offered none, both having searched by meaning and keywords and listed %s",
 		offered, target)
 }

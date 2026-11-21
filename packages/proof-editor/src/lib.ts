@@ -193,7 +193,9 @@ export interface CreateProofEditorOptions {
   renderBlock?: HostBlockRenderer;
   /** The open document's unversioned Dispatch reference (`dispatch://<ISSUE>/spec`, or
    *  `dispatch://<ISSUE or PROJECT>/artifact/<slug>`), so the typed-block commands refuse a
-   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow. */
+   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow, and the
+   *  commands and a paste refuse a typed block naming something of another issue than its own
+   *  (`otherIssueRefusal`). */
   documentRef?: string;
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
@@ -425,7 +427,7 @@ export async function createProofEditor(
     // of plugins — is an argument Milkdown accepts but its own signature cannot express.
     .use(codeBlockExtPlugins as unknown as MilkdownPlugin[])
     // Every block carries a stable blockId (see ./editor/schema/block-ids.ts).
-    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock) as unknown as MilkdownPlugin[]) : [])
+    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock, opts.documentRef) as unknown as MilkdownPlugin[]) : [])
     .use(blockIdPlugins)
     .use(history)
     .use(listener)
@@ -526,8 +528,8 @@ export async function createProofEditor(
   // mapping is populated.
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
-    // Before the shared document renders: an ask two collaborators left off its content rule
-    // must not be deleted from it (see ./ask-content.ts).
+    // Before the shared document renders: an ask or a decision two collaborators left off its
+    // content rule must not be deleted from it (see ./ask-content.ts).
     relaxAskContentCheck(ctx.get(schemaCtx));
     collabService.bindDoc(opts.ydoc);
     collabService.mergeOptions({

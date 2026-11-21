@@ -15,7 +15,7 @@ import (
 
 // An ask's question and its options' labels and descriptions share one bound, held wherever the
 // ask is written: on create, on an edit that sends options alone and is measured against the
-// question the row already holds, and in a document's decision block, where the refusal comes
+// question the row already holds, and in a document's ask block, where the refusal comes
 // back as the one every unreadable ask block gets. They are bounded together because an
 // ask.answered event carries them all at once.
 func TestAnAsksWordingIsBoundedWhereverItIsWritten(t *testing.T) {
@@ -45,7 +45,7 @@ func TestAnAsksWordingIsBoundedWhereverItIsWritten(t *testing.T) {
 	assertCapExceeded(t, "an edit sending options alone", edited, "question and options",
 		contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax, "")
 
-	// A decision block is an ask the document writes, so the same bound refuses the document's
+	// An ask block is an ask the document writes, so the same bound refuses the document's
 	// save and nothing of it is stored.
 	block := ":::ask{#big urgency=\"med\" multiple=\"false\" state=\"open\"}\n" +
 		strings.Repeat("q", contracts.DispatchEventBodyMax) + "\n\n- Ship: Release it\n:::\n"
@@ -57,13 +57,13 @@ func TestAnAsksWordingIsBoundedWhereverItIsWritten(t *testing.T) {
 	body := refused.Body.String()
 	if refused.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"INVALID_ASK_BLOCK"`) ||
 		!strings.Contains(body, `ask block \"big\" is 14 characters over the 32000-character limit on its question and options (32014/32000)`) {
-		t.Fatalf("a decision block past the bound: status=%d body=%.400s", refused.Code, body)
+		t.Fatalf("an ask block past the bound: status=%d body=%.400s", refused.Code, body)
 	}
 	text := decodeBody[struct {
 		Markdown string `json:"markdown"`
 	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice"))
 	if strings.Contains(text.Markdown, "#big") {
-		t.Fatalf("the document holds the refused decision block: %.200s", text.Markdown)
+		t.Fatalf("the document holds the refused ask block: %.200s", text.Markdown)
 	}
 }
 

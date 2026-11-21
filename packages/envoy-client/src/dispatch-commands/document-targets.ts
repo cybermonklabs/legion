@@ -348,7 +348,7 @@ export function approvalLine(
       if (documentPlaysPlan(artifact)) {
         return `${changed} - a plan review of this version records a new approval with dispatch plan-approve${content}`;
       }
-      return `${changed} - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
+      return `${changed} - request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     }
     case "changes_requested":
       return `Approval: changes requested on v${approval.version} by ${by}: ${approval.reason ?? ""}${content}`;

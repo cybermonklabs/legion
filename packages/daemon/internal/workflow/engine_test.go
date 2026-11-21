@@ -165,12 +165,12 @@ func TestAReopenedPullRequestTakesItsNewHeadAndKeepsItsReview(t *testing.T) {
 	}
 }
 
-// A spec's decisions live in a document of their own beside the spec. That document gets versions
-// of its own as the agents write decisions into it, and none of them is a change to the design a
-// person approved: the design gate is the spec's, and only the spec's own versions and reviews
-// move it. The decisions version here is above the gate's own, the one shape that would close an
-// open gate if the gate took another document's events, so the test holds the behaviour rather
-// than the arithmetic of a version too old to matter.
+// The design gate is the spec's: only the spec's own versions and reviews move it. Another
+// document of the issue gets versions of its own, and none of them is a change to the design a
+// person approved - here a decisions document an earlier release kept beside the spec, which can
+// still take a version until Dispatch's conversion retires it. Its version is above the gate's
+// own, the one shape that would close an open gate if the gate took another document's events, so
+// the test holds the behaviour rather than the arithmetic of a version too old to matter.
 func TestDecisionsDocumentLeavesDesignGateOpen(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()

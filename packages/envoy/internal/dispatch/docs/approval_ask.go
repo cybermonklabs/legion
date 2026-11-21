@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -109,15 +110,17 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // (versionWrite.settlement), or the reopen's follow of a version written while the issue was
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
-// requested_version is the version the request names) and markdown is byte for byte the stored
-// text of that version (restoresVersionText), does its requested_version move with its version,
-// quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
-// wrote back, so the text the person was asked about did not change and the request keeps its
-// turn as if it had not moved, waking nobody. A version a route writes - a named version, an
-// upload, an edit or a summary edit - moves the request to its agent whatever text it stores, as
-// every move did before the rule: the Legion daemon answers an agent's gate wait with such a
-// version's artifact.version, telling the agent the request is back on its turn, which this keeps
-// true.
+// requested_version is the version the request names), and markdown either is byte for byte the
+// stored text of that version (restoresApprovedText) or differs from it in the server-owned
+// attributes of its ask blocks alone, every ask block agreeing with its node (R10's test,
+// changesAskAttributesAlone), does its requested_version move with its version, quietly: a
+// settlement saves what the room already holds - the blocks a close and a reopen wrote back, or
+// the state a person's answer, resolve or decline wrote into the ask's block - so the text the
+// person was asked about did not change and the request keeps its turn as if it had not moved,
+// waking nobody. A version a route writes - a named version, an upload, an edit or a summary edit
+// - moves the request to its agent whatever text it stores, as every move did before the rule:
+// the Legion daemon answers an agent's gate wait with such a version's artifact.version, telling
+// the agent the request is back on its turn, which this keeps true.
 //
 // It runs in a transaction a caller joined, as every other document operation does, and in the
 // one a settlement or the block-id backfill owns, which no caller joins (Ledger): the version
@@ -130,23 +133,27 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // (recordPendingApproval), so the carry that follows in the same version write reads the request
 // as this move leaves it.
 func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) error {
-	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, serverURL)
+	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, nil, mover, nil, bySettlement, serverURL)
 }
 
-// moveApprovalAsk is MoveApprovalAsk with keptEditor, the editor a settlement on the document's
-// closed issue kept, set by a settlement's version that adds none of that editor's text and so
-// names SettlementActor as mover (versionWrite.keptEditor). A request that names a version before
-// the one this version follows was moved by none of the versions between, so each was written
-// while the issue was closed (versionWrite.closedIssue), and its move names keptEditor, as the
-// reopen's move to such a version does (FollowClosedIssueVersions). The rule takes those versions
-// to hold that editor's text; no stored version says whose text each added, so a version the close
-// alone produced, or one a settlement wrote for another edit, is read the same way. A request that
-// names the version this one follows moves over this version's text alone, in mover's name.
+// moveApprovalAsk is MoveApprovalAsk with tree, the tree markdown was rendered from where the
+// caller holds it (nil where it does not, and the keep-turn rule parses markdown when it needs a
+// tree), and keptEditor, the editor a settlement on the document's closed issue kept, set by a
+// settlement's version that adds none of that editor's text and so names SettlementActor as mover
+// (versionWrite.keptEditor). A request that names a version before the one this version follows
+// was moved by none of the versions between, so each was written while the issue was closed
+// (versionWrite.closedIssue), and its move names keptEditor, as the reopen's move to such a
+// version does (FollowClosedIssueVersions). The rule takes those versions to hold that editor's
+// text; no stored version says whose text each added, so a version the close alone produced, or
+// one a settlement wrote for another edit, is read the same way. A request that names the version
+// this one follows moves over this version's text alone, in mover's name.
 //
 // The version the keep-turn rule reads is a stored one: the request names a version written
 // before this transaction, since the one transaction that moves a request with bySettlement set
-// writes at most one version of the document (a settlement's) or none (the reopen's follow).
-func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
+// writes at most one version of the document (a settlement's) or none (the reopen's follow). The
+// rule compares with that version, the one the request names, whatever versions a closed issue's
+// settlements wrote since, which moved no request.
+func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, tree *pmdoc.Node, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
 	ask, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return err
@@ -167,8 +174,13 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	}
 	keepsTurn := false
 	if bySettlement && moved.RequestedVersion == moved.Version {
-		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
+		if keepsTurn, err = restoresApprovedText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return err
+		}
+		if !keepsTurn {
+			if keepsTurn, err = changesAskAttributesAlone(ctx, tx, artifactID, moved.Version, version.Number, markdown, tree); err != nil {
+				return err
+			}
 		}
 	}
 	documents := slices.Clone(ask.Approval.Documents)
@@ -194,7 +206,8 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // (rewriteApprovalAsk). A version move, a request with a new summary and a request that changes
 // which documents it covers all reword; none hands the request back, so each document's
 // requested_version stays as it was. The one exception is a settlement's version move that stores
-// byte for byte the text of the version the person was asked about, which moves that document's
+// byte for byte the text of the version the person was asked about, or differs from it only in the
+// server-owned attributes of its ask blocks (changesAskAttributesAlone), which moves that document's
 // requested_version with its version, quietly (MoveApprovalAsk). A move of a request that an
 // earlier version already moved since it was opened or handed back, a document's
 // requested_version below the version it named, is recorded quiet
@@ -256,7 +269,7 @@ func rewriteApprovalAsk(
 	if err != nil {
 		return err
 	}
-	reader := refs.NewReader(ctx, tx, "ask", ask.ID, serverURL)
+	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL)
 	changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		return fmt.Errorf("index approval ask: %w", err)

@@ -4,14 +4,26 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
+
+// The Decisions read reads the store alone. Its entries are held
+// by decision_entries_test.go: the order, the shaped links and their staleness, and the review state
+// a Keep moves are TestTheDecisionsReadAnswersEveryDecisionInOrder's, and a decision whose words
+// change after a Keep waiting again is TestAReadingIsAChildNodeOfTheDecisionItReads'. The Keep on a
+// decision node is TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects'. This file holds
+// the members the release before reads, the Keep on a heading of a decisions document an earlier
+// release stored, each person's last read version of a document, and the ties a first indexing
+// leaves current.
 
 // holdIt is the spec's second callout, written with its id, hold-it.
 func holdIt(body string) string {
@@ -28,345 +40,7 @@ func readIssueDecisions(t *testing.T, handler http.Handler, key string) issueDec
 	return decodeBody[issueDecisions](t, response)
 }
 
-// decisionNamed is the decision whose heading is heading, or a failure naming what the view holds.
-func decisionNamed(t *testing.T, view issueDecisions, heading string) model.Decision {
-	t.Helper()
-	for _, decision := range view.Decisions {
-		if decision.Heading == heading {
-			return decision
-		}
-	}
-	headings := make([]string, 0, len(view.Decisions))
-	for _, decision := range view.Decisions {
-		headings = append(headings, decision.Heading)
-	}
-	t.Fatalf("no decision %q; the view holds %v", heading, headings)
-	return model.Decision{}
-}
-
-// staleTargets is each spec block a decision's links mark out of date, by block id.
-func staleTargets(decision model.Decision) []string {
-	stale := []string{}
-	for _, link := range decision.Links {
-		if link.Stale {
-			stale = append(stale, link.To.BlockID)
-		}
-	}
-	return stale
-}
-
-// linkTargets is each spec block a decision links, by block id, in the order the view lists them.
-func linkTargets(decision model.Decision) []string {
-	targets := make([]string, 0, len(decision.Links))
-	for _, link := range decision.Links {
-		targets = append(targets, link.To.BlockID)
-	}
-	return targets
-}
-
-// decisionsFixture is one issue whose spec holds two linkable blocks and whose decisions.md holds
-// an agent decision linking both, a person's decision linking an answered ask and one of them, an
-// unsure decision, and a replaced one.
-type decisionsFixture struct {
-	handler   http.Handler
-	database  *store.Store
-	deps      Deps
-	issue     model.Issue
-	decisions model.Artifact
-	askID     string
-}
-
-const (
-	tableDecision   = "Store notices in a table"
-	nameDecision    = "Use the name the person gave"
-	cacheDecision   = "Keep the cache warm"
-	fileDecision    = "Store notices in a file"
-	tableParagraph  = "Chosen for the simplest storage."
-	changedTableSay = "Chosen for the simplest storage, after measuring."
-)
-
-func newDecisionsFixture(t *testing.T) decisionsFixture {
-	t.Helper()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createSpecIssue(t, handler, "CORE",
-		shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n\nOther paragraph.\n")
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
-		"question": "Which name do we use?",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("open the ask: status=%d body=%s", created.Code, created.Body.String())
-	}
-	askID := decodeBody[struct {
-		ID string `json:"id"`
-	}](t, created).ID
-	spec := "dispatch://" + issue.Key + "/spec"
-	markdown := fmt.Sprintf(`## %s
-
-%s Shapes %s#b-ship%%5Fit and %s#b-hold-it.
-
-## %s
-
-Decided in dispatch://%s/ask/%s. Shapes %s#b-hold-it.
-
-## %s
-
-Unsure: a measurement of the hit rate would change this.
-
-## Replaced
-
-### %s
-
-Replaced by the table above.
-`, tableDecision, tableParagraph, spec, spec, nameDecision, issue.Key, askID, spec, cacheDecision, fileDecision)
-	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md", markdown)
-	return decisionsFixture{handler: handler, database: database, deps: deps, issue: issue, decisions: decisions, askID: askID}
-}
-
-// specVersionCount is how many versions the issue's spec has.
-func specVersionCount(t *testing.T, database *store.Store, artifactID string) int {
-	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from artifact_versions where artifact_id = $1`, artifactID).Scan(&count); err != nil {
-		t.Fatalf("count the spec's versions: %v", err)
-	}
-	return count
-}
-
-// The view reads decisions.md field by field: each `##` section in document order, the `###`
-// sections under `## Replaced` marked replaced, a decision that mentions an ask the person's, a
-// paragraph that starts `Unsure:` marking its decision unsure, and every link to a spec block.
-// Right after the decisions are written no link is stale, and writing decisions.md wrote the spec
-// no version of its own.
-func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	specVersions := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID)
-
-	view := readIssueDecisions(t, fixture.handler, fixture.issue.Key)
-	want := "dispatch://" + fixture.issue.Key + "/artifact/" + fixture.decisions.Slug
-	if view.Document == nil || *view.Document != want {
-		t.Fatalf("document = %v, want %q", view.Document, want)
-	}
-	headings := make([]string, 0, len(view.Decisions))
-	for _, decision := range view.Decisions {
-		headings = append(headings, decision.Heading)
-	}
-	wantHeadings := []string{tableDecision, nameDecision, cacheDecision, fileDecision}
-	if fmt.Sprint(headings) != fmt.Sprint(wantHeadings) {
-		t.Fatalf("headings = %v, want %v", headings, wantHeadings)
-	}
-
-	table := decisionNamed(t, view, tableDecision)
-	if table.Kind != "agent" || table.Unsure || table.Replaced || len(table.Asks) != 0 {
-		t.Fatalf("the agent decision = %#v, want an agent decision that is neither unsure nor replaced", table)
-	}
-	if table.Kept != nil || !table.WaitingReview {
-		t.Fatalf("the agent decision's kept = %#v, waiting_review = %t, want null and true", table.Kept, table.WaitingReview)
-	}
-	if table.Ref != want+"#b-"+table.BlockID {
-		t.Fatalf("ref = %q, want %q", table.Ref, want+"#b-"+table.BlockID)
-	}
-	if table.ChangedVersion != 1 || table.ChangedAt == nil {
-		t.Fatalf("changed_version = %d, changed_at = %v, want 1 and the version's time", table.ChangedVersion, table.ChangedAt)
-	}
-	if got := fmt.Sprint(linkTargets(table)); got != "[hold-it ship_it]" && got != "[ship_it hold-it]" {
-		t.Fatalf("the agent decision's links = %v, want both spec blocks", linkTargets(table))
-	}
-	if !strings.Contains(table.Text, tableParagraph) || !strings.Contains(table.Text, "## "+tableDecision) {
-		t.Fatalf("text = %q, want the heading and its paragraph", table.Text)
-	}
-
-	name := decisionNamed(t, view, nameDecision)
-	if name.Kind != "person" || len(name.Asks) != 1 || name.Asks[0] != fixture.askID {
-		t.Fatalf("the person's decision = %#v, want kind person naming ask %s", name, fixture.askID)
-	}
-	if got := fmt.Sprint(linkTargets(name)); got != "[hold-it]" {
-		t.Fatalf("the person's decision's links = %v, want hold-it", linkTargets(name))
-	}
-	if name.WaitingReview {
-		t.Fatalf("a person's decision waits for no review: %#v", name)
-	}
-
-	cache := decisionNamed(t, view, cacheDecision)
-	if !cache.Unsure || cache.Replaced || len(cache.Links) != 0 {
-		t.Fatalf("the unsure decision = %#v, want unsure, not replaced, with no link", cache)
-	}
-
-	file := decisionNamed(t, view, fileDecision)
-	if !file.Replaced || file.WaitingReview {
-		t.Fatalf("the replaced decision = %#v, want replaced and waiting for no review", file)
-	}
-
-	for _, decision := range view.Decisions {
-		if stale := staleTargets(decision); len(stale) != 0 {
-			t.Fatalf("%q marks %v out of date right after the decisions were written", decision.Heading, stale)
-		}
-	}
-	if got := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID); got != specVersions {
-		t.Fatalf("the spec has %d versions, want %d: writing decisions.md writes the spec none", got, specVersions)
-	}
-	// The view answers each decision's text with the reading Go made of it, so the panel that
-	// lays a decision out block by block takes those blocks from this tree rather than splitting
-	// the markdown in the browser.
-	requireDisplayTree(t, fixture.handler, "/api/v1/issues/"+fixture.issue.Key+"/decisions",
-		"decisions.0.text", "decisions.0.text_tree")
-}
-
-// A link added to an existing decision is not out of date; a version that changes the decision's
-// own text makes every link it already held out of date; and a later version of one linked spec
-// block clears that link alone.
-func TestDecisionLinksGoStaleWithTheDecisionAndClearWithTheirBlock(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler, key := fixture.handler, fixture.issue.Key
-
-	// A link added to an existing decision: the paragraph that adds it is new, so the decision
-	// changed in the version that wrote it, which is the version the new pair was created in.
-	added := "Also shapes dispatch://" + key + "/spec#b-ship%5Fit."
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "insert", "markdown": added, "before": "## " + cacheDecision},
-	})
-	name := decisionNamed(t, readIssueDecisions(t, handler, key), nameDecision)
-	for _, link := range name.Links {
-		if link.To.BlockID == "ship_it" && link.Stale {
-			t.Fatalf("the link a version added is out of date: %#v", link)
-		}
-	}
-
-	// A version that changes the agent decision's own text: both links it already held are out of
-	// date, the spec not having changed since.
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "replace", "find": tableParagraph, "with": changedTableSay},
-	})
-	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if got := len(staleTargets(table)); got != 2 {
-		t.Fatalf("after the decision changed its links mark %v out of date, want both spec blocks", staleTargets(table))
-	}
-
-	// A later version of one of those spec blocks clears its link alone.
-	editSpec(t, handler, key, []map[string]any{{"op": "replace", "find": "Ship it.", "with": "Ship it, soon."}})
-	table = decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if got := fmt.Sprint(staleTargets(table)); got != "[hold-it]" {
-		t.Fatalf("after the spec block changed the decision marks %v out of date, want hold-it alone", staleTargets(table))
-	}
-}
-
-// A `#` heading after a decision ends it, as the block walk ends it, so text under that heading
-// is no part of the decision and changing it marks nothing; and a heading the document carries
-// twice - a decision made again after a replaced one of the same name - still names each of its
-// decisions, so the live one's links go out of date with its own text.
-func TestTheVersionCutReadsTheSameDecisionsAsTheBlockWalk(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler, key := fixture.handler, fixture.issue.Key
-
-	// A `#` heading and a paragraph written after the agent decision, before the next one.
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "insert", "markdown": "# Notes\n\nA note.", "before": "## " + nameDecision},
-	})
-	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if strings.Contains(table.Text, "A note.") {
-		t.Fatalf("the `#` heading did not end the decision: %q", table.Text)
-	}
-	if stale := staleTargets(table); len(stale) != 0 {
-		t.Fatalf("a `#` heading written after the decision marks %v out of date", stale)
-	}
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "replace", "find": "A note.", "with": "A changed note."},
-	})
-	if table = decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision); len(staleTargets(table)) != 0 {
-		t.Fatalf("text under the `#` heading marks %v out of date", staleTargets(table))
-	}
-
-	// The same heading under `## Replaced`: the document now carries it twice, and the live
-	// decision's own change still marks the blocks it links.
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "insert", "markdown": "### " + tableDecision + "\n\nThe file store we tried first.", "after": "## Replaced"},
-	})
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "replace", "find": tableParagraph, "with": changedTableSay},
-	})
-	view := readIssueDecisions(t, handler, key)
-	live := view.Decisions[0]
-	if live.Heading != tableDecision || live.Replaced {
-		t.Fatalf("the document's first decision = %#v, want the live %q", live, tableDecision)
-	}
-	if got := len(staleTargets(live)); got != 2 {
-		t.Fatalf("beside a replaced decision of its own heading the live one marks %v out of date, want both spec blocks",
-			staleTargets(live))
-	}
-}
-
-// Keep records a person's agreement with the text they read, which stops the decision waiting for
-// review; a later change of the decision asks for review again, and a Keep that carries the text
-// before that change is refused. A bearer may not keep, and a block that is no decision heading
-// is not a target.
-func TestKeepRecordsAgreementUntilTheDecisionChanges(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler, key := fixture.handler, fixture.issue.Key
-	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-
-	keepPath := "/api/v1/artifacts/" + fixture.decisions.ID + "/blocks/" + table.BlockID + "/keep"
-	kept := dispatchRequest(t, handler, http.MethodPost, keepPath,
-		map[string]any{"text_sha256": table.TextSHA256}, "alice")
-	if kept.Code != http.StatusOK {
-		t.Fatalf("keep: status=%d body=%s", kept.Code, kept.Body.String())
-	}
-	keep := decodeBody[model.DecisionKeep](t, kept)
-	if keep.BlockID != table.BlockID || keep.ChangedVersion != table.ChangedVersion || keep.KeptBy != "alice" {
-		t.Fatalf("keep = %#v, want %s at version %d by alice", keep, table.BlockID, table.ChangedVersion)
-	}
-	after := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if after.Kept == nil || after.Kept.ChangedVersion != table.ChangedVersion || after.WaitingReview {
-		t.Fatalf("after Keep the decision = %#v, want it kept and waiting for no review", after)
-	}
-
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "replace", "find": tableParagraph, "with": changedTableSay},
-	})
-	changed := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if changed.Kept == nil || !changed.WaitingReview {
-		t.Fatalf("after the decision changed it = %#v, want it kept at the older version and waiting for review", changed)
-	}
-
-	// The Keep of the text the person read before that change is refused, and writes nothing: a
-	// Keep that stood would record an agreement with words nobody read.
-	stale := dispatchRequest(t, handler, http.MethodPost, keepPath,
-		map[string]any{"text_sha256": table.TextSHA256}, "alice")
-	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "DECISION_CHANGED") {
-		t.Fatalf("a Keep of the text before the change: status=%d body=%s, want 409 DECISION_CHANGED",
-			stale.Code, stale.Body.String())
-	}
-	if again := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision); !again.WaitingReview {
-		t.Fatalf("the refused Keep was recorded: %#v", again)
-	}
-	keepBlock(t, handler, fixture.decisions.ID, changed.BlockID, changed.TextSHA256)
-	if now := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision); now.WaitingReview {
-		t.Fatalf("after a Keep of the text as it stands the decision = %#v, want it kept", now)
-	}
-
-	// A Keep is the person's own agreement, so the route needs the person scope: the deployment's
-	// shared token holds none and is refused, naming it.
-	bearer := sessionRequest(t, handler, http.MethodPost, keepPath, map[string]any{"actor": sessionActor()})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
-		t.Fatalf("a bearer's keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
-	}
-
-	blocks := blockIDsByText(t, handler, fixture.decisions.ID)
-	paragraph := blocks[changedTableSay+" Shapes dispatch://"+key+"/spec#b-ship%5Fit and dispatch://"+key+"/spec#b-hold-it."]
-	if paragraph == "" {
-		t.Fatalf("the decision's paragraph has no block id; blocks = %v", blocks)
-	}
-	notHeading := dispatchRequest(t, handler, http.MethodPost,
-		"/api/v1/artifacts/"+fixture.decisions.ID+"/blocks/"+paragraph+"/keep",
-		map[string]any{"text_sha256": table.TextSHA256}, "alice")
-	if notHeading.Code != http.StatusNotFound || !strings.Contains(notHeading.Body.String(), "TARGET_NOT_FOUND") {
-		t.Fatalf("keep on a block that is no decision heading: status=%d body=%s, want 404 TARGET_NOT_FOUND",
-			notHeading.Code, notHeading.Body.String())
-	}
-}
-
-// keepBlock is a person's Keep of the decision that heading block opens, at the text sum the
-// view served them.
+// keepBlock is a person's Keep of the decision at blockID, at the text sum the read served them.
 func keepBlock(t *testing.T, handler http.Handler, artifactID, blockID, sum string) model.DecisionKeep {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodPost,
@@ -378,99 +52,220 @@ func keepBlock(t *testing.T, handler http.Handler, artifactID, blockID, sum stri
 	return decodeBody[model.DecisionKeep](t, response)
 }
 
-// A kept decision whose text changes without its changed version moving waits for review again,
-// and the spec blocks it linked are out of date. The version is the greatest of the blocks the
-// decision holds now, so a block taken out of it, and one moved from it into another decision,
-// leave both decisions' versions where they were while their text changed: the text, not the
-// version, is what Keep records and what the out-of-date rule reads.
-func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler, key, id := fixture.handler, fixture.issue.Key, fixture.decisions.ID
+// oldMembersSpec is the spec of the old members' test: one requirement, an ask that shaped it,
+// which bob answers, and an ask nobody answers.
+const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transport.\n:::\n\n" +
+	":::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://CORE-1/spec#b-r1\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n" +
+	":::ask{#a2 urgency=\"low\" multiple=\"false\"}\nWhich region first?\n\n- East: Near the team\n- West: Near the users\n:::\n"
 
-	// A paragraph written into the agent decision: its text changed after it linked both spec
-	// blocks, so both are out of date, and a Keep agrees with the text as it now stands.
-	const measured = "Measured against the file store."
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "insert", "markdown": measured, "before": "## " + nameDecision},
+// The Decisions read's old members answer from the store for one release, for a page of the
+// release before. `decisions` answers each decision node
+// and each answered ask in model.Decision's shape: kind `agent` for a `decision` block and
+// `person` for an answered ask, links from their `shaped` tuples, waiting_review from the node, and
+// no entry for an open ask. `document` answers null while the issue holds no decisions document.
+// With one an earlier release stored standing, `document` answers its address and the issue's
+// `decisions_artifact_id` its id, found by its slug when its role is null, and none of its
+// sections reaches `decisions`. Once it is retired, `document` answers null and
+// `decisions_artifact_id` "".
+func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", oldMembersSpec)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the seeded issue is %s, want CORE-1, which the answered ask's shaped link names", issue.Key)
+	}
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	settleIssue(t, documents, issue.Key)
+	answered, open := blockAskID(t, handler, issue.Key, "a1"), blockAskID(t, handler, issue.Key, "a2")
+	answerDecisionBlock(t, handler, answered, "bob", []string{"REST"}, "REST, plain HTTP.", nil)
+	agentEdit(t, handler, spec.id, latestVersion(t, database, spec.id).Number+1, map[string]string{
+		"op": "insert", "after": "end",
+		"markdown": ":::decision{#d1 shaped=\"dispatch://CORE-1/spec#b-r1\"}\nWe ship one region first.\n:::\n",
 	})
-	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if got := fmt.Sprint(staleTargets(table)); got != "[hold-it ship_it]" && got != "[ship_it hold-it]" {
-		t.Fatalf("after a block joined it the decision marks %v out of date, want both spec blocks",
-			staleTargets(table))
-	}
-	keepBlock(t, handler, id, table.BlockID, table.TextSHA256)
-	if kept := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision); kept.WaitingReview {
-		t.Fatalf("after the Keep the decision = %#v, want it waiting for no review", kept)
-	}
 
-	// The paragraph taken out again: the decision's text is the text it linked those blocks
-	// with, so neither is out of date any more, while the Keep, which agreed with the
-	// paragraph, no longer holds - and the decision's changed version moved for neither.
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "delete", "find": measured},
-	})
-	removed := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
-	if strings.Contains(removed.Text, measured) {
-		t.Fatalf("the paragraph is still in the decision: %q", removed.Text)
-	}
-	if removed.Kept == nil || removed.Kept.ChangedVersion < removed.ChangedVersion {
-		t.Fatalf("the removal moved the decision's changed version: kept = %#v, decision = %#v",
-			removed.Kept, removed)
-	}
-	if !removed.WaitingReview {
-		t.Fatalf("after a block left it the decision = %#v, want it waiting for review", removed)
-	}
-	if stale := staleTargets(removed); len(stale) != 0 {
-		t.Fatalf("the decision's text is what it linked those blocks with, and it marks %v", stale)
-	}
-
-	// Both decisions kept as they now stand, then the agent decision's paragraph moved into the
-	// unsure one: no block of either changed, so neither changed version moves.
-	view := readIssueDecisions(t, handler, key)
-	table = decisionNamed(t, view, tableDecision)
-	cache := decisionNamed(t, view, cacheDecision)
-	keepBlock(t, handler, id, table.BlockID, table.TextSHA256)
-	keepBlock(t, handler, id, cache.BlockID, cache.TextSHA256)
-	blocks := blockIDsByText(t, handler, id)
-	paragraph := blocks[tableParagraph+" Shapes dispatch://"+key+"/spec#b-ship%5Fit and dispatch://"+key+"/spec#b-hold-it."]
-	if paragraph == "" {
-		t.Fatalf("the decision's paragraph has no block id; blocks = %v", blocks)
-	}
-	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
-		{"op": "move", "block": paragraph, "before": "## Replaced"},
-	})
-	moved := readIssueDecisions(t, handler, key)
-	left := decisionNamed(t, moved, tableDecision)
-	joined := decisionNamed(t, moved, cacheDecision)
-	if strings.Contains(left.Text, tableParagraph) || !strings.Contains(joined.Text, tableParagraph) {
-		t.Fatalf("the move left the paragraph where it was: %q and %q", left.Text, joined.Text)
-	}
-	for _, decision := range []model.Decision{left, joined} {
-		if decision.Kept == nil || decision.Kept.ChangedVersion < decision.ChangedVersion {
-			t.Fatalf("the move moved %q's changed version: kept = %#v, decision = %#v",
-				decision.Heading, decision.Kept, decision)
+	byRef := func(view issueDecisions) map[string]model.Decision {
+		decisions := make(map[string]model.Decision, len(view.Decisions))
+		for _, decision := range view.Decisions {
+			decisions[decision.Ref] = decision
 		}
-		if !decision.WaitingReview {
-			t.Fatalf("after the move %q = %#v, want it waiting for review", decision.Heading, decision)
+		return decisions
+	}
+	agentRef, personRef := "dispatch://CORE-1/spec#b-d1", "dispatch://CORE-1/ask/"+answered
+	requireOld := func(when string, view issueDecisions) {
+		t.Helper()
+		decisions := byRef(view)
+		agent, person := decisions[agentRef], decisions[personRef]
+		if len(view.Decisions) != 2 || agent.Kind != "agent" || person.Kind != "person" {
+			t.Fatalf("%s the old decisions member = %s, want the decision %s (agent) and the answered ask %s (person) and nothing else",
+				when, entryJSON(t, view.Decisions), agentRef, personRef)
+		}
+		if _, listed := decisions["dispatch://CORE-1/ask/"+open]; listed {
+			t.Fatalf("%s the old decisions member lists the open ask %s", when, open)
+		}
+		for _, decision := range []model.Decision{agent, person} {
+			if len(decision.Links) != 1 || decision.Links[0].To.ID != spec.address("r1") {
+				t.Errorf("%s %s answers the links %s, want one, to %s, from its shaped tuple",
+					when, decision.Ref, entryJSON(t, decision.Links), spec.address("r1"))
+			}
+		}
+		if !agent.WaitingReview || person.WaitingReview || agent.TextSHA256 != decisionread.TextSum(agent.Text) {
+			t.Errorf("%s the decision waits %t and the answered ask %t, want true and false, and the decision's sum is its words'",
+				when, agent.WaitingReview, person.WaitingReview)
+		}
+		for _, entry := range view.Entries {
+			if entry.Node.Kind == graphstore.KindAsk && entry.Node.ID == open {
+				return
+			}
+		}
+		t.Errorf("%s the entries hold no open ask %s: the old member leaves out what entries keep", when, open)
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	requireOld("with no decisions document", view)
+	if view.Document != nil {
+		t.Fatalf("the old document member = %q with no decisions document, want null", *view.Document)
+	}
+	// A decision's text carries the tree a reader is shown, for a caller that asked for the trees.
+	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions", "decisions.0.text", "decisions.0.text_tree")
+
+	standing := seedDecisionsDocument(t, database, documents, issue.Key,
+		"# Decisions\n\n## Transport\n\nHTTP it is.\n\n## Regions\n\nOne region first. This shapes dispatch://CORE-1/spec#b-r1.\n")
+	if _, err := database.Pool.Exec(ctx, `update artifacts set role = null where id = $1`, standing); err != nil {
+		t.Fatalf("clear the stored role: %v", err)
+	}
+	view = readIssueDecisions(t, handler, issue.Key)
+	requireOld("while a decisions document stands", view)
+	if want := "dispatch://CORE-1/artifact/decisions-md"; view.Document == nil || *view.Document != want {
+		t.Fatalf("the old document member = %v while the decisions document stands, want %s", view.Document, want)
+	}
+	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != standing {
+		t.Fatalf("the issue read names decisions_artifact_id %q while the roleless decisions document stands, want %s, found by its slug",
+			named.DecisionsArtifactID, standing)
+	}
+
+	retireTestDocument(t, database, standing)
+	view = readIssueDecisions(t, handler, issue.Key)
+	requireOld("once the decisions document is retired", view)
+	if view.Document != nil {
+		t.Fatalf("the old document member = %q once the decisions document is retired, want null", *view.Document)
+	}
+	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != "" {
+		t.Fatalf("the issue read names decisions_artifact_id %q once the decisions document is retired, want \"\"", named.DecisionsArtifactID)
+	}
+}
+
+// An issue that holds two decisions documents as decisions_documents() reads them - one an earlier
+// release gave the decisions role under another slug, and one with no role under the decisions
+// document's slug - names the same one in both old members: the oldest, by created_at and then id
+// (refs.DecisionsDocumentOf), in the issue read's decisions_artifact_id as in the Decisions read's
+// document. The younger is given the lower id, so a rule that took the lowest id would name it.
+func TestBothOldMembersNameTheOldestOfAnIssuesTwoDecisionsDocuments(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const older, younger = "ffffffff-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, role, created_by, created_at)
+		select v.id::uuid, i.key, i.project_key, v.slug, v.name, 'doc', false, v.role,
+		       '{"kind":"session","id":"`+decidingSession+`"}', v.at
+		from issues i, (values ($2, 'decided-md', 'decided.md', 'decisions', now() - interval '1 hour'),
+		                       ($3, 'decisions-md', 'decisions.md', null, now())) v (id, slug, name, role, at)
+		where i.key = $1
+	`, issue.Key, older, younger); err != nil {
+		t.Fatalf("store the issue's two decisions documents: %v", err)
+	}
+	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != older {
+		t.Fatalf("the issue read names decisions_artifact_id %q, want %s, the older of its two decisions documents", named.DecisionsArtifactID, older)
+	}
+	if view := readIssueDecisions(t, handler, issue.Key); view.Document == nil || !strings.HasSuffix(*view.Document, "/artifact/decided-md") {
+		t.Fatalf("the Decisions read's document = %v, want the address of decided-md, the document decisions_artifact_id names", view.Document)
+	}
+}
+
+// Until the decisions step retires it, a heading of a decisions document an earlier release stored
+// is kept as the release before kept it: the Keep reads the
+// section through the step's section reader, whose text runs from the heading to its last block, so
+// its sum is the one that release served. A Keep of another sum is 409 DECISION_CHANGED and writes
+// nothing; the Keep of the sum answers 200 and writes the decision_keeps row the conversion carries
+// onto the node. A heading under `## Replaced`, a block that opens no section and a bearer's Keep are
+// refused. Once the document is retired, its heading is 404 TARGET_NOT_FOUND. A heading's node is
+// a plain block and no decision, so the Keep's read of a decision node leaves it out without
+// logging it as a decision whose stored value does not parse.
+func TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	logs := captureLogs(t)
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	decisions := seedDecisionsDocument(t, database, deps.Docs.(*docs.Service), issue.Key,
+		"# Decisions\n\n## Transport\n\nHTTP it is.\n\n## Replaced\n\n### Files\n\nReplaced by HTTP.\n")
+	blocks := blockIDsByText(t, handler, decisions)
+	transport, files, paragraph := blocks["## Transport"], blocks["### Files"], blocks["HTTP it is."]
+	if transport == "" || files == "" || paragraph == "" {
+		t.Fatalf("the decisions document's blocks = %v, want the two headings and the paragraph", blocks)
+	}
+	keepPath := func(block string) string { return "/api/v1/artifacts/" + decisions + "/blocks/" + block + "/keep" }
+	keeps := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from decision_keeps where artifact_id = $1`, decisions).Scan(&count); err != nil {
+			t.Fatalf("count the Keeps: %v", err)
+		}
+		return count
+	}
+	sum := decisionread.TextSum("## Transport\n\nHTTP it is.")
+
+	changed := dispatchRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": decisionread.TextSum("## Transport\n\nHTTP/2 it is.")}, "alice")
+	if changed.Code != http.StatusConflict || !strings.Contains(changed.Body.String(), "DECISION_CHANGED") || keeps() != 0 {
+		t.Fatalf("a Keep of words the section does not hold: status=%d body=%s, %d Keeps; want 409 DECISION_CHANGED and none written",
+			changed.Code, changed.Body.String(), keeps())
+	}
+	keep := keepBlock(t, handler, decisions, transport, sum)
+	// The sum is no part of the Keep's wire shape (model.DecisionKeep), so it is read off the row.
+	var keptSum string
+	if err := database.Pool.QueryRow(ctx, `select text_sha256 from decision_keeps where artifact_id = $1 and block_id = $2`,
+		decisions, transport).Scan(&keptSum); err != nil {
+		t.Fatalf("read the Keep's row: %v", err)
+	}
+	if keep.BlockID != transport || keptSum != sum || keep.KeptBy != "alice" || keeps() != 1 {
+		t.Fatalf("the Keep of the heading = %#v with the row's sum %q, %d Keeps; want %s kept by alice at %s, one decision_keeps row",
+			keep, keptSum, keeps(), transport, sum)
+	}
+	for _, refusal := range []struct{ what, block string }{
+		{"a heading under `## Replaced`", files},
+		{"a block that opens no section", paragraph},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPost, keepPath(refusal.block), map[string]any{"text_sha256": sum}, "alice")
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "TARGET_NOT_FOUND") {
+			t.Fatalf("a Keep on %s: status=%d body=%s, want 404 TARGET_NOT_FOUND", refusal.what, response.Code, response.Body.String())
 		}
 	}
-	// The links moved with the paragraph, and both spec blocks are out of date under the
-	// decision that holds them now: the decision they joined changed when they arrived.
-	if got := fmt.Sprint(staleTargets(joined)); got != "[hold-it ship_it]" && got != "[ship_it hold-it]" {
-		t.Fatalf("the decision the paragraph joined marks %v out of date, want both spec blocks",
-			staleTargets(joined))
+	bearer := sessionRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": sum, "actor": sessionActor()})
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
+		t.Fatalf("a bearer's Keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
 	}
-	if len(left.Links) != 0 {
-		t.Fatalf("the decision the paragraph left still holds %v", linkTargets(left))
+	if warned := logs.Lines("a decision whose stored value does not parse"); warned != "" {
+		t.Fatalf("the Keeps of the decisions document's blocks logged:\n%swant no parse failure: a heading's node is no decision", warned)
+	}
+
+	retireTestDocument(t, database, decisions)
+	retired := dispatchRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": sum}, "alice")
+	if retired.Code != http.StatusNotFound || !strings.Contains(retired.Body.String(), "TARGET_NOT_FOUND") {
+		t.Fatalf("a Keep on a heading of the retired document: status=%d body=%s, want 404 TARGET_NOT_FOUND",
+			retired.Code, retired.Body.String())
 	}
 }
 
 // Each person's last read version of a document: null before they read it, the version they
 // recorded after, and a bearer may read neither route.
 func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler := fixture.handler
-	path := "/api/v1/me/documents/" + fixture.decisions.ID + "/read"
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n")
+	path := "/api/v1/me/documents/" + issue.PrimaryArtifactID + "/read"
 
 	first := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
 	if first.Code != http.StatusOK {
@@ -509,23 +304,62 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 	}
 }
 
-// A decisions.md whose links the block index wrote at its first indexing marks nothing out of
-// date, in both cases of a first indexing: the document's first version, written while it has no
-// block rows, and the backfill over a document no block-aware build indexed.
-func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
-	fixture := newDecisionsFixture(t)
-	handler, database, key := fixture.handler, fixture.database, fixture.issue.Key
+// firstIndexingSpec is the spec of TestAFirstIndexingMarksNothingOutOfDate: two requirements, a
+// decision that shapes both and one that shapes the second. The issue the test creates is CORE-1,
+// the first of its project.
+const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n" +
+	":::decision{#d1 shaped=\"dispatch://CORE-1/spec#b-r1 dispatch://CORE-1/spec#b-r2\"}\nOne transport for both.\n:::\n\n" +
+	":::decision{#d2 shaped=\"dispatch://CORE-1/spec#b-r2\"}\nThe second ships first.\n:::\n"
 
-	// The document's first version, written while it had no block rows: the fixture's own upload.
-	for _, decision := range readIssueDecisions(t, handler, key).Decisions {
-		if stale := staleTargets(decision); len(stale) != 0 {
-			t.Fatalf("the first version's %q marks %v out of date", decision.Heading, stale)
+// A first indexing of a document holding decisions marks no tie out of date, in both cases of a
+// first indexing: the document's first version, written while it has no block rows, and the
+// backfill over a document no block-aware build indexed. The spec's decisions shape its
+// requirements in the version that writes them all, so no requirement's text changed after a
+// tie, and a later version that leaves every requirement and decision alone is one more version
+// the backfill walks. Each link is judged on the change the index recorded for its requirement,
+// so it holds text_changed_at, and reads stale false.
+func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "A first indexing", "actor": sessionActor(), "spec": firstIndexingSpec,
+	})
+	requireAgentWrite(t, "the agent's issue", created, http.StatusCreated)
+	issue := decodeBody[model.Issue](t, created)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the seeded issue is %s, want CORE-1, which the decisions' shaped links name", issue.Key)
+	}
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	ties := map[string][]string{
+		"d1": {spec.address("r1"), spec.address("r2")},
+		"d2": {spec.address("r2")},
+	}
+	judge := func(when string) {
+		t.Helper()
+		entries := readEntries(t, handler, issue.Key)
+		for _, block := range []string{"d1", "d2"} {
+			entry := requireEntry(t, entries, "the decision "+block, refs.BlockNodeKind+":"+spec.address(block))
+			if targets := shapedTargets(entry); !slices.Equal(targets, ties[block]) {
+				t.Fatalf("%s the decision %s answers the links %v, want %v", when, block, targets, ties[block])
+			}
+			for _, link := range entry.Shaped {
+				if link.TextChangedAt == nil || link.Stale {
+					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded and stale false",
+						when, link.To.ID, block, entryJSON(t, link))
+				}
+			}
 		}
 	}
 
+	// The document's first version, written while it had no block rows: the create's own write
+	// indexes it.
+	requireIndexedAt(t, database, spec.id, 1)
+	judge("at the first version,")
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph no decision shapes."}})
+
 	// The backfill: the state migration 0121 left a document no block-aware build indexed, then
 	// one reconciliation tick, as the block index's own tests run it.
-	ctx := context.Background()
 	for _, statement := range []string{
 		`delete from block_refs where artifact_id = $1`,
 		`delete from document_blocks where artifact_id = $1`,
@@ -533,37 +367,28 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 		`delete from document_indexed_versions where artifact_id = $1`,
 		`update document_block_versions set version = null where artifact_id = $1`,
 	} {
-		if _, err := database.Pool.Exec(ctx, statement, fixture.decisions.ID); err != nil {
+		if _, err := database.Pool.Exec(ctx, statement, spec.id); err != nil {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	if _, err := fixture.deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
 		t.Fatalf("reconcile the block index: %v", err)
 	}
-	view := readIssueDecisions(t, handler, key)
-	linked := 0
-	for _, decision := range view.Decisions {
-		linked += len(decision.Links)
-		if stale := staleTargets(decision); len(stale) != 0 {
-			t.Fatalf("after the backfill %q marks %v out of date", decision.Heading, stale)
-		}
-	}
-	if linked == 0 {
-		t.Fatalf("the backfill left no link to judge: %s", asJSON(t, view))
-	}
+	requireIndexedAt(t, database, spec.id, 2)
+	judge("after the backfill,")
 }
 
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an
-// issue with no decisions.md answers them with a null document and no decisions. The two asks are
-// written in two versions, so one is older than the other: two that one settlement writes share
-// their created_at and the order between them is their ids'.
+// issue with no decisions document and no decision answers them with a null document and no
+// decisions. The two asks are written in two versions, so one is older than the other: two that one
+// settlement writes share their created_at and the order between them is their ids'.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")
 	view, _ := waitForOpenQuestions(t, handler, issue.Key, 1)
 	if view.Document != nil || len(view.Decisions) != 0 {
-		t.Fatalf("an issue with no decisions.md = %#v, want a null document and no decisions", view)
+		t.Fatalf("an issue with no decisions document and no decision = %#v, want a null document and no decisions", view)
 	}
 
 	editSpec(t, handler, issue.Key, []map[string]any{

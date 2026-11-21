@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -49,7 +50,9 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
 // route refuses its own), and so is a set past referenceTargetsMax, which is refused before
 // anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw.
+// target was deleted still has to draw. The read answers for the acting reader, as every read of
+// the graph does: a target reserved for an author who is not the reader, or at node state gone,
+// is answered gone, which is what an address nobody holds answers (refs.TargetNames).
 //
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
@@ -60,15 +63,21 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // refuse a whole batch: the page reads its batches together, so one refusal would blank the
 // name of every reference in the batch.
 //
+// It answers for the acting reader (actingReader), as every read of the graph does: a target the
+// reader may not see is answered gone, as a target nothing addresses is (refs.TargetNames), and a
+// short id is resolved among the items the reader may see alone (refs.ResolvePrefixes), so an
+// item the reader may not see makes no short id ambiguous and names none.
+//
 // A caller that sent `Dispatch-Trees: 1` is given each block's whole text as its text_tree
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	targets, err := s.referenceTargets(r, trees)
+	targets, err := s.referenceTargets(r, who, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -95,9 +104,10 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // a caller matching the members against the strings it sent finds none of them under a
 // reference this read had rewritten.
 //
-// trees is the request's own reader, nil for a caller that asked for no tree, which then reads
-// no block's text at all.
-func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
+// who is the reader the read answers for, whose visibility predicates both the short ids and the
+// names are read under. trees is the request's own reader, nil for a caller that asked for no
+// tree, which then reads no block's text at all.
+func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
 	raw := r.URL.Query()["ref"]
 	if len(raw) == 0 {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "ref is required, once per reference to resolve")
@@ -113,7 +123,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		}
 		parsed[index] = ref
 	}
-	ambiguous, err := s.wholeReferences(r.Context(), parsed)
+	ambiguous, err := s.wholeReferences(r.Context(), who, parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +140,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +149,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 			answers[index].Name, answers[index].Gone = name, false
 		}
 	}
-	if err := s.blockTrees(r.Context(), answers, named, trees); err != nil {
+	if err := s.blockTrees(r.Context(), who, answers, named, trees); err != nil {
 		return nil, err
 	}
 	return answers, nil
@@ -157,8 +167,10 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 //
 // Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
 // distinct id once, in one statement per kind of item and two for the blocks of a document, so
-// a set with no short id costs no statement.
-func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (ambiguous []bool, err error) {
+// a set with no short id costs no statement. The batch reads for who, so an item who may not see
+// is no candidate for any prefix, as GET /api/v1/references reads one prefix for its reader
+// (wholeReference).
+func (s *server) wholeReferences(ctx context.Context, who model.Actor, references []text.Ref) (ambiguous []bool, err error) {
 	short := make([]refs.ShortID, len(references))
 	var asked []refs.ShortID
 	for index, ref := range references {
@@ -172,7 +184,7 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked)
 	if err != nil {
 		return nil, err
 	}
@@ -205,11 +217,19 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 // cut at refs.BlockExcerptRunes and holding a typed block's opening line. The texts are read in
 // one statement per kind of block the request names (refs.BlockTexts), beside the one per kind
 // the names cost, and no document is loaded for them: a block of a document, a comment or an ask
-// has its text read from the block index, and a block of a message has its text split again from
-// its message's body, since no table records it.
+// has its text read from the block index, a block of a message has its text split again from its
+// message's body, since no table records it, and a finding of a lens has its text read from the
+// store, through the predicate of a finding for who, the reader the names were resolved for. A
+// finding is no typed block, so no line of its text is a directive or a fence to cut: its tree is
+// of its whole text, the text the lens read answers for it, never passed to blockTextContent.
+//
+// A block is read only for a member that is not gone, and a member is not gone only where
+// refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
+// visibility predicate of its own, so that test is what keeps the text of a block the reader may
+// not see out of the answer: such a block is gone, and no text of it is read.
 //
 // answers must have stopped growing: what is registered is a pointer into each member.
-func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
+func (s *server) blockTrees(ctx context.Context, who model.Actor, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
 	if trees == nil {
 		return nil
 	}
@@ -227,17 +247,18 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if len(blocks) == 0 {
 		return nil
 	}
-	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, blocks)
+	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, who, blocks)
 	if err != nil {
 		return err
 	}
-	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
-		contents[target] = blockTextContent(whole, target.Kind == "block")
+		if target.Kind != graphstore.KindLensBlock {
+			texts[target] = blockTextContent(whole, target.Kind == "block")
+		}
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
-			trees.text(&answers[index].TextTree, contents[target])
+			trees.text(&answers[index].TextTree, texts[target])
 		}
 	}
 	return nil

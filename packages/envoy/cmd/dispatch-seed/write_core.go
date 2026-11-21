@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -127,13 +128,18 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 
 // writeIssues writes every issue, parents before children, so issues_parent_key_fkey holds on
 // each row as it lands. The search vector, the title lexemes and the embedding queue row are the
-// triggers' work, as they are on every other write.
+// triggers' work, as they are on every other write. Each batch writes its issues' nodes first, in
+// the transaction that copies their rows and in each issue's project, as the server's issue create
+// does (api's createIssue); the seed records no event of an issue, so what the node write states
+// carries the sentinel.
 func (r *seedRun) writeIssues(ctx context.Context) error {
 	issues := r.plan.issues
 	return r.inBatches(ctx, "issues", len(issues), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		rows := make([][]any, 0, to-from)
+		nodes := make([]graphstore.Node, 0, to-from)
 		for index := from; index < to; index++ {
 			issue := issues[index]
+			project := r.plan.projects[issue.Project].Key
 			var parent *string
 			if issue.Parent >= 0 {
 				parent = &issues[issue.Parent].Key
@@ -147,10 +153,14 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 				closedAt = issue.CreatedAt.Add(seedSpan / 10)
 			}
 			rows = append(rows, []any{
-				issue.Key, r.plan.projects[issue.Project].Key, issue.Number,
+				issue.Key, project, issue.Number,
 				r.plan.vocabulary.phrase(r.random, 7), issue.Status, parent, seedActor,
 				issue.CreatedAt, issue.CreatedAt, closedAt, issue.Rank, repo, int16(index % 4),
 			})
+			nodes = append(nodes, graphstore.IssueNode(issue.Key, project, seedAuthor, issue.CreatedAt))
+		}
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+			return fmt.Errorf("the issues' nodes: %w", err)
 		}
 		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, []string{
 			"key", "project_key", "number", "title", "status", "parent_key", "created_by",

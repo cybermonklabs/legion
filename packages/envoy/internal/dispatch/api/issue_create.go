@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -363,6 +364,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The spec's row and its node are dated with one time read from the database's clock under
+	// the project's owner lock this create holds (graphstore.StatementTime), as every create of a
+	// document dates them. It is read here, in the read phase, so it holds no transaction id.
+	specRef := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
+	createdAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, specRef)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var markdown string
 	if input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
 		markdown = *input.Spec
@@ -384,6 +394,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		IssueKey:      key,
 		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
 		PendingParent: parentKey,
+		Project:       input.Project,
 	})
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {
@@ -407,7 +418,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -460,6 +471,23 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issueRank := rank.Between(lastRank, "")
 
+	// The issue's node and its spec's node go in before the two rows, in one write that takes
+	// them in the store's order, each in the issue's project; what that write states waits for
+	// the issue.created event below (graphstore.QueueCaused). It is one of the create's inline
+	// writes, before the ledger's: the spec's version and block index run at Commit, and the
+	// index's projection rows name the spec's node. Both are nodes this write creates
+	// (graphstore.Created).
+	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
+		graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt)),
+		graphstore.Created(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt)),
+	}, nil)
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, issueNodes)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -507,9 +535,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(r.Context(), `
-		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, $3, 'spec', 'spec.md', 'doc', true, $4)
-	`, artifactID, key, input.Project, actorJSON); err != nil {
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ($1, $2, $3, 'spec', 'spec.md', 'doc', true, $4, $5)
+	`, artifactID, key, input.Project, actorJSON, createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -537,6 +565,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// comes before the event.
 	event, err := s.queueStampedEvent(ledger, issueOwner(key).event("issue.created", actor, payload), "artifact", artifactID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated, and what the issue's and the spec's node write stated,
+	// wait for the issue's own event, queued right after it: that event is the cause every node
+	// and tuple of both writes carries (graphstore.QueueCaused).
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, issueNodes, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

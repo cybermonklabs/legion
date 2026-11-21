@@ -95,6 +95,12 @@ jobs:
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
 
+      # A marker of a thing kept for one release can be added or moved in any file, so the check
+      # that holds every marker to packages/dispatch/e2e/acceptance/root-deletes.txt runs here, on
+      # every change. It reads text alone, so no Go test compiles for it.
+      - name: Check every thing kept for one release is listed and marked
+        run: .github/scripts/check-kept-for-one-release.sh
+
       # Biome's own rule refuses the `fireEvent` import under packages/dispatch/web/src, and a file
       # that needs it keeps one `biome-ignore` naming that file's reasons. The rule reads imports,
       # so it says nothing about a call added to a file whose exemption is already in place, which

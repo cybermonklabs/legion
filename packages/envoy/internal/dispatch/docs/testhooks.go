@@ -157,6 +157,21 @@ func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artif
 	return nil
 }
 
+// StoredTreeForTest is artifactID's document tree as its stored history holds it now: the state a
+// room loads, which every update a settlement wrote into the live document is part of once it
+// commits. Tests in package api read a settlement's repairs of the live tree through it.
+func StoredTreeForTest(ctx context.Context, database *store.Store, artifactID string) (*pmdoc.Node, error) {
+	loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("load the stored document: %w", err)
+	}
+	doc := crdt.New()
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
+		return nil, fmt.Errorf("decode the stored document: %w", err)
+	}
+	return pmdoc.Read(doc.GetXmlFragment(fragmentName))
+}
+
 // appendTextMark persists attrs, one mark, over the whole of the document's first text, so that
 // text carries the mark on every run.
 func appendTextMark(attrs crdt.Attributes) func(context.Context, *store.Store, string) error {
@@ -315,8 +330,8 @@ func (r *renderRecord) rendered() []string {
 // the render answered - the empty string for a render that failed, which is a rendering made all
 // the same. Every rendering of a whole document goes through one of its callers, so what a read
 // or a write costs in renderings is what it records. A rendering of a tree derived from a
-// document - the copy without ask blocks an approval carry compares (renderWithoutAskBlocks), a
-// single block (renderBlock) - is not one of them.
+// document - the versions an approval carry compares with their ask attributes taken off
+// (carryVerdict), a single block (renderBlock) - is not one of them.
 func countDocumentRender(markdown string) {
 	if record := documentRenders.Load(); record != nil {
 		record.record(markdown)

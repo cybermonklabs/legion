@@ -320,11 +320,11 @@ func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, frame := range []going.Event{going.Text("Nobody "), going.Text("has.")} {
-		if _, err := rig.server.appendGoingEvent(ctx, run.ID, frame); err != nil {
+		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, frame); err != nil {
 			t.Fatalf("append %s: %v", frame.Name, err)
 		}
 	}
-	if _, err := rig.server.endGoingRun(ctx, run.ID, going.End(2, 0)); err != nil {
+	if _, err := endGoingRun(ctx, rig.database.Pool, run.ID, going.End(2, 0)); err != nil {
 		t.Fatalf("end the run: %v", err)
 	}
 
@@ -413,7 +413,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		t.Fatalf("record the run: %v", err)
 	}
 	for _, frame := range []going.Event{going.Text("Nobody "), going.Text("has.")} {
-		if _, err := rig.server.appendGoingEvent(ctx, run.ID, frame); err != nil {
+		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, frame); err != nil {
 			t.Fatalf("append %s: %v", frame.Name, err)
 		}
 	}
@@ -527,7 +527,7 @@ func TestGoingStreamEndsARunWhosePodIsGone(t *testing.T) {
 	if response.Body.String() != want {
 		t.Fatalf("the stream wrote %q, want the deadline's error %q", response.Body.String(), want)
 	}
-	stored, err := rig.server.readGoingTerminalEvent(context.Background(), id)
+	stored, err := readGoingTerminalEvent(context.Background(), rig.database.Pool, id)
 	if err != nil {
 		t.Fatalf("read the stored ending: %v", err)
 	}
@@ -614,6 +614,47 @@ func TestGoingStreamRefusesAnotherOwnersPersonalToken(t *testing.T) {
 	}
 }
 
+// A run an earlier build stored keeps its asker's owner in the case that build wrote it, and no
+// backfill rewrites it, while the token that asked it now resolves with its owner canonical. The
+// stream compares the two through model.Actor.SameCredential, which reads an owner in its
+// canonical form on both sides, so the run is served to the token that asked it. The run is
+// asked through the route and its author's owner then restated under "Dana@Example.COM", in case
+// only, as such a build stored it.
+func TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner(t *testing.T) {
+	const owner, stored = "dana@example.com", "Dana@Example.COM"
+	rig := newGoingRoutesRig(t, nil)
+	dana := personalTokenOwnedBy(t, rig.database, owner, model.ScopePerson)
+
+	asked := rig.askUnder(t, dana, map[string]any{"words": "who asked this run?"})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("ask under dana's token: status=%d body=%s", asked.Code, asked.Body.String())
+	}
+	run := decodeBody[askedRun](t, asked)
+	rig.awaitTerminal(t, run.ID)
+	if moved, err := rig.database.Pool.Exec(context.Background(),
+		`update going_requests set author = jsonb_set(author, '{owner}', to_jsonb($2::text)) where id = $1::uuid`, run.ID, stored); err != nil {
+		t.Fatalf("store the run under the owner %s: %v", stored, err)
+	} else if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d run(s) with id %s, want the run", moved.RowsAffected(), run.ID)
+	}
+	recorded, err := rig.server.readGoingRequest(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("read the recorded run: %v", err)
+	}
+	if recorded.Author.Owner == nil || *recorded.Author.Owner != stored {
+		t.Fatalf("the record holds the author %+v, want the owner %s an earlier build stored", recorded.Author, stored)
+	}
+
+	response := rig.streamUnder(t, run.ID, dana)
+	if response.Code != http.StatusOK {
+		t.Fatalf("the going run asked under the owner %s answers %d to the same token's canonical owner %s, want 200", stored, response.Code, owner)
+	}
+	want := fmt.Sprintf("id: 1\nevent: %s\ndata: {\"code\":\"%s\"}\n\n", contracts.GoingEventError, contracts.GoingErrorNoModelConfigured)
+	if response.Body.String() != want {
+		t.Fatalf("the stream wrote %q, want the run's one frame %q", response.Body.String(), want)
+	}
+}
+
 // The POST refuses a credential that names nobody and records nothing. The deployment's shared
 // token resolves as {} (server.go), so the run it asked for would name no session, no person
 // and no workload, and the stream serves such a run to nobody: the model would be called and
@@ -685,10 +726,10 @@ func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
-	if _, err := rig.server.appendGoingEvent(ctx, run.ID, going.Text("Nobody has.")); err != nil {
+	if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Nobody has.")); err != nil {
 		t.Fatalf("append the answer: %v", err)
 	}
-	if _, err := rig.server.endGoingRun(ctx, run.ID, going.End(2, 0)); err != nil {
+	if _, err := endGoingRun(ctx, rig.database.Pool, run.ID, going.End(2, 0)); err != nil {
 		t.Fatalf("end the run: %v", err)
 	}
 

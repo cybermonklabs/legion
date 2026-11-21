@@ -19,6 +19,7 @@ import type {
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import type { DecisionsRead } from "../issue/decision-entries";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
 
 answerTextReadsWithTheSeededText();
@@ -42,34 +43,61 @@ function version(number: number): Version {
 
 const spec: Artifact = { ...artifact, versions: [1, 2, 3, 4].map(version) };
 
+// One decision whose `shaped` tie to p-plan was written by event 10, and p-plan's text changed in
+// a version event 12 wrote, after the tie.
 const decisions: IssueDecisions = {
-  decisions: [
+  decisions: [],
+  document: null,
+  entries: [
     {
-      asks: [],
-      block_id: "d-1",
+      answer: null,
+      answer_state: null,
+      answered_at: null,
+      answered_by: null,
       changed_at: "2026-10-04T00:00:00Z",
       changed_version: 3,
-      heading: "Ship in two steps",
+      decided_by: { id: "session-1", kind: "session" },
+      declined: false,
+      declined_note: null,
+      document: {
+        artifact_id: "choices-id",
+        block: "CORE-1/choices-md#d-1",
+        block_id: "d-1",
+        ref: "dispatch://CORE-1/artifact/choices-md",
+      },
+      from_ask: [],
       kept: null,
+      kept_by: null,
+      kept_text_sum: null,
       kind: "agent",
-      links: [
+      multiple: null,
+      node: { id: "CORE-1/choices-md#d-1", kind: "block" },
+      options: null,
+      question: null,
+      readings: [],
+      ref: "dispatch://CORE-1/artifact/choices-md#b-d-1",
+      replaced: false,
+      resolution: null,
+      selected: null,
+      shaped: [
         {
           created_at: "2026-10-01T00:00:00Z",
           created_version: 1,
-          from_block: "d-1-para",
+          event: 10,
+          from_block: "d-1",
           stale: true,
+          text_changed_event: 12,
           to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
         },
       ],
-      ref: "dispatch://CORE-1/artifact/decisions-md#b-d-1",
-      replaced: false,
-      text: "Ship it in two steps.",
+      text: ":::decision{#d-1}\nShip it in two steps.\n:::\n",
       text_sha256: "sum-d-1",
-      unsure: false,
+      uncertainty: null,
+      uncertainty_reason: null,
+      urgency: null,
       waiting_review: true,
     },
   ],
-  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
 };
 
@@ -125,9 +153,9 @@ function readOf(version: number | null): DocumentRead {
   };
 }
 
-function stubReads(readVersion: number | null) {
+function stubReads(readVersion: number | null, decisionsRead: IssueDecisions = decisions) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(blocks);
@@ -230,6 +258,65 @@ test("with no read version the Spec tab shows no line and marks no changed block
       ])
     );
     expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    reads.restore();
+  }
+});
+
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, each with the links it shaped and the server's
+// own `stale`. A page of this build that reaches it during a roll still marks the block a
+// decision's link went out of date on, rather than marking nothing.
+test("a Decisions read of the release before, with no entries, still marks the stale block", async () => {
+  const before: DecisionsRead = {
+    decisions: [
+      {
+        asks: [],
+        block_id: "h-two-steps",
+        changed_at: "2026-10-04T00:00:00Z",
+        changed_version: 3,
+        heading: "Ship it in two steps",
+        kept: null,
+        kind: "agent",
+        links: [
+          {
+            created_at: "2026-10-01T00:00:00Z",
+            created_version: 1,
+            from_block: "h-two-steps",
+            stale: true,
+            to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          },
+        ],
+        ref: "dispatch://CORE-1/artifact/decisions-md#b-h-two-steps",
+        replaced: false,
+        text: "## Ship it in two steps\n\nThe flag goes first.",
+        text_sha256: "sum-two-steps",
+        unsure: false,
+        waiting_review: true,
+      },
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const reads = stubReads(null, before as IssueDecisions);
+  const { editors, sync } = renderProofDocument({
+    document: spec,
+    queryClient: createQueryClient(),
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("editor missing");
+
+    await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(editor.blockMarks.at(-1)).toEqual([
+        { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
+      ])
+    );
   } finally {
     cleanup();
     reads.restore();

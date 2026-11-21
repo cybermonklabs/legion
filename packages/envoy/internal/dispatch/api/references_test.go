@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -347,6 +348,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "ask", ID: ask.ID, IssueKey: &legionKey, Project: "LEGION", Ref: askRef,
 		MadeBy: []model.Actor{ask.Author}, MadeAt: &ask.CreatedAt, ChangedBy: []model.Actor{ask.Author}, ChangedAt: &ask.CreatedAt,
 		Parent: &model.NodeParent{Kind: "issue", ID: legion.Key, Ref: "dispatch://" + legion.Key},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}); !reflect.DeepEqual(incoming.Node, want) {
 		t.Fatalf("queried node = %#v; want %#v", incoming.Node, want)
 	}
@@ -362,6 +364,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "block", ID: "message/" + message.ID + "#b1", BlockID: "b1", IssueKey: &acmeKey, Project: "ACME", Ref: messageRef + "#b-b1",
 		MadeBy: []model.Actor{message.Author}, MadeAt: &message.CreatedAt, ChangedBy: []model.Actor{message.Author}, ChangedAt: &message.CreatedAt,
 		Parent: &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	if edge.Kind != "mentions" || edge.Direction != "in" || !reflect.DeepEqual(edge.Node, wantNode) {
 		t.Fatalf("backlink edge = %#v; want mentions in from %#v", edge, wantNode)
@@ -543,9 +546,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	targetRef := "dispatch://" + target.Key
 
 	ctx := t.Context()
-	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
+	mention := func(tx pgx.Tx, issueKey string, comment model.Comment) int64 {
 		t.Helper()
-		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		commentID := comment.ID
+		found := text.Refs(refs.NewReader(ctx, tx, comment.Author, "comment", commentID, "").Mentions("Now see " + targetRef))
 		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
 		if err != nil {
 			t.Fatalf("plan comment %s's references: %v", commentID, err)
@@ -573,13 +577,13 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		t.Fatalf("begin the lower event's transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = open.Rollback(context.Background()) })
-	low := mention(open, firstIssue.Key, first.ID)
+	low := mention(open, firstIssue.Key, first)
 	committed, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the higher event's transaction: %v", err)
 	}
 	defer func() { _ = committed.Rollback(context.Background()) }()
-	high := mention(committed, secondIssue.Key, second.ID)
+	high := mention(committed, secondIssue.Key, second)
 	if err := committed.Commit(ctx); err != nil {
 		t.Fatalf("commit the higher event: %v", err)
 	}

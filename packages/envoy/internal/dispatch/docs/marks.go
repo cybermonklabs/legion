@@ -66,6 +66,13 @@ func ActorRef(actor model.Actor) string {
 	return actor.Kind + ":" + actor.ID
 }
 
+// MarkTime is a time as a margin record writes it: a record's createdAt and each reply's at. It
+// is the one spelling of both, so the erase names an erased reply's entry by the time it was
+// made (ErasedReply) exactly as the record wrote it.
+func MarkTime(at time.Time) string {
+	return at.UTC().Format(time.RFC3339Nano)
+}
+
 func (m MarkSpec) pmMark() pmdoc.Mark {
 	if m.Attrs != nil {
 		return pmdoc.Mark{Type: string(m.Kind), Attrs: m.Attrs}

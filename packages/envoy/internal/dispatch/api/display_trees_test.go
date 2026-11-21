@@ -116,10 +116,11 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // it when, and only when, the request holds `Dispatch-Trees: 1`, and the tree is the one
 // pmdoc.ReadForDisplay makes of exactly that text, and the document the route table emits
 // declares that tree where the answer carries it. The routes covered here are the issue's
-// comment list and one comment's thread, the issue's ask list and one ask, the issue's message
-// list, the issue's event log, a document's text, the caller's own answers, a project's
-// architecture and one node's references; the search snippet, whose tree is cut and marked
-// rather than read whole, has its own test below.
+// comment list and one comment's thread, the issue's ask list and one ask, the answer of an ask
+// the issue's Decisions read lists, the issue's message list, the issue's event log, a
+// document's text, the caller's own answers, a project's architecture and one node's
+// references; the search snippet, whose tree is cut and marked rather than read whole, has its
+// own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	handler := newTestHandler(t)
 	const (
@@ -167,8 +168,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	// are rows of the schema reading alone - the trees they carry need an architecture source
 	// and a stored reference this issue has neither of - and they are the two rows that were
 	// found naming the model (INFRA-635). A decision's text is a row of the schema reading too:
-	// its live reading is the decisions view's own test, which has a decisions.md to read
-	// (decisions_test.go).
+	// its live reading is the old decisions member's own test, which reads a decision node
+	// (TestTheOldDecisionsMembersAnswerFromTheStore, decisions_test.go).
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
 	for _, test := range []struct{ name, pattern, target, textPath, treePath string }{
@@ -194,6 +195,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 		{"a node's own text", "/api/v1/references", "", "", "node.text_tree"},
 		{"the text a reference pinned", "/api/v1/references", "", "", "node.pin.text_tree"},
 		{"a decision's text", "/api/v1/issues/{key}/decisions", "", "", "decisions.0.text_tree"},
+		{"an answered ask's entry in the Decisions read", "/api/v1/issues/{key}/decisions",
+			"/api/v1/issues/" + issue.Key + "/decisions", "entries.0.answer", "entries.0.answer_tree"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.target != "" {

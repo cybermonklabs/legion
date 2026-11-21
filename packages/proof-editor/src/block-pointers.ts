@@ -14,12 +14,68 @@
 
 import {
   blockPointerValueProblem,
+  hasControlCharacter,
+  PROJECT_KEY_PATTERN,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
 } from "@legion/contracts";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockTypeSchema } from "./block-schema";
 import { blockIdOf } from "./editor/schema/block-ids";
+
+// An issue key, as Go's `text` grammar reads one: a project key, `-` and a number from 1.
+const PROJECT_KEY = PROJECT_KEY_PATTERN.source.slice(1, -1);
+const ISSUE_KEY = `${PROJECT_KEY}-[1-9][0-9]*`;
+const ISSUE_KEY_ONLY = new RegExp(`^${ISSUE_KEY}$`);
+// An ask of an issue, `dispatch://<ISSUE>/ask/<id>`, and a part of one, which a `#b-` fragment
+// follows. The id holds no `/`, `?`, `#` or whitespace, as Go's `itemSegment` reads it, and no
+// character a reference ends at (`referenceEnd`: quotes, angle and square brackets, a backtick,
+// `|`).
+const ASK_REFERENCE = new RegExp(`^dispatch://(${ISSUE_KEY})/ask/([^/?#\\s'"<>\`\\[\\]|]+)$`);
+const ASK_PART_REFERENCE = new RegExp(`^dispatch://${ISSUE_KEY}/ask/[^/?#\\s]+#b-`);
+// What Go's `trimReference` takes off a reference's end: trailing punctuation, and a `)` no `(`
+// opened.
+const TRIMMED_END = /[.,;:!?*_~]$/;
+// The owner key of a document's unversioned reference: an issue's or a project's.
+const DOCUMENT_OWNER = new RegExp(`^dispatch://(${PROJECT_KEY}(?:-[1-9][0-9]*)?)/`);
+
+/**
+ * The issue key of `value` when it is an `ask` attribute's value as the document service takes
+ * one (pmdoc `validateAskReference`): one ask of an issue, `dispatch://<ISSUE>/ask/<id>`, written
+ * whole as every writer writes its address, the id needing no decoding. Undefined otherwise.
+ */
+export function askReferenceIssue(value: string): string | undefined {
+  const match = ASK_REFERENCE.exec(value);
+  const id = match?.[2] ?? "";
+  const unopened =
+    id.endsWith(")") && (id.match(/\(/g)?.length ?? 0) < (id.match(/\)/g)?.length ?? 0);
+  if (match === null || hasControlCharacter(value) || TRIMMED_END.test(id) || unopened) {
+    return undefined;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(id);
+  } catch {
+    return undefined;
+  }
+  return decoded === id ? match[1] : undefined;
+}
+
+/**
+ * Why `value` is no `ask` attribute's value (`askReferenceIssue`), in the document service's
+ * wording (pmdoc `validateAskReference`, the value quoted with `JSON.stringify` where Go uses
+ * `%q`), or undefined when it is one. A part of an ask is refused with a reason of its own: it
+ * names a block of the ask's text, not the ask a decision settles.
+ */
+export function askReferenceProblem(value: string): string | undefined {
+  if (ASK_PART_REFERENCE.test(value)) {
+    return `${JSON.stringify(value)} is a part of an ask: an ask attribute names the ask itself, dispatch://<ISSUE>/ask/<id>`;
+  }
+  if (askReferenceIssue(value) === undefined) {
+    return `${JSON.stringify(value)} is not an ask of an issue as Dispatch writes one: dispatch://<ISSUE>/ask/<id>`;
+  }
+  return undefined;
+}
 
 /**
  * The first block of `doc` whose id is `id`, and its position, or null when no block has it. The
@@ -106,6 +162,56 @@ export function blockPointerRefusal(
       if (target !== undefined && !targets.includes(target)) {
         const at = block === null ? "" : ` #${block}`;
         return `typed block ${JSON.stringify(type.name)}${at} attribute ${JSON.stringify(name)} points at ${value}, a ${JSON.stringify(target)} block; it points only at ${targets.join(", ")}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Why a typed block of `type` holding the attribute values `attrs` may not stand in the document
+ * `documentRef` (its unversioned reference), or undefined when it may: it names something of
+ * another issue than the document's own. The document service refuses such a tie on every write
+ * that takes markdown - an upload, an editor operation, an issue's first document, a rebuild -
+ * quoting the attribute and the value (pmdoc.CheckIssueTies); a browser's write it never refuses,
+ * and settlement stores the block with no tuple and no row for the tie to the other issue, while
+ * a tie of the same block inside the issue stands. A `block[]` attribute with no `targets` (a
+ * decision's or an ask's `shaped`) points at a block of any document of the document's own issue,
+ * and an `ask` attribute (a decision's `from_ask`) names an ask of that issue. A command and a
+ * paste are both held to it, so neither builds a document the service refuses or a tie it drops.
+ * Without `documentRef`, or for a document no issue owns, nothing is refused here.
+ */
+export function otherIssueRefusal(
+  type: BlockTypeSchema,
+  attrs: Readonly<Record<string, unknown>>,
+  documentRef: string | undefined
+): string | undefined {
+  const owner = documentRef === undefined ? undefined : DOCUMENT_OWNER.exec(documentRef)?.[1];
+  if (owner === undefined || !ISSUE_KEY_ONLY.test(owner)) {
+    return undefined;
+  }
+  for (const name of Object.keys(attrs).sort()) {
+    const attribute = type.attributes[name];
+    const value = attrs[name];
+    if (attribute?.kind === "ask" && typeof value === "string") {
+      const issue = askReferenceIssue(value);
+      if (issue !== undefined && issue !== owner) {
+        return `typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} names ${value}, an ask of ${issue}; it names only an ask of this document's issue, ${owner}`;
+      }
+      continue;
+    }
+    if (
+      attribute?.kind !== "block[]" ||
+      (attribute.targets?.length ?? 0) > 0 ||
+      !Array.isArray(value)
+    ) {
+      continue;
+    }
+    for (const pointer of value as readonly string[]) {
+      const reference = parseCanonicalBlockReference(pointer);
+      const issue = reference?.issue ?? reference?.project;
+      if (reference !== undefined && issue !== owner) {
+        return `typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} points at ${pointer}, a block of ${issue}; it points only at a block of this document's issue, ${owner}`;
       }
     }
   }

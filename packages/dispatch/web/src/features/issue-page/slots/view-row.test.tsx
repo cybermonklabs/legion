@@ -9,7 +9,12 @@ import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import {
+  decisionsRead,
+  issueDetails,
+  KEY,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
@@ -86,11 +91,7 @@ function answerReads() {
     ),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),

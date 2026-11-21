@@ -1,6 +1,12 @@
-import { answerAsk, createAsk, createIssue, createProject } from "./api";
+import { answerAsk, createAsk, createIssue, createProject, getIssueDecisions } from "./api";
 import { expect, test } from "./test";
 import { asUser } from "./users";
+
+// A person's past decision is a node of the store: the ask they answered. The Decisions read
+// answers it among the issue's `entries`, as a person's decision on the ask's own node. This row
+// reads that decision from `entries`, then types a draft title that finds it, and proves that the
+// Create issue dialog lists that same node with its own state and claims nothing about whether it
+// settles the draft.
 
 /** The ask the check finds. Its question carries the rare words the draft title is typed with,
  *  and the issue that owns it carries none of them, so the ask is its owner's only match: the
@@ -40,6 +46,21 @@ test("the dialog lists the answered ask it found and claims nothing about what s
     text: "The north one, which holds them all winter.",
   });
 
+  // The decision is the answered ask's node: the issue's one entry is a person's decision, on
+  // the node of kind `ask` whose id is the ask's, answered, asked on the issue itself and on no
+  // document.
+  await expect
+    .poll(async () => (await getIssueDecisions(issue.key)).entries)
+    .toMatchObject([
+      {
+        answer_state: "answered",
+        document: null,
+        kind: "person",
+        node: { id: ask.id, kind: "ask" },
+        question: hangarQuestion,
+      },
+    ]);
+
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -56,9 +77,12 @@ test("the dialog lists the answered ask it found and claims nothing about what s
 
     await title.fill(draftTitle);
 
-    // What the section still does, once the check's answer has reached the page: it lists what
-    // it found, under the link of the issue the answered ask sits on, with the ask's own state.
-    await expect(related.getByRole("link", { name: `${issue.key} ${mastTitle}` })).toBeVisible();
+    // What the section still does, once the check's answer has reached the page: it lists the
+    // decision it found, under the link of the issue the answered ask sits on, with the ask's own
+    // state. The link opens the node the Decisions read named, the ask's own page on its issue.
+    const item = related.getByRole("link", { name: `${issue.key} ${mastTitle}` });
+    await expect(item).toBeVisible();
+    await expect(item).toHaveAttribute("href", `/issues/${issue.key}/asks/${ask.id}`);
     await expect(related.getByText("Answered", { exact: true })).toBeVisible();
 
     // What it no longer does: nothing on the dialog says one of those items answers this draft.

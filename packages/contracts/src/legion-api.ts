@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { goBlankPattern } from "./go-blank";
 import {
+  DESIGN_GATE_STEPS,
   DISPATCH_KEY_PATTERN,
   GATED_STEPS,
   LEGION_PLAN_RATING_LEAST,
@@ -475,9 +476,9 @@ const legionGateView = z.object({
 });
 
 /** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
- * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
- * its primary document. */
-const legionDesignStep = z.enum(GATED_STEPS);
+ * root issue: `criteria` its Verification document, `spec` its primary document. The `decisions`
+ * step is gone, behind the `DaemonAPIVersion` bump: decisions are nodes of the spec. */
+const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
 
 /** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
@@ -487,9 +488,12 @@ const legionDesignStep = z.enum(GATED_STEPS);
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, the one status that lets the work past the
  * step) or `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). */
+ * `changesReason` the reason they gave; absent under every other status). `step` reads
+ * GATED_STEPS, the gone `decisions` included: the daemon sends one of DESIGN_GATE_STEPS, and its
+ * record of every contract since 55 still admits `decisions`, which this reader parses so that
+ * the view's enumeration is the daemon's own (legion-api.test.ts). */
 const legionGatedStepView = z.object({
-  step: legionDesignStep.optional(),
+  step: z.enum(GATED_STEPS).optional(),
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),

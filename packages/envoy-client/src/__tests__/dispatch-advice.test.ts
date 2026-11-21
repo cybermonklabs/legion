@@ -1187,7 +1187,7 @@ describe("dispatch_ask's standing review", () => {
   });
 });
 
-describe("dispatch_doc_edit's decision block checks", () => {
+describe("dispatch_doc_edit's ask block checks", () => {
   const askBlock =
     ':::ask{urgency="med"}\nShould webhook deliveries back off exponentially?\n:::\n';
   const editArgs = {
@@ -1220,7 +1220,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
             suggestions: {
               outcome: "not_made",
               related: [],
-              missing: "more than five new decision blocks in one edit",
+              missing: "more than five new ask blocks in one edit",
             },
           },
         ],
@@ -1230,11 +1230,11 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "Decision block ask-block-1:",
+        "Ask block ask-block-1:",
         "Related items (searched by keywords only: meaning search is off on this server):",
         "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
-        "Decision block ask-block-2:",
-        "No related-item check was made: more than five new decision blocks in one edit. Search before you rely on this being new: dispatch search --project DSP --query 'Which queue holds'",
+        "Ask block ask-block-2:",
+        "No related-item check was made: more than five new ask blocks in one edit. Search before you rely on this being new: dispatch search --project DSP --query 'Which queue holds'",
         "Document token: sha256:edited",
       ].join("\n")
     );
@@ -1250,7 +1250,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "1 new decision block:",
+        "1 new ask block:",
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
         "Document token: sha256:edited",
       ].join("\n")
@@ -1281,7 +1281,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "1 new decision block:",
+        "1 new ask block:",
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
         "Document token: sha256:edited",
       ].join("\n")
@@ -1303,7 +1303,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // version, so the line is about that one write: what it stored, whose approval it staled, how that
 // approval comes back, and what the reader does next. The negative is the ordinary case - a write
 // on a document nobody approved, one whose approval was already stale, and one whose version
-// carried that approval forward (an answer to a decision block, or text the approved version held
+// carried that approval forward (an answer to an ask block, or text the approved version held
 // exactly, an undo among them) all arrive here with the field absent, and print nothing.
 //
 // The gate clause between the two is printed from `design_gates` alone, the issues whose design
@@ -1311,7 +1311,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
   const stored =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no ask block in it decided since.";
   const nextStep =
     "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;
@@ -2133,7 +2133,7 @@ describe("the answered questions of other projects", () => {
     expect(result.text).toBe(
       [
         `Applied 1 ops (no new version) ${issueSuffix}`,
-        "Decision block ask-block-1:",
+        "Ask block ask-block-1:",
         "Related items (searched by meaning and keywords):",
         "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
         "Answered questions in other projects:",

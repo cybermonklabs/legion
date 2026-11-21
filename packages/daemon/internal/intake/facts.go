@@ -281,13 +281,16 @@ type DispatchArtifact struct {
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
-// in a person's name when their answer to a decision block was the whole change since the version
-// they approved, when a later version's text is the text of the version they approved, or when a
-// later version's text is that text with the questions a reopen opened again
-// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason, restoreReason and
-// reopenReason, whose format is "Carried forward from the approval of version %d: ..."). The
-// daemon cannot import that package, so it holds the prefix before the version number as a
-// literal of its own.
+// in a person's name at a later version that holds nothing they have not agreed to - one whose
+// text is the text of the version they approved, or one whose only change is readings, the
+// answered ask blocks the restore writes back, the decisions the conversion writes, or the ask
+// attributes the server drops (packages/envoy/internal/dispatch/docs/approval_carry.go,
+// restoreReason, restoreCarriedReason and carriedReasonPrefix, whose format is "Carried forward
+// from the approval of version %d: ..."). A person's answer, resolve or decline of an ask writes
+// one version, which changes only the server-owned attributes of the ask's block (`state`, and
+// `answered_by` and `answered_at` where it is answered), so its carry is the last of these, a
+// carried approval like any other. The daemon cannot import that package, so it holds the prefix
+// before the version number as a literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
@@ -337,7 +340,7 @@ type DispatchAskOpened struct {
 
 func (f DispatchAskOpened) namedIssue() (string, bool) { return f.Key, true }
 
-// DispatchAskRestored is Dispatch's settlement restoring a decision block it retracted: the ask
+// DispatchAskRestored is Dispatch's settlement restoring an ask block it retracted: the ask
 // opened again (Open), or closed again with the answer given before the retraction. Nobody acted,
 // so it moves the ask's mirror row alone and is never a person's act.
 type DispatchAskRestored struct {
