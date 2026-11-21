@@ -206,6 +206,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.goBack();
     if (!page.url().includes(`/issues/${key}`)) await page.goBack();
     await issueRead(page);
+    await expectOpeningLanded(page);
 
     // The page's column: the window less the rail.
     const column = await boxOf(issuePage(page), "the page");
@@ -255,6 +256,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     expect(resized, "dragging the handle did not widen Details").toBeGreaterThan(384 + 50);
     await page.reload();
     await issueRead(page);
+    await expectOpeningLanded(page);
     await expect(marginShell(page), "a load opened Details").toBeHidden();
     await openDetails(page);
     expect((await boxOf(marginShell(page), "Details")).width, "the width was not kept").toBeCloseTo(

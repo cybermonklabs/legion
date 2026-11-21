@@ -2525,6 +2525,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
   await phase(browser, seedHeader, async (page, seeded) => {
     await page.setViewportSize(IPHONE_13);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
@@ -2618,6 +2619,7 @@ test("Details closed after a write removed the labels' count leaves the focus in
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
     await expect(count, "twenty labels draw no labels' count").toBeVisible();
@@ -2653,6 +2655,7 @@ test("Details closed after a write removed the labels' count while the palette w
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
     await expect(count, "twenty labels draw no labels' count").toBeVisible();
@@ -2690,6 +2693,7 @@ test("Details closed after a write removed the parent link leaves the focus in t
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const parent = issueHeader(page).getByRole("link", { exact: true, name: seeded.parentKey });
     await parent.focus();
@@ -2723,6 +2727,7 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2782,6 +2787,7 @@ test("the approval chip's a approves the document whose request waits, and a els
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2839,6 +2845,7 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -2896,6 +2903,7 @@ test("an approval entry's a approves that entry's document and no other", async 
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       for (const step of ["criteria", "spec"]) {
@@ -2965,6 +2973,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByRole("button", { exact: true, name: "Approve" }),
@@ -3073,6 +3082,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
     ] as const) {
       await patchIssue(key, { status: "in_progress" });
       await gotoIssue(page, `/issues/${key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await control.focus();
       await expect(control).toBeFocused();
@@ -3182,6 +3192,7 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -3235,6 +3246,7 @@ test("a change request sent from the header's Request changes leaves the focus o
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3282,6 +3294,7 @@ test("a change request sent after the header's actions went leaves the focus on 
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3349,6 +3362,7 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
@@ -3420,6 +3434,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
@@ -3509,6 +3524,7 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
   await phase(browser, seedHeader, async (page, seeded) => {
     const clipboard = await holdClipboard(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const copy = header.getByRole("button", { name: new RegExp(`^Copy issue key ${seeded.key} `) });
@@ -3611,6 +3627,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
       ],
     ] as const) {
       await gotoIssue(page, `/issues/${key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       // Every write is refused until Retry is pressed; the Retry's write is held open, so the
       // focus is read while it runs, and then let through.
@@ -3725,6 +3742,7 @@ test("an approval entry's a approves its own document when an earlier entry also
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       const chip = approvalEntry(page, "spec").locator("[data-approval-artifact]");

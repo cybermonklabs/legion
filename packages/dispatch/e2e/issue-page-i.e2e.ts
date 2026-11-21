@@ -3923,6 +3923,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, seeded.answeredAsk);
     await page.keyboard.press("w");
@@ -4044,6 +4045,7 @@ test("a comment's address followed from a link while the reader is zoomed elsewh
       reply_to: seeded.head,
     });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, seeded.head);
     await page.keyboard.press(".");
@@ -4118,6 +4120,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       await bobPage.setViewportSize({ height: 900, width: 1280 });
       const bobSockets = countDocumentSockets(bobPage, seeded.specArtifactId);
       await gotoIssue(bobPage, `/issues/${seeded.key}`);
+      await expectOpeningLanded(bobPage);
       await expectTreeDrawn(bobPage);
       await focusRow(bobPage, statement);
       await bobPage.keyboard.press("Enter");
@@ -4146,6 +4149,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
     // What was typed is stored: a reload reads it, and the same keys remove it.
     const storedWords = async () => {
       await page.reload();
+      await expectOpeningLanded(page);
       await expectTreeDrawn(page);
       const row = await focusRow(page, statement);
       return (await rowWords(row).innerText()).replace(/\s+/g, " ");
@@ -4490,6 +4494,7 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
     const [gone = "", other = ""] = seeded.comments.threads;
     expect(other, "the seed holds fewer than two comment threads").not.toBe("");
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, gone);
 
@@ -4888,6 +4893,7 @@ test("Tab from a row's editor stops at the references button of the node's own b
     },
     async (page, seeded) => {
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expectTreeDrawn(page);
       const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
       const statementBlock = requirementBlockId(2);

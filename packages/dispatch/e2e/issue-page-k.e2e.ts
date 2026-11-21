@@ -822,6 +822,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;
     // Enter and Space press the two buttons.
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
     await expect(planView(page, "chart")).toHaveAttribute("aria-pressed", "true");
     await expect.poll(() => chartOrder(page)).toEqual(charted);
     await planView(page, "chart").focus();
@@ -929,6 +930,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // On a phone the down arrow moves from card to card in the same order.
     await page.setViewportSize(PHONE_K);
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
     await expect.poll(() => chartOrder(page)).toEqual(charted);
     await nodeRow(page, step(T.third)).first().focus();
     await expect.poll(() => focusedNodeId(page)).toBe(step(T.third));
@@ -1194,6 +1196,7 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
     const T = PLAN_ORDER_TASKS;
     await page.setViewportSize(PHONE_K);
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
 
     await expect(
       planChart(page).locator("[data-plan-bar-row]"),

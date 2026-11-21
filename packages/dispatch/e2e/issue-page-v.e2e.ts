@@ -609,6 +609,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
     for (const width of [1440, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
+      await expectOpeningLanded(page);
       const statementA = verificationCard(page, a);
       await expect(
         statementA,
