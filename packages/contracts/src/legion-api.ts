@@ -1197,7 +1197,7 @@ const LEGION_INTAKE_GIVE_UP_REASONS = [
   "consumer moved past",
 ] as const;
 
-/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 207): its `name`,
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 217): its `name`,
  * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
  * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. The
  * controller's `read_state` summary prints all three, so each is required (LEGION_ANSWER_READS). */
@@ -1227,7 +1227,7 @@ const legionIntakeGiveUp = z.object({
   lastError: z.string().optional(),
 });
 
-/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 207), the messages it gave up on
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 217), the messages it gave up on
  * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
  * `newest`, the newest of them, latest given up first, at most 50. The daemon writes both lists
  * on every body, never null and empty while nothing is open. The controller's summary reads
@@ -1363,10 +1363,10 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither. `intakeGiveUps` is the intake's open give-ups, the messages
  * it gave up on that no replay or discard has closed, counted by consumer and the newest of them
- * listed (contract 207). The daemon writes it on every body, its two lists empty while nothing is
+ * listed (contract 217). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
- * below 207, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 207 refuses the key whether its lists are empty or not. */
+ * below 217, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
+ * 217 refuses the key whether its lists are empty or not. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1871,7 +1871,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -1948,7 +1948,7 @@ const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", 
 
 /** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
  * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
- * (contract 207): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * (contract 217): `replayed`, each record the replay took, in stream order, with its id, consumer,
  * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
  * error; and `remaining`, the open records of the selection left after it, which another call
  * takes. The controller's `replay_give_up` hands the daemon's answer to its agent whole
@@ -1973,7 +1973,7 @@ export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
 
 /** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
  * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
- * (contract 207): `discarded`, the id of each record it closed, in stream order. The controller's
+ * (contract 217): `discarded`, the id of each record it closed, in stream order. The controller's
  * `discard_give_up` hands it to its agent whole, so the field is optional, as the replay's are. */
 export const LegionIntakeDiscardResponse = z.object({
   discarded: z.array(z.number().int().positive()).optional(),
@@ -2229,9 +2229,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2375,9 +2375,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's lines on the intake's open give-ups (contract 207) print each consumer's
+    // The summary's lines on the intake's open give-ups (contract 217) print each consumer's
     // name, open count and newest sequence. `intakeGiveUps` stays optional: the daemon strips it
-    // for a caller below 207. The lag view of the state's `consumers` has a `name` too, and the
+    // for a caller below 217. The lag view of the state's `consumers` has a `name` too, and the
     // census matches a read by the field's name under its parent's, so the summary's read of a
     // give-up count's `name` is read as one of the lag view's as well, which is why this set
     // names `consumers[].name`; the lag view keeps the field optional all the same.

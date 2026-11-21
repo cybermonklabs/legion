@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
@@ -33,10 +36,12 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
 	label := "legion-testnats-" + rand.Text()
-	created, err := start(Image,
-		testcontainers.WithLabels(map[string]string{"legion.test": label}),
-		testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3*time.Second)),
-	)
+	created, err := start(Image, func() []testcontainers.ContainerCustomizer {
+		return []testcontainers.ContainerCustomizer{
+			testcontainers.WithLabels(map[string]string{"legion.test": label}),
+			testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3 * time.Second)),
+		}
+	})
 	if err == nil {
 		t.Fatal("a start whose readiness wait cannot succeed returned no error")
 	}
@@ -56,6 +61,62 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 		t.Errorf("container %s of the failed start is still there (%s)", c.ID, c.State)
 		_ = docker.ContainerRemove(t.Context(), c.ID, container.RemoveOptions{Force: true})
 	}
+}
+
+// A start Docker refuses because something took a probed port before the publish is tried again
+// on a fresh address and ports (start), and the server the retry runs is the one its caller
+// configured: an nkey server refuses a client with no credential and admits its user there, as at
+// a first start. testcontainers reads a configuration file's reader to its end as it creates the
+// container (v0.41.0 lifecycle.go:159), before Docker refuses the publish at the start, so a retry
+// handed the first attempt's reader copies an empty configuration in, and that server admits
+// anyone. The row takes the first probe's client port at its address once the probe lets it go,
+// as another program can, and requires the start to have been tried again: a first start Docker
+// did not refuse checks no retry.
+func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
+	if server, _, err := external(); err == nil && server != "" {
+		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	probe := loopbackPorts
+	t.Cleanup(func() { loopbackPorts = probe })
+	probes := 0
+	loopbackPorts = func(n int) (string, []int, error) {
+		host, ports, err := probe(n)
+		probes++
+		if err != nil || probes > 1 {
+			return host, ports, err
+		}
+		taken, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(ports[0])))
+		if err != nil {
+			return "", nil, fmt.Errorf("take the probed client port %s:%d: %w", host, ports[0], err)
+		}
+		t.Cleanup(func() { _ = taken.Close() })
+		t.Logf("took %s, the first probe's client port, once the probe let it go", taken.Addr())
+		return host, ports, nil
+	}
+	user, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatalf("create an nkey user: %v", err)
+	}
+	public, err := user.PublicKey()
+	if err != nil {
+		t.Fatalf("read the nkey user's public key: %v", err)
+	}
+	_, url := StartNkeyAuthorizedUsers(t, Image, NkeyUser{Public: public})
+	if probes < 2 {
+		t.Fatalf("start chose ports %d time(s): Docker did not refuse the publish on the taken port, so no retry was checked", probes)
+	}
+	if conn, err := nats.Connect(url, nats.Timeout(time.Second), nats.NoReconnect()); err == nil {
+		conn.Close()
+		t.Fatalf("the server the retry started at %s admitted a client with no credential", url)
+	} else if !errors.Is(err, nats.ErrAuthorization) {
+		t.Fatalf("the server the retry started at %s refused a client with no credential with %v, not its authorization violation", url, err)
+	}
+	conn, err := nats.Connect(url, nats.Nkey(public, user.Sign), nats.Timeout(time.Second), nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("the server the retry started at %s refused its own nkey user: %v", url, err)
+	}
+	conn.Close()
+	t.Logf("the server the retry started at %s refuses a client with no credential and admits its user", url)
 }
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }

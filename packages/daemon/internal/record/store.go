@@ -1030,6 +1030,18 @@ func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, sessi
 	return claims, nil
 }
 
+func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error) {
+	var issue string
+	err := tx.QueryRow(ctx, "select issue from claims where tree = $1 and session = $2 and role = $3 and session <> ''", tree, session, string(claim.RoleArchitect)).Scan(&issue)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the architect claim of session %s in %s: %w", session, tree, err)
+	}
+	return issue, true, nil
+}
+
 func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error) {
 	var claims bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where session = $1 and session <> '')", session).Scan(&claims); err != nil {

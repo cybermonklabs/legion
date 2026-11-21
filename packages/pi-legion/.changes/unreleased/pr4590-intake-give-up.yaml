@@ -6,4 +6,4 @@ body: |-
   the stored message inside the daemon; a discard closes the records with the reason. The
   `read_state` summary prints `intake give-ups <consumer> open <n> newest seq <seq>`. The tool's
   description says to replay a record once the fix for its last error runs in the daemon, and to
-  discard a message that can never apply. The plugin's daemon API contract is 207.
+  discard a message that can never apply. The plugin's daemon API contract is 217.

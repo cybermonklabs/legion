@@ -46,8 +46,10 @@ func ListenLoopback() (net.Listener, error) {
 // loopbackPorts returns, so another program can take one of the ports before Docker binds it:
 // start retries a publish refused for that (addressInUse) on a fresh address and fresh ports. That
 // freed-port race is a class of its own; a port another process must bind cannot be held here. It
-// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is.
-func loopbackPorts(n int) (string, []int, error) {
+// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is. It is a variable
+// so a test can take a probed port before Docker binds it, as another program can, and so check
+// start's retry (TestAStartRetriedAfterARefusedPublishEnforcesItsUsers).
+var loopbackPorts = func(n int) (string, []int, error) {
 	host := LoopbackIP().String()
 	listeners := make([]net.Listener, 0, n)
 	defer func() {

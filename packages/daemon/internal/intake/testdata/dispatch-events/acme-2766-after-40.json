@@ -1,0 +1,38 @@
+[
+  {
+    "id": 628011,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 41,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "01a1db45-7f94-7519-998f-4556d50e219a",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1395"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T18:46:16.673349Z",
+    "payload": {
+      "key": "ACME-2766",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzi",
+      "claim": null,
+      "labels": [],
+      "number": 2766,
+      "parent": "ACME-1395",
+      "status": "todo",
+      "changed": ["blocked_by"],
+      "project": "ACME",
+      "last_seq": 41,
+      "priority": 1,
+      "ancestors": ["ACME-1395"],
+      "closed_at": null,
+      "blocked_by": ["ACME-4037", "ACME-4038"],
+      "created_at": "2026-11-10T19:42:03.788307Z",
+      "updated_at": "2026-11-16T18:46:16.817633Z"
+    }
+  }
+]

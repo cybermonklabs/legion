@@ -17,6 +17,7 @@ import (
 	"authelia.com/provider/oauth2/token/jose"
 	"authelia.com/provider/oauth2/token/jwt"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -440,7 +441,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // (registeredPodSession). The claim on the session name is made
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for.
-func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
+//
+// trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
+// the library has validated the request, before the exchange decides anything, and a *Refusal it
+// answers is written as that refusal. Nil runs nothing.
+func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade func(context.Context, map[string]any) error) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
 		p.writeError(ctx, w, nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -458,6 +463,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectTokenType := request.GetRequestForm().Get(FormSubjectTokenType)
+	if subjectTokenType == tokenTypeAccessToken && trade != nil {
+		if err := trade(ctx, session.GetSubjectToken()); err != nil {
+			var refused *Refusal
+			if errors.As(err, &refused) {
+				WriteRefusal(w, refused)
+				return
+			}
+			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		}
+	}
 	if subjectTokenType == tokenTypeAccessToken {
 		if _, err := p.decide(ctx, request, session.GetSubjectToken()); err != nil {
 			p.writeError(ctx, w, request, err)
@@ -745,7 +761,7 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 const claimLegacyProject = "project"
 
 // refusedByDispatch is the trade's refusal when the broker's own account token does not work
-// (projectaccess.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
+// (dispatchread.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
 // list the broker's account or does not accept its token (one minted for another audience, say),
 // or the broker could not read it from its file at all. That is a misconfiguration and not an
 // outage, so the trade is refused naming it rather than minted.
@@ -824,7 +840,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names the project %s, which its person %s cannot see.", unseen.Project, person).WithWrap(err).WithDebugError(err)
 		case errors.Is(err, projectaccess.ErrListRequired):
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
-		case errors.Is(err, projectaccess.ErrBrokerRefused):
+		case errors.Is(err, dispatchread.ErrBrokerRefused):
 			return refusedByDispatch(err)
 		case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 			return unknownMemberKind(err)
@@ -855,7 +871,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrInvalidRequest.WithHintf("The token names a project its person cannot see: %s.", unseen.Project).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, projectaccess.ErrListRequired):
 		return oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
+	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		return refusedByDispatch(err)
 	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 		return unknownMemberKind(err)

@@ -121,11 +121,25 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # why: .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+
   # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
   legion_build:
     # Only main releases, as .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     # says; a workflow_dispatch on main runs it as a push does.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -241,7 +255,8 @@ jobs:
   # why: .github/ci-notes/release.md#what-pi_envoy_build-hands-to-publish
   pi_envoy_build:
     # why: .github/ci-notes/release.md#why-only-main-publishes-a-plugin
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -364,7 +379,8 @@ jobs:
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
     # Only main publishes, as .github/ci-notes/release.md#why-only-main-publishes-a-plugin says.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -486,7 +502,8 @@ jobs:
   # why: .github/ci-notes/release.md#what-claude_envoy_build-packs-and-why-it-builds-the-plugin-first
   claude_envoy_build:
     # Only main publishes, as .github/ci-notes/release.md#why-only-main-publishes-a-plugin says.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -633,8 +650,8 @@ jobs:
 
   # why: .github/ci-notes/release.md#what-the-publish-job-runs-and-why-one-job-publishes-all-four-packages
   publish:
-    needs: [pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
-    if: always() && github.ref == 'refs/heads/main'
+    needs: [ref, pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
+    if: always() && needs.ref.result == 'success' && needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # why: .github/ci-notes/release.md#why-the-publish-job-holds-each-of-its-scopes

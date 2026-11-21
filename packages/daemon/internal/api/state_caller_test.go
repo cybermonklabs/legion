@@ -684,7 +684,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
 		// too, and the claim views' keys of contract 193, the repositories block this daemon
 		// writes, which is served in contract 152's shape, and the state's `intakeGiveUps` of
-		// contract 207 are the three bands left above it.
+		// contract 217 are the three bands left above it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, from which every build states its
 		// contract in the header. Such a pod is in no pod reading: podContracts leaves out a claim

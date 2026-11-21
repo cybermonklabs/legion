@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,10 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
+
+// DeviceLoginFunc opens a device login's record from the device authorization request's form and
+// the user code the provider minted, in the provider's transaction (Deps.DeviceLogin).
+type DeviceLoginFunc func(ctx context.Context, form url.Values, userCode string) error
 
 type Deps struct {
 	PublicURL string
@@ -145,7 +150,7 @@ type Deps struct {
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
 	// an error refuses the request (deviceLoginRefusal maps it to the broker's code).
-	DeviceLogin func(ctx context.Context, form url.Values, userCode string) error
+	DeviceLogin DeviceLoginFunc
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/cipher/approval),
@@ -165,22 +170,67 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
+	// RegisterEdge sets the edge's to a one-second cache over it (cachedPing).
+	DatabasePing func(context.Context) error
+	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
+	// (config.NATSCallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
+	// names, presenting its own identity token as a listed caller does, about the projects that
+	// entry lists and no others, and refuses every other account. cmd/cipherd reads them whether or
+	// not it runs the NATS auth service. Nil lists none, where that route answers no caller.
+	EdgeListeners []EdgeListener
+	// ProjectRepositories reads Dispatch's answer for GET /v1/project-repositories, fresh on
+	// every call (projectrepos.Client, at BROKER_PROJECT_ACCESS_URL with the account token
+	// projectaccess presents). Nil is a broker that reads no Dispatch, where that route answers
+	// every listed edge listener 503 REPOSITORIES_UNKNOWN.
+	ProjectRepositories ProjectRepositoriesReader
+}
+
+// pingDatabase pings Postgres: DatabasePing when set, and the store's pool otherwise.
+func (d Deps) pingDatabase(ctx context.Context) error {
+	if d.DatabasePing != nil {
+		return d.DatabasePing(ctx)
+	}
+	return d.Enroll.Store.Pool.Ping(ctx)
 }
 
 type server struct {
 	deps            Deps
 	launcherLimiter *launcherLimiter
 	// rereadLimiter is the per-address bucket on POST /v1/secrets/{name}/reread
-	// (clientAddress) and rereadOverall the one every caller shares; refuseReread takes from
+	// (address) and rereadOverall the one every caller shares; refuseReread takes from
 	// both or neither. For a Deps that carries a RereadRate these are that rate's own pair, so
 	// a change of the replica count moves the rates this route really runs at.
 	rereadLimiter *ratelimit.Keyed
 	rereadOverall *ratelimit.Bucket
-	// tokenLimiter is TokenLimit applied per source address (clientAddress), over its route's own
+	// tokenLimiter is TokenLimit applied per source address (address), over its route's own
 	// bucket, and accountLimiter AccountLimit, over the bucket every accountAuth route and every
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// address is the source address every per-address bucket of this listener keys on:
+	// clientAddress under BROKER_TRUSTED_PROXY_HEADER on the broker's own address, and
+	// edgeClientAddress at its edge, where a request it reads no address from is refused before
+	// any handler runs (edgeFormGate).
+	address func(*http.Request) string
+	// loginKeyPrefix opens every per-login bucket's key: "" on the broker's own address, and
+	// edgeLoginKeyPrefix at its edge.
+	loginKeyPrefix string
+	// loginKeyByAddress is whether a person's per-login bucket is also keyed on the caller's
+	// address (spendDeviceLoginBucket): at the edge, where anyone on the internet can name a
+	// person, so a flood from one address cannot empty the bucket that person uses from another.
+	loginKeyByAddress bool
+	// verificationURI is the page a device authorization on this listener sends a person to:
+	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
+	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
+	verificationURI string
+	// pingLogsItself is whether deps.DatabasePing writes its own line for a failed ping, so GET
+	// /healthz writes none: at the edge, whose DatabasePing is a cachedPing, so a caller on the
+	// internet writes no line of its own (RegisterEdge sets the two together).
+	pingLogsItself bool
+	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
+	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
+	repositoryCalls *callsInFlight
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -221,13 +271,19 @@ func Register(mux *http.ServeMux, deps Deps) {
 	if deps.AccountLimit != nil {
 		account = *deps.AccountLimit
 	}
+	address := func(r *http.Request) string { return clientAddress(r, deps.TrustedProxyHeader) }
 	s := &server{
 		deps:            deps,
-		launcherLimiter: newLauncherLimiter(limits, deps.TrustedProxyHeader),
+		launcherLimiter: newLauncherLimiter(limits, address),
 		rereadLimiter:   rereadLimiter,
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		address:         address,
+		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+	}
+	if deps.OAuth != nil {
+		s.verificationURI = deps.OAuth.VerificationURL()
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
@@ -244,17 +300,25 @@ func Register(mux *http.ServeMux, deps Deps) {
 		if deps.Approval == nil && (strings.HasPrefix(route.Pattern, approvalRoutes) || strings.HasPrefix(route.Pattern, signInRoutes)) {
 			continue
 		}
-		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
-			recorder := answer.FromContext(r.Context())
-			who, ok := s.authenticate(w, r, route)
-			if !ok {
-				// A refusal raised in authentication, before any caller was established.
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
-				return
-			}
-			recorder.NoteCaller(who.answerCaller(route.Handler))
-			route.Handler.serve(s, w, r, who)
-		})
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.handle(route))
+	}
+}
+
+// handle is route as a handler of s's listener: the caller authenticated as the row's class
+// requires, the answer's record told who it is, and the row's handler run. Register mounts every
+// row through it, and RegisterEdge the edge's three behind its gates, so a row runs one way on
+// either listener.
+func (s *server) handle(route apiRoute) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recorder := answer.FromContext(r.Context())
+		who, ok := s.authenticate(w, r, route)
+		if !ok {
+			// A refusal raised in authentication, before any caller was established.
+			recorder.NoteCaller(answer.CallerUnauthenticated, "")
+			return
+		}
+		recorder.NoteCaller(who.answerCaller(route.Handler))
+		route.Handler.serve(s, w, r, who)
 	}
 }
 
@@ -272,13 +336,15 @@ const (
 // authenticate proves who r comes from, as route's authentication requires, or writes the
 // refusal. A bad or missing credential is a 401; a store that cannot answer is a 503 naming it,
 // never mistaken for a bad credential. A route a ServiceAccount token authenticates — one a
-// listed caller's token does (accountAuth) and one a service's own login token does
-// (serviceAuth) — first spends its source address's bucket (DefaultAccountLimit), a refusal
-// being 429 RATE_LIMITED with Retry-After, so a flood of forged tokens past that bucket costs no
-// verification and no fetch of the issuer's keys; a listed caller must then hold the power its
-// row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
-// BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
-// bucket, for the same reason: see the authSignIn case.
+// listed caller's token does (accountAuth), one a service's own login token does (serviceAuth)
+// and one an edge listener's token does (edgeListenerAuth) — first spends its source address's
+// bucket (DefaultAccountLimit), a refusal being 429 RATE_LIMITED with Retry-After, so a flood of
+// forged tokens past that bucket costs no verification and no fetch of the issuer's keys; a
+// listed caller must then hold the power its row declares, a service's token must name an
+// account BROKER_SERVICE_LOGINS lists and BROKER_POD_OPERATORS does not map (serviceCaller), and
+// an edge listener's must name an account an edge-listener entry of BROKER_NATS_SERVICES names
+// (edgeListenerCaller). The approval page's routes spend that same bucket, for the same reason:
+// see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -307,6 +373,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			return caller{}, false
 		}
 		return s.serviceCaller(w, r)
+	case authEdgeListener:
+		if s.refuseAccountAddress(w, r) {
+			return caller{}, false
+		}
+		return s.edgeListenerCaller(w, r)
 	case authSignIn:
 		// The page's routes and the sign-in's spend the bucket the account class spends, so no
 		// caller drives them unmetered either. GET /approve/{record} with no session does one
@@ -370,10 +441,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, or the signed-in
-// person. A route that takes no credential is public, and a route of the approval page reached
-// with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
-// class over this one (tokenLogin, and rereadSecret for a session's proof).
+// enrollment, the listed account, the service and the account it presented, the edge listener's
+// account, or the signed-in person. A route that takes no credential is public, and a route of
+// the approval page reached with no live sign-in unauthenticated; a handler that authenticates
+// its own caller notes its class over this one (tokenLogin, and rereadSecret for a session's
+// proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -384,6 +456,8 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 		return answer.CallerAccount, c.account.Name
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
+	case authEdgeListener:
+		return answer.CallerEdgeListener, c.edge.Account
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""
@@ -445,67 +519,18 @@ type GoogleVerifier interface {
 
 // accountCaller authenticates a listed caller's own identity token for authenticate, the
 // credential accountAuth's routes take, and answers the caller BROKER_API_ACCOUNTS names it:
-// its name and its powers, which authenticate then checks against the route's.
-//
-// A caller presents one of two tokens, and the setting says which one each account presents: a
-// Kubernetes service account's own projected token, looked up by its subject, or a machine's
-// Google identity token, looked up by the account its email claim names, which is how the Envoy
-// listener calls from a VM that holds no Kubernetes token. Which verifier judges a token is the
-// token's own issuer: a verifier answers oidc.ErrIssuer for a token of any issuer but its own,
-// which is the one error that means "not mine" rather than a refusal, so a token neither
-// verifier claims is simply invalid and no token is ever judged twice.
-//
-// The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
-// means the same thing for either kind: a broker that trusts no issuer for its callers at all
-// (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
-// token includes one naming no verified account, since the email claim is what names the caller
-// — one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied token
-// is spendable for at most an hour, and an account BROKER_API_ACCOUNTS does not name. Only the
-// last is a 403: the credential is sound and it is the broker's list that refuses. No refusal
-// repeats the token.
+// its name and its powers, which authenticate then checks against the route's. The token is
+// verified as identityAccount verifies it; a sound one naming an account BROKER_API_ACCOUNTS does
+// not name is 403 ACCOUNT_NOT_LISTED, the one refusal that is the broker's list and not the
+// credential.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
+	account, google, ok := s.identityAccount(w, r)
+	if !ok {
 		return caller{}, false
 	}
-	raw := bearer(r)
-	if s.deps.AccountTokens != nil {
-		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			return s.listedCaller(w, err, claims.Subject, claims.IssuedAt, claims.Expiry, s.deps.APIAccounts)
-		}
-	}
-	if s.deps.GoogleAccountTokens != nil {
-		token, err := s.deps.GoogleAccountTokens.VerifyGoogle(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
-				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
-				return caller{}, false
-			}
-			return s.listedCaller(w, err, token.Identity.Account, token.IssuedAt, token.Expiry, s.deps.GoogleAPIAccounts)
-		}
-	}
-	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
-	return caller{}, false
-}
-
-// listedCaller is accountCaller's judgement of one verified token, whichever kind it is: err is
-// what its verifier answered, account the name it is looked up by (a ServiceAccount subject or a
-// Google account address), and accounts the half of BROKER_API_ACCOUNTS its kind is listed in.
-func (s *server) listedCaller(w http.ResponseWriter, err error, account string, issuedAt, expiry time.Time, accounts map[string]Account) (caller, bool) {
-	switch {
-	case errors.Is(err, oidc.ErrExpired):
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
-		return caller{}, false
-	case err != nil:
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
-		return caller{}, false
-	case issuedAt.IsZero():
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
-		return caller{}, false
-	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
-		return caller{}, false
+	accounts := s.deps.APIAccounts
+	if google {
+		accounts = s.deps.GoogleAPIAccounts
 	}
 	listed, found := accounts[account]
 	if !found {
@@ -513,6 +538,92 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 		return caller{}, false
 	}
 	return caller{account: listed}, true
+}
+
+// edgeListenerCaller authenticates an edge listener's own identity token for authenticate, the
+// credential edgeListenerAuth's routes take, and answers the edge-listener entry of
+// BROKER_NATS_SERVICES that names its account (Deps.EdgeListeners). The token is the one a listed
+// caller presents, verified the same way (identityAccount); a sound one naming an account no
+// edge-listener entry names is 403 NOT_AN_EDGE_LISTENER, whatever else lists that account: the
+// Envoy listener's entry of kind listener, or its BROKER_API_ACCOUNTS name, makes it no edge
+// listener.
+func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	account, google, ok := s.identityAccount(w, r)
+	if !ok {
+		return caller{}, false
+	}
+	for _, edge := range s.deps.EdgeListeners {
+		if edge.Account == account && edge.Google == google {
+			return caller{edge: edge}, true
+		}
+	}
+	writeError(w, http.StatusForbidden, "NOT_AN_EDGE_LISTENER", "this account is named by no edge-listener entry of BROKER_NATS_SERVICES")
+	return caller{}, false
+}
+
+// identityAccount verifies r's bearer, a caller's own identity token, and answers the account it
+// names and whether that is a Google account, or writes the refusal: the one verification
+// accountCaller and edgeListenerCaller share.
+//
+// A caller presents one of two tokens: a Kubernetes service account's own projected token, which
+// names the account by its subject, or a machine's Google identity token, which names it by its
+// email claim, which is how the Envoy listener calls from a VM that holds no Kubernetes token.
+// Which verifier judges a token is the token's own issuer: a verifier answers oidc.ErrIssuer for
+// a token of any issuer but its own, which is the one error that means "not mine" rather than a
+// refusal, so a token neither verifier claims is simply invalid and no token is ever judged
+// twice.
+//
+// The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
+// means the same thing for either kind: a broker that trusts no issuer for its callers at all
+// (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
+// token includes one naming no verified account, since the email claim is what names the caller
+// — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied
+// token is spendable for at most an hour. Each is a 401, and no refusal repeats the token.
+func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (account string, google, ok bool) {
+	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
+		return "", false, false
+	}
+	raw := bearer(r)
+	if s.deps.AccountTokens != nil {
+		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
+		if !errors.Is(err, oidc.ErrIssuer) {
+			return claims.Subject, false, s.liveIdentityToken(w, err, claims.IssuedAt, claims.Expiry)
+		}
+	}
+	if s.deps.GoogleAccountTokens != nil {
+		token, err := s.deps.GoogleAccountTokens.VerifyGoogle(r.Context(), raw)
+		if !errors.Is(err, oidc.ErrIssuer) {
+			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
+				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
+				return "", false, false
+			}
+			return token.Identity.Account, true, s.liveIdentityToken(w, err, token.IssuedAt, token.Expiry)
+		}
+	}
+	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
+	return "", false, false
+}
+
+// liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever
+// kind it is: err is what the verifier answered. It reports whether the token is sound, or
+// writes the refusal.
+func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, expiry time.Time) bool {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
+		return false
+	case err != nil:
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
+		return false
+	case issuedAt.IsZero():
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
+		return false
+	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
+		return false
+	}
+	return true
 }
 
 // serviceCaller authenticates a service's own projected ServiceAccount token for authenticate,
@@ -619,10 +730,18 @@ func pathRecordID(w http.ResponseWriter, r *http.Request, name, code string) (st
 
 // requireApprover refuses an approver login that canonicalizes to nothing with 400
 // APPROVER_REQUIRED: every UI route names the human it acts for, whether a decision's or a
-// revoke's approver field or a list's ?approver= query.
+// revoke's approver field or a list's ?approver= query. A login spelled as a group
+// (record.GroupOf) is no human either, and is refused 400 APPROVER_IS_GROUP: a group's records and
+// grants are listed and revoked by naming a member, whom the group reader admits, never by naming
+// the group.
 func requireApprover(w http.ResponseWriter, login string) bool {
-	if record.CanonicalLogin(login) == "" {
+	canonical := record.CanonicalLogin(login)
+	if canonical == "" {
 		writeError(w, http.StatusBadRequest, "APPROVER_REQUIRED", "approver is required")
+		return false
+	}
+	if _, group := record.GroupOf(canonical); group {
+		writeError(w, http.StatusBadRequest, "APPROVER_IS_GROUP", "approver names a person, not a group")
 		return false
 	}
 	return true
@@ -685,9 +804,22 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 	writeError(w, http.StatusInternalServerError, "INTERNAL", op+" failed")
 }
 
-// writeUnavailable logs a dependency that could not answer and answers 503 with code naming it.
+// writeUnavailable logs a dependency that could not answer (logUnavailable) and answers 503 with
+// code naming it (answerUnavailable).
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
-	slog.Error("broker: "+op+" failed", "error", err)
+	logUnavailable(op, err)
+	answerUnavailable(w, code, op)
+}
+
+// logUnavailable writes the ERROR line of a dependency op could not reach: "broker: <op> failed",
+// with err and any attrs after it.
+func logUnavailable(op string, err error, attrs ...any) {
+	slog.Error("broker: "+op+" failed", append([]any{"error", err}, attrs...)...)
+}
+
+// answerUnavailable answers 503 with code naming the dependency op could not reach, and writes no
+// line.
+func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
@@ -725,11 +857,102 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
 	}
-	if err := s.deps.Enroll.Store.Pool.Ping(r.Context()); err != nil {
+	if err := s.deps.pingDatabase(r.Context()); err != nil {
+		if s.pingLogsItself {
+			answerUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres")
+			return
+		}
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
+// healthCacheFor is how long the edge's GET /healthz answers from one Postgres ping: the load
+// balancer's health check asks every few seconds, so a second is fresh enough for it, and a caller
+// on the internet who asks at any rate costs the database at most one ping a second per pod.
+const healthCacheFor = time.Second
+
+// healthPingTimeout bounds one ping of the edge's health cache (cachedPing): a database that
+// answers no ping in two seconds is one the load balancer should take the pod out for, and the
+// caller that runs the ping waits no longer than that after its own request ends.
+const healthPingTimeout = 2 * time.Second
+
+// cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
+// Deps.DatabasePing (RegisterEdge). At most one ping runs at a time, on a context of its own
+// (context.WithoutCancel of the caller's, with timeout), so a caller that leaves mid-ping neither
+// cancels it, which in pgx closes the pool's connection, nor keeps its result from the next
+// caller. Its result is kept and, when it failed, logged with one ERROR line naming port
+// (answer.PortEdge), whoever waited for it: a failing or hung database writes one line a ping, at
+// most one per healthCacheFor plus timeout per pod, whatever the number of callers. A caller that
+// asks while a ping runs waits for it, and leaves as soon as its own request ends.
+type cachedPing struct {
+	ping func(context.Context) error
+	now  func() time.Time
+	// port is the value of the port field the line of a failed ping names (answer.PortEdge).
+	port string
+	// timeout bounds one ping; zero means healthPingTimeout.
+	timeout time.Duration
+
+	mu  sync.Mutex
+	at  time.Time
+	err error
+	// running is closed when the ping that runs now ends; nil while none runs.
+	running chan struct{}
+}
+
+// result is the last ping's result while it is under healthCacheFor old, and otherwise the result
+// of a ping it runs (run) or waits for. A waiter whose request ends first answers its own
+// context's error; the ping goes on, and its result is kept for the next caller.
+func (c *cachedPing) result(ctx context.Context) error {
+	for {
+		c.mu.Lock()
+		if now := c.now(); !c.at.IsZero() && now.Sub(c.at) < healthCacheFor {
+			err := c.err
+			c.mu.Unlock()
+			return err
+		}
+		if wait := c.running; wait != nil {
+			c.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		c.running = done
+		c.mu.Unlock()
+		return c.run(ctx, done)
+	}
+}
+
+// run is the one ping running now, which result started: on context.WithoutCancel(ctx) with the
+// ping's own timeout, its result kept and, when it failed, logged. It clears running and closes
+// done in a defer, so a ping that panics leaves the next caller to ping again rather than wait on
+// a ping that will never end.
+func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
+	defer func() {
+		c.mu.Lock()
+		c.running = nil
+		c.mu.Unlock()
+		close(done)
+	}()
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = healthPingTimeout
+	}
+	pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	err := c.ping(pingCtx)
+	c.mu.Lock()
+	c.at, c.err = c.now(), err
+	c.mu.Unlock()
+	if err != nil {
+		logUnavailable("ping Postgres", err, "port", c.port)
+	}
+	return err
 }
 
 // signInStatusResponse is GET /signin/status's answer, the broker's one signin_status row as it

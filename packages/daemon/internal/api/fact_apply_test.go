@@ -108,12 +108,11 @@ type agentRoute struct {
 // Every route of the table is in this test's table, and each request of an agent whose fact names
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
-// architect's moves back, the architect's sign-off and its park of a child in accepting, each
-// ending its own step, and the architect's retry of an issue its own failure held in accepting
-// and its gate registration on a root in accepting. So the record of a step an agent's request
-// ends names the model whose answer its stream read ahead of the request. The routes are read
-// from the server's own table (routes), so a route added later fails here by name until it is
-// put in this one.
+// architect's moves back and the architect's sign-off, each ending its own step, and the
+// architect's retry of an issue its own failure held in accepting and its gate registration on a
+// root in accepting. So the record of a step an agent's request ends names the model whose answer
+// its stream read ahead of the request. The routes are read from the server's own table (routes),
+// so a route added later fails here by name until it is put in this one.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
@@ -177,15 +176,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
 			}}}
 		}},
-		"POST /legion/v1/children/park": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			seedTree(t, r.h, "LEGION-208", "LEGION-209")
-			setIssue(t, r.h, "LEGION-209", func(issue *record.Issue) { issue.Phase = phase.Accepting })
-			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
-			r.runs(t, "LEGION-209", acceptingPlace, architect.token)
-			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
-				return r.h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-209"}, nil)
-			}}}
-		}},
+		"POST /legion/v1/children/park": {none: "a removed route's refusal; " + noFact},
 		"POST /legion/v1/phase/retry": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			// A failure of the architect's claim holds an issue in accepting, whose role is the
 			// architect's (workflow's claimFailed), and the held run is the step of the phase its
@@ -277,10 +268,10 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 // worker, whose run the record holds open, goes through apply as every fact does and waits for
 // no stream, since the operator is no requester whose stream the record reads. A request an
 // agent made waits only where the record names that agent the agent of a run on the issue its
-// fact names: the architect's park of a child in implementing, whose run is its implementer's,
-// waits for nothing, though the architect runs the accepting step of another child. A request
-// refused before it applies a fact waits for nothing: the tester's completion with no verdict,
-// and the architect's move back of an issue of another tree.
+// fact names: the architect's move back of a child in implementing, whose run is its
+// implementer's, waits for nothing, though the architect runs the accepting step of another
+// child. A request refused before it applies a fact waits for nothing: the tester's completion
+// with no verdict, and the architect's move back of an issue of another tree.
 func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r := newAwaitRig(t)
 	worker, _ := r.h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -304,8 +295,10 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	implementer, _ := r.h.launchIn("LEGION-300", "LEGION-302", claim.RoleImplementer)
 	r.runs(t, "LEGION-301", acceptingPlace, architect.token)
 	r.runs(t, "LEGION-302", implementingPlace, implementer)
-	if park := r.h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-302"}, nil); park.Code != http.StatusOK {
-		t.Fatalf("park = %d: %s", park.Code, park.Body)
+	if back := r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+		"grantId": architect.grant(t), "issue": "LEGION-302", "to": "planning", "reason": "the plan needs another look",
+	}, nil); back.Code != http.StatusOK {
+		t.Fatalf("the architect's move back of LEGION-302 = %d: %s", back.Code, back.Body)
 	}
 
 	seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
@@ -324,6 +317,6 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 		t.Fatalf("the waits made = %+v, want none", made)
 	}
 	if applied := r.facts.recorded(); len(applied) != 2 {
-		t.Fatalf("the facts applied = %#v, want the operator's retry and the park", applied)
+		t.Fatalf("the facts applied = %#v, want the operator's retry and the move back", applied)
 	}
 }

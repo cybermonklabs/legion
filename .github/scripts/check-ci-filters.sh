@@ -86,11 +86,25 @@
 #      other job of the run; a job CI_OK_EXEMPT names that does report to ci-ok, or that
 #      CI_OK_SELECTED_BY also maps, or
 #      that is no job of the file at all; a job named for a check main's ruleset requires (ci-ok
-#      and pr-title) that is not the job of that name, and either of those two jobs renamed by a
-#      `name:`, since a job posts its own check under its display name and a skipped one posts a
-#      pass; a pr-title job that is missing, since nothing else reports that check on a pull
-#      request or a merge group; a ci-ok job — the verdict, whose own check run is the other
-#      check that ruleset requires — that is missing, that CI_OK_EXEMPT does not name, or whose
+#      and pr-title), or named by an expression that can evaluate to one, that is not the job of
+#      that name; ci-ok carrying any `name:` but `${{ github.event_name == 'workflow_dispatch' &&
+#      needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}`, pr-title
+#      any but `${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' ||
+#      'pr-title' }}`, since a job posts its own check under its display name, a skipped one posts
+#      a pass, and a dispatch of any ref but exactly refs/heads/main tests that ref's tree and
+#      lands its check runs on the branch's head, a pull request's head, beside the pull
+#      request's own, where a reader by name takes the newer; the ci-ok job's step "Set every
+#      other ci-ok on this head to this job's conclusion" carrying any `if:` but `${{ always() &&
+#      (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true')
+#      }}`, since on any other dispatch it would set a pull request's ci-ok check runs to that
+#      run's verdict; the changes job lacking the output `ref_is_main: ${{
+#      steps.ref.outputs.is_main }}` or its one step `ref`, whose `run:` is exactly `if [
+#      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
+#      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
+#      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
+#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
+#      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
 #      that list ends after a verdict that says nothing about it; and a job of the file that is
 #      in none of ci-ok's three classes, or in two of them: CI_OK_SELECTED_BY maps it to the
@@ -349,16 +363,15 @@
 # working directory (its own, else the job's or workflow's defaults.run, else the root) joined
 # with the command's own `go -C` the Run's. A -race line's closure is the one `go list -race`
 # lists, so its Run says race too. A script_run is held exact instead: the script's line holding
-# its text must be that text alone and uncontinued, under such an env, shell and container (the
-# job's, and those of its steps up to the last one whose run: names the script - by its path from
-# the root or from the step's directory, at the start of a line or after a space, a quote, an `=`,
-# a `(` or a backtick, as `./<path>`, or after a `/` that ends a variable (`$NAME/`), a `}` or a
-# `)`, so `"$GITHUB_WORKSPACE/<path>"`, `${{ github.workspace }}/<path>`, `$(<path> ...)` and
-# `$(git rev-parse --show-toplevel)/<path>` name it, while a `/` after any other text ends a
-# directory of another path and `tools/<path>` names another script - or of all of them where it
-# names the script nowhere, since it may start the script some way this check does not see, each
-# job of a workflow it calls read the same way) and such a job; the script's variables are the
-# Run author's to read, and anything appended to that line falls to everything.
+# its text must be that text alone and uncontinued, under such an env, shell and container - the
+# workflow's, the job's, and those of every step of each job that may run the script, each job of
+# a workflow it calls read the same way - and with no step of those jobs writing $GITHUB_ENV or
+# $GITHUB_PATH or running `go env -w`, before the script's start or after it. Which step starts a
+# script is nothing this check can prove: a step can start it through another script, from another
+# directory or by a test it compiles, and a step that names its path may only chmod or lint it. So
+# a write after the last step that shows a start still counts, which errs wide, never narrow. The
+# script's variables are the Run author's to read, and anything appended to that line falls to
+# everything.
 # A step whose go commands are in no such form can be an exact entry instead: it pins the step's
 # whole run: script (compared as text after trailing whitespace, nothing parsed) and directory,
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under
@@ -448,10 +461,13 @@
 # `go env GOROOT` which go to run, and an exported GOROOT is that answer whichever go PATH finds
 # first, so a GOROOT another install left (mise's go1.27.0 on a dev box) runs that go, and every
 # closure fails with `go.work requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)`: 1618
-# problems where CI finds none, measured on one tree.
+# problems where CI finds none, measured on one tree. go itself names that toolchain's root: the
+# go PATH finds, where it already is go.work's version (as setup-go and mise install it), else
+# the toolchain module in this machine's module cache, fetched there once if it is not. Where go
+# can have neither, it says why, and the recipe stops there.
 #   v=$(sed -n 's/^go //p' go.work)
-#   tc=$(env -u GOROOT go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go$v.$(go env GOHOSTOS)-$(go env GOHOSTARCH)/bin
-#   test -x "$tc/go" && env -u GOROOT PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
+#   goroot=$(env -u GOROOT GOTOOLCHAIN="go$v" go env GOROOT) &&
+#     env -u GOROOT PATH="$goroot/bin:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
 # Either way, read its output by grepping for the problem rather than by its last line.
 set -euo pipefail
 

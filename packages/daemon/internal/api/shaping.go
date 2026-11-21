@@ -979,7 +979,7 @@ const pauseContract = 178
 const repositoriesLiveContract = 202
 
 // intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's
-// 207, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
+// 217, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
 // consumer's count of the messages its intake gave up on that no replay or discard has closed,
 // with the newest stream sequence among them, and the newest of those records. It added two
 // answers whole with their routes, the controller's replay and discard of those records
@@ -995,7 +995,7 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract the key and the two answers arrived at stays where it is.
-const intakeGiveUpsContract = 207
+const intakeGiveUpsContract = 217
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

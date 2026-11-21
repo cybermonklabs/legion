@@ -275,6 +275,14 @@ func (e dispatchEvent) mark() record.EventMark {
 	return record.EventMark{Seq: e.Seq, At: e.CreatedAt.UTC()}
 }
 
+// daemonActor says whether the daemon made the event: its actor is the session the daemon writes
+// every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
+// one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
+// check (StatusChange.DaemonActor) both read.
+func (e dispatchEvent) daemonActor() bool {
+	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
+}
+
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
 // (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
 // its key in neither form is poison (errIssueNameInNeitherForm).
@@ -387,7 +395,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			parent = *issue.Parent
 		}
 		actorSession := ""
-		daemonActor := event.Actor.Kind == "session" && event.Actor.ID == dispatch.DaemonSession(event.IssueKey)
+		daemonActor := event.daemonActor()
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}

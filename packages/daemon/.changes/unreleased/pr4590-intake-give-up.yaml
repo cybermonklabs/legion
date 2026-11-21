@@ -21,6 +21,6 @@ body: |-
   labelled triage root it does not record whose Dispatch event log does not decode or holds a page
   the daemon cannot read is left out of admission's decision with one ERROR line naming it, and the
   reconcile goes on. Any other failed read of the log, a refusal by Dispatch included, still fails
-  the listing. The daemon API contract is 207. Before a rollback to an earlier release, run the two
+  the listing. The daemon API contract is 217. Before a rollback to an earlier release, run the two
   statements of the migration `20261120144241_intake_failures.up.sql` with the daemon stopped
   (docs/kubernetes.md, "Rolling back the release that gives up on intake messages").

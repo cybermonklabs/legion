@@ -99,26 +99,91 @@ func productionEnv(t *testing.T) []string {
 	}
 }
 
-func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
-	err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "")
-	if err == nil {
-		t.Fatal("BROKER_PUBLIC_URL port 0 with no BROKER_FAKE_SECRETS_FILE: want an error, got nil")
+// TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL
+// that is not https, however its scheme is written, refuses a start that is not a local run,
+// naming that setting and never the rest of the URL's text but what redact.URL keeps; https ones
+// start, a broker with no edge is refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set)
+// may use http for either.
+//
+// The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
+// check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
+func TestAnHTTPEdgeURLIsRefusedOutsideALocalRun(t *testing.T) {
+	const edgeURL, machineLoginURL = "https://edge.invalid", "https://dispatch.edge.invalid/credentials/machine"
+	for _, plain := range []string{"http://edge.invalid", "HTTP://edge.invalid:8080", "ws://edge.invalid", "edge.invalid"} {
+		for _, row := range []struct{ setting, edgeURL, machineLoginURL string }{
+			{"BROKER_EDGE_URL", plain, machineLoginURL},
+			{"BROKER_EDGE_MACHINE_LOGIN_URL", edgeURL, plain},
+		} {
+			err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "")
+			if err == nil || !strings.HasPrefix(err.Error(), row.setting+" ") || !strings.Contains(err.Error(), "must be https in production") {
+				t.Errorf("%s %s with no BROKER_FAKE_SECRETS_FILE = %v, want the https refusal naming %s", row.setting, plain, err, row.setting)
+			}
+			if err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "/dev/fake-secrets.json"); err != nil {
+				t.Errorf("%s %s in a local run = %v, want nil", row.setting, plain, err)
+			}
+		}
 	}
-	const want = `BROKER_PUBLIC_URL "http://127.0.0.1:0": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention`
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+	for _, row := range [][2]string{{edgeURL, machineLoginURL}, {"HTTPS://edge.invalid:8443", "HTTPS://dispatch.edge.invalid:8443/m"}, {"", ""}} {
+		if err := refuseHTTPEdgeURLsInProduction(row[0], row[1], ""); err != nil {
+			t.Errorf("BROKER_EDGE_URL %q and BROKER_EDGE_MACHINE_LOGIN_URL %q with no BROKER_FAKE_SECRETS_FILE = %v, want nil", row[0], row[1], err)
+		}
+	}
+}
+
+// portZeroPublicURLs are BROKER_PUBLIC_URLs whose port is 0 as the bind reads a port: each spelling
+// of zero, which the production refusal and main's derive-from-bind rewrite both take as port 0.
+var portZeroPublicURLs = []string{"http://127.0.0.1:0", "http://127.0.0.1:00", "http://[::1]:000", "http://localhost:0000"}
+
+// TestPortZeroPublicURLRefusedInProduction: a BROKER_PUBLIC_URL whose port is 0, however the zero
+// is written, refuses a start that is not a local run.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows load.
+func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
+	for _, publicURL := range portZeroPublicURLs {
+		err := refusePortZeroPublicURLInProduction(publicURL, "")
+		if err == nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with no BROKER_FAKE_SECRETS_FILE: want an error, got nil", publicURL)
+			continue
+		}
+		want := "BROKER_PUBLIC_URL " + strconv.Quote(publicURL) + ": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention"
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
 	}
 }
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("BROKER_PUBLIC_URL port 0 with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+	for _, publicURL := range portZeroPublicURLs {
+		if err := refusePortZeroPublicURLInProduction(publicURL, "/dev/fake-secrets.json"); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", publicURL, err)
+		}
 	}
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("https://broker.invalid", ""); err != nil {
-		t.Fatalf("a real BROKER_PUBLIC_URL: want nil, got %v", err)
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:"} {
+		if err := refusePortZeroPublicURLInProduction(publicURL, ""); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s: want nil, got %v", publicURL, err)
+		}
+	}
+}
+
+// TestThePublicURLsPortIsReadAsTheBindReadsIt holds publicURLPortZero, the one reading of the
+// port that both the production refusal and main's derive-from-bind rewrite take, to the number
+// the bind reads: every spelling of zero is port 0, and a URL naming another port, or none (an
+// empty port included), or not parsing, names no port 0.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows read as no port 0.
+func TestThePublicURLsPortIsReadAsTheBindReadsIt(t *testing.T) {
+	for _, publicURL := range portZeroPublicURLs {
+		if !publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = false, want true: the bind reads that port as 0", publicURL)
+		}
+	}
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:", "http://127.0.0.1:%30", "://no-scheme"} {
+		if publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = true, want false", publicURL)
+		}
 	}
 }
 
@@ -241,7 +306,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -289,6 +354,38 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 	}
 	if strings.Contains(string(out), "broker listening") {
 		t.Fatalf(`broker refused to boot but still logged "broker listening" first — the guard ran after binding: %s`, out)
+	}
+}
+
+// TestMainRefusesAnHTTPEdgeURLInProduction: the binary, with an edge whose BROKER_EDGE_URL is
+// plain http and no BROKER_FAKE_SECRETS_FILE, exits non-zero naming the https refusal before it
+// reaches the database or binds a socket (refuseHTTPEdgeURLsInProduction runs beside the port-0
+// refusal, before store.Open), as TestMainRefusesPortZeroPublicURLInProduction holds for that one.
+//
+// The named revert: drop the call of refuseHTTPEdgeURLsInProduction from main, and the broker goes
+// on to dial the unreachable database instead of naming the refusal.
+func TestMainRefusesAnHTTPEdgeURLInProduction(t *testing.T) {
+	cmd := exec.Command(buildBroker(t))
+	cmd.Env = append(append(os.Environ(), productionEnv(t)...),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://broker.invalid",
+		"BROKER_MACHINE_LOGIN_URL=https://dispatch.invalid/credentials/machine",
+		"BROKER_EDGE_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_EDGE_URL=http://edge.invalid",
+		"BROKER_EDGE_MACHINE_LOGIN_URL=https://dispatch.edge.invalid/credentials/machine",
+	)
+	out, err := cmd.CombinedOutput()
+	exitErr, isExit := err.(*exec.ExitError)
+	if err == nil || !isExit || exitErr.ExitCode() == 0 {
+		t.Fatalf("broker BROKER_EDGE_URL=http://edge.invalid in production: want a nonzero exit, got err=%v output=%s", err, out)
+	}
+	const wantSubstring = `must be https in production`
+	if !strings.Contains(string(out), wantSubstring) {
+		t.Fatalf("broker refused to boot (exit %d) but its output didn't name the reason: %s\nwant it to contain: %s",
+			exitErr.ExitCode(), out, wantSubstring)
+	}
+	if strings.Contains(string(out), "broker listening") || strings.Contains(string(out), "broker edge listening") {
+		t.Fatalf(`broker refused to boot but still logged that it was listening first: %s`, out)
 	}
 }
 
