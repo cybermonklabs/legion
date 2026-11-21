@@ -26,7 +26,9 @@ import (
 // The supervisor's bounds (section 5 of the background-runs design).
 const (
 	// agentMemoryEvery is how often the supervisor reads the agent's resident memory.
-	agentMemoryEvery = 50 * time.Millisecond
+	// Check c20's mutant: the supervisor reads the agent's memory every 1 s, so the kernel kills in
+	// the container before the supervisor does.
+	agentMemoryEvery = time.Second
 	// agentRenewalsMissed is how long the agent may go without a renew, three of the renews the
 	// server answers every 10 s, before the supervisor kills it as stuck as a whole: a SIGSTOP,
 	// a deadlock, a runtime that no longer schedules.
