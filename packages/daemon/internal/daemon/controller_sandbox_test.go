@@ -416,7 +416,7 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 		}
 		opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return []string{controllerSandboxOwner} }
-		opts.Mapped = func() []ghrepo.Repository { return nil }
+		opts.CacheRepositories = func() []ghrepo.Repository { return nil }
 		opts.Tools.Legion = r.legion
 		opts.Agent = r.agent
 		opts.DaemonURL, opts.EnvoyURL = cfg.DaemonURL, cfg.EnvoyURL

@@ -359,6 +359,83 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## project-secrets-check.sh
+
+Shows on the local stack that a private Dispatch project's secret goes only to a
+credential that names the project (R11 of dispatch://INFRA-3862). It starts one
+`dev-stack.sh --project-access` run, makes `PRIV` private (owner carol, access list
+bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier) and
+`PUB_KEY` (untagged), and drives six callers. For each it runs `agent-secrets request`
+of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts`,
+which prints the token's `project_scope` and `projects` from the broker's
+introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
+the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
+exits 0 only when all 16 rows ran and passed.
+
+```bash
+cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
+```
+
+| Caller | What passes |
+| --- | --- |
+| PRIV's pod (`legion-priv-worker`, mapped to PRIV for carol by its exchange entry) | its trade is `named` with `["PRIV"]`; after `agent-secrets enroll --pod --service legion-priv`, `PRIV_KEY` and `PUB_KEY` are granted |
+| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, which no machine registration names | avenue F's refusal (`machine_not_registered` at the trade, `MACHINE_NOT_REGISTERED` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
+| alice's session listing PRIV | her trade is refused (her person cannot see PRIV) and her enrollment is refused `PROJECT_NOT_VISIBLE` |
+| carol's session naming nothing | `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| the machine's own session | its trade names no project, `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| PRIV's pod behind the airlock | a request through the proxy that spends the `PRIV_KEY` placeholder is served by the bound host (the host's own answer is read); after carol is taken off PRIV and the broker's 30-second K3 cache has passed, the next request's `CONNECT` is refused 407 |
+
+carol and alice each sign in with `agent-secrets login` on a box of their own (a HOME,
+key directory, sign-in store and `agent-secrets-helper` each), at the stack's issuer.
+Their sessions read no sign-in, so `agent-secrets register --exec` sends them to the
+box's helper, which enrolls them under the person's sign-in with the projects the
+session listed.
+
+The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
+and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
+it should have been refused: <caller>` (on the right stack, carol's session naming
+nothing):
+
+```bash
+LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
+```
+
+Live mode runs the session half against a deployment and writes nothing:
+
+```bash
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
+```
+
+Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
+the pod's enrolled key directory (`AGENT_SECRETS_KEY_DIR`), the operator's helper with
+its machine login (`AGENT_SECRETS_HELPER_SOCK`), and an account token the broker lists
+in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller the
+broker lets read a token's introspection. A missing one of the first three exits 2; a
+missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
+names the project), the pod's request for the secret, and the operator's session
+listing that project, which reads F's check as the stack's row does. It takes no
+Dispatch URL, since nothing of the session half reads one.
+
+Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
+switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
+in place of three of A's routes, reads them back, and says so on its output. The writes
+are two functions, each named for the route it stands in for, so each body becomes that
+call once the route answers: `standin_patch_access_private` for `PATCH
+/api/v1/projects/PRIV/access {"visibility":"private"}` and `PUT
+/api/v1/projects/PRIV/access/people/bob@example.com`, and, in the airlock row,
+`standin_patch_access_owner` for `PATCH /api/v1/projects/PRIV/access
+{"owner":"bob@example.com"}`. The rows need A's schema (`projects.owner`,
+`projects.visibility`, `project_access`), so on a Dispatch without it the run stops
+before any row with the route the write stands in for.
+
+`scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
+`dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and
+`sleep`: each row passes on the right answer and fails naming its caller and secret on
+a wrong one, the control fails, a run whose rows matched nothing fails, and live mode
+refuses half its options. It needs bash and jq and takes a few seconds. The driver
+needs what `dev-stack.sh` needs (Docker included, for the airlock's stands), `bun` with
+this repository's packages installed, and a few minutes.
+
 ## callout-check.sh
 
 Proves, on the whole local stack behind the NATS auth service, what the hub lets a
