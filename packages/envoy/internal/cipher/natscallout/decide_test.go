@@ -391,14 +391,14 @@ var (
 // known, and with released's while it is unknown, so the hold never refuses it; its user expires
 // with its token or 10 minutes after the decision, whichever is first, in every phase. Every other
 // client a decision admits - a session, a listed service, the hold's probe - is refused
-// hold_unknown while the row is unknown, naming nothing but that, and is decided as before while it
-// is known, held included (refusing them under held is a later task's). A decision reads the row
-// once, and only for a client it would otherwise admit: a client with no credential or an unlisted
-// one costs the broker's Postgres nothing.
+// hold_unknown while the row is unknown and held while the row holds held, naming nothing but
+// that, and is decided as before under released and prepare. A decision reads the row once, and
+// only for a client it would otherwise admit: a client with no credential or an unlisted one costs
+// the broker's Postgres nothing.
 //
-// It fails when the operator is refused for the hold (the unknown row's operator line), when a
-// client other than the operator is admitted while the row is unknown, or when the operator's user
-// outlives 10 minutes.
+// It fails when the operator is refused for the hold (the unknown and held rows' operator lines),
+// when a client other than the operator is admitted while the row is unknown or held, or when the
+// operator's user outlives 10 minutes.
 func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 	now := time.Now()
 	signer := newHoldSigner(t)
@@ -417,14 +417,15 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 	for _, row := range []struct {
 		name   string
 		answer holdAnswer
-		// phase is the operator's grant's phase; known is whether every other client is admitted.
-		phase natsgrant.OperatorPhase
-		known bool
+		// phase is the operator's grant's phase; refusal is the label every other client is refused
+		// with, "" when it is admitted.
+		phase   natsgrant.OperatorPhase
+		refusal string
 	}{
-		{"released", rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseReleased, "h-1")), natsgrant.OperatorPhaseReleased, true},
-		{"prepare", rowOf(signer.reading(t, 2, natsgrant.OperatorPhasePrepare, "h-1")), natsgrant.OperatorPhasePrepare, true},
-		{"held", rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")), natsgrant.OperatorPhaseHeld, true},
-		{"unknown: no row", holdAnswer{}, natsgrant.OperatorPhaseReleased, false},
+		{"released", rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseReleased, "h-1")), natsgrant.OperatorPhaseReleased, ""},
+		{"prepare", rowOf(signer.reading(t, 2, natsgrant.OperatorPhasePrepare, "h-1")), natsgrant.OperatorPhasePrepare, ""},
+		{"held", rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")), natsgrant.OperatorPhaseHeld, labelHeld},
+		{"unknown: no row", holdAnswer{}, natsgrant.OperatorPhaseReleased, labelHoldUnknown},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			stub.set(row.answer)
@@ -454,14 +455,19 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 				before := stub.called()
 				decision, err := Decide(t.Context(), deps, holdServices, other.req)
 				require.Equal(t, 1, stub.called()-before, "%s's decision did not read the row once", other.name)
-				if row.known {
+				if row.refusal == "" {
 					require.NoError(t, err, "%s was refused under %s", other.name, row.name)
 					require.Equal(t, other.want, decision, "%s under %s", other.name, row.name)
 					continue
 				}
 				var refused *Refusal
-				require.True(t, errors.As(err, &refused), "%s was admitted while the hold was unknown: %+v", other.name, decision)
-				require.Equal(t, labelHoldUnknown, refused.Label)
+				require.True(t, errors.As(err, &refused), "%s was admitted under %s: %+v", other.name, row.name, decision)
+				require.Equal(t, row.refusal, refused.Label, "%s under %s", other.name, row.name)
+				if row.refusal == labelHeld {
+					require.Equal(t, "held: the NATS writer hold is set, and admits only its operator", refused.Reason)
+					require.NoError(t, refused.Cause, "a held refusal has no failed step to name")
+					continue
+				}
 				require.Equal(t, "hold_unknown: the NATS writer hold cannot be read", refused.Reason)
 				require.ErrorIs(t, refused.Cause, errNoHoldRow, "the reporter's line does not say why")
 			}
