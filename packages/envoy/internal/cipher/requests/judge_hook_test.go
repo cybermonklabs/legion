@@ -184,6 +184,18 @@ func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 	}
 }
 
+// TestJudgePolicyReportsAFederationSecret: JudgePolicy's third answer is whether a person approves
+// every release of the secret, and an Anthropic federation secret with no admin tag is one, so the
+// judge's own check refuses it as it refuses an administrator's.
+func TestJudgePolicyReportsAFederationSecret(t *testing.T) {
+	m, enr, _, approver := newFixture(t)
+	retag(t, m, federationSecret())
+	decision, withheld, personOnly, err := m.JudgePolicy(t.Context(), enr, federationSecretName)
+	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || !personOnly {
+		t.Fatalf("JudgePolicy(%s) = %+v, withheld %v, a person's alone %v, %v; want an approval by %s that a person approves every release of", federationSecretName, decision, withheld, personOnly, err, approver)
+	}
+}
+
 // TestJudgePolicyReportsAWithheldName: the operator's revoke of an automatic grant withholds that
 // name from the session, and JudgePolicy says so beside the decision — the policy answers the
 // withheld name with an approval, which is exactly why the judge needs the flag as well as the

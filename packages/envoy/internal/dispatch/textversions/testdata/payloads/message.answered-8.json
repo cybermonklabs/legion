@@ -1,0 +1,33 @@
+{
+  "id": 125165,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "",
+  "seq": 0,
+  "type": "message.answered",
+  "actor": {
+    "kind": "session",
+    "id": "01a16553-3e04-7776-a285-c3590293cf71",
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-30T16:12:39.715692Z",
+  "payload": {
+    "id": "0ebaae58-42ee-4816-8b23-2163d3300a26",
+    "body": "lorem ipsum dolor sit ",
+    "author": {
+      "id": "01a16553-3e04-7776-a285-c3590293cf71",
+      "kind": "session",
+      "owner": "alice@example.com"
+    },
+    "target": "session:01a16553-3e04-7776-a285-c3590293cf71",
+    "issue_key": null,
+    "created_at": "2026-10-30T16:12:39.715692Z",
+    "deliveries": [],
+    "reply_body": "lorem ipsum d",
+    "in_reply_to": "822bdfb1-b760-4282-bf67-6cfe9e00daa6",
+    "reply_block": null,
+    "broadcast_id": null,
+    "thread_target": "session:01a16553-3e04-7776-a285-c3590293cf71"
+  }
+}

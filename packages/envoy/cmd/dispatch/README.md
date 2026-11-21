@@ -213,6 +213,15 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
+No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
+a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
+The person makes those calls from their browser session, or with a personal token they gave `approve`.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
+
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
@@ -294,7 +303,7 @@ see that component's README for its inputs, the IAM grant it writes and the one 
 GitHub does not redeliver a webhook delivery that failed.
 When NATS is configured and the App's private key (`DISPATCH_APP_PEM_B64`) is present, Dispatch redelivers them itself, following GitHub's documented approach.
 At start and every two minutes after (Background loops, below:
-each sweep two minutes plus up to a tenth after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
+each sweep at most two minutes, and more than 0.9 of that, after the last) it lists the App webhook's attempts (`GET /app/hook/deliveries`) and judges each delivery by its GUID, as GitHub's own redelivery script does:
 a GUID with an `OK` attempt is delivered, whatever its failures, and it asks GitHub to redeliver each other GUID with an attempt whose status is not `OK` (`POST /app/hook/deliveries/{id}/attempts`).
 Both endpoints accept only an App JWT, which is why Dispatch runs this.
 The webhook the App delivers to is the Envoy listener's `/webhook/github`.
@@ -305,7 +314,8 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 - Every failed delivery is asked for again, whatever status code its failed attempts carry:
   a 5xx, an attempt GitHub could not complete, and a 4xx alike (the listener's 401 for a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), since what the listener cannot take now it may take later.
   The first request goes on the next sweep.
-  While no attempt is `OK`, the next request is due 2, 4, 8, 16 and 32 minutes after the one before, then every 60 minutes.
+  While no attempt is `OK`, the next request waits a backoff of 2, 4, 8, 16 and 32 minutes after the one before, then 60 minutes each time: one, two, four, eight and sixteen two-minute intervals, then thirty.
+  It is due nine tenths of that backoff after the sweep that made the request before it (`duty.LeasePeriod`), since a sweep comes more than nine tenths of two minutes after the one before: so the sweep that many intervals on makes it at the latest, and the first retry is the next sweep's.
   A redelivery request GitHub refuses (for example 422) delivers nothing and is asked again on the same schedule, as is an accepted request whose redelivery never appears in GitHub's log.
 
 - The sweep stops asking 72 hours after the first failed attempt it saw for the delivery, since GitHub keeps a delivery 72 hours, or when GitHub answers the redelivery request 404 (it no longer has the delivery).
@@ -337,7 +347,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 
 - Every sweep logs an INFO `msg="webhook redelivery sweep"` line:
   `failed_attempts` (the failed attempts listed), `deliveries` (the deliveries the sweep decided:
-  the GUIDs of the listed failed attempts, plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
+  the GUIDs of the listed failed attempts, less any it left out (below), plus the open deliveries the listing no longer returns that the index says are due, one whose claim was never answered included), `index_entries` (the entries the index read returned, none in the operator command, which reads no index), and one count per outcome, which add up to `deliveries`.
   `closed` is a delivery an earlier sweep settled (GitHub recorded it `OK`, or it expired):
   its failed attempt stays listed until it is older than the sweep's look-back, so after a burst of failures is redelivered, the sweeps of the next hour and six minutes count the burst as `closed`.
   `waiting` is a delivery whose next request is not due yet:
@@ -345,6 +355,29 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   and in the operator command every open delivery it reads that is not due and not claimed, listed or not.
   `claimed_elsewhere` is a delivery another sweep is asking GitHub for.
   A delivery the sweep's cap of 300 requests left over is not counted; the next sweep takes it.
+
+- A delivery whose GUID the sweep's bucket cannot key is left out of the sweep:
+  a GUID outside the characters a NATS key may hold (letters, digits, `-`, `/`, `_`, `=` and `.`), one holding a space or an empty token, or one so long that its index entry's key passes the bucket's bound for a write (`bus.KeyValue.RefusesWrite`).
+  No sweep could read or write such a delivery's record or index entry, so it would otherwise fail every sweep, or leave every sweep incomplete with its cursor held, for as long as GitHub lists it.
+  Each sweep that lists it logs `level=WARN msg="webhook redelivery left out a delivery whose GUID the bucket cannot key"` with `guid` and `error` (the bucket's refusal), decides the rest, and stays complete.
+
+- A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, and an index entry's `key`, to a bound (`githubapp.ShownBody`):
+  whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`, where `<n>` is the size of the text.
+  The GitHub App client (`githubapp`) shows a refusal's body in its errors as `githubapp.ShownBody` shows it, and `<n>` is the size of the body.
+  A value of an answer that the client cannot decode, in a time parse error or a JSON type error, is cut alone, and `<n>` is the size of the value.
+  That error still names the time layout, or the field and its Go type.
+  For a valid time with text after it, the time parse error's reason quotes that text (`extra text`).
+  The client cuts that reason alone too, and `<n>` is the size of the reason.
+  An error for a request that GitHub did not answer, or whose answer could not be read or passed the size limit, names the request's URL as `githubapp.ShownBody` shows it, and `<n>` is the size of the URL.
+  A transport error also cuts its cause, so it still names the cause after a long URL, for example `context deadline exceeded`.
+  A line the cause quotes is cut with the cause's text, and `<n>` is the size of the cause's text.
+  `githubapp.ShownErr` cuts whole any other error that quotes GitHub's text, such as an error of the bucket that quotes a key, and `<n>` is the size of the error's text.
+  No error that `githubapp.ShownErr` answers is longer than 4,414 bytes: two texts as `githubapp.ShownBody` shows them, each at most 2,079 bytes, and 256 bytes for the error's own words.
+  A time parse error, a JSON type error or a transport error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
+  A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
+  The sweep's errors and lines therefore carry that text the same way.
+  A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
+  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.
@@ -371,6 +404,8 @@ a rate limit GitHub answers its listing with is recorded for every process, as a
 envoy-dispatch redeliver-webhooks --since 72h --dry-run   # list what would be redelivered
 envoy-dispatch redeliver-webhooks --since 72h             # redeliver under the sweep's rules
 ```
+
+Its table shows each delivery's GUID, event and action as `githubapp.ShownBody` shows them, as the sweep's lines do.
 
 It reads the same App credentials and NATS configuration as the server, and opens the database `DATABASE_URL` names for the rate limits every process shares;
 it migrates nothing, so it runs against a database the server of its release has already migrated.
@@ -455,6 +490,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
+  The passes after a pass that its own deadline ended before it reached a head — read one whole or gave one up — read at the floor until one reaches a head.
+  In a process's first cycle such a pass learned no page of any head it listed, so the arithmetic would set the passes after it at the ceiling, and under a short deadline a pass at the ceiling can reach no head either, so no cycle would ever close; later, where the `Reconciler` holds pages from earlier passes, the floor is only the faster of the two answers, never a slower one.
+  Every other way a pass ends with no head reached leaves that floor as it was: a rate limit, even one GitHub answers as the deadline falls; its caller's cancellation or deadline; an order with no head in it.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
   The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the ones `repo_projects` maps and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
@@ -835,7 +873,7 @@ Run the commands from a checkout of this repository with `bun install` run, each
 
 2. `curl -s https://<dispatch>/healthz` prints a body with `"idempotency_keys":true`: this build judges `Idempotency-Key` (Keyed writes, below).
    The field is a fact of the build, so a `503` for a database or NATS that is down carries it too;
-   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends no write again to it.
+   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends a failed write again under its key and asks nothing first, so that build must not serve.
 
 3. `bun scripts/e2e/lib/dispatch-keyed-comment.ts --url https://<dispatch> --bearer-file <token file> --issue <scratch issue>` posts one comment twice under one `Idempotency-Key`, as a page whose first answer was lost asks again.
    It passes when the repeat is Dispatch's stored answer and the issue holds the comment once:
@@ -906,15 +944,18 @@ So the two surfaces a client crosses a roll on, the body it sends and the route 
 **The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
 one an earlier server ran whose answer was lost is run again by its retry on a new server, which holds no key for it, and a retry of one a new server ran runs again on an earlier one.
-The page and the `dispatch` command both retry a write whose answer was lost, and the command's check that Dispatch keeps keys (the key echoed back, or `/healthz`) reads whichever server answered it.
+The page and the `dispatch` command both retry a write whose answer was lost, under its key, and ask nothing first.
 Stop the earlier release, or scale it to zero, before this one serves:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica;
 a deployment running more than one replica, which rolls, is scaled to zero first, as for `0117` (Database migrations, below).
 The compose auto-deployer stops the old container before it starts the new one.
 Releases after this one roll again.
 A rollback to an earlier release brings the same hazard back, the other way:
-a tab still open, and a `dispatch` client that saw this release keep keys within the last five minutes (`KEYED_LAYER_MEMORY_MS`), retry a write whose answer was lost against the earlier server, which runs it again.
+a tab still open, and every `dispatch` client, which sends a failed write again under its key and asks nothing first, retry a write whose answer was lost against the earlier server, which runs it again.
 Fix forward instead; if you must roll back, stop this release first, knowing a write in flight at that moment may land twice.
+A rollback to a build whose keyed layer passes a caller it cannot resolve on to the handler, rather than answering that caller itself, brings the double write back too, for every `dispatch` client that sends a failed write again with no `/healthz` read (`packages/envoy-client/README.md`), for as long as that build serves:
+that build can run a keyed write with no key, so a write whose answer was lost, sent again under its key, can land twice.
+Once a deployment's sessions run such a client, do not roll Dispatch back past `b1c42d1d7d` (the first build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
 A tab opened before the deploy needs a reload:
@@ -1029,8 +1070,8 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
-  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
+  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers, for each of the four callers of the two intakes' holds and for each of the two callers of the keyword fill's hold, twenty-four (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
 
@@ -1214,12 +1255,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the delivery intakes' holds and the keyword fill's hold (`duty.Hold`) with the fill's batches, the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1230,7 +1271,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 230, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1526,11 +1567,12 @@ A process that finds it held tries again
   those are retried up to six more passes, the first a second later and doubling to at most a minute, and drift left after them is logged at WARN and left to the next start.
 
 **Timers that stay**, because nothing announces what they would miss
-— a webhook that never arrived, a delivery that failed, a source's branch head, an expired key, a delivery a process that died still owes:
+— a webhook that never arrived (a push to a component source's branch among them, which the architecture import repairs), a delivery that failed, an expired key, a delivery a process that died still owes:
 
 - The delivery reconcile (`delivery.ReconcileInterval`) and the architecture import (`architecture.SyncInterval`) run every 5 minutes through `duty.RunJittered`, the first pass after a random delay within one interval.
   The webhook redelivery sweep (Webhook redelivery, above; `redeliver.Interval`) runs every 2 minutes, its first sweep at start.
-  Each waits the interval plus up to a tenth again after every pass (`duty.Jittered`), drawn afresh every period, so two processes' passes drift apart rather than ticking in step.
+  Each waits the interval less up to a tenth of it after every pass (`duty.JitteredWithin`), drawn afresh every time, so no wait is longer than the interval and two processes' passes drift apart rather than ticking in step.
+  Each hands its lease a period of 0.9 of its interval (`duty.LeasePeriod`), which every wait is longer than, so a lone process's pass is never refused as a period its own last pass served.
   `DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL` replaces the delivery reconcile's 5 minutes for an end-to-end test, and a deployment never sets it.
   `DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's 2 minutes for an end-to-end test, and a deployment never sets it.
   `DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1` runs the architecture import's first pass as the process starts, rather than after the random delay, for an end-to-end test that must see a pass inside its window, as `DISPATCH_TEST_RECONCILE_AT_START=1` does for the delivery reconcile, and a deployment never sets either.
@@ -1556,6 +1598,61 @@ Outside these classes, the document compaction sweep (lease `document-compaction
 Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
 The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
 
+**The keyword fill** (`textversions.Run`) is a held duty, not a loop woken per pass, and it has none of the three shapes above.
+It writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log (Search, below).
+One process at a time holds its `duty.Hold`, named `search-text-versions-fill`, and fills the table for as long as it serves.
+A lease taken per pass would move the fill from one process to another at each pass, and the pause below reads only the answers reads of the process that writes.
+The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
+So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
+A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+
+- The hold has the values of the delivery intakes' holds.
+  It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
+  Each other process stands by.
+  A standby tries for the hold at once, each time a hold is released (`dispatch_duty_holds`), and every 10 s.
+  So it takes a released hold at once, and the hold of a holder that died within 25 s.
+  When the process stops, the batch in flight commits or rolls back, and the holder releases its hold before the pool closes.
+
+- The holder runs a pass when it takes the hold, and then each time a commit writes an event (`dispatch_events`).
+  These two wakes are the fill's own, on the shared listener (below).
+  A pass reads the event log's safe horizon once (`events.Horizon`) and writes the rows of the events above the cursor up to that horizon, in id order.
+  While the horizon stands below an id that a read of the horizon saw, the holder reads it again after 1 s, then 2 s, 4 s and 8 s, until the horizon passes that id.
+  A transaction that writes no event ends with no notification, so nothing else wakes the fill for the events that wait behind it.
+  A fill that is caught up holds no timer and sends no statement except the renewal of its hold.
+
+- Before each batch the fill asks `sessionanswers.Latency`, which times the answers reads (`GET /api/v1/agents/{session_id}/answers`) that this process serves.
+  The route times each read from the moment it enters the route's handler chain, as the access-log line times it.
+  The fill pauses while a read that took longer than 800 ms ended within the last 10 s, and while a read has run longer than 800 ms and has not ended.
+  It asks again each second, and it continues when neither condition has held for 10 s.
+  A batch that runs while a read becomes slow commits, and the pause holds back the next batch.
+
+- The cursor row is the one row of `search_text_versions_fill`: every event at or below its `event_id` has its rows.
+  The fill creates the row when it finds none.
+  A new holder, in this process or in another, continues from the cursor, so no event gets its rows twice and no event is missed.
+  Each batch checks the log against the cursor (`events.EventLogWasReset`).
+  When the log was reset, the batch deletes the rows of both tables and writes the cursor row again at event 0 with no reach, in one transaction, and the fill starts again from the first event.
+  An event whose payload the rules cannot read stops the fill at that event.
+  The fill then tries the pass again after 1 s, doubling to a minute, and logs the error each time.
+
+- A batch reads at most 500 events and at most 2 MB of the text its vectors are made from.
+  Each event of a type the rules read counts its payload, and a post whose event cut its body counts the body its present row holds too: the read of the events bounds those.
+  An event that starts a version counts what that version's vector reads besides, measured while the rules decide:
+  an issue's row counts the markdown of the primary document version it names (version 1 for `issue.created`, the version it carries forward for `issue.updated` and `issue.closed`, the named version for `artifact.version`), and a post whose event cut its body counts the whole body the rules give it, where that is longer than its row's.
+  The rules end the batch before the first event that takes it past 2 MB.
+  The title that an `artifact.version`'s row carries forward is not counted, at most 3,000 bytes a row.
+  An event that counts more than 2 MB is a batch alone.
+  A batch is one transaction.
+  It locks the cursor row, checks that `duty_holds` still names this holder live, writes the rows, moves the cursor, stores the reach, and commits.
+  A holder that lost its hold writes nothing.
+  `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB the batch counts.
+  `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
+  After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
+
+- The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
+  While it catches up, it logs a progress line at most every 30 s.
+  When it is caught up, a pass logs at most once a minute the reach, the lag of the reach behind `now()`, and how many events the cursor is behind the newest event.
+  It takes two connections of the lease pool: `search text versions fill`, for its hold statements, batches and reads, and `search text versions fill hold renewal`.
+
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
 A channel is registered only for a loop that will run:
@@ -1564,9 +1661,13 @@ No loop waits for the listener: each runs its boot pass whether or not it has co
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
 **The GitHub intake** (`delivery.Intake`) checks each message's subject before it decodes anything:
-only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
-— checks, comments, issues, pushes, job events, `pr.<n>.review` — is acknowledged with no decode.
-A wanted message runs under its key: a pull request under its repository and number, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, `notifications.github.<owner>.<repo>.workflow.<file>.<action>` and `notifications.github.<owner>.<repo>.push.branch.<branch>` can carry a kind it handles, and every other subject
+— checks, comments, issues, a push of a tag, job events, `pr.<n>.review` — is acknowledged with no decode.
+A wanted message runs under its key: a pull request under its repository and number, read from the subject, a push of a branch under its repository, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
+The intake hands a push of a branch to the architecture importer, which imports every enabled component source on that repository and branch at once rather than at its next five-minute pass (`delivery.PushImports`, `architecture.Importer.Pushed`).
+The intake runs only while `delivery_settings` holds a row (`Intake.Run`), so a push is imported this way only where delivery is configured, and elsewhere the five-minute pass is a source's only automatic import.
+A push is no delivery fact: a push of a branch calls the importer once, a push of a tag calls nothing, and neither records an `issue.deployed` or moves the Delivery page's event freshness, `last_event_at` (`TestTheIntakeHandsABranchPushToItsImporter`).
+A hand-off that fails is logged at `WARN` (`process event`) and the envelope acknowledged, as `Intake.deliver` does for a handler's error other than `ErrHeadNotStored`, since the importer's five-minute pass imports the source all the same.
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
@@ -2585,6 +2686,21 @@ The previous release neither reads nor writes them, so the two roll side by side
 An event that release records keeps the values this release wrote last, or null, and every event written since - by either release - moves its owner's `last_seq` past them, so a copy this release sends waits until this release records the event again: while the previous release holds the publisher hold, copies on an owner with an unpublished earlier event wait longer, and pass none of its events.
 This release also writes both again for every unpublished event a batch reads not due, when either changed.
 
+Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
+Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+`search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
+`search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
+`search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
+Neither table has a foreign key: a key locks the table it names, and a version is history that a later change to its item must not follow or refuse.
+It is a new-table migration: it holds only `create table` and `create index` on the two new tables, the release before it neither reads nor writes them, and its census answers `0`.
+No migration writes a row of either table.
+At production's counts the table and its indexes take about 2 GB (1.9 GB measured on real text, 2,134 MB on the keyed copy) and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
+So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
+A change to its shape is a new table that the fill writes again.
+The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
+A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
@@ -2594,7 +2710,7 @@ That key is the first issue the five sources name that resolves to the repositor
 a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
-An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than five minutes.
+An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than 4.5 minutes (`delivery.PullRequestHeadStaleAfter`).
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
@@ -2672,7 +2788,7 @@ Migration `20261105070440_pull_request_heads_attribution_rule` gives `pull_reque
 `0` is what every row written before the column has:
 the rule that took the first candidate the five sources named outright, whatever repository that issue resolved to.
 A merged row is the one row nothing revisits:
-an open row comes round every five minutes, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
+an open row comes round at every reconcile pass of one process, each starting at most five minutes after the one before it ended, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
 So a pull request merged under an older rule kept for good whatever that rule concluded, and one that rule credited to nobody left every `before_merge` result at its merged head standing at no basis for ever.
 The column bounds the repair: the reconcile's merged arm takes a merged row credited to nobody that this build's rule has not judged, and the read stamps the row at that rule whether or not it could attribute it, so every such row stored before the deploy is judged once more and then left alone, and a later change to the attribution reaches the merged rows already stored by raising that constant by one.
 The migration replaces `pull_request_heads_merged_unread` to follow the arm it serves:
@@ -2702,7 +2818,7 @@ Its census answers `0`.
 Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
 has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
 A `before_merge` result whose commit heads no row attributed to the check's own issue is read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and that read can repair nothing for a commit Dispatch already holds an open or merged pull request for:
-the reconcile re-reads an open row every five minutes and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
+the reconcile re-reads an open row at every pass of one process, each starting at most five minutes after the one before it ended, and offers a merged one once per rule version, so asking GitHub again from a read teaches nothing.
 So the read asks this first, and a child's result on its parent's tab
 — whose commit heads the child's own pull request, attributed to the child
 — costs no GitHub call at all (`api/results_comparison.go`, `comparisonReader.readThroughHead`).
@@ -3342,6 +3458,18 @@ a text with no whitespace before the cut is found by none of its own.
 An issue's key is always indexed whole.
 Meaning search, where an embedder is configured (below), ranks by the embedding of a window of neighbouring blocks, not by the text's search vector, so it can still return such a text for a query whose words the vector does not hold, and it names the block of the window that ranks highest for the query (`block_id` on the hit).
 
+**A search at a past time reads the keyword table.**
+`search_text_versions` (migration `20261120021308`, Database migrations above) holds one row for each version of the text that keyword search reads.
+For an issue it is the title, with the version of the primary document that the issue held.
+For a comment or an issue message it is the body, and for an ask it is the question, a space and `ask_search_suffix` of its options and answer.
+A version starts at the event that changed that text, and an event that changes no searchable text starts no version.
+The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
+The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above).
+`store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
+A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
+`TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
+In this build the relation's `deleted_at` is null, and no route searches at a past time yet.
+
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).
 Bedrock with no AWS region logs `dispatch: meaning search
@@ -3677,8 +3805,10 @@ A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
 Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
-A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
-the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
+A check tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
+The agents' client reads no `/healthz`: every Dispatch that carries `b1c42d1d7d` runs this layer on every write route, so it sends a failed write again under its key and asks nothing first, whatever the echo says.
+It reads the echo to settle a refusal: a fresh 4xx, or a `422 KEY_REUSED`, that echoes exactly its key is final (`answerEvent`, `packages/envoy-client/README.md`), so a change that drops or moves the echo turns such a refusal back into an unsettled write.
+It also reads the echo to judge a 2xx: once an answer of the same write echoed the key, a 2xx without exactly that key is something in Dispatch's place, so a change that drops the echo from a 2xx alone turns that write's success into an unsettled write.
 
 ## Access log
 
@@ -3953,6 +4083,7 @@ Each item below names a path with its method and identity, then its purpose.
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
+  `envoy_dispatch_document_replacements_unguarded_total`, with no label, counts the whole-document uploads that replaced a document naming no token for the version they replace, which Dispatch takes unchecked until every deployed `dispatch` client sends one (INFRA-4980); each also logs one INFO line naming the artifact and the document (`api.noteUnguardedReplacement`), and no caller: the access log's line for the same upload names the caller and its User-Agent, so the two are joined on the upload's path and time.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
   Nothing scrapes it yet.
 
@@ -4788,7 +4919,7 @@ Each item below names a path with its method and identity, then its purpose.
     It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
     Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
     Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
-    The public text check refuses a host below `.internal.` and not one ending in `.internal`: it guards the whole repository, where names such as `metadata.google.internal` and `host.docker.internal` are well known, while the line is pasted into public text with no reader in between.
+    The public text check refuses a host below `.internal.` everywhere, and one ending in `.internal` only in a pull request's own text, where it still lets `metadata.google.internal` and `host.docker.internal` pass: over the whole repository such names are well known, while the line is pasted into public text with no reader in between and drops them too.
     A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
     `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
     What is left, when it is longer than 80 runes, is cut at the last blank within its first 80 runes, or, where those runes hold no blank, at the limit itself, with `…` where it was cut; a cut text is judged again, since a cut at the limit can fall inside a word and leave a key the whole word did not hold; a reading of which nothing is left, before the cut or after that second judging, says `The reading holds only words this line leaves out.`, and a result with no reading says `The role recorded no reading.`
