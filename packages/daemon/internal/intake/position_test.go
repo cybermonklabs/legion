@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -84,7 +85,7 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 // events were published is created at the last message it applied, so every event published while
 // it was missing is applied, and none twice: the one at its position, already applied, is
 // delivered again and dropped as a duplicate. Both ways a consumer is created do it: the boot's
-// OpenConsumers, and a mapping refresh's SetRepositories mid-run.
+// OpenConsumers, and a SetRepositories mid-run, as a recording on a repository not heard yet makes.
 func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 	for _, reopen := range []struct {
 		name string
@@ -151,6 +152,100 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Each read of the notification stream's info goes through a handle of its own, never through the
+// one handle the consumers share. This test reads at once: DispatchTarget on two goroutines; on a
+// third, SetRepositories after each delete of the GitHub consumer, which creates it again at its
+// stored position and so reads the stream's info (createConsumer); and on a fourth, for as long as
+// the third runs, Lag, while a Dispatch issue event waits unacknowledged on the Dispatch consumer,
+// so that every Lag reads that event's time (oldestWaiting) with a GetMsg on the shared handle,
+// which reads the handle's cached info. nats.go's Info writes the cached info of the handle it is
+// called on under no lock, so the race detector fails this test on a read of the stream's info on
+// the shared handle: createConsumer's beside Lag's GetMsg, and DispatchTarget's beside the other
+// goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
+// DAEMON_RACE_PACKAGES).
+func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	github, dispatch := githubConsumerName(spec.Project), dispatchConsumerName(spec.Project)
+	pushed := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	// A position stored for the GitHub consumer, so each creation of it reads the stream's info.
+	if _, err := pool.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, $2, $3)`,
+		github, int64(pushed.Sequence), time.Now()); err != nil {
+		t.Fatalf("store the GitHub consumer's position: %v", err)
+	}
+	consumers, err := OpenConsumers(ctx, js, pool, spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	// Published after OpenConsumers created the Dispatch consumer at the next message, and handled
+	// by nothing, since nothing runs the consumers: it waits on the Dispatch consumer throughout.
+	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	waiting, err := stream.GetMsg(ctx, last.Sequence)
+	if err != nil {
+		t.Fatalf("read the waiting Dispatch event back: %v", err)
+	}
+
+	const reads, creations = 50, 10
+	recreated := make(chan struct{})
+	lags := 0
+	var group errgroup.Group
+	for range 2 {
+		group.Go(func() error {
+			for range reads {
+				target, err := consumers.DispatchTarget(ctx)
+				if err != nil {
+					return fmt.Errorf("DispatchTarget: %w", err)
+				}
+				if target != int64(last.Sequence) {
+					return fmt.Errorf("DispatchTarget = %d, want the stream's last sequence, %d", target, last.Sequence)
+				}
+			}
+			return nil
+		})
+	}
+	group.Go(func() error {
+		defer close(recreated)
+		for range creations {
+			if err := stream.DeleteConsumer(ctx, github); err != nil {
+				return fmt.Errorf("delete the GitHub consumer: %w", err)
+			}
+			if err := consumers.SetRepositories(ctx, capturedRepositories); err != nil {
+				return fmt.Errorf("SetRepositories: %w", err)
+			}
+		}
+		return nil
+	})
+	group.Go(func() error {
+		for {
+			// The control: Lag read the waiting event's time, so it took oldestWaiting's GetMsg on
+			// the shared handle.
+			if got := consumers.Lag(ctx)[0]; got.Name != dispatch || got.Waiting != 1 || !got.OldestAt.Equal(waiting.Time) || got.Unavailable != "" {
+				return fmt.Errorf("Lag's first consumer = %+v, want %s with the one event waiting, the oldest stored at %s, and nothing unavailable",
+					got, dispatch, waiting.Time)
+			}
+			lags++
+			select {
+			case <-recreated:
+				return nil
+			default:
+			}
+		}
+	})
+	if err := group.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	// The control: OpenConsumers and every SetRepositories created the GitHub consumer at its
+	// stored position, the path that reads the stream's info.
+	if created := strings.Count(logs.String(), "created at the last message it applied"); created != creations+1 {
+		t.Fatalf("the GitHub consumer was created at its stored position %d times, want %d: once by OpenConsumers and once by each SetRepositories; logs:\n%s",
+			created, creations+1, logs)
+	}
+	t.Logf("Lag read the waiting event's time %d times while the GitHub consumer was created %d times", lags, creations)
 }
 
 // A consumer that has applied nothing — here the GitHub consumer, whose only message was a push to

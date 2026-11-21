@@ -17,6 +17,7 @@ import {
   setGatedSteps,
 } from "./api";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
+import { focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import {
   actionsMenuDrop,
@@ -1598,6 +1599,11 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   await page.setViewportSize({ height: 420, width });
   await gotoIssue(page, `/issues/${key}`);
   await expectHeaderDrawn(page);
+  // The outline opens with the focus on the first question that waits on the reader and holds
+  // that row on screen until the reader acts or the focus leaves it, so the page's
+  // growth below would scroll back to it: the focus lands, then leaves the tree.
+  await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
+  await focusThePage(page);
   await page.evaluate(() => {
     const page = document.querySelector("[data-issue-page]");
     if (page instanceof HTMLElement) page.style.minHeight = "2000px";

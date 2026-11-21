@@ -307,6 +307,13 @@ func (rig *contractRig) approveOnBrokerPage(t *testing.T, login, recordID string
 	ciphertest.Decide(t, rig.BrokerURL, rig.issuer, login, recordID, true)
 }
 
+// approveOnBrokerPageRefused is approveOnBrokerPage for an approval the broker refuses with a
+// reason the page names, code being the page's fixed refusal code (ciphertest.DecideRefused).
+func (rig *contractRig) approveOnBrokerPageRefused(t *testing.T, login, recordID, code string) {
+	t.Helper()
+	ciphertest.DecideRefused(t, rig.BrokerURL, rig.issuer, login, recordID, true, code)
+}
+
 // grantOf reads requestID as session, which made it, straight from the broker, and answers its
 // grant, failing t unless the request was granted.
 func (rig *contractRig) grantOf(t *testing.T, session contractSession, requestID string) string {
@@ -934,7 +941,9 @@ func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T)
 	if resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-grants/"+*auto.GrantID+"/revoke", map[string]any{}, contractApprover); resp.Code != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", resp.Code, resp.Body.String())
 	}
-	rig.approveOnBrokerPage(t, contractOther, *mixed.RecordID)
+	// The current policy has the operator approve AUTO_TOKEN now that it is withheld, so the
+	// broker refuses the second person's approval and the page names that reason ("policy").
+	rig.approveOnBrokerPageRefused(t, contractOther, *mixed.RecordID, "policy")
 	if n := rig.decisionEvents(t, *mixed.RecordID); n != 0 {
 		t.Fatalf("the request has %d decisions after %s approved it once %s withheld AUTO_TOKEN, want none", n, contractOther, contractApprover)
 	}

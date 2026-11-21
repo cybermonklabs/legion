@@ -115,9 +115,8 @@ func TestHandoffRecordsLive(t *testing.T) {
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
 }
 
-// newHandoffRecordsLive starts Dispatch, sets up its project, default repository and issues,
-// seeds the daemon's store with those issues where each step starts them, and boots the daemon at
-// Dispatch.
+// newHandoffRecordsLive starts Dispatch, sets up its project, default repository and issues, seeds
+// the daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
 	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
@@ -130,9 +129,9 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 // startOnDispatch readies a whole-daemon proof over the real Dispatch, for this driver and for
 // review_range_live_test.go's, which embeds what it returns. It starts Dispatch, writes its agent
 // token where the daemon reads it and names it the daemon's dispatch_url, and creates the run's
-// project, prefix and six characters of the run's own, titled name, with liveRepo as its default
-// repository. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
-// and boots the daemon (boot).
+// project, prefix and six characters of the run's own, titled name, with liveRepo set as its
+// default repository in Dispatch. The caller creates its issues (createIssue), seeds them
+// (seedIssues), sets github and boots the daemon (boot).
 func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
 	t.Helper()
 	proof := newLiveProof(t, script)

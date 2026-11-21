@@ -292,8 +292,8 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	return r
 }
 
-// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository,
-// and creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
+// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository, and
+// creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
 func (r *lateCompletionLive) setUpDispatch() {
 	t := r.t
 	t.Helper()

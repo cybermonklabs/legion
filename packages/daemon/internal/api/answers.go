@@ -46,10 +46,13 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// The last is the constant rather than its number, because this change's own entry is the last
-// one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract}
+// 193 is the constant rather than its number, because the entry that added the shaped answers
+// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
+// one of the two alone would describe a shape at a contract no entry declares. The last is
+// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
+// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
+// list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -352,9 +355,13 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "capabilities.*.status", Values: capabilityStatuses},
 	{Answer: AnswerState, KeyPath: "capabilities.*.source", Values: capabilitySources},
 	// `state` of a repository cache under the Kubernetes runtime (api.CacheView.State). The
-	// mapping carries one per mapped repository and one per cache of a repository the mapping
-	// no longer names, which are two key paths of the one field.
+	// block carries one per live repository and one per cache of a repository no live record
+	// names, which are two key paths of the one field. The first is `repositories.live.*.cache`
+	// from repositoriesLiveContract on, which arrived with that block (liveCacheStates), and
+	// `repositories.mapped.*.cache` below it, in the block contract 152's shape writes from the
+	// same entries (shaping.go's withoutRepositoriesLive).
 	{Answer: AnswerState, KeyPath: "repositories.mapped.*.cache.state", Values: cacheStates},
+	{Answer: AnswerState, KeyPath: "repositories.live.*.cache.state", Values: liveCacheStates},
 	{Answer: AnswerState, KeyPath: "repositories.caches.*.state", Values: cacheStates},
 	// `heldFrom` of an issue, the phase a hold took it out of (api.Issue.HeldFrom). It arrived
 	// with the decided record and is served down below that contract with the rest of it
@@ -608,3 +615,8 @@ var capabilitySources = valuesFrom(ServingFloor, capabilities.SourceConfiguratio
 // field is older than the floor (version.go's 32) and the list has not moved since. It stays a
 // literal: the words are spelled only by unexported constants of the sandbox runtime package.
 var cacheStates = valuesFrom(ServingFloor, "starting", "cloning", "ready", "failing", "refused")
+
+// liveCacheStates is the same five states at the contract `repositories.live` arrived at, which
+// each live entry's cache takes: no `live` is served below that contract at all (shaping.go's
+// withoutRepositoriesLive), so the values arrived with the key.
+var liveCacheStates = valuesFrom(repositoriesLiveContract, "starting", "cloning", "ready", "failing", "refused")

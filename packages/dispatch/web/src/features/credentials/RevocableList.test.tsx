@@ -38,7 +38,7 @@ const sections: Section[] = [
     empty: "No live grants.",
     heading: "Live grants",
     name: "the grant of WORKER_TOKEN to session · box-1 · ada@example.com",
-    refusal: "only the grant's approver or its enrollment's operator may revoke it",
+    refusal: "only the grant's approver or the person its session acts for may revoke it",
     rowId: "grant-1",
     section: () => <GrantsSection />,
     stub: (revoke) => {

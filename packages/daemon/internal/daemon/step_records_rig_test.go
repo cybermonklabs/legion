@@ -88,11 +88,11 @@ func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 	return newStepRecordsRigWith(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), issues)
 }
 
-// newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its default
-// repository and issues issues, seeds the daemon's store of proof with each issue at admitted, its
-// gate approved, on an open pull request of its own GitHub reports clean, boots the daemon at
-// Dispatch and registers each tree's architect. The admission pass then starts planning, the first
-// step of each walk. The walk's steps act on the first issue until on moves them.
+// newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
+// default repository and issues issues, seeds the daemon's store of proof with each issue at
+// admitted, its gate approved, on an open pull request of its own GitHub reports clean, boots the
+// daemon at Dispatch and registers each tree's architect. The admission pass then starts planning,
+// the first step of each walk. The walk's steps act on the first issue until on moves them.
 func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int) *stepRecordsRig {
 	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch

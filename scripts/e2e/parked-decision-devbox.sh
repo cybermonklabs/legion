@@ -276,7 +276,7 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is its default repository on Dispatch (the PUT in rig sets $repo).
+# The project's repository is no key of legion.yaml: the PUT in rig sets $repo as its default repository in Dispatch.
 projects:
   $project: {}
 gates:
