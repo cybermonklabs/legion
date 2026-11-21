@@ -7,7 +7,7 @@ import {
   wordsAreAddress,
   wordsFormatting,
 } from "@legion/contracts";
-import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
+import { createContext, type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
 import { StatusGlyph } from "../../components/StatusGlyph";
 import { borderDefault } from "../../theme/classes";
@@ -38,6 +38,13 @@ export interface WordStretch {
 
 /** A reference whose words hold no search mark of their own. */
 const NO_STRETCHES: readonly WordStretch[] = [];
+
+/** Whether a link to an issue whose words its author wrote draws the issue's status mark before
+ *  those words (INFRA-4009 R4): true in a rendered body, the default, and false where a surface
+ *  keeps such a link exactly as its author wrote it - the new issue page's rows, which draw the
+ *  mark only on the references they name themselves (`row-references.ts`), as the document
+ *  editor does. */
+export const WordedLinksMarked = createContext(true);
 
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
@@ -145,10 +152,14 @@ export function RefLink({
   const [failedPicture, setFailedPicture] = useState<string>();
   // Until the target answers, for an issue the reader cannot read, for a target that does not
   // exist and for a link whose words its author wrote, the words the author wrote stand. An
-  // issue is the issue's own address or a tab of its page (`issueOfRoute`).
+  // issue is the issue's own address or a tab of its page (`issueOfRoute`); a link to it whose
+  // words its author wrote draws its mark only where the surface marks such a link.
+  const wordedMarked = useContext(WordedLinksMarked);
   const issueKey = issueOfRoute(route);
   const issueStatus =
-    issueKey !== undefined && !missing && title !== undefined ? status : undefined;
+    issueKey !== undefined && !missing && title !== undefined && (reads !== "words" || wordedMarked)
+      ? status
+      : undefined;
   const named =
     reads === "words" || missing
       ? undefined
