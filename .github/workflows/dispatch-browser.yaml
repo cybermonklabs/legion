@@ -149,7 +149,10 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 522 x 1.15 = 601 s -> 11 min.
+        # 522 x 1.15 = 601 s -> 11 min. 522 s is the maximum of main's full-lane legs from
+        # 2026-11-18 to 2026-11-21 (624 legs). The suite grew about 10% in rows in those 3 days
+        # (1,453 to 1,600) and the step with it, so 11 min is about 26% over 522 s: read the
+        # maximum again when the suite has grown that much more.
         timeout-minutes: 11
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
