@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,11 +30,26 @@ const (
 // hold's tables when it ran, so the preflight takes one run less than an hour before (§3a).
 const minterReportAge = time.Hour
 
-// MinterFinding is one holder the minter script reports: a principal and the right it holds, a
-// right that mints the operator's token or writes the hold's tables.
+// MinterFinding is one holder the minter script reports (#4679): a principal, the role it holds on
+// resource, that role's permissions that mint the operator's token or write the hold's tables, and
+// when the grant was made. A person never appears in the report (#4679), so no finding names one,
+// and no accepted entry does either.
 type MinterFinding struct {
-	Principal string `json:"principal"`
-	Right     string `json:"right"`
+	Principal   string    `json:"principal"`
+	Role        string    `json:"role"`
+	Resource    string    `json:"resource"`
+	Permissions []string  `json:"permissions"`
+	GrantedAt   time.Time `json:"granted_at"`
+}
+
+// minterFindingJSON is a finding as the report writes it, with granted_at kept as its text, so an
+// empty one is named as a missing field rather than failing the whole decode.
+type minterFindingJSON struct {
+	Principal   string   `json:"principal"`
+	Role        string   `json:"role"`
+	Resource    string   `json:"resource"`
+	Permissions []string `json:"permissions"`
+	GrantedAt   string   `json:"granted_at"`
 }
 
 // MinterUnknown is one step the minter script could not read, and why.
@@ -42,19 +58,21 @@ type MinterUnknown struct {
 	Reason string `json:"reason"`
 }
 
-// minterReport is the report operator-token-minters.sh --report <file> writes (plan E line 2148):
-// {"run_at": "<RFC 3339>", "findings": [{"principal", "right"}], "unknown": [{"step", "reason"}]}.
-// Both lists are pointers so that a report missing one is told from a report whose list is empty.
+// minterReport is the report operator-token-minters.sh --report <file> writes (plan E line 2148,
+// its findings structured by #4679): {"run_at": "<RFC 3339>", "findings": [{"principal", "role",
+// "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]}. Both lists are
+// pointers so that a report missing one is told from a report whose list is empty.
 type minterReport struct {
-	RunAt    *time.Time       `json:"run_at"`
-	Findings *[]MinterFinding `json:"findings"`
-	Unknown  *[]MinterUnknown `json:"unknown"`
+	RunAt    *time.Time           `json:"run_at"`
+	Findings *[]minterFindingJSON `json:"findings"`
+	Unknown  *[]MinterUnknown     `json:"unknown"`
 }
 
 // AcceptedMinter is one entry of the accepted list, as t-11's cluster-grants/ renders it
-// (the deployment repository's pull request 4235): a principal, the right it holds, the clause of plan F's go-live items it falls
-// under (8(d) for a minter, 8(f) for a hold writer), and the link to Sami's answer that accepts it.
-// Every field is required.
+// (the deployment repository's pull request 4235): a principal, its Right (the role a finding names for it), the clause of plan
+// F's go-live items it falls under (8(d) for a minter, 8(f) for a hold writer), and the link to
+// Sami's answer that accepts it. Every field is required. No entry names a person, because the
+// report never does.
 type AcceptedMinter struct {
 	Principal string `json:"principal"`
 	Right     string `json:"right"`
@@ -71,9 +89,11 @@ type minterPreflight struct {
 // PreflightMinters is the preflight's minter check (§3a, "How the preflight reads it"): it reads
 // reportPath, the --minters-report of `hold prepare` or `hold set`, and the accepted list through
 // client (t-11's get on that one ConfigMap). It stops the hold unless the report ran under one hour
-// before now, its unknown list is empty, and every finding, the hold writers included, is an
-// accepted entry of the same principal and right. No report is a refusal naming it; a report or a
-// list that does not read whole is UNKNOWN, and so is a report whose unknown list names a step.
+// before now, its unknown list is empty, and every finding, the hold writers included, has an
+// accepted entry whose principal is its principal and whose right is its role; a finding with none
+// is named by its principal, role and resource. A person never appears in the report, so no
+// accepted entry names one. No report is a refusal naming it; a report or a list that does not read
+// whole is UNKNOWN, and so is a report whose unknown list names a step.
 func PreflightMinters(ctx context.Context, client kubernetes.Interface, reportPath string, now func() time.Time) error {
 	return minterPreflight{}.run(ctx, client, reportPath, now)
 }
@@ -85,15 +105,15 @@ func (p minterPreflight) run(ctx context.Context, client kubernetes.Interface, r
 	if reportPath == "" {
 		return refusef(StepPreflight, "no minter report: the hold takes --minters-report <file>, the report operator-token-minters.sh --report writes")
 	}
-	report, err := readMinterReport(reportPath)
+	runAt, findings, unknown, err := readMinterReport(reportPath)
 	if err != nil {
 		return err
 	}
 	at := now()
-	if age := at.Sub(*report.RunAt); age < 0 || age >= minterReportAge {
-		return refusef(StepPreflight, "the minter report %s ran at %s, %s before now (%s); the hold takes a report under %s old", reportPath, report.RunAt.Format(time.RFC3339), age.Round(time.Second), at.UTC().Format(time.RFC3339), minterReportAge)
+	if age := at.Sub(runAt); age < 0 || age >= minterReportAge {
+		return refusef(StepPreflight, "the minter report %s ran at %s, %s before now (%s); the hold takes a report under %s old", reportPath, runAt.Format(time.RFC3339), age.Round(time.Second), at.UTC().Format(time.RFC3339), minterReportAge)
 	}
-	if unknown := *report.Unknown; len(unknown) > 0 {
+	if len(unknown) > 0 {
 		steps := make([]string, len(unknown))
 		for i, u := range unknown {
 			steps[i] = fmt.Sprintf("%s (%s)", u.Step, u.Reason)
@@ -104,14 +124,15 @@ func (p minterPreflight) run(ctx context.Context, client kubernetes.Interface, r
 	if err != nil {
 		return err
 	}
-	ok := map[MinterFinding]bool{}
+	// ok holds each accepted principal with its right, the role a finding must name.
+	ok := map[[2]string]bool{}
 	for _, a := range accepted {
-		ok[MinterFinding{Principal: a.Principal, Right: a.Right}] = true
+		ok[[2]string{a.Principal, a.Right}] = true
 	}
 	var refused []string
-	for _, finding := range *report.Findings {
-		if !ok[finding] {
-			refused = append(refused, finding.Principal+" ("+finding.Right+")")
+	for _, f := range findings {
+		if !ok[[2]string{f.Principal, f.Role}] {
+			refused = append(refused, f.Principal+" (role "+f.Role+" on "+f.Resource+")")
 		}
 	}
 	if len(refused) > 0 {
@@ -121,29 +142,51 @@ func (p minterPreflight) run(ctx context.Context, client kubernetes.Interface, r
 }
 
 // readMinterReport reads the report at path, strictly: one JSON object with run_at, findings and
-// unknown, no other field, each finding a principal and a right. Anything else is UNKNOWN, naming
-// the file.
-func readMinterReport(path string) (minterReport, error) {
+// unknown, no other field, each finding its principal, role, resource, permissions and granted_at
+// and no other field. So a report in the old shape, a principal and a right, does not decode. A
+// finding that leaves out or empties any of the five (a permissions list with no entry, or an empty
+// one) is UNKNOWN, naming its index and each field it lacks; a granted_at that is not RFC 3339 is
+// UNKNOWN naming it; anything else that does not read is UNKNOWN, naming the file.
+func readMinterReport(path string) (time.Time, []MinterFinding, []MinterUnknown, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return minterReport{}, unknownf(StepPreflight, err, "read the minter report %s", path)
+		return time.Time{}, nil, nil, unknownf(StepPreflight, err, "read the minter report %s", path)
 	}
 	var report minterReport
 	if err := decodeStrict(data, &report); err != nil {
-		return minterReport{}, unknownf(StepPreflight, err, "decode the minter report %s", path)
+		return time.Time{}, nil, nil, unknownf(StepPreflight, err, "decode the minter report %s", path)
 	}
 	switch {
 	case report.RunAt == nil:
-		return minterReport{}, unknownf(StepPreflight, nil, "the minter report %s has no run_at", path)
+		return time.Time{}, nil, nil, unknownf(StepPreflight, nil, "the minter report %s has no run_at", path)
 	case report.Findings == nil || report.Unknown == nil:
-		return minterReport{}, unknownf(StepPreflight, nil, "the minter report %s lacks its findings or its unknown list", path)
+		return time.Time{}, nil, nil, unknownf(StepPreflight, nil, "the minter report %s lacks its findings or its unknown list", path)
 	}
+	findings := make([]MinterFinding, len(*report.Findings))
 	for i, f := range *report.Findings {
-		if f.Principal == "" || f.Right == "" {
-			return minterReport{}, unknownf(StepPreflight, nil, "the minter report %s's findings[%d] names no principal or no right", path, i)
+		var lacks []string
+		for _, field := range []struct {
+			name  string
+			empty bool
+		}{
+			{"principal", f.Principal == ""}, {"role", f.Role == ""}, {"resource", f.Resource == ""},
+			{"permissions", len(f.Permissions) == 0 || slices.Contains(f.Permissions, "")},
+			{"granted_at", f.GrantedAt == ""},
+		} {
+			if field.empty {
+				lacks = append(lacks, field.name)
+			}
 		}
+		if len(lacks) > 0 {
+			return time.Time{}, nil, nil, unknownf(StepPreflight, nil, "the minter report %s's findings[%d] lacks its %s", path, i, joinLacks(lacks))
+		}
+		grantedAt, err := time.Parse(time.RFC3339, f.GrantedAt)
+		if err != nil {
+			return time.Time{}, nil, nil, unknownf(StepPreflight, err, "the minter report %s's findings[%d]'s granted_at %q is not RFC 3339", path, i, f.GrantedAt)
+		}
+		findings[i] = MinterFinding{Principal: f.Principal, Role: f.Role, Resource: f.Resource, Permissions: f.Permissions, GrantedAt: grantedAt}
 	}
-	return report, nil
+	return *report.RunAt, findings, *report.Unknown, nil
 }
 
 // readAcceptedMinters reads the accepted list: the ConfigMap's AcceptedMintersKey, a JSON array of
@@ -187,10 +230,16 @@ func entryLacks(a AcceptedMinter) string {
 			lacks = append(lacks, f.name)
 		}
 	}
-	if len(lacks) < 2 {
-		return strings.Join(lacks, "")
+	return joinLacks(lacks)
+}
+
+// joinLacks is fields as a finding names what an entry lacks: "clause", or "principal, right,
+// clause and answer"; "" for none.
+func joinLacks(fields []string) string {
+	if len(fields) < 2 {
+		return strings.Join(fields, "")
 	}
-	return strings.Join(lacks[:len(lacks)-1], ", ") + " and " + lacks[len(lacks)-1]
+	return strings.Join(fields[:len(fields)-1], ", ") + " and " + fields[len(fields)-1]
 }
 
 // decodeStrict decodes data, one JSON value, into into, refusing an unknown field and anything
