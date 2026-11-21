@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `gcp:Dispatch` takes `natsAudience`, unset by default, and a deployment that does not set it
+  renders exactly as before. With `natsAudience` the app and its listener connect to NATS through
+  the auth service, each by a projected token of its own pod's ServiceAccount for that audience
+  (`<hostname>` and `<hostname>-listener`, both listed in the broker's `BROKER_NATS_SERVICES` as
+  `dispatch/<hostname>/*`): the component mounts, classes and grants no seed, and refuses
+  `natsSeedSecret` beside it, and a `natsAudience` equal to `agentSecretsAudience`, the listener's
+  own audience, `oidcAudience` or the keyless Azure sign-in's audience. The listener keeps
+  admitting both the shared bearer and Dispatch's own projected token in every mode, so no update
+  switches the credential the listener takes and the one Dispatch presents at once.
+  `agentSecretsAudience`, `oidcAudience` and `azureFederationAudience` are compared and rendered
+  trimmed of surrounding whitespace, as their verifiers read them, and one of whitespace alone is
+  refused by name rather than turning its verifier off.
+time: 2026-11-16T11:00:07Z
+custom:
+    Issue: pr4202

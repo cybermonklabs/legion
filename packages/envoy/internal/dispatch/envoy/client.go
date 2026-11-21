@@ -284,9 +284,10 @@ type Client struct {
 	logger *slog.Logger
 }
 
-// defaultTimeout is the window every listener call gets. A send that misses it is
+// DefaultTimeout is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
-const defaultTimeout = 5 * time.Second
+// The listener answers inside it whatever its OIDC issuer does (cmd/listener, listenerKeySetWait).
+const DefaultTimeout = 5 * time.Second
 
 // Option configures a Client.
 type Option func(*Client)
@@ -339,7 +340,7 @@ func New(baseURL string, options ...Option) *Client {
 	client := &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		httpClient: &http.Client{
-			Timeout: defaultTimeout,
+			Timeout: DefaultTimeout,
 		},
 	}
 	for _, option := range options {

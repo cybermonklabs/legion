@@ -461,8 +461,9 @@ type GoogleVerifier interface {
 // token includes one naming no verified account, since the email claim is what names the caller
 // — one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied token
 // is spendable for at most an hour, and an account BROKER_API_ACCOUNTS does not name. Only the
-// last is a 403: the credential is sound and it is the broker's list that refuses. No refusal
-// repeats the token.
+// last is a 403: the credential is sound and it is the broker's list that refuses. A token whose
+// issuer cannot be reached is no refusal: 503 ISSUER_UNAVAILABLE (writeIssuerUnavailable). No
+// refusal repeats the token.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
@@ -497,6 +498,9 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
 		return caller{}, false
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the caller's identity token", err)
+		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
 		return caller{}, false
@@ -523,7 +527,8 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // on a copied token, and the same list. An account the list does not name is 403
 // ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
 // trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
-// authenticate no one. No refusal repeats the token.
+// authenticate no one, and a token whose issuer cannot be reached 503 ISSUER_UNAVAILABLE. No
+// refusal repeats the token.
 //
 // A verified account that BROKER_POD_OPERATORS maps to a person (machine.ServiceAccount.Person)
 // is 403 PERSON_ACCOUNT, and the refusal names the account. A mapped account is a person's
@@ -543,6 +548,9 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		return caller{}, false
 	case errors.Is(err, machine.ErrAccountNotListed):
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS")
+		return caller{}, false
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the ServiceAccount token", err)
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
@@ -689,6 +697,15 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 	slog.Error("broker: "+op+" failed", "error", err)
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// writeIssuerUnavailable answers a token the broker could not judge because its issuer's key set
+// could not be read (oidc.ErrIssuerUnavailable): 503 ISSUER_UNAVAILABLE, never the 401 or 403 a
+// refused token gets. A caller stops on a refusal and retries a 503 (cipherclient's
+// RefusedError.Permanent, the helper's own retry), so a live token refused for an outage ended an
+// enrolment, a login or a call that the next attempt, once the issuer answers, would land.
+func writeIssuerUnavailable(w http.ResponseWriter, op string, err error) {
+	writeUnavailable(w, "ISSUER_UNAVAILABLE", op, err)
 }
 
 // writeJSON answers status with v, which is one of this package's named response types: the

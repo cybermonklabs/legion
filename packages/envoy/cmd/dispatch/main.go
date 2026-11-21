@@ -234,7 +234,7 @@ type bootConfig struct {
 	SigningKey auth.SigningKeys
 	// InsecureCookie (DISPATCH_INSECURE_COOKIE set to anything) drops Secure from every cookie.
 	InsecureCookie bool
-	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
+	// EnvoyToken is ENVOY_TOKEN, the shared bearer every Envoy listener call sends.
 	EnvoyToken string
 	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
 	// Kubernetes service-account token for the listener's audience, which every listener call

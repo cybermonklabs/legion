@@ -81,6 +81,7 @@ func TestIAPVerifierReportsAnUnreadableKeySetForAnExpiredAssertion(t *testing.T)
 		t.Fatalf("an expired assertion while the key set answers 503: err = %v, want %v", err, ErrIssuerUnavailable)
 	}
 	rig.server.FailKeys(0)
+	rig.clock.advance(rig.keys.RetrySpacing)
 	if _, err := rig.verify(t, rig.signing, expiredClaims(nil)); !errors.Is(err, ErrExpired) {
 		t.Fatalf("the same assertion once the key set answers: err = %v, want %v", err, ErrExpired)
 	}

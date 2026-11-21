@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `envoy-listener` answers 503 with `Retry-After: 1`, not 401, to a projected service-account
+  token it cannot judge because its `ENVOY_OIDC_ISSUER`'s key set cannot be read, so Dispatch
+  tries the call again for up to 12 seconds rather than settling the delivery as failed at once;
+  an outage longer than that still settles it as failed. Every token the verifier does judge and
+  refuse is still 401.
+time: 2026-11-16T14:33:51Z
+custom:
+    Issue: pr4202

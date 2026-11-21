@@ -101,9 +101,10 @@ type dispatchDatabase struct {
 	agentToken    *random.RandomPassword
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput
-	seedAccessor  *secretmanager.SecretIamMember
-	// listenerSeedAccessor is the NATS seed's grant to the listener's own account,
-	// ServiceAccount <hostname>-listener, the one grant that account holds.
+	// seedAccessor is the NATS seed's grant to the app's account, and listenerSeedAccessor its
+	// grant to the listener's own account, ServiceAccount <hostname>-listener, the one grant that
+	// account holds. Both are nil with natsAudience, where no pod mounts the seed.
+	seedAccessor         *secretmanager.SecretIamMember
 	listenerSeedAccessor *secretmanager.SecretIamMember
 	// azureKeyAccessor is set only with azureEmbedKeySecret, and chatTokenAccessor only with
 	// chatTokenSecret: each is the per-secret grant that one feature's mounted secret needs.
@@ -427,17 +428,23 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}).(pulumi.StringOutput)
 	}
 	principal := principalOf(s.hostname)
-	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
-	if err != nil {
-		return nil, err
-	}
-	// The listener runs as an account of its own, <hostname>-listener, so that no listener pod can
-	// project a token naming the app's account, the one principal the listener takes a send's role
-	// mark from (ENVOY_DISPATCH_PRINCIPAL). The NATS seed it mounts is granted to that account too,
-	// and nothing else is.
-	listenerSeedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-listener-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principalOf(s.hostname + "-listener")}, child, pulumi.DependsOn(cloud.waitFor))
-	if err != nil {
-		return nil, err
+	// The NATS seed is granted only where the pods mount it: with natsAudience each pod presents
+	// its own account's projected token instead (newDispatchNATSCredential), and nothing of the
+	// seed is mounted, classed or granted.
+	var seedAccessor, listenerSeedAccessor *secretmanager.SecretIamMember
+	if s.natsAudience == "" {
+		seedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
+		if err != nil {
+			return nil, err
+		}
+		// The listener runs as an account of its own, <hostname>-listener, so that no listener pod
+		// can project a token naming the app's account, the one principal the listener takes a
+		// send's role mark from (ENVOY_DISPATCH_PRINCIPAL). The NATS seed it mounts is granted to
+		// that account too, and nothing else is.
+		listenerSeedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-listener-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principalOf(s.hostname + "-listener")}, child, pulumi.DependsOn(cloud.waitFor))
+		if err != nil {
+			return nil, err
+		}
 	}
 	var azureKeyAccessor *secretmanager.SecretIamMember
 	if s.azure.key {

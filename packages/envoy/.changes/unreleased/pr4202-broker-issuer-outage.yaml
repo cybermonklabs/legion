@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  The secrets broker answers a token it cannot judge because its issuer's key set cannot be read
+  as an outage, not as a refused token: `503 ISSUER_UNAVAILABLE` on every route that verifies a
+  projected ServiceAccount or Google identity token (`accountAuth`, `serviceAuth`, the token
+  login, `POST /v1/oauth/exchange/pod-sessions`' pod token, and a pod's enrolment and renewal),
+  and `503 temporarily_unavailable` at the token exchange. These were `401 ACCOUNT_TOKEN_INVALID`,
+  `401 TOKEN_INVALID`, `401 POD_TOKEN_INVALID`, `403 POD_IDENTITY_MISMATCH` and `400
+  invalid_request`, and `cipherclient` stops trading for good on a 4xx, so an outage ended a pod's
+  or a daemon's trade where the next one would land; it now trades again. A token its own claims
+  refuse — expired, for another audience, from another issuer — is still refused during the
+  outage, as the claims are decided before the key set: 401 on the routes, or 403 at a pod's
+  enrolment and renewal (`POD_TOKEN_EXPIRED`, `POD_IDENTITY_MISMATCH`), and `400 invalid_request`
+  naming the claim at the exchange, so a trade no read could land is not traded again for the
+  whole outage.
+time: 2026-11-16T18:05:08Z
+custom:
+    Issue: pr4202

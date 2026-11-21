@@ -801,7 +801,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | Private services access range and connection | Cloud SQL receives a private IP on the component's VPC. | Not built |
 | Autopilot cluster | Enables the Secret Manager add-on, Secret Sync with rotation (GKE 1.33 or later; a new Secret Manager version reaches a synced Kubernetes Secret whose SecretProviderClass reads `versions/latest` without an apply), and Workload Identity. | Built |
 | Cloud SQL instance, database, user and generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. | Not built |
-| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
+| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected tokens the app presents to the listener and, with `natsAudience`, to the NATS auth service, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed, whose projected token the listener presents to the NATS auth service with `natsAudience`, and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (not with `natsAudience`; and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
@@ -1003,7 +1003,8 @@ reports, so a cluster in the same project gives the same principal. With
 The schema requires `region` and `hostname` alone. Twelve inputs that configure Dispatch itself
 are optional in the schema, and the resolver is what requires them while `clusterOnly` is off.
 Four of them — the digest-pinned images `envoyImage` and `cloudSqlProxyImage`, `natsUrl` and
-`natsSeedSecret` — every deployment sets, and each missing one is refused by name as it always
+`natsSeedSecret` — every deployment sets, `natsSeedSecret` unless `natsAudience` takes its place
+(below), and each missing one is refused by name as it always
 was. The other eight are two groups, each set whole or left wholly unset: the tailnet group
 `tailnetDnsName`, `tags`, `tailnetAuthKey`, `tailscaleImage` and `frontDoorToolsImage`, which
 builds the front door and serves Dispatch at its tailnet name, and
@@ -1346,6 +1347,63 @@ Each unset renders nothing, and the binaries then keep one copy and set no byte 
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
 
+`natsAudience` (plain), unset by default, moves both NATS clients onto the NATS auth service the
+secrets broker runs: the app's `envoy-dispatch` and the listener's `envoy-listener` each connect
+as user `service` with a projected token of their own pod's ServiceAccount for this audience, the
+app's `<hostname>` and the listener's `<hostname>-listener`, in place of the seed. Each of the two
+pods gets a projected volume `nats-token`, whose one source is a `serviceAccountToken` for
+`natsAudience` with `expirationSeconds: 3600` (the auth service refuses a token living longer than
+an hour from its issue), written to the file `nats-token` and mounted read-only where the seed is
+otherwise, at `/var/run/secrets/envoy`, and each container carries `NATS_SERVICE_TOKEN_FILE`
+naming `/var/run/secrets/envoy/nats-token` in `NATS_NKEY_SEED_FILE`'s place. The kubelet rewrites
+the file in place at 80% of the token's life, and each connection reads it afresh at each connect
+and moves to a later token ten minutes before the one it presented lapses, so nothing stores the
+token and no rotation restarts a pod. Nothing of the seed is rendered then: no
+`NATS_NKEY_SEED_FILE`, no seed volume, no SecretProviderClass `<hostname>-nats-seed` and neither
+grant, `<hostname>-nats-seed-accessor` nor `<hostname>-listener-nats-seed-accessor`, so neither
+Deployment waits for a seed grant. A connection presents one credential, and the bus refuses a
+token beside a seed when it starts, so `natsSeedSecret` beside `natsAudience` is refused, naming
+`natsSeedSecret`; without `natsAudience`, `natsSeedSecret` stays required and both pods connect by
+the seed exactly as before. Pin `envoyImage` to a build whose bus reads `NATS_SERVICE_TOKEN_FILE`.
+The auth service admits a token only once the broker's configuration names its account, so the
+hub and the broker change in the same deploy as this component:
+
+- the hub runs the auth service (`authCallout`, on `gcp:ClusteredNatsHub` or `gcp:NatsHub`);
+- `BROKER_NATS_K8S_AUDIENCE` is the value given here as `natsAudience`, verified against
+  `BROKER_K8S_OIDC_ISSUER`, this component's cluster issuer (the `serviceAccountIssuer` output);
+- `BROKER_NATS_SERVICES` lists both pods' accounts as Dispatch of machine id `<hostname>`, as
+  `dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>` and
+  `dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>-listener`: the one grant
+  both connections share (`natsgrant.Dispatch`, the listener's grant of that machine id and
+  Dispatch's own), as they share the seed's user without `natsAudience`. Until it lists an
+  account, the auth service refuses that pod's connection, naming the account, as
+  `service not listed: system:serviceaccount:<namespace>:<hostname>-listener`.
+
+A credential the auth service refuses shows differently in the two pods, so watch both while
+`natsAudience` rolls out. `envoy-dispatch` serves without the bus and keeps retrying in the
+background, so its pods go ready and its `/healthz` answers 200 with `"nats":false`.
+`envoy-listener` connects in the foreground and exits when that connect fails
+(`packages/envoy/cmd/listener/main.go`). A starting listener counts as ready by design
+(LEGION-456, #1661): its `/healthz` answers 200 `{"status":"starting"}` until its durable consumer
+binds, because during a rolling deploy the replacement's bind waits for the old pod to let go of
+the durable, and a 503 while starting would stall that roll for good. So a listener pod whose
+credential is refused is ready for the seconds its connect takes, then exits and crash-loops. At
+one listener replica its Deployment is `Recreate`, so no listener serves and every delivery fails
+until the credential is admitted. No startup probe reads NATS, so an app pod that restarts during
+a NATS outage serves again as soon as it starts.
+
+`natsAudience` holding an nkey seed, whitespace or a control character is refused by name before
+the component registers a resource, and `clusterOnly` refuses it. So is a `natsAudience` equal to
+`agentSecretsAudience` (the broker's `BROKER_K8S_OIDC_AUDIENCE`), to the listener's own audience
+(its Service address, `http://<hostname>-listener.<namespace>.svc.cluster.local:9020`), to
+`oidcAudience` or to the keyless Azure sign-in's `azureFederationAudience`
+(`api://AzureADTokenExchange` when unset), naming both: the NATS token crosses every CONNECT over
+plain `nats://`, so it would be a credential there, and a token for the other would be one the
+NATS auth service admits. `agentSecretsAudience`, `oidcAudience` and `azureFederationAudience` are
+compared and rendered as Dispatch and Entra read them, trimmed of surrounding whitespace, so a
+padded one renders and is compared as the audience it names, and one of whitespace alone, which
+names none, is refused by name rather than turning its verifier off.
+
 `senderMessagesPerMinute` and `senderMessageBurst` are the listener's sender limit
 ([The listener's sender limit](#the-listeners-sender-limit)): `ENVOY_SENDER_MESSAGES_PER_MINUTE`
 and `ENVOY_SENDER_MESSAGE_BURST`, each rendered only when its input is set, on the listener's
@@ -1486,8 +1544,9 @@ app pod gets a projected volume of its own, `agent-secrets-account-token`, whose
 `agent-secrets-account-token` and mounted read-only into `envoy-dispatch` at
 `/var/run/secrets/dispatch`; `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names
 `/var/run/secrets/dispatch/agent-secrets-account-token`. The kubelet rewrites that file in place
-before the token expires and Dispatch reads it on every call, so nothing stores the token, no
-rotation restarts a pod, and no Secret Manager secret, grant or SecretProviderClass exists for it.
+before the token expires and Dispatch reads it at call time, reusing it for at most 30 seconds, so
+nothing stores the token, no rotation restarts a pod, and no Secret Manager secret, grant or
+SecretProviderClass exists for it.
 The URL must be reachable from the app pod's own network, because Dispatch's broker client dials
 it directly, never through the front door's SOCKS5 proxy, which only the NATS clients use and only
 without `natsInCluster`: an Internet host through Cloud NAT, an in-cluster Service, or a name a
@@ -1620,7 +1679,11 @@ Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
-refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
+refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, a
+`natsSeedSecret` beside `natsAudience` and neither of the two, a `natsAudience` holding whitespace
+or a control character, a `natsAudience` equal to `agentSecretsAudience`, the listener's own
+audience, `oidcAudience` or the keyless Azure sign-in's audience, an `agentSecretsAudience`,
+`oidcAudience` or `azureFederationAudience` of whitespace alone, an
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
@@ -1677,7 +1740,8 @@ accepts that member before the project's first Workload Identity cluster creates
 unproven (`docs/plans/2026-10-14-dispatch-gcp-plan.md`, the hardening ledger); if it refuses it,
 the first apply stops at the app's readiness wait, and a grant made then lets the next apply
 finish. The component itself grants that
-principal `roles/secretmanager.secretAccessor` only on the NATS seed secret (and on the Azure key
+principal `roles/secretmanager.secretAccessor` only on the NATS seed secret, which it does not
+grant with `natsAudience` (and on the Azure key
 secret when `azureEmbedKeySecret` is set, and on the chat token's secret when `chatTokenSecret`
 is), and grants the listener's own account, `<hostname>-listener`, the same role on the NATS seed
 secret alone (`<hostname>-listener-nats-seed-accessor`); the app and the listener, which mount the
@@ -1739,9 +1803,28 @@ token, and the app does not wait for the listener's rollout (in the SOCKS5 mode 
 for the front door, which the app must come back without), so while both roll a new app pod can
 reach an old listener pod, and such a call is made again on the shared token rather than refused. A
 send for a `role:` route is never made on it: one an old listener refuses fails its attempt, which
-the delivery records. The listener runs as machine `<hostname>`, so the hub's user for this deployment
-sets `dispatchMachineId` to the component's `hostname`. Both Envoy containers mount the NATS seed
-at `/var/run/secrets/envoy/nats-seed`; the seed remains outside Pulumi state. With
+the delivery records. The listener admits both credentials in every mode of this component,
+`natsAudience` included, so no update of it switches the credential a listener takes and the
+credential the app presents at once; the shared bearer goes only once the listener's count of
+requests admitted on it, `envoy_listener_requests_total{credential="shared_token"}`, has read zero.
+The listener needs the cluster's issuer at boot: it reads the issuer's discovery document before it
+binds its port and exits when it cannot within 30 seconds, so a listener pod started while the
+issuer cannot be reached restarts until it can. Once started, it keeps the key set it read, reads
+it again every 15 minutes behind the answers it serves from it, and reads it for a token naming a
+key it does not hold. While the key set cannot be read it keeps serving the keys it holds, however
+old the set grows, and reads again no sooner than 5 seconds after a read that failed, whether or
+not it has read a key set yet, and never two reads at once, since every call that arrives while a
+read is in flight waits on it. A token it cannot judge because the
+key set cannot be read, or has not answered within 3 seconds, is answered 503 with `Retry-After`
+(for a key rotated in during the outage, every such call until a read succeeds), which Dispatch
+tries again, as it does a listener being replaced, and never 401. The listener runs as machine
+`<hostname>`, so the hub's user for this deployment sets `dispatchMachineId` to the component's
+`hostname`. Both Envoy containers mount the NATS seed at `/var/run/secrets/envoy/nats-seed`, or
+with `natsAudience` their own projected NATS token at `/var/run/secrets/envoy/nats-token`; the seed
+remains outside Pulumi state. Neither pod mounts its ServiceAccount's default token
+(`automountServiceAccountToken: false`): no container of either reads it, since the Envoy
+containers read only the files their environment names, `cloud-sql-proxy` signs in through the GKE
+metadata server, and the Secret Manager CSI driver asks for a token of its own. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
 ServiceAccount token, read-only, at `/var/run/secrets/dispatch/agent-secrets-account-token`; with
 `azureEmbedKeySecret`, the Azure key at `/var/run/secrets/azure-embed/key`; with the keyless
@@ -1922,14 +2005,16 @@ these are preconditions of that procedure, not guarantees the component makes.
   negative generation or a repeated one.
 
 The projected tokens need no restart either: the kubelet rewrites them in place, and Dispatch
-reads the broker token on every call, the keyless Azure form's token on every exchange with
-Entra — the answerer's sign-in as much as the embedder's — and the answerer's bearer token on
-every call. The secrets the component does not own carry no checksum, so after rotating one, restart
+reads the broker token and the listener token at call time, reusing the broker token for at most
+30 seconds (`ciphertoken.AccountTokenCacheTTL`), the keyless Azure form's token on every exchange
+with Entra — the answerer's sign-in as much as the embedder's — and the answerer's bearer token on
+every call, and with `natsAudience` both Envoy containers read the NATS token at each connect. The
+secrets the component does not own carry no checksum, so after rotating one, restart
 the Deployments that read it, once the synced Kubernetes Secret or the mounted file holds the new
 value:
 
-- the NATS seed: the app's `envoy-dispatch` and the listener's `envoy-listener` each read it once,
-  at start
+- the NATS seed, without `natsAudience`: the app's `envoy-dispatch` and the listener's
+  `envoy-listener` each read it once, at start
   (`kubectl -n <namespace> rollout restart deployment/<hostname> deployment/<hostname>-listener`);
 - the GitHub App key and the Azure key: the app alone reads them, each once at boot
   (`kubectl -n <namespace> rollout restart deployment/<hostname>`). Rotate the App key by adding a

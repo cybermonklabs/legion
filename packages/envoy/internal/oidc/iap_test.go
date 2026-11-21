@@ -15,11 +15,14 @@ import (
 const iapTestAudience = "/projects/123456789012/global/backendServices/9876543210"
 
 // iapRig is a key set served on this machine in IAP's place, which no discovery document names,
-// and the verifier of assertions to iapTestAudience over it.
+// and the verifier of assertions to iapTestAudience over it. Its keys run on clock, which a test
+// moves past RetrySpacing once the key set answers again rather than waiting.
 type iapRig struct {
 	server   *oidctest.Issuer
 	signing  *oidctest.Key
 	verifier *IAPVerifier
+	keys     *Keys
+	clock    *testClock
 }
 
 func newIAPRig(t *testing.T) iapRig {
@@ -27,7 +30,9 @@ func newIAPRig(t *testing.T) iapRig {
 	server := oidctest.New(t)
 	signing := oidctest.NewES256Key(t, "iap-key")
 	server.Publish(signing)
-	return iapRig{server: server, signing: signing, verifier: NewIAPVerifier(iapTestAudience, NewKeysAt(server.URL()+"/keys"))}
+	keys := NewKeysAt(server.URL() + "/keys")
+	clock := onTestClock(keys)
+	return iapRig{server: server, signing: signing, verifier: NewIAPVerifier(iapTestAudience, keys), keys: keys, clock: clock}
 }
 
 // iapClaims is an assertion's claim set as IAP writes it for a Google account of the Workspace
@@ -137,6 +142,7 @@ func TestIAPVerifierReportsAnUnreadableKeySetAsUnavailable(t *testing.T) {
 		t.Fatalf("an assertion while the key set answers 503: err = %v, want %v", err, ErrIssuerUnavailable)
 	}
 	rig.server.FailKeys(0)
+	rig.clock.advance(rig.keys.RetrySpacing)
 	if _, err := rig.verify(t, rig.signing, nil); err != nil {
 		t.Fatalf("the same assertion once the key set answers: %v", err)
 	}

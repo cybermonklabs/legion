@@ -23,6 +23,7 @@
         ]
       }
     },
+    "automountServiceAccountToken": false,
     "containers": [
       {
         "env": [

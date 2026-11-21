@@ -205,8 +205,7 @@ func identityRefusal(err error, reason string) error {
 // refused credential gets here.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		writeUnjudged(w, "this identity token could not be checked; try again shortly")
 		return
 	}
 	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
@@ -470,20 +469,24 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 		slog.String("path", r.URL.Path))
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeUnjudged(w, "service starting")
 	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
+		writeUnjudged(w, "the secrets broker cannot be reached; try again shortly")
 	case errors.Is(err, ciphertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again in a minute")
+		writeUnjudged(w, "this access token could not be checked; try again shortly")
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// writeUnjudged answers a credential the listener could not judge yet, for want of something it
+// depends on: 503 with message and Retry-After: 1, which a client retries where it stops on a 401.
+func writeUnjudged(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusServiceUnavailable, message)
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:
@@ -536,6 +539,22 @@ func isAPIAuthExemptPath(path string) bool {
 // is a refusal naming the missing one.
 func resolveListenerOIDCConfig(getenv func(string) string) (issuer, audience string, err error) {
 	return oidc.ConfigFromEnv(getenv, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE")
+}
+
+// listenerKeySetWait is the longest the listener's verifiers wait on an issuer's key-set read
+// (oidc.Keys.FetchWait, which oidc.Discover sets from its keySetWait) before they answer the token
+// unjudged, a 503 (refuseIdentityToken). It is below the window Dispatch's client gives each call
+// (envoy.DefaultTimeout, 5 s), so a key set that hangs reaches Dispatch as a 503 it retries rather
+// than as its own timeout; the read goes on under FetchTimeout for the next call. The secrets
+// broker and Dispatch's own verifier set none and wait the read out.
+const listenerKeySetWait = 3 * time.Second
+
+// discoverListenerVerifier is oidc.Discover for one of the listener's /v1 verifiers, the
+// projected-token one and Google's alike, its key-set wait bounded by listenerKeySetWait: nil,
+// nil for an unconfigured pair, and the discovery read under oidc.DiscoveryTimeout, refusing the
+// boot when it fails.
+func discoverListenerVerifier(ctx context.Context, issuer, audience string) (*oidc.Verifier, error) {
+	return oidc.Discover(ctx, issuer, audience, oidc.DiscoveryTimeout, listenerKeySetWait)
 }
 
 // serviceAccountSubjectPrefix begins every subject a projected service-account token carries,

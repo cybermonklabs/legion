@@ -2,10 +2,13 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // TestDiscoverRefusesAnIssuerThatNeverAnswers is the case a 404 issuer does not
@@ -46,7 +49,7 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 
 	issuer := "http://" + silent.Addr().String()
 	start := time.Now()
-	verifier, err := Discover(context.Background(), issuer, "dispatch", 300*time.Millisecond)
+	verifier, err := Discover(context.Background(), issuer, "dispatch", 300*time.Millisecond, 0)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -64,9 +67,31 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 // half of the contract, which is what keeps both binaries byte-identical to
 // their pre-OIDC behaviour.
 func TestDiscoverIsNilWhenNoIssuerIsConfigured(t *testing.T) {
-	verifier, err := Discover(context.Background(), "", "", time.Second)
+	verifier, err := Discover(context.Background(), "", "", time.Second, 0)
 	if err != nil || verifier != nil {
 		t.Fatalf("Discover(\"\") = %#v, %v; want nil, nil", verifier, err)
+	}
+}
+
+// Discover is how the Envoy listener builds its /v1 verifier at boot (cmd/listener), so the
+// key-set wait it is given bounds every Verify that waits on a read: a key set slower than the
+// wait is answered ErrIssuerUnavailable once the wait has passed, the read going on behind the
+// answer for the next caller, where a verifier with no wait would sit the read out.
+func TestDiscoverBoundsAVerifysKeySetWaitByItsArgument(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "boot-key")
+	const keySetWait, slowRead = 200 * time.Millisecond, 1500 * time.Millisecond
+	verifier, err := Discover(context.Background(), issuer.URL(), "dispatch", time.Second, keySetWait)
+	if err != nil {
+		t.Fatalf("Discover(%q): %v", issuer.URL(), err)
+	}
+	token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:example-ns:example-app", "dispatch"))
+	issuer.DelayKeys(slowRead)
+	start := time.Now()
+	_, err = verifier.Verify(context.Background(), token)
+	if elapsed := time.Since(start); !errors.Is(err, ErrIssuerUnavailable) || elapsed >= slowRead/2 {
+		t.Fatalf("Verify against a key set that answers in %s = %v after %s, want ErrIssuerUnavailable once the %s wait Discover was given has passed",
+			slowRead, err, elapsed.Round(time.Millisecond), keySetWait)
 	}
 }
 

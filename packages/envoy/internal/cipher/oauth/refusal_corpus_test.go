@@ -115,7 +115,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
-	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
+	{"%s was not minted for %s, which is the audience this broker accepts from %s", []any{"the subject token", "legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
 // The OAuth error codes broker-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this

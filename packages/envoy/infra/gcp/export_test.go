@@ -212,8 +212,8 @@ func DispatchKubeconfig(endpoint, ca, name string) string {
 
 // DispatchListenerEnvError resolves the listener container's environment from the one NATS URL,
 // for the refusal tests, with the front door's proxy in the default namespace: nil when the URL
-// renders an environment.
+// renders an environment. No NATS credential reaches a refusal, so the helper passes none.
 func DispatchListenerEnvError(hostname, url string) error {
-	_, err := dispatchListenerEnv(dispatchSettings{hostname: hostname, namespace: defaultDispatchNamespace}, hostname+"-listener", url)
+	_, err := dispatchListenerEnv(dispatchSettings{hostname: hostname, namespace: defaultDispatchNamespace}, dispatchNATSCredential{}, hostname+"-listener", url)
 	return err
 }

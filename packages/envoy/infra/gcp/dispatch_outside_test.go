@@ -196,6 +196,7 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 		{"dispatch-pod-with-chat-endpoint.golden", dispatchArgsWith(setChatEndpoint)},
 		{dispatchPublicOriginGolden, dispatchPublicOriginArgs},
 		{dispatchIAPGolden, dispatchIAPArgs},
+		{"dispatch-pod-with-service-identity.golden", dispatchServiceIdentityArgs},
 	}
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)

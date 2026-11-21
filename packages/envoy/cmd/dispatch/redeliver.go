@@ -54,17 +54,19 @@ func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.App
 // failed deliveries since --since and, unless --dry-run, redelivers them under the running
 // sweep's rules and records. It leaves the running sweep's cursor alone. It opens the database
 // DATABASE_URL names, as the server does, for the GitHub rate limits every process shares, and
-// migrates nothing. It connects to envoy.natsUrls as the nkey user NATS_NKEY_SEED_FILE (or
-// NATS_NKEY_SEED) names and never runs envoy.natsSeed, so a run against a NATS that requires a
-// user needs NATS_NKEY_SEED_FILE.
+// migrates nothing. It connects to envoy.natsUrls with the server's own NATS credential, the nkey
+// user NATS_NKEY_SEED_FILE (or NATS_NKEY_SEED) names or the platform token NATS_SERVICE_TOKEN_FILE
+// names, one of them and never both, and never runs envoy.natsSeed, so a run against a NATS that
+// requires a credential needs NATS_NKEY_SEED_FILE or NATS_SERVICE_TOKEN_FILE.
 func redeliverWebhooks(ctx context.Context, args []string, env settingValues, out io.Writer) int {
 	flags := flag.NewFlagSet("redeliver-webhooks", flag.ContinueOnError)
 	flags.SetOutput(out)
 	flags.Usage = func() {
 		fmt.Fprintln(out, "usage: envoy-dispatch redeliver-webhooks --since <duration> [--dry-run]")
 		fmt.Fprintln(out, "Opens the database DATABASE_URL names, for the GitHub rate limits every Dispatch process shares.")
-		fmt.Fprintln(out, "Connects to envoy.natsUrls as the nkey user NATS_NKEY_SEED_FILE (or NATS_NKEY_SEED) names;")
-		fmt.Fprintln(out, "it never runs envoy.natsSeed, so a run against a NATS that requires a user needs NATS_NKEY_SEED_FILE.")
+		fmt.Fprintln(out, "Connects to envoy.natsUrls as the nkey user NATS_NKEY_SEED_FILE (or NATS_NKEY_SEED) names, or with the")
+		fmt.Fprintln(out, "platform token NATS_SERVICE_TOKEN_FILE names (one of them, never both); it never runs envoy.natsSeed,")
+		fmt.Fprintln(out, "so a run against a NATS that requires a credential needs NATS_NKEY_SEED_FILE or NATS_SERVICE_TOKEN_FILE.")
 		flags.PrintDefaults()
 	}
 	since := flags.Duration("since", 0, "list failed deliveries this far back (GitHub keeps 72h)")

@@ -219,9 +219,10 @@ func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 }
 
 // TestRenewRetriesEveryOtherRefusal: a refusal outside the terminal set keeps the retry backoff.
-// POD_IDENTITY_MISMATCH is among them because the broker also answers it for a token it could not
-// verify while its issuer or key set was unreachable; a real mismatch is bounded by the lease,
-// after which the next renewal is ENROLLMENT_NOT_LIVE. POD_TOKEN_EXPIRED is retried with the token
+// POD_IDENTITY_MISMATCH is among them because a broker of an earlier release also answers it for a
+// token it could not verify while its issuer or key set was unreachable (the broker now answers
+// that 503 ISSUER_UNAVAILABLE); a real mismatch is bounded by the lease, after which the next
+// renewal is ENROLLMENT_NOT_LIVE. POD_TOKEN_EXPIRED is retried with the token
 // the file holds next, and PROOF_INVALID that does not say "not live" (clock skew, key, URL) can
 // clear on its own.
 func TestRenewRetriesEveryOtherRefusal(t *testing.T) {

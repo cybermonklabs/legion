@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // tokenTypeAccessToken is RFC 8693's own name for an access token: the only kind this provider's
@@ -108,7 +109,10 @@ const (
 )
 
 // KeySource answers the public key a token's header names, which is what the library's
-// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set.
+// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set. An error that
+// wraps oidc.ErrKeySet is an issuer whose set could not be read, which the exchange answers 503
+// temporarily_unavailable (keyFuncError) rather than as a token it refused, unless the token's
+// own claims refuse it (refuseByClaims).
 type KeySource interface {
 	// Key is the public key a token naming kid and signed with alg is checked against.
 	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
@@ -312,7 +316,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// pod is the pod binding the decision requires.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               keyFunc(c.Kubernetes.Keys),
+				ValidateFunc:               keyFunc(c.Kubernetes),
 			},
 		}
 	}
@@ -325,7 +329,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// token needs and a leaked one cannot be replayed.
 				ValidateJTI:                true,
 				JWTLifetimeToleranceWindow: githubTolerance,
-				ValidateFunc:               keyFunc(c.GitHub.Keys),
+				ValidateFunc:               keyFunc(c.GitHub),
 			},
 		}
 	}
@@ -341,7 +345,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// copied it is the DPoP key the minted token is bound to.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: googleTolerance,
-				ValidateFunc:               keyFunc(c.Google.Keys),
+				ValidateFunc:               keyFunc(c.Google),
 			},
 		}
 	}
@@ -353,9 +357,10 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 		// subject with no actor is refused by the decision, and the machine type is an actor
 		// type the exchange client may present and no subject type at all.
 		for _, name := range []string{oauthwire.SubjectTokenTypePerson, oauthwire.ActorTokenTypeMachine} {
+			issuer, _ := c.issuerOf(name)
 			types[name] = &rfc8693.JWTType{
 				Name:   name,
-				Issuer: c.Google.Issuer,
+				Issuer: issuer.Issuer,
 				JWTValidationConfig: rfc8693.JWTValidationConfig{
 					// A person's sign-in holds Google's refresh token and mints an identity
 					// token from it whenever one is wanted, and the machine presents the same
@@ -364,7 +369,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 					// being spendable is the box key the sign-in is recorded against.
 					ValidateJTI:                false,
 					JWTLifetimeToleranceWindow: googleTolerance,
-					ValidateFunc:               keyFunc(c.Google.Keys),
+					ValidateFunc:               keyFunc(issuer),
 				},
 			}
 		}
@@ -390,23 +395,82 @@ func (c ExchangeConfig) issuerOf(subjectTokenType string) (IssuerConfig, bool) {
 	return IssuerConfig{}, false
 }
 
-// keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
-// unverified token and checks the signature with whatever key it returns.
+// keyFunc is a JWT token type's ValidateFunc, for tokens of issuer: the library hands it the
+// parsed but unverified token and checks the signature with whatever key it returns.
 //
 // The algorithm comes from a header nobody has verified, and the library's parse allows every
 // algorithm including 'none', so the header is refused before any key is returned: an issuer
 // publishes public keys, so a token signed with a shared secret or not signed at all is not one
 // of its tokens whatever key id it names.
 //
+// A key set that cannot be read reaches no verdict on the signature, but the token's own claims
+// may still refuse it, and the library checks them only after this returns. So where the key
+// source answers oidc.ErrKeySet, the unverified claims are held to issuer first (refuseByClaims),
+// as the verifier's classify decides a token's claims before its key-set error
+// (internal/oidc/verifier.go): a token that no read of the set could make acceptable is refused,
+// and only one its claims accept is answered as the outage.
+//
 // The read runs on its own context rather than the request's, because the library's signature
 // gives it none; the key source bounds its own fetch, and a set already cached costs no read.
-func keyFunc(keys KeySource) jwt.Keyfunc {
+func keyFunc(issuer IssuerConfig) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
 		}
-		return keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		key, err := issuer.Keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		if errors.Is(err, oidc.ErrKeySet) {
+			if refused := refuseByClaims(issuer, token.Claims.ToMapClaims()); refused != nil {
+				return nil, refused
+			}
+		}
+		return key, err
 	}
+}
+
+// claimRefusal is a token its own claims refuse, decided while its issuer's key set could not be
+// read (keyFunc). Its text says which claim refused it and repeats nothing of the token.
+type claimRefusal struct{ reason string }
+
+func (r *claimRefusal) Error() string { return r.reason }
+
+// refuseByClaims holds a token's unverified claims to the issuer its type is configured with: the
+// issuer it must name, the audience it must carry (audienceRefusal, the check decide makes of a
+// verified token) and an expiry that has not passed. It answers nil for claims that accept the
+// token, which leaves only its signature undecided.
+func refuseByClaims(issuer IssuerConfig, claims map[string]any) *claimRefusal {
+	if iss, _ := claims["iss"].(string); iss != issuer.Issuer {
+		return &claimRefusal{fmt.Sprintf("the token was not issued by %s, the issuer this token type is accepted from", issuer.Issuer)}
+	}
+	if err := audienceRefusal(issuer, claims["aud"], "the token"); err != nil {
+		return &claimRefusal{err.Error()}
+	}
+	if expiry, ok := expiryOf(claims); ok && expiry.Before(time.Now()) {
+		return &claimRefusal{fmt.Sprintf("the token expired at %s", expiry.UTC().Format(time.RFC3339))}
+	}
+	return nil
+}
+
+// audienceRefusal refuses an `aud` claim that does not carry the audience issuer is configured
+// with, naming the token it was read from, and answers nil for one that does. It is the one
+// audience rule of the exchange, for a verified subject token (Provider.audience) and for an
+// unverified token while its issuer's key set cannot be read (refuseByClaims).
+func audienceRefusal(issuer IssuerConfig, aud any, token string) error {
+	if hasAudience(aud, issuer.Audience) {
+		return nil
+	}
+	return fmt.Errorf("%s was not minted for %s, which is the audience this broker accepts from %s", token, issuer.Audience, issuer.Issuer)
+}
+
+// keyFuncError is the error keyFunc returned inside err, the library's refusal of an exchange
+// request, and nil for a refusal keyFunc did not make. The library keeps keyFunc's error as a
+// jwt.ValidationError's Inner, which errors.Is and errors.As do not reach, so it is read from
+// there: an oidc.ErrKeySet, no verdict on the token at all, or a claimRefusal.
+func keyFuncError(err error) error {
+	var invalid *jwt.ValidationError
+	if errors.As(err, &invalid) {
+		return invalid.Inner
+	}
+	return nil
 }
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
@@ -448,6 +512,19 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
+	var refused *claimRefusal
+	switch inner := keyFuncError(err); {
+	case errors.As(inner, &refused):
+		// A token whose issuer's key set is down, refused on its own claims: the 400
+		// invalid_request it gets once the set reads, naming the claim, since no read changes it.
+		err = oauth2.ErrInvalidRequest.WithHintf("The presented token was refused: %s.", refused).WithWrap(err).WithDebugError(err)
+	case errors.Is(inner, oidc.ErrKeySet):
+		// No verdict on the token: 503 temporarily_unavailable, never the 400 invalid_request a
+		// token that does not verify gets, since cipherclient, which every pod and daemon trades
+		// with, stops for good on a 4xx refusal (RefusedError.Permanent) and trades again after a
+		// 5xx.
+		err = oauth2.ErrTemporarilyUnavailable.WithHint("The issuer of the presented token cannot be reached, so the token could not be checked; try again shortly.").WithWrap(err).WithDebugError(err)
+	}
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -1310,10 +1387,7 @@ func (p *Provider) audience(subjectTokenType string, subjectToken map[string]any
 	if !ok {
 		return nil
 	}
-	if hasAudience(subjectToken["aud"], issuer.Audience) {
-		return nil
-	}
-	return fmt.Errorf("the subject token was not minted for %s, which is the audience this broker accepts from %s", issuer.Audience, issuer.Issuer)
+	return audienceRefusal(issuer, subjectToken["aud"], "the subject token")
 }
 
 // hasAudience reports whether an `aud` claim carries want. RFC 7519 Section 4.1.3 allows either

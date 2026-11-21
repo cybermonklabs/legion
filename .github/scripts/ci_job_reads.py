@@ -827,6 +827,11 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/listener/dispatch_listener_credentials_test.go": reads(
+        (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden",
+         "cmd/listener/dispatch_listener_credentials_test.go:20, read by brokerauth_render_test.go:18"),
+        (f"{INFRA}/gcp/testdata/dispatch-listener-pod-with-service-identity.golden",
+         "cmd/listener/dispatch_listener_credentials_test.go:21, read by brokerauth_render_test.go:18")),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
          "cmd/spec-check/cifiles_test.go:641 reads that one fragment under ../..")),

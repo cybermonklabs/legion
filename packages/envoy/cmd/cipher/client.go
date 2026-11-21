@@ -53,8 +53,9 @@ type client struct {
 // ENROLLMENT_NOT_LIVE answers an ended enrollment
 // PROOF_INVALID with a message saying "not live" (its renew handler's "enrollment is not live" and
 // its proof check's "proof invalid: not live"), which no recoverable proof failure says.
-// POD_IDENTITY_MISMATCH is not a member: the broker also answers it for a token it could not
-// verify while its issuer or key set was unreachable, and a real mismatch ends with the lease,
+// POD_IDENTITY_MISMATCH is not a member: a broker of an earlier release also answers it for a
+// token it could not verify while its issuer or key set was unreachable (the broker now answers
+// that 503 ISSUER_UNAVAILABLE, retried as every 5xx is), and a real mismatch ends with the lease,
 // after which the next renewal is ENROLLMENT_NOT_LIVE.
 var terminalRenewal = struct {
 	Codes                     []string

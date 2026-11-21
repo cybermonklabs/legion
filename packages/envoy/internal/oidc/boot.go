@@ -35,14 +35,21 @@ func ConfigFromEnv(getenv func(string) string, issuerVar, audienceVar string) (i
 	return issuer, audience, nil
 }
 
-// Discover is New under a deadline, and (nil, nil) for an unconfigured pair.
-// The deadline bounds the discovery read only: the key set refreshes on its own
-// background context, so a boot deadline never disables key rotation.
-func Discover(ctx context.Context, issuer, audience string, timeout time.Duration) (*Verifier, error) {
+// Discover is New under a deadline, its key cache waiting at most keySetWait on a key-set read
+// (Keys.FetchWait; zero waits the read out, up to FetchTimeout), and (nil, nil) for an
+// unconfigured pair. The deadline bounds the discovery read only: the key set refreshes on its
+// own background context, so a boot deadline never disables key rotation. The Envoy listener
+// builds its /v1 verifier with it (cmd/listener, listenerKeySetWait).
+func Discover(ctx context.Context, issuer, audience string, timeout, keySetWait time.Duration) (*Verifier, error) {
 	if issuer == "" {
 		return nil, nil
 	}
 	discovery, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return New(discovery, issuer, audience)
+	keys, err := NewKeys(discovery, issuer)
+	if err != nil {
+		return nil, err
+	}
+	keys.FetchWait = keySetWait
+	return NewWithKeys(issuer, audience, keys), nil
 }

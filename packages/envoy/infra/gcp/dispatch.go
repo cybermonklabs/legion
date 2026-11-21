@@ -183,6 +183,16 @@ type DispatchArgs struct {
 
 	NatsUrl        pulumi.StringInput `pulumi:"natsUrl,optional"`
 	NatsSeedSecret pulumi.StringInput `pulumi:"natsSeedSecret,optional"`
+	// NatsAudience moves the app's and the listener's NATS connections behind the auth service:
+	// each pod presents a projected token of its own ServiceAccount for this audience, the app's
+	// <hostname> and the listener's <hostname>-listener, read afresh at each connect from the file
+	// NATS_SERVICE_TOKEN_FILE names, in place of the seed. It is the broker's
+	// BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists both accounts as Dispatch of
+	// machine id <hostname> (dispatch/<hostname>/*): the one grant the two connections share, as
+	// they share the seed today (natsgrant.Dispatch). Set, natsSeedSecret is refused, since a
+	// connection presents one credential, and nothing of the seed is mounted, classed or granted;
+	// unset, natsSeedSecret is required.
+	NatsAudience string `pulumi:"natsAudience,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
@@ -253,10 +263,11 @@ type DispatchArgs struct {
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
 	// trimmed, as Dispatch trims it) and the audience of the projected ServiceAccount token the
-	// app presents to the broker on every call, read at call time from the file
-	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names. AgentSecretsAudience is the broker's
-	// BROKER_K8S_OIDC_AUDIENCE: the kubelet mints the token for it and refreshes it in place, so
-	// no token is an input, a stored secret or part of the component's state. Set both or neither.
+	// app presents to the broker on every call, read at call time and reused for at most 30
+	// seconds, from the file DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names. AgentSecretsAudience
+	// is the broker's BROKER_K8S_OIDC_AUDIENCE: the kubelet mints the token for it and refreshes
+	// it in place, so no token is an input, a stored secret or part of the component's state. Set
+	// both or neither.
 	AgentSecretsUrl      string `pulumi:"agentSecretsUrl,optional"`
 	AgentSecretsAudience string `pulumi:"agentSecretsAudience,optional"`
 
@@ -542,6 +553,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
+		{"natsAudience", args.NatsAudience},
 		{"outsideOrigin", args.OutsideOrigin},
 		{"publicOrigin", args.PublicOrigin},
 		{"networkEndpointGroupName", args.NetworkEndpointGroupName},
@@ -693,6 +705,7 @@ type dispatchSettings struct {
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
+	natsAudience                                string
 	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
@@ -791,10 +804,10 @@ func newDispatchAzure(args *DispatchArgs) (dispatchAzure, error) {
 	if keyless {
 		azure.audience = defaultAzureFederationAudience
 		if args.AzureFederationAudience != nil {
-			if *args.AzureFederationAudience == "" {
+			azure.audience = dispatchAudience(*args.AzureFederationAudience)
+			if azure.audience == "" {
 				return dispatchAzure{}, errors.New("azureFederationAudience is empty; leave it unset for " + defaultAzureFederationAudience)
 			}
-			azure.audience = *args.AzureFederationAudience
 		}
 	}
 	if !azure.embedder {
@@ -1033,6 +1046,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
+		{"natsAudience", args.NatsAudience != ""},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
@@ -1386,6 +1400,61 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// dispatchAudience is the audience an input names, as the verifier that checks it reads it:
+// trimmed of surrounding whitespace, as oidc.ConfigFromEnv trims every verifier's audience
+// (internal/oidc/boot.go), Dispatch's DISPATCH_OIDC_AUDIENCE among them. Three inputs are read
+// through it — agentSecretsAudience, oidcAudience and azureFederationAudience — so a padded one
+// renders the audience it names and is compared as that one in refuseSharedAudiences, and one of
+// whitespace alone, which would name none, is refused by name (blankAudience). natsAudience is
+// rendered as it is, since core.CheckEnvValue refuses any whitespace in it.
+func dispatchAudience(input string) string {
+	return strings.TrimSpace(input)
+}
+
+// blankAudience is the refusal of an audience input that is set and holds whitespace alone,
+// naming it: trimmed to nothing, it would render no verifier and turn the feature off without a
+// word, where Dispatch's own boot used to refuse the half pair it rendered.
+func blankAudience(input, value string) error {
+	if value != "" && dispatchAudience(value) == "" {
+		return core.InputErrorf(input, "%s is blank: set the audience, or leave it unset to turn its verifier off", input)
+	}
+	return nil
+}
+
+// refuseSharedAudiences keeps natsAudience, which the NATS auth service admits, apart from every
+// other audience the app presents a token for or verifies one under: agentSecretsAudience (the
+// secrets broker's BROKER_K8S_OIDC_AUDIENCE, on every broker route), the listener's own audience
+// (its Service address, dispatchListenerURL), oidcAudience (callers of Dispatch itself) and the
+// keyless Azure sign-in's audience (Entra; azureFederationAudience, or its default). A token
+// minted for natsAudience crosses each NATS CONNECT, over plain nats:// through the front door's
+// proxy, so were it also minted for another of these, whoever reads a CONNECT could present it
+// there, the broker's routes as Dispatch's account among them; and a token minted for another
+// would be a bearer the auth service admits. Each audience is kept apart, as the secrets broker
+// keeps its exchange audience apart from its enrollment one (internal/cipher/config,
+// BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where another is. It compares the
+// resolved settings, each audience as dispatchAudience reads it, and names both inputs and no
+// value but the public Azure default and the listener's own address, which is no secret.
+func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
+	if s.natsAudience == "" {
+		return nil
+	}
+	azureInput := "azureFederationAudience"
+	if args.AzureFederationAudience == nil {
+		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
+	}
+	for _, other := range []struct{ input, audience string }{
+		{"agentSecretsAudience", s.agentSecretsAudience},
+		{"the listener's own audience, " + dispatchListenerURL(s), dispatchListenerURL(s)},
+		{"oidcAudience", s.oidcAudience},
+		{azureInput, s.azure.audience},
+	} {
+		if other.audience == s.natsAudience {
+			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, and the NATS token, which crosses every CONNECT, would be spendable there, so give natsAudience an audience of its own", other.input)
+		}
+	}
+	return nil
+}
+
 // resolveDispatchExistingCluster resolves existingCluster: nil when it is unset, where the
 // component makes a cluster of its own, and otherwise the input itself, once its name and location
 // have the shape GKE gives them, each refused as a core.InputError naming its path when it does
@@ -1579,15 +1648,26 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.NatsUrl == nil {
 		return dispatchSettings{}, errors.New("natsUrl is required")
 	}
-	if args.NatsSeedSecret == nil {
-		return dispatchSettings{}, errors.New("natsSeedSecret is required")
+	if err := resolveDispatchNATSCredential(args); err != nil {
+		return dispatchSettings{}, err
 	}
-	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {
+	// agentSecretsAudience and oidcAudience are read as their verifiers read them, trimmed
+	// (dispatchAudience), and either set to whitespace alone is refused by name.
+	for _, in := range []struct{ input, value string }{
+		{"agentSecretsAudience", args.AgentSecretsAudience},
+		{"oidcAudience", args.OidcAudience},
+	} {
+		if err := blankAudience(in.input, in.value); err != nil {
+			return dispatchSettings{}, err
+		}
+	}
+	agentSecretsAudience, oidcAudience := dispatchAudience(args.AgentSecretsAudience), dispatchAudience(args.OidcAudience)
+	if agentSecretsAudience != "" && args.AgentSecretsUrl == "" {
 		return dispatchSettings{}, errors.New("agentSecretsUrl is required when agentSecretsAudience is set")
 	}
 	agentSecretsURL := strings.TrimSuffix(args.AgentSecretsUrl, "/")
 	if args.AgentSecretsUrl != "" {
-		if args.AgentSecretsAudience == "" {
+		if agentSecretsAudience == "" {
 			return dispatchSettings{}, errors.New("agentSecretsAudience is required when agentSecretsUrl is set")
 		}
 		// The shape Dispatch itself requires of DISPATCH_AGENT_SECRETS_URL, checked here so a bad
@@ -1607,7 +1687,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// without an audience would configure nothing and is refused rather than dropped. Dispatch
 	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
 	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
-	if args.OidcIssuer != "" && args.OidcAudience == "" {
+	if args.OidcIssuer != "" && oidcAudience == "" {
 		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
 	}
 	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
@@ -1680,8 +1760,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.publicOrigin = publicOrigin
 	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
-	s.agentSecretsAudience = args.AgentSecretsAudience
-	s.oidcAudience = args.OidcAudience
+	s.agentSecretsAudience = agentSecretsAudience
+	s.natsAudience = args.NatsAudience
+	s.oidcAudience = oidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
@@ -1770,6 +1851,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsLabel(namespace) {
 			return dispatchSettings{}, fmt.Errorf("allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
+	}
+	// The listener's own audience is its Service address, which names the namespace, so the
+	// audiences are compared once every input they read is resolved.
+	if err := refuseSharedAudiences(args, s); err != nil {
+		return dispatchSettings{}, err
 	}
 	return s, nil
 }

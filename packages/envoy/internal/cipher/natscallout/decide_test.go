@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -199,6 +200,10 @@ func TestRefusals(t *testing.T) {
 			return "", false, time.Time{}, time.Time{}, ctx.Err()
 		},
 	}
+	// outage is the cluster's key set that cannot be read: the verifier reaches no verdict.
+	outage := Deps{ServiceToken: func(context.Context, string) (string, bool, time.Time, time.Time, error) {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("verify: %w", oidc.ErrIssuerUnavailable)
+	}}
 	spent, cancel := context.WithCancel(context.Background())
 	cancel()
 	badSig := a.request(t, "nonce")
@@ -224,6 +229,7 @@ func TestRefusals(t *testing.T) {
 		{"a broker that does not answer", unreachable, nil, a.request(t, "nonce"), labelBrokerUnreachable, "broker unreachable"},
 		{"a budget spent in the token's introspection", cancelled, spent, a.request(t, "nonce"), labelBudget, "decision exceeded its budget at the token's introspection"},
 		{"a service token that does not verify", deps, nil, serviceRequest("forged"), labelServiceToken, "service token not verified"},
+		{"a service token whose issuer cannot be reached", outage, nil, serviceRequest("dispatch-token"), labelIssuerUnavailable, "service token's issuer cannot be reached"},
 		{"a budget spent in the service token's verification", cancelled, spent, serviceRequest("held-token"), labelBudget, "decision exceeded its budget at the service token's verification"},
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},

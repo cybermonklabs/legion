@@ -594,6 +594,7 @@
                         ]
                       }
                     },
+                    "automountServiceAccountToken": false,
                     "containers": [
                       {
                         "command": [
@@ -1082,6 +1083,7 @@
                         ]
                       }
                     },
+                    "automountServiceAccountToken": false,
                     "containers": [
                       {
                         "env": [
@@ -3988,6 +3990,7 @@
                         ]
                       }
                     },
+                    "automountServiceAccountToken": false,
                     "containers": [
                       {
                         "command": [
@@ -4485,6 +4488,7 @@
                         ]
                       }
                     },
+                    "automountServiceAccountToken": false,
                     "containers": [
                       {
                         "env": [

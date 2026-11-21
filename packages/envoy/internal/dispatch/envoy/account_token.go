@@ -164,7 +164,7 @@ func (g *googleIdentity) forget() {
 }
 
 // accountTokenExpiryMargin is how long before its own exp a token read from the account token file
-// is no longer presented: about a call's whole window (defaultTimeout) and a few seconds of clock
+// is no longer presented: about a call's whole window (DefaultTimeout) and a few seconds of clock
 // difference, so a token is never sent to arrive expired. The kubelet rewrites a projected token
 // once it is 80% of the way through its life, which for the hour the deployment projects leaves
 // twelve minutes, so a working kubelet never brings a token this near.

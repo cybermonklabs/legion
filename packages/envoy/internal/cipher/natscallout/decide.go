@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -126,6 +127,7 @@ const (
 	labelNoExpiry          = "no_expiry"
 	labelBadSessionID      = "bad_session_id"
 	labelServiceToken      = "service_token_not_verified"
+	labelIssuerUnavailable = "issuer_unavailable"
 	labelTokenTooLong      = "token_too_long"
 	labelServiceNotListed  = "service_not_listed"
 	labelHeldToProjects    = "held_to_projects"
@@ -256,9 +258,14 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the service token's verification")
 		}
-		// The cause names which: a wrong audience, an expired token, an issuer this broker takes no
-		// NATS token from, or a key set it could not fetch. The verifiers' errors carry no token
-		// (internal/oidc), so the cause is safe to log; it is never answered.
+		// An issuer whose key set could not be read reached no verdict on the token: its own label,
+		// so an alert on refused service tokens never reads an outage as forged ones. Otherwise the
+		// cause names which: a wrong audience, an expired token, an issuer this broker takes no NATS
+		// token from. The verifiers' errors carry no token (internal/oidc), so the cause is safe to
+		// log; it is never answered.
+		if errors.Is(err, oidc.ErrIssuerUnavailable) {
+			return Decision{}, refuse(labelIssuerUnavailable, "service token's issuer cannot be reached").because(err)
+		}
 		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
 	}
 	if expiry.Sub(issued) > longestServiceToken {

@@ -102,8 +102,8 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 	expired := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(-time.Minute))
 	writeAccountToken(t, path, expired)
 	err := send()
-	if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrReceiptTimeout) || !strings.Contains(err.Error(), path) {
-		t.Fatalf("a send on an expired token = %v, want ErrAccountToken naming %s, made before any request", err, path)
+	if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrReceiptTimeout) || errors.Is(err, ErrUnreachable) || !strings.Contains(err.Error(), path) {
+		t.Fatalf("a send on an expired token = %v, want ErrAccountToken naming %s, made before any request, and never ErrUnreachable: asking again repeats it", err, path)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove the token file: %v", err)

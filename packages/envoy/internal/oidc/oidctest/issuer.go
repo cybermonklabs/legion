@@ -294,7 +294,9 @@ func (i *Issuer) DiscoveryRequests() int {
 // the caller's ctx.Done() and its own inflight fetch, and against a local
 // issuer that answers in microseconds both cases are ready at once, so Go
 // picks between them at random. Over a network the fetch is the slow one,
-// which is the case the test means to describe.
+// which is the case the test means to describe. A delay longer than the
+// reader waits is an issuer that hangs: the endpoint answers nothing once the
+// reader hangs up, so the server's own shutdown does not wait the delay out.
 func (i *Issuer) DelayKeys(d time.Duration) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -970,14 +972,18 @@ func randomUserCode() string {
 	return string(code)
 }
 
-func (i *Issuer) handleKeys(w http.ResponseWriter, _ *http.Request) {
+func (i *Issuer) handleKeys(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	i.jwksRequests++
 	set := jose.JSONWebKeySet{Keys: append([]jose.JSONWebKey(nil), i.served...)}
 	delay, status := i.keysDelay, i.keysStatus
 	i.mu.Unlock()
 	if delay > 0 {
-		time.Sleep(delay)
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
 	}
 	if status != 0 {
 		http.Error(w, "key set unavailable", status)

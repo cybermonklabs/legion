@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // launcherLoginKey is the per-login bucket a person's machine login spends: person:<login>, the
@@ -56,7 +57,8 @@ type tokenLoginResponse struct {
 // BROKER_SERVICE_LOGINS does not name for the requested service 403 ACCOUNT_NOT_LISTED, a request
 // object that does not verify or repeats a jti 400 REQUEST_INVALID, a key another live credential
 // holds 409 KEY_HOLDS_LIVE_CREDENTIAL, and a broker that trusts no Kubernetes token issuer
-// answers 404 TOKEN_LOGIN_OFF.
+// answers 404 TOKEN_LOGIN_OFF. A token whose issuer's key set cannot be read is no refusal: 503
+// ISSUER_UNAVAILABLE, keeping the address's request as every token that did not verify does.
 func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	// The route takes no credential of the broker's, but the login is the token it carries: a
 	// refusal before that token verifies is the authentication's, and after it the service's.
@@ -102,6 +104,8 @@ func writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete 
 		writeError(w, http.StatusNotFound, "TOKEN_LOGIN_OFF", err.Error())
 	case errors.Is(err, machine.ErrTokenExpired):
 		writeError(w, http.StatusUnauthorized, "TOKEN_EXPIRED", err.Error())
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the ServiceAccount token", err)
 	case errors.Is(err, machine.ErrTokenInvalid):
 		writeError(w, http.StatusUnauthorized, "TOKEN_INVALID", err.Error())
 	case errors.Is(err, machine.ErrTokenTooLongLived):

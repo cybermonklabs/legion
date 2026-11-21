@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A projected service-account token's issuer that hangs, or rotates its key while its key set
+  cannot be read, no longer makes the verifier call a live token refused. A key set past its
+  15-minute life that holds the token's key answers at once and is read again behind the answer,
+  the read going on under its 10-second timeout for the next caller; and a key id the cached set
+  does not hold is answered "issuer unavailable", not "no such key", while a read is in flight or
+  after one failed, for every caller, racing ones included, until a read succeeds. Once a set is
+  held, the next read after a failed one starts 5 seconds later (`oidc.DefaultKeysRetrySpacing`),
+  not a minute, so a key rotated in during a short outage is found inside Dispatch's 12-second
+  retry window, and an issuer that fails fast is read once per 5 seconds rather than once per
+  token. A stale key set keeps answering the keys it holds for as long as the issuer cannot be
+  read; it has no maximum age. `envoy-listener` waits at most 3 seconds on a key-set read
+  (`listenerKeySetWait`, below Dispatch's 5-second call window) and answers such a token 503, on
+  every call of the outage, not 401. The secrets broker and Dispatch's own verifier still wait a
+  read out, up to that 10-second timeout.
+time: 2026-11-16T16:04:42Z
+custom:
+    Issue: pr4202

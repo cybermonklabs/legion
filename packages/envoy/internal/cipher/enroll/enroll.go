@@ -1720,17 +1720,20 @@ type Renewal struct {
 // verifyPodToken verifies a pod's projected service-account token (issuer, audience, signature,
 // expiry) and requires it to name a pod UID. Create and Renew both call it before any transaction
 // opens, so the issuer's key-set fetch on an unknown key id never holds a row lock or a pooled
-// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; every other
-// failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
+// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; a token whose
+// issuer cannot be reached is the verifier's oidc.ErrIssuerUnavailable, no verdict on the pod at
+// all; every other failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
 func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, error) {
 	if s.Pod == nil {
 		return PodClaims{}, fmt.Errorf("%w: a pod's token needs BROKER_K8S_OIDC_ISSUER", ErrPodIdentity)
 	}
 	claims, err := s.Pod.Verify(ctx, raw)
-	if errors.Is(err, oidc.ErrExpired) {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
 		return PodClaims{}, fmt.Errorf("%w (%v)", ErrPodTokenExpired, err)
-	}
-	if err != nil || claims.PodUID == "" {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		return PodClaims{}, err
+	case err != nil || claims.PodUID == "":
 		return PodClaims{}, ErrPodIdentity
 	}
 	return claims, nil

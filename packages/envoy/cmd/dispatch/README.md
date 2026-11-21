@@ -65,6 +65,15 @@ Each item below names a variable, then its purpose.
   The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
   Either set beside any other NATS credential variable refuses startup naming both.
 
+- `ENVOY_ACCOUNT_TOKEN_FILE`
+
+  Dispatch's own projected Kubernetes ServiceAccount token for the Envoy listener's audience, which every call to the listener at `ENVOY_URL` presents as its bearer ahead of `ENVOY_TOKEN`.
+  The listener admits it through its `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` pair, held to the subjects `ENVOY_OIDC_ACCOUNTS` lists, and takes a send's role mark from that account alone (`ENVOY_DISPATCH_PRINCIPAL`).
+  Dispatch reads the file at each call, never at startup, so the token the kubelet rewrites in place reaches the next call with no restart, and a path that holds nothing yet still boots.
+  A token that cannot be read, or whose own expiry is ten seconds away, is not presented: the call is read once more and then fails as an unavailable listener does (`envoy.ErrAccountToken`, an `envoy.ErrUnavailable`), naming the file, unless `ENVOY_TOKEN` takes its place as below.
+  `ENVOY_TOKEN` stays beside it while a listener Dispatch calls may not verify the token yet: a call the listener refuses (401) on two reads of the file is made once more on `ENVOY_TOKEN`, with a WARN line, unless it carries a role mark.
+  Set beside `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`, it refuses startup naming both.
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);
@@ -379,8 +388,9 @@ It opens the redelivery bucket as the server does, at `ENVOY_NATS_REPLICAS` copi
 a value other than a whole number from 1 to 5 stops it before it connects.
 It runs no keeper: the server's keeper raises the bucket back to the server's value every 30 seconds, and a refused raise names the bucket, `raise KV_envoy_webhook_redelivery: ENVOY_NATS_REPLICAS=3: context deadline exceeded` under a grant without its stream update.
 Run inside the Dispatch container it reaches that deployment's NATS with `ENVOY_ALLOW_REMOTE_NATS=1 envoy-dispatch redeliver-webhooks …`.
-It connects as the nkey user `NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names and runs no `!` command, so it never reads `envoy.natsSeed`:
-a run against a NATS that requires a user needs `NATS_NKEY_SEED_FILE`.
+It connects with the server's own NATS credential, the nkey user `NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names or the platform token `NATS_SERVICE_TOKEN_FILE` names, one of them and never both, and runs no `!` command, so it never reads `envoy.natsSeed`:
+a run against a NATS that requires a credential needs `NATS_NKEY_SEED_FILE` or `NATS_SERVICE_TOKEN_FILE`.
+In a pod `gcp:Dispatch` renders with `natsAudience`, `NATS_SERVICE_TOKEN_FILE` is already set, and adding a seed variable beside it refuses the run, naming both.
 
 ## CI reconcile
 

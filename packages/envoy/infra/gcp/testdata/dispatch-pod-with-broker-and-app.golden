@@ -24,6 +24,7 @@
         ]
       }
     },
+    "automountServiceAccountToken": false,
     "containers": [
       {
         "command": [
