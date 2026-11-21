@@ -770,9 +770,10 @@ async function heldBytes(directory: string, record: JudgedRecord, name: string):
  * `outcomes.jsonl` and outcomes disagree, and one ask with two outcomes. Every other file the
  * record names is read and held to its sha256 too: one under `requests/<ask id>/` that is not
  * there with those bytes (a transcript, a bundle, the answers, the calls, the sandbox's record,
- * `started.json`) is that request's lost evidence (`JudgedStage.evidence`), which the analysis
- * makes the request's deviation; one outside every request's directory (the kept frozen code, a
- * preflight's result) refuses the stage, which is then not what its record says.
+ * `started.json`, a pending outcome) is that request's lost evidence (`JudgedStage.evidence`),
+ * which the analysis makes the request's deviation; one outside every request's directory (the
+ * kept frozen code, a preflight's result) refuses the stage, which is then not what its record
+ * says.
  */
 export async function judgedStageOf(directory: string): Promise<JudgedStage> {
   const recordPath = join(directory, JUDGED_FILE);

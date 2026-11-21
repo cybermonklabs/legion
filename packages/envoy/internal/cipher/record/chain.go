@@ -97,6 +97,12 @@ type ChainVerifier struct {
 	// decision (requests' stillAllowed), so a row that claims it of a key that needs one
 	// releases nothing.
 	Decided func(ctx context.Context, recordID string) (func(secret string) bool, error)
+
+	// Groups answers who is a member of a group approver now (the broker's group reader), which
+	// MayDecide reads for a group-approved agent_secret record. A verifier that leaves it nil
+	// admits no group's member, which is what enroll.NewChainVerifier does, a machine login's
+	// approver never being a group.
+	Groups Groups
 }
 
 // Verify re-derives recordID's full issuance chain and returns its parsed Body once every link
@@ -106,6 +112,13 @@ type ChainVerifier struct {
 // own approval is written under JudgeActor with a null login on purpose, so no owner tag or
 // login_hint can dress it up as a person's — MayDecide refuses a login shaped "judge:" for that
 // same reason — and an event with any other actor is a person's, held to MayDecide as before.
+//
+// A group-approved record whose decider the group does not admit now answers
+// ApproverNotAdmittedError: alone, a lapsed grant (ErrApproverNotAdmittedNow), when the group is
+// stale or was never read, since nobody can tell whether the decider is still a member; wrapped
+// in ErrChainBroken when the group is fresh and does not list the decider, since nobody in the
+// group decided it now — a member who left, or a decision row naming a login the group never
+// held. A decision row with no login is a broken chain whatever the group says.
 func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, error) {
 	canonical, createdAt, found, err := c.FetchRecord(ctx, recordID)
 	if err != nil {
@@ -147,7 +160,14 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
 			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which the rules do not admit: %s", ErrChainBroken, modelID, err)
 		}
-	} else if !MayDecide(c.Kind, body.Approver, obj.Service(), decisions[0].Login) {
+	} else if err := CheckDecider(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups); err != nil {
+		var lapsed ApproverNotAdmittedError
+		if errors.As(err, &lapsed) {
+			if !lapsed.Fresh {
+				return Body{}, lapsed
+			}
+			return Body{}, fmt.Errorf("%w: %w", ErrChainBroken, lapsed)
+		}
 		return Body{}, fmt.Errorf("%w: approved by %q, whom the record's rule does not admit (approver %q)", ErrChainBroken, decisions[0].Login, body.Approver)
 	}
 	return body, nil

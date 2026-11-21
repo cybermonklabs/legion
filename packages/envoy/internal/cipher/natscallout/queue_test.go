@@ -421,7 +421,17 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, staying.Ready(ready))
-	time.Sleep(200 * time.Millisecond) // the closing replica's own reconnect
+	// The closing replica's own reconnect, which its backoff can put a second or more after
+	// staying's (bus.WithPromptReconnect), and then a round trip on its connection, so whatever
+	// nats.go sent again on the reconnect has reached the hub before the hold is released. Both
+	// come well inside drainBound: Close waits that long for the held delivery and then closes
+	// the connection, after which no reconnect can come.
+	testwait.WithinPolling(t, 4*time.Second, 5*time.Millisecond, "the closing replica's own reconnect", closing.conn.IsConnected)
+	require.NoError(t, closing.conn.FlushTimeout(time.Second))
+	// A Close that unsubscribed has ended the subscription already; one that drains instead still
+	// holds it here, and nats.go sent it again on that reconnect. The sessions below can miss that
+	// fault when the drain ends while they connect, so the subscription itself is read.
+	require.False(t, closing.sub.IsValid(), "the closing replica retained its authorization subscription across reconnect")
 	release()
 
 	for _, s := range sessions {
