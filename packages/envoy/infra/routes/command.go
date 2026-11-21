@@ -28,7 +28,9 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     when a pod changed during the check.
 `
 
-// timeout bounds a whole command: every kubectl call, port-forward and read it makes.
+// timeout bounds a command's reads of the hub: each kubectl call, each wait for a port-forward to
+// listen, and each read through one. A port-forward's own process runs under no deadline; Close
+// stops it when the command ends.
 const timeout = 5 * time.Minute
 
 // Command runs `envoy-infra routes` on args, the words after "routes", reading the hub through
