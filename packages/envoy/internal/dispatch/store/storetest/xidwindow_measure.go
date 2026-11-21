@@ -113,8 +113,8 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	// tracer would go on recording, and the execution tracer would stay on, so the next Measure in
 	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). A
 	// transaction the stop left open leaves its thread's clock open too, which the capture's end
-	// drops (xidDropThreadClock). endCapture is deferred after conn.Close, so it runs first;
-	// traced.stop is deferred inside the callback.
+	// drops (xidDropThreadClock). endCapture is deferred after conn.Close, so it runs first; the
+	// execution tracer's stop is deferred after endCapture, so it runs before it on such an exit.
 	endCapture := sync.OnceFunc(func() {
 		close(stop)
 		<-polled
@@ -128,6 +128,11 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	defer endCapture()
 
 	var traced *xidTrace
+	defer func() {
+		if traced != nil {
+			traced.stop()
+		}
+	}()
 	var started, finished time.Time
 	runWithIdlePs(func() {
 		runWithoutCollector(func() {
@@ -136,14 +141,20 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 				if traced, err = startXidTrace(); err != nil {
 					t.Fatalf("XID RIG PROBLEM (not a finding about the code): start the execution tracer, which the rig reads the runtime's own waits off: %v", err)
 				}
-				defer traced.stop()
 			}
 			started = time.Now()
 			operation()
 			finished = time.Now()
 		})
 	})
+	// The tracer stops only once the capture has ended: a route's own goroutines - a broadcast's
+	// deliveries - may still run a transaction after operation returns, and the rig records its
+	// statements until the capture ends, so the trace must reach every window it records
+	// (xidPastTraceProblem).
 	endCapture()
+	if traced != nil {
+		traced.stop()
+	}
 
 	x.mu.Lock()
 	spans := x.spans

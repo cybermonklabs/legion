@@ -237,7 +237,7 @@ type xidTraceReading struct {
 }
 
 // stop stops the tracer. It stops the world to stop, so Measure stops it once the operation has
-// returned, after every window.
+// returned and the capture has ended, after every window it records. A second stop does nothing.
 func (x *xidTrace) stop() {
 	trace.Stop()
 }
