@@ -8,3 +8,6 @@ body: |-
   write carry that reading as `description_tree` beside `description` for a caller that sent
   `Dispatch-Trees: 1`. The page draws it and parses nothing. Each write stores the tree; a
   description written before this change has its tree read and stored by its first read.
+time: 2026-11-21T12:46:10.000000000Z
+custom:
+  Issue: pr4835
