@@ -216,7 +216,7 @@ func flatPayload(fields map[string]json.RawMessage) map[string]string {
 // workflow messages over, as the same test now measures, so the one subject is no longer the only
 // shape that works; it stays because it is the simplest, and because the filter then does not
 // depend on the settings row, so a settings change needs no rebind.
-const githubIntakeSubject = "notifications.github.>"
+const githubIntakeSubject = bus.DispatchDeliveryFilter
 
 // intakeMessageTimeout bounds how long one envelope's own handling may take -- its GitHub calls
 // (a pull request plus its commit pages, or a workflow run plus its jobs pages, each with this
@@ -246,8 +246,9 @@ func intakeAckWait() time.Duration {
 	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
 }
 
-// deliveryConsumerConfig is the policy a take-over creates the durable with
-// (bus.DispatchDeliveryDurable, one push consumer over githubIntakeSubject), unless the deployed
+// deliveryConsumerConfig is the policy a take-over creates the durable with: its shape,
+// bus.DispatchDeliveryConsumer (one push consumer over githubIntakeSubject), which the operator's
+// census holds the durable to, and this intake's bounds, unless the deployed
 // durable carries a higher generation (takeOverConfig). The server holds a backlog undelivered
 // until a subscriber attaches, so a restart with events waiting loses none of them and none of
 // them count against MaxAckPending in the meantime.
@@ -258,23 +259,11 @@ func intakeAckWait() time.Duration {
 // process is left. A change to this config takes a new consumerConfigGeneration and a new row in
 // TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
 func deliveryConsumerConfig() natsgo.ConsumerConfig {
-	return natsgo.ConsumerConfig{
-		Durable:        bus.DispatchDeliveryDurable,
-		DeliverSubject: natsgo.NewInbox(),
-		FilterSubject:  githubIntakeSubject,
-		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(),
-		MaxAckPending:  intakeMaxAckPending,
-		Metadata:       consumerGenerationMetadata(),
-	}
-}
-
-// ConsumerConfigs are the durables of the notification stream Dispatch's intakes create, the
-// delivery intake's and the job intake's (bus.DispatchDurables), each as a take-over creates it. The
-// operator's census keeps a consumer of either name only while its configuration has their shape
-// (packages/envoy/infra/streams, DeclaredConsumers).
-func ConsumerConfigs() []natsgo.ConsumerConfig {
-	return []natsgo.ConsumerConfig{deliveryConsumerConfig(), jobConsumerConfig()}
+	config := bus.DispatchDeliveryConsumer()
+	config.AckWait = intakeAckWait()
+	config.MaxAckPending = intakeMaxAckPending
+	config.Metadata = consumerGenerationMetadata()
+	return config
 }
 
 // consumerConfigGeneration is the generation of the intakes' consumer configs

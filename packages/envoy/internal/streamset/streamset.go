@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/cistore"
-	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -105,8 +104,8 @@ func Find(streams []Stream, name string) (Stream, bool) {
 // registry at the deployment's age and the known-session store (internal/session), the Legion
 // agent registry with one entry of history (internal/legionagents), the CI state
 // (internal/cistore), the spent proofs (cmd/listener/brokerauth.go) and Dispatch's webhook
-// redelivery state (internal/dispatch/redeliver). Every one is on file at the deployment's copies.
-// A bucket it does not know is nil.
+// redelivery state (internal/dispatch/redeliver, at bus.WebhookRedeliveryRetention). Every one is
+// on file at the deployment's copies. A bucket it does not know is nil.
 func BucketConfig(bucket string, s Settings) *nats.KeyValueConfig {
 	cfg := &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: s.replicas()}
 	switch bucket {
@@ -125,7 +124,7 @@ func BucketConfig(bucket string, s Settings) *nats.KeyValueConfig {
 	case bus.DPoPProofBucket:
 		cfg.TTL = ciphertoken.SpentProofRetention
 	case bus.WebhookRedeliveryBucket:
-		cfg.TTL = redeliver.Retention
+		cfg.TTL = bus.WebhookRedeliveryRetention
 	default:
 		return nil
 	}

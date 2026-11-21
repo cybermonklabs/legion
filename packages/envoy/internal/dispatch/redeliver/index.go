@@ -101,7 +101,7 @@ func pendingFor(r record, guid string, now time.Time) string {
 // 60-MM minutes reach the next hour, 23-HH hours reach the next day, two whole days follow, then HH
 // hours and MM+1 minutes reach a ceiling three days on: (60-MM) + (23-HH) + 2 + HH + (MM+1) = 86,
 // whatever HH and MM are, since the two terms that hold them cancel. A wider window would cost
-// more, which is why Sweep clamps its floor to now-Retention.
+// more, which is why Sweep clamps its floor to now-retention.
 const maxPendingFilters = 60 + 23 + 2 + 1
 
 // pendingFilters decomposes the minutes from floor to ceiling, both included, into the

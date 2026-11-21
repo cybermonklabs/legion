@@ -155,6 +155,13 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 // only on a released claim of its own project.
 const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 
+// WebhookRedeliveryRetention is the webhook redelivery bucket's TTL, GitHub's own horizon: past
+// three days GitHub neither lists nor redelivers an attempt, so nothing older is worth
+// remembering, and a delivery still failing that long after its first failed attempt is expired
+// (internal/dispatch/redeliver). The operator makes the bucket with it too (internal/streamset),
+// which is why it lives here, beside the bucket's name, and not in Dispatch's code.
+const WebhookRedeliveryRetention = 72 * time.Hour
+
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
 // every GitHub notification (internal/dispatch/delivery).
 const DispatchDeliveryDurable = "delivery-events"
@@ -162,6 +169,41 @@ const DispatchDeliveryDurable = "delivery-events"
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
 // run's job events (internal/dispatch/delivery).
 const DispatchJobDurable = "delivery-jobs"
+
+// DispatchDeliveryFilter is the subject Dispatch's delivery intake consumes: every GitHub
+// notification. DispatchJobFilter is the job intake's: a deploy run's job events.
+const (
+	DispatchDeliveryFilter = NotificationTopicPrefix + "github.>"
+	DispatchJobFilter      = NotificationTopicPrefix + "github.*.*.job.>"
+)
+
+// DispatchDeliveryConsumer is the shape of Dispatch's delivery intake's durable: its name, one
+// push consumer over every GitHub notification, delivered to a reply inbox of its own and
+// acknowledged one message at a time. Dispatch's intake builds its durable on it, adding its ack
+// wait, pending bound and generation (internal/dispatch/delivery), and the operator's census keeps
+// a consumer of that name only while it has this shape (packages/envoy/infra/streams), so the two
+// cannot drift apart.
+func DispatchDeliveryConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchDeliveryDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchDeliveryFilter,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
+
+// DispatchJobConsumer is the shape of Dispatch's job intake's durable, as DispatchDeliveryConsumer
+// is the delivery intake's: one push consumer over a deploy run's job events, starting at new
+// messages.
+func DispatchJobConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchJobDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchJobFilter,
+		DeliverPolicy:  nats.DeliverNewPolicy,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
 // binds. A space in the machine id is a hyphen in the name.
