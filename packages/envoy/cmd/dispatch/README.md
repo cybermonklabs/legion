@@ -268,12 +268,16 @@ The sign-in check refuses every write by a credential that names a service and n
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
-So does a broker token that names a service and no person under the project scope `named`: the broker minted it from a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<service account>==`), its service is that account, and each of its writes is recorded as the token's session acting for the account and for no person.
+A broker token that names a service and no person under the project scope `named` reaches the handler too, where before this release it was refused `401 BROKER_TOKEN_NOT_A_SESSION`: the broker mints it only from a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<service account>==`), its service is that account, and each of its writes is recorded as the token's session acting for the account and for no person.
+Every verifier admits that shape only when its service is a Kubernetes account (`system:serviceaccount:<namespace>:<name>`).
 Such a token holds no OAuth scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED`.
+`GET /api/v1/whoami` answers `sign_in_required` from the same decision this check makes: true for a machine nobody has signed in on, and false for every other credential, this account token among them.
 A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
-The project and session checks are a no-op for a credential that carries no project and proves no session
+The project check is a no-op for a credential that carries no project
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, an access token the broker scoped to a person rather than to one project, and a `named` token of an account entry that names no project.
+The session check is a no-op only for a credential that proves no session
+— a browser cookie, a personal agent token, a Kubernetes service-account token and the shared token; every broker-issued token proves its session, and the session check holds it to that session's own rows.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
 A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 

@@ -4815,7 +4815,9 @@ describe("executeDispatchTool", () => {
   // A token that names a service and no person is refused every Dispatch write with
   // SIGN_IN_REQUIRED, whose message names `agent-secrets login`. whoami is where a person asks
   // what their credential may do, so its sentence for that caller must not describe the issue
-  // creation the server refuses, and must name the command that gets them a write.
+  // creation the server refuses, and must name the command that gets them a write. This answer is
+  // an older Dispatch's, which omits sign_in_required, so the command reads the rule from the
+  // shape that Dispatch kept.
   test("dispatch_whoami tells a service-only caller its writes need a sign-in", async () => {
     const fetchImpl = async (): Promise<Response> =>
       response({
@@ -4840,6 +4842,75 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("runs as service example-fleet");
     expect(result.text).not.toMatch(/issues? you create/);
     expect(result.text).toContain("agent-secrets login");
+  });
+
+  // A current Dispatch answers the decision itself (sign_in_required), and the command reads it.
+  test("dispatch_whoami tells a machine Dispatch says needs a sign-in that its writes are refused", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({
+        kind: "agent",
+        owner: null,
+        service: "example-fleet",
+        session: "session-1",
+        project: null,
+        scopes: [],
+        sign_in_required: true,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.text).toContain("runs as service example-fleet");
+    expect(result.text).toContain("Dispatch refuses every write it makes");
+    expect(result.text).toContain("agent-secrets login");
+  });
+
+  // An exchange entry that names no person mints a token that names its Kubernetes account as
+  // the service and proves a session, the shape of a machine nobody signed in on, but Dispatch
+  // records its writes under the account and answers sign_in_required false. The command must
+  // not tell that session it may not write, nor send it to a sign-in a pod cannot make.
+  test("dispatch_whoami tells an exchange entry's account session that it writes", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({
+        kind: "agent",
+        owner: null,
+        service: "system:serviceaccount:example-ns:example-public",
+        session: "session-1",
+        project: null,
+        scopes: [],
+        sign_in_required: false,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.text).toContain("runs as service example-ns/example-public");
+    expect(result.text).not.toContain("Dispatch refuses every write it makes");
+    expect(result.text).not.toContain("agent-secrets login");
+    expect(result.details).toEqual({
+      session: "session-1",
+      owner: null,
+      service: "system:serviceaccount:example-ns:example-public",
+      project: null,
+    });
   });
 
   test("dispatch_issue_update moves status and merges external links by URL as the session", async () => {

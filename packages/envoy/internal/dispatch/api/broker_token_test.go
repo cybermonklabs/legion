@@ -277,6 +277,8 @@ type whoamiAnswer struct {
 	Service *string `json:"service"`
 	Session *string `json:"session"`
 	Project *string `json:"project"`
+	// SignInRequired is a pointer so an answer that omits the field reads as nil, not false.
+	SignInRequired *bool `json:"sign_in_required"`
 }
 
 // refusal is the code and message a refused request carries.
@@ -977,6 +979,9 @@ func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
 	if answer.Project != nil {
 		t.Fatalf("whoami project = %q, want null: the token is held to no one project", *answer.Project)
 	}
+	if answer.SignInRequired == nil || !*answer.SignInRequired {
+		t.Fatalf("whoami answered %s, want sign_in_required true: Dispatch refuses every write of a machine nobody has signed in on", who.Body.String())
+	}
 
 	read := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/issues/"+own.issue, token, nil))
 	if read.Code != http.StatusOK {
@@ -1074,6 +1079,9 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 	if answer.Kind != "agent" || answer.Session == nil || *answer.Session != brokerTestSession ||
 		answer.Service == nil || *answer.Service != brokerTestAccount || answer.Owner != nil || answer.Project != nil || len(answer.Scopes) != 0 {
 		t.Fatalf("whoami = %+v, want the session %s acting for the service %s, no owner, no project and no scope", answer, brokerTestSession, brokerTestAccount)
+	}
+	if answer.SignInRequired == nil || *answer.SignInRequired {
+		t.Fatalf("whoami answered %s, want sign_in_required false: the account's writes are recorded under it, so no sign-in is needed", who.Body.String())
 	}
 
 	comment := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+own.issue+"/comments", token, map[string]any{

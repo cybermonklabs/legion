@@ -145,6 +145,13 @@ const (
 	ProjectScopeNone = "none"
 )
 
+// AccountSubjectPrefix opens a Kubernetes service account's subject,
+// system:serviceaccount:<namespace>:<name>: the service a ProjectScopeNamed token that names no
+// person carries, since the one entry that mints that shape is an account entry naming no person,
+// whose token acts as the account (exchange.Set.Pod). A resource server reads a named token that
+// names no person and any other service as no token the broker mints (ciphertoken).
+const AccountSubjectPrefix = "system:serviceaccount:"
+
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
 

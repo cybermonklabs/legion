@@ -146,6 +146,11 @@ type whoamiAgent struct {
 	Scopes  []string `json:"scopes"`
 	Service *string  `json:"service"`
 	Session *string  `json:"session"`
+	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
+	// signs in on its machine (403 SIGN_IN_REQUIRED): the decision writeNeedsASignedInPerson acts
+	// on, answered from that same function (signInRequired), so a client reads it rather than
+	// guessing it from the owner and the service. A Dispatch that predates it omits the field.
+	SignInRequired bool `json:"sign_in_required"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
@@ -164,6 +169,11 @@ type whoamiAgent struct {
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
 // person that token acts for is its `owner`, which the dispatch command reads.
+//
+// An agent is also told whether Dispatch refuses its every write until a person signs in on its
+// machine (sign_in_required): true for a broker-issued token of a machine nobody has signed in
+// on, and false for every other credential, an account entry's token naming no person among them,
+// whose writes are recorded under its account.
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -183,13 +193,15 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	_, signInRequired := s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, whoamiAgent{
-		Kind:    "agent",
-		Owner:   owner,
-		Project: actor.Project,
-		Scopes:  scopes,
-		Service: actor.Service,
-		Session: session,
+		Kind:           "agent",
+		Owner:          owner,
+		Project:        actor.Project,
+		Scopes:         scopes,
+		Service:        actor.Service,
+		Session:        session,
+		SignInRequired: signInRequired,
 	})
 }
 

@@ -344,10 +344,10 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 }
 
 // TestAPersonlessEntryNamesNoProject: only an account entry that names no project may name no
-// person, so no project's write is personless. An account entry naming a project and no person is
-// refused, naming the entry and that rule; a person that is blank without being empty is refused
-// whatever the project; and a workflow entry still needs a person, whether or not it names a
-// project.
+// person: an entry that names a project names its person, so no token held to a project is
+// personless. An account entry naming a project and no person is refused, naming the entry and
+// that rule; a person that is blank without being empty is refused whatever the project; and a
+// workflow entry still needs a person, whether or not it names a project.
 func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 	for _, c := range []struct {
 		name      string

@@ -199,17 +199,17 @@ func readOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection {
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
-// person but comes from
-// another client, and the six whose project scope or list this package cannot read — an answer
-// carrying no project scope at all, one carrying a word it does not know, a named scope naming a
-// service and a project, a named scope with two projects, and a list no exchange could have
-// minted. Those are refused rather than read as a token that names no project, which would hand
-// their caller every project the person may write; the one naming a project under no scope would
-// otherwise be the louder of the two, since the project beside the scope is then read under
-// nothing at all. A named scope naming a service and no project and no person is no such token:
-// an account entry naming no person mints it (TestANamedAnswerNamingNoPersonIsItsAccount). The
-// proof-checked Verify and the answer-only Live refuse every one, so an open connection cannot
-// keep one alive either.
+// person but comes from another client, and the seven whose project scope or list this package
+// cannot read — an answer carrying no project scope at all, one carrying a word it does not know,
+// a named scope naming a fleet and no person and no project, a named scope naming an account and a
+// project, a named scope with two projects, and a list no exchange could have minted. Those are
+// refused rather than read as a token that names no project, which would hand their caller every
+// project the person may write; the one naming a project under no scope would otherwise be the
+// louder of the two, since the project beside the scope is then read under nothing at all. A
+// named scope naming no person is minted only by an account entry naming no person, whose service
+// is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same answer naming a fleet
+// is no token the broker mints. The proof-checked Verify and the answer-only Live refuse every
+// one, so an open connection cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -221,6 +221,8 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
+	namedFleet := liveToken(caller.jkt, time.Hour)
+	namedFleet.Person, namedFleet.Service, namedFleet.Projects = "", "example-fleet", nil
 	namedServiceProject := liveToken(caller.jkt, time.Hour)
 	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
 	namedTwo := liveToken(caller.jkt, time.Hour)
@@ -228,14 +230,15 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	unsorted := liveToken(caller.jkt, time.Hour)
 	unsorted.ProjectScope, unsorted.Projects = ciphertoken.ProjectScopePerson, []string{"PUB", "PRIV"}
 	for name, answer := range map[string]ciphertoken.Introspection{
-		"a machine login's own token":                  machineLoginToken(caller.jkt, time.Hour),
-		"a token naming neither a person nor service":  noOwner,
-		"a token of another client":                    anotherClient,
-		"a token naming no project scope":              noScope,
-		"a token of an unknown project scope":          unknownScope,
-		"a named scope naming a service and a project": namedServiceProject,
-		"a named scope naming two projects":            namedTwo,
-		"a list no exchange mints":                     unsorted,
+		"a machine login's own token":                   machineLoginToken(caller.jkt, time.Hour),
+		"a token naming neither a person nor service":   noOwner,
+		"a token of another client":                     anotherClient,
+		"a token naming no project scope":               noScope,
+		"a token of an unknown project scope":           unknownScope,
+		"a named scope naming a fleet and no person":    namedFleet,
+		"a named scope naming an account and a project": namedServiceProject,
+		"a named scope naming two projects":             namedTwo,
+		"a list no exchange mints":                      unsorted,
 	} {
 		t.Run(name, func(t *testing.T) {
 			token := "a-token-that-is-" + strings.ReplaceAll(name, " ", "-")
@@ -268,9 +271,9 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 }
 
 // TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
-// one project, or none for an account entry naming none, and always a person. An answer of that
-// scope naming two or more projects, or none and no person, is no token the exchange minted and is
-// refused, so a Dispatch reader never takes it as a caller no project limits.
+// one project, or none for an account entry naming none. An answer of that scope naming two,
+// sixteen or seventeen projects is no token the exchange minted and is refused, so a Dispatch
+// reader never takes it as a caller no project limits.
 func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)

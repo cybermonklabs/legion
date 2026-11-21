@@ -753,8 +753,11 @@ entry may name neither a person nor a project (`<service account>==`, or
 `<service account>===<session>` to fix its session): its tokens name no person and no project and
 name the account as their service, so they act as the account itself, write wherever Dispatch's own
 rules let a credential naming no project write, and are recorded under that account. The broker
-refuses to start on an entry that names a project and no person, so no project's write is
-personless, and a broker of a build older than the entry naming no person refuses to start on one.
+refuses to start on an entry that names a project and no person: an entry that names a project
+names its person, so no token held to a project is personless. A broker of a build older than the
+entry naming no person refuses to start on one, and an Envoy listener or a Dispatch of a build
+older than it answers such a token `401`, so deploy the broker, Dispatch and every Envoy listener
+before you write one.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.

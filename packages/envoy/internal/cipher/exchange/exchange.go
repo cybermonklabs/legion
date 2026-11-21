@@ -423,8 +423,8 @@ type AccountEntry struct {
 	Project string
 	// Person is who the account's pods act for, or empty for an entry that names no project
 	// either: such an entry's tokens act as the account itself, which they name as their service
-	// (Claims.Service) and Dispatch records their writes under. An entry naming a project names
-	// a person, so no project's write is personless.
+	// (Claims.Service) and Dispatch records their writes under. An entry that names a project
+	// names its person, so no token held to a project is personless.
 	Person string
 	// Session, when set, is the session name every token minted for this account carries, and a
 	// request naming any other is refused. It is how a long-running service keeps writing under
@@ -546,8 +546,8 @@ type mapping struct{ person, project string }
 // that pins a Compute Engine project without an instance pattern or the other way round says
 // nothing clear about which machines it means, and one that names a person without a project, or
 // a project without a person, says nothing clear about what they may write. An account entry
-// that names a project and no person is refused, naming that rule: such an entry names a person
-// or names no project either, so no project's write is personless.
+// that names a project and no person is refused, naming that rule: an entry that names a project
+// names its person, so no token held to a project is personless.
 //
 // reads are the read entries, which list Kubernetes service accounts as accounts does. An
 // account both lists name is refused, naming its read entry, for the reason an identity listed
@@ -718,7 +718,7 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 // disagree. A workflow is no account and is answered false.
 func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
 	principal := GooglePrincipal(account)
-	if strings.HasPrefix(account, "system:serviceaccount:") {
+	if strings.HasPrefix(account, oauthwire.AccountSubjectPrefix) {
 		principal = AccountPrincipal(account)
 	}
 	_, projects, ok := s.MappedProjects(principal)
@@ -750,11 +750,11 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 // and no project — the shared public-session account's entry, minting named tokens that name no
 // project (a pod account many people launch must never act as one person's own token) — or name
 // neither, when its tokens act as the account itself (Pod). An account entry that names a project
-// names a person, so no project's write is personless; every other entry names a person, since
-// its tokens act for someone. A person or a project that is blank without being empty is refused
-// everywhere, and so is a project that is no project key: every token the entry mints names it,
-// the exchange stores and reads that list through oauthwire.ParseProjects, which takes only
-// project keys, so an entry naming anything else would boot and then fail every trade.
+// names its person, so no token held to a project is personless; every other entry names a
+// person, since its tokens act for someone. A person or a project that is blank without being
+// empty is refused everywhere, and so is a project that is no project key: every token the entry
+// mints names it, the exchange stores and reads that list through oauthwire.ParseProjects, which
+// takes only project keys, so an entry naming anything else would boot and then fail every trade.
 func checkGrant(where, project, person, session string, account bool) error {
 	if !(account && project == "") && strings.TrimSpace(project) == "" {
 		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
@@ -766,7 +766,7 @@ func checkGrant(where, project, person, session string, account bool) error {
 	}
 	switch {
 	case account && person == "" && project != "":
-		return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either, so no project's write is personless", where)
+		return fmt.Errorf("exchange: %s: an account entry names no person only when it names no project either: an entry that names a project names its person, so no token held to a project is personless", where)
 	case !(account && person == "") && strings.TrimSpace(person) == "":
 		return fmt.Errorf("exchange: %s: the person is required, since the entry's tokens act for someone", where)
 	}

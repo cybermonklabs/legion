@@ -425,18 +425,37 @@ func addressesOneSession(route apiRoute) bool {
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at
 // the cost of the one header read brokerCredentialActor makes.
+//
+// The decision is signInRequired's, which whoami answers as sign_in_required, so a client reads
+// it from Dispatch rather than guessing it from the shape of who it is.
 func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor, resolved := s.brokerCredentialActor(r)
-		if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) {
+		service, required := s.signInRequired(r)
+		if !required {
 			handler(w, r)
 			return
 		}
 		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
 			"this request's credential acts for service %s and no person, so there is nobody to "+
 				"record this write under; run `agent-secrets login` on this machine and try again",
-			*actor.Service))
+			service))
 	}
+}
+
+// signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
+// answers as sign_in_required: whether r presents a broker-issued token that resolved and names a
+// service and no person, and is no account entry's (actsAsItsAccount), which is a machine nobody
+// has signed in on, and the service that token names. Every other caller answers false: a
+// credential that is no broker token, one that did not resolve (its refusal is written further
+// in), one that names a person, and an account entry's token naming no person, whose writes are
+// recorded under its account. A read-only token would answer true, and reaches neither caller:
+// the read-only gate answers it first on every route but the read list's.
+func (s *server) signInRequired(r *http.Request) (string, bool) {
+	actor, resolved := s.brokerCredentialActor(r)
+	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) {
+		return "", false
+	}
+	return *actor.Service, true
 }
 
 // actsAsItsAccount answers whether a broker-issued token naming a service and no person is an
