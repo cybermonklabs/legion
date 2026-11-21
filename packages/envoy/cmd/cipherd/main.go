@@ -218,7 +218,7 @@ func main() {
 	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
-	fatal(refuseHTTPEdgeURLInProduction(cfg.EdgeURL, fakeSecrets))
+	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
@@ -1021,20 +1021,31 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
 }
 
-// refuseHTTPEdgeURLInProduction refuses a BROKER_EDGE_URL whose scheme is not https unless
-// BROKER_FAKE_SECRETS_FILE makes this a local run, as refusePortZeroPublicURLInProduction does:
-// the edge answers callers on the internet, and over plain http anyone on the path could rewrite a
-// device authorization's verification_uri and user_code to send a person to a page of their own. A
-// broker with no edge (an empty edgeURL) is refused nothing. Extracted from main so a test can
-// drive it directly instead of through fatal, which calls os.Exit.
-func refuseHTTPEdgeURLInProduction(edgeURL, fakeSecretsFile string) error {
-	if edgeURL == "" || fakeSecretsFile != "" {
+// refuseHTTPEdgeURLsInProduction refuses a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL whose
+// scheme is not https unless BROKER_FAKE_SECRETS_FILE makes this a local run, as
+// refusePortZeroPublicURLInProduction does. Both are on the path of a person on the internet. Over
+// plain http, anyone on the path could rewrite the edge's device authorization, its
+// verification_uri and user_code among them, or serve a page of their own where
+// BROKER_EDGE_MACHINE_LOGIN_URL sends the person to type the user code while signed in to Dispatch.
+// A setting left empty (a broker with no edge) is refused nothing. Extracted from main so a test
+// can drive it directly instead of through fatal, which calls os.Exit.
+func refuseHTTPEdgeURLsInProduction(edgeURL, machineLoginURL, fakeSecretsFile string) error {
+	if fakeSecretsFile != "" {
 		return nil
 	}
-	if u, err := url.Parse(edgeURL); err == nil && strings.EqualFold(u.Scheme, "https") {
-		return nil
+	for _, setting := range []struct{ name, value, what string }{
+		{"BROKER_EDGE_URL", edgeURL, "the edge answers callers on the internet"},
+		{"BROKER_EDGE_MACHINE_LOGIN_URL", machineLoginURL, "the edge sends a person on the internet to this page to type a user code"},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		if u, err := url.Parse(setting.value); err == nil && strings.EqualFold(u.Scheme, "https") {
+			continue
+		}
+		return fmt.Errorf("%s %q: %s, so it must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http", setting.name, redact.URL(setting.value), setting.what)
 	}
-	return fmt.Errorf("BROKER_EDGE_URL %q: the edge answers callers on the internet and must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may serve it over http", redact.URL(edgeURL))
+	return nil
 }
 
 // publicURLPortZero reports whether publicURL names port 0, its port read as a number the way

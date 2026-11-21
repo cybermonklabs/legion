@@ -47,6 +47,13 @@ func newTestEdgeMux(t *testing.T) *http.ServeMux {
 // of a test falls in one cache window however long the checks take.
 func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http.ServeMux {
 	t.Helper()
+	frozen := time.Unix(1_700_000_000, 0)
+	return newTestEdgeMuxClocked(t, ping, func() time.Time { return frozen })
+}
+
+// newTestEdgeMuxClocked is newTestEdgeMuxPinging with now as its health cache's clock.
+func newTestEdgeMuxClocked(t *testing.T, ping func(context.Context) error, now func() time.Time) *http.ServeMux {
+	t.Helper()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
@@ -68,9 +75,8 @@ func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http
 		DatabasePing: ping,
 	}
 	mux := http.NewServeMux()
-	frozen := time.Unix(1_700_000_000, 0)
 	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"},
-		Now: func() time.Time { return frozen }})
+		Now: now})
 	return mux
 }
 
@@ -97,41 +103,65 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 	}
 }
 
-// TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft: anyone on the internet can call
-// the edge's GET /healthz, so no caller writes a log line of its own. While the database stalls,
-// five callers that give up each get their answer and write no line; once the database fails,
-// fifty callers within one cache window all get 503 DATABASE_UNAVAILABLE and the one ping they
-// share writes one ERROR line, naming port=edge. The cache's clock stands still
-// (newTestEdgeMuxPinging), so no load makes the checks cross a window.
+// TestTheEdgesHealthWritesOneLineAPing: anyone on the internet can call the edge's GET /healthz,
+// so no caller writes a log line of its own, and each ping that fails writes one. While the
+// database hangs, five callers that give up after 20ms each get 503, and the one ping they share,
+// which runs on a context of its own until its own timeout, writes one ERROR line. In the next
+// cache window, with the database failing, fifty callers all get 503 DATABASE_UNAVAILABLE, and the
+// one ping they share writes one more. Each line names port=edge. The cache's clock moves only
+// when the test moves it, so no load makes the checks cross a window.
 //
-// The named reverts: log every failed check through writeUnavailable at the edge too, and the
-// stalled callers write five lines and the failing ones fifty, none naming a port.
-func TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft(t *testing.T) {
+// The named reverts: ping on the caller's context and keep or log the result only while that
+// context has not ended, as before, and the hung database writes no line; log every failed check
+// through writeUnavailable at the edge too, and the callers write fifty-five lines, none naming a
+// port.
+func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
 	log := &logtest.Recorder{}
 	logtest.SetDefault(t, log)
 	failing := fmt.Errorf("database away")
-	var stall atomic.Bool
-	stall.Store(true)
-	mux := newTestEdgeMuxPinging(t, func(ctx context.Context) error {
-		if stall.Load() {
+	var hang atomic.Bool
+	hang.Store(true)
+	var now atomic.Int64
+	now.Store(time.Unix(1_700_000_000, 0).UnixNano())
+	mux := newTestEdgeMuxClocked(t, func(ctx context.Context) error {
+		if hang.Load() {
 			<-ctx.Done()
 			return ctx.Err()
 		}
 		return failing
-	})
+	}, func() time.Time { return time.Unix(0, now.Load()) })
+	lines := func(what string, want int) {
+		t.Helper()
+		records := log.Records()
+		if len(records) != want {
+			t.Fatalf("%s: the edge's health checks wrote %d log lines, want %d: %v", what, len(records), want, records)
+		}
+		for _, record := range records {
+			var port string
+			record.Attrs(func(a slog.Attr) bool {
+				if a.Key == "port" {
+					port = a.Value.String()
+				}
+				return true
+			})
+			if record.Level != slog.LevelError || record.Message != "broker: ping Postgres failed" || port != answer.PortEdge {
+				t.Fatalf("%s: a line is %q at %v naming port %q, want an ERROR broker: ping Postgres failed naming port=%s", what, record.Message, record.Level, port, answer.PortEdge)
+			}
+		}
+	}
 	for i := range 5 {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil).WithContext(ctx))
 		cancel()
 		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("stalled check %d of the edge's GET /healthz = %d %s, want 503", i+1, w.Code, w.Body)
+			t.Fatalf("check %d of the edge's GET /healthz while the database hangs = %d %s, want 503", i+1, w.Code, w.Body)
 		}
 	}
-	if records := log.Records(); len(records) != 0 {
-		t.Fatalf("five edge health checks that gave up while the database stalled wrote %d log lines, want none: %v", len(records), records)
-	}
-	stall.Store(false)
+	lines("five checks that gave up while the database hung", 1)
+
+	hang.Store(false)
+	now.Add(int64(healthCacheFor))
 	for i := range 50 {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -139,20 +169,7 @@ func TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft(t *testing.T) 
 			t.Fatalf("check %d of the edge's GET /healthz with the database failing = %d %s, want 503 DATABASE_UNAVAILABLE", i+1, w.Code, w.Body)
 		}
 	}
-	records := log.Records()
-	if len(records) != 1 {
-		t.Fatalf("fifty edge health checks within one cache window of a failing database wrote %d log lines, want 1: %v", len(records), records)
-	}
-	var port string
-	records[0].Attrs(func(a slog.Attr) bool {
-		if a.Key == "port" {
-			port = a.Value.String()
-		}
-		return true
-	})
-	if records[0].Level != slog.LevelError || port != answer.PortEdge {
-		t.Fatalf("the failed ping's line is %v at %v naming port %q, want an ERROR naming port=%s", records[0].Message, records[0].Level, port, answer.PortEdge)
-	}
+	lines("fifty checks in the next window, the database failing", 2)
 }
 
 // TestTheEdgeMountsOnlyTheDeviceLoginRoutes walks every row of the broker's route table and asks

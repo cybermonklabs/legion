@@ -865,17 +865,26 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 // on the internet who asks at any rate costs the database at most one ping a second per pod.
 const healthCacheFor = time.Second
 
+// healthPingTimeout bounds one ping of the edge's health cache (cachedPing): a database that
+// answers no ping in two seconds is one the load balancer should take the pod out for, and the
+// caller that runs the ping waits no longer than that after its own request ends.
+const healthPingTimeout = 2 * time.Second
+
 // cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
-// Deps.DatabasePing (RegisterEdge). At most one ping runs at a time: a caller that asks while one
-// runs waits for it, and leaves as soon as its own request ends, so a database that hangs keeps
-// no waiter past its own deadline. A ping that fails while its caller's request still runs writes
-// one ERROR line naming port (answer.PortEdge), so a failing database is logged at most once a
-// healthCacheFor per pod, whatever the number of callers; a ping its caller left writes none.
+// Deps.DatabasePing (RegisterEdge). At most one ping runs at a time, on a context of its own
+// (context.WithoutCancel of the caller's, with timeout), so a caller that leaves mid-ping neither
+// cancels it, which in pgx closes the pool's connection, nor keeps its result from the next
+// caller. Its result is kept and, when it failed, logged with one ERROR line naming port
+// (answer.PortEdge), whoever waited for it: a failing or hung database writes one line a ping, at
+// most one per healthCacheFor plus timeout per pod, whatever the number of callers. A caller that
+// asks while a ping runs waits for it, and leaves as soon as its own request ends.
 type cachedPing struct {
 	ping func(context.Context) error
 	now  func() time.Time
 	// port is the value of the port field the line of a failed ping names (answer.PortEdge).
 	port string
+	// timeout bounds one ping; zero means healthPingTimeout.
+	timeout time.Duration
 
 	mu  sync.Mutex
 	at  time.Time
@@ -885,9 +894,8 @@ type cachedPing struct {
 }
 
 // result is the last ping's result while it is under healthCacheFor old, and otherwise the result
-// of a ping it runs or waits for. A ping the caller's own request ended (ctx done) is answered to
-// that caller and not kept, since it says nothing about the database; a waiter whose request ends
-// first answers its own context's error.
+// of a ping it runs (run) or waits for. A waiter whose request ends first answers its own
+// context's error; the ping goes on, and its result is kept for the next caller.
 func (c *cachedPing) result(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -908,20 +916,35 @@ func (c *cachedPing) result(ctx context.Context) error {
 		done := make(chan struct{})
 		c.running = done
 		c.mu.Unlock()
-
-		err := c.ping(ctx)
-		c.mu.Lock()
-		if ctx.Err() == nil {
-			c.at, c.err = c.now(), err
-			if err != nil {
-				logUnavailable("ping Postgres", err, "port", c.port)
-			}
-		}
-		c.running = nil
-		close(done)
-		c.mu.Unlock()
-		return err
+		return c.run(ctx, done)
 	}
+}
+
+// run is the one ping running now, which result started: on context.WithoutCancel(ctx) with the
+// ping's own timeout, its result kept and, when it failed, logged. It clears running and closes
+// done in a defer, so a ping that panics leaves the next caller to ping again rather than wait on
+// a ping that will never end.
+func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
+	defer func() {
+		c.mu.Lock()
+		c.running = nil
+		c.mu.Unlock()
+		close(done)
+	}()
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = healthPingTimeout
+	}
+	pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	err := c.ping(pingCtx)
+	c.mu.Lock()
+	c.at, c.err = c.now(), err
+	c.mu.Unlock()
+	if err != nil {
+		logUnavailable("ping Postgres", err, "port", c.port)
+	}
+	return err
 }
 
 // signInStatusResponse is GET /signin/status's answer, the broker's one signin_status row as it

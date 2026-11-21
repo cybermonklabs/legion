@@ -151,7 +151,11 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			if gate(edge, w, r) {
 				next(w, r)
+				return
 			}
+			// A gate refuses before any bucket is spent, so at whatever rate a caller on the
+			// internet chooses: its refusal is counted with port="edge" and writes no line.
+			answer.FromContext(r.Context()).NoteQuiet()
 		})
 	}
 }

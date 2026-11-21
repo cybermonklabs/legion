@@ -24,8 +24,9 @@
 // either: the writer of each one already logs its cause.
 //
 // The edge is recorded by EdgeMiddleware: its lines name port=edge and its samples carry
-// port="edge", so a reader can leave it out, and the mux's own 404 and 405 there, which anyone on
-// the internet can send at any rate, are counted and write no line.
+// port="edge", so a reader can leave it out, and the mux's own 404 and 405 there, and the
+// refusals the edge's gates mark (NoteQuiet), which anyone on the internet can send at any rate,
+// are counted and write no line.
 //
 // The line never holds a secret's value or the refusal's message text: it names the code, and the
 // code is read from the answer (refusalCode), not the words around it.
@@ -195,6 +196,8 @@ type Recorder struct {
 	code    string
 	// callerEnded is whether the caller went away before the answer (NoteCallerEnded).
 	callerEnded bool
+	// quiet is whether this answer is counted and writes no refusal line (NoteQuiet).
+	quiet bool
 
 	// status is the answer's status, 0 until the handler has set one.
 	status int
@@ -216,7 +219,8 @@ const PortEdge = "edge"
 // EdgeMiddleware is Middleware for the broker's edge, whose callers are anyone on the internet:
 // each refusal line it writes names port=edge, each sample it counts carries port="edge", and the
 // mux's own 404 and 405 (an answer to a path or a method the edge serves no route for, which a
-// scanner sends at its own rate) are counted and write no line.
+// scanner sends at its own rate) and the refusals a handler marks NoteQuiet are counted and write
+// no line.
 func EdgeMiddleware(next http.Handler, answers *metrics.Counter) http.Handler {
 	return middleware(next, answers, PortEdge)
 }
@@ -316,6 +320,20 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 	}
 	rec.mu.Lock()
 	rec.secrets.Note(names...)
+	rec.mu.Unlock()
+}
+
+// NoteQuiet marks this answer as one to count and write no refusal line for: the broker's edge
+// marks its gate refusals (the caller's address or body, a grant it does not trade, a person of
+// the Workspace), which come before any bucket and so at whatever rate a caller on the internet
+// chooses, as the unrouted 404 and 405 there are (unrouted). broker_answers_total still counts
+// each with its code and port="edge".
+func (rec *Recorder) NoteQuiet() {
+	if rec == nil {
+		return
+	}
+	rec.mu.Lock()
+	rec.quiet = true
 	rec.mu.Unlock()
 }
 
@@ -595,7 +613,7 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 		rec.Header().Set(Header, rec.id)
 	}
 	rec.mu.Lock()
-	class, caller, secrets, noted, ended := rec.class, rec.caller, rec.secrets, rec.code, rec.callerEnded
+	class, caller, secrets, noted, ended, quiet := rec.class, rec.caller, rec.secrets, rec.code, rec.callerEnded, rec.quiet
 	rec.mu.Unlock()
 
 	body := rec.body.Bytes()
@@ -608,7 +626,7 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 	if ended {
 		answers.Inc(rec.labels(outcome(outcomeCancelled), code(answerCode), callerClass(class))...)
 	} else {
-		if Refused(rec.status, answerCode) && !rec.unrouted(r) {
+		if Refused(rec.status, answerCode) && !rec.unrouted(r) && !quiet {
 			line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
 				CallerClass: class, Caller: caller, Secrets: secrets, Correlation: rec.correlation}
 			var extras []any

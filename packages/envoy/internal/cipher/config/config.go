@@ -117,11 +117,13 @@ type Config struct {
 	// https://secrets.example. A machine login's request object made at the edge names it as its
 	// audience and every DPoP proof sent there names it and the route's path, as one made on
 	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
-	// BROKER_EDGE_LISTEN_ADDR.
+	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
+	// set.
 	EdgeURL string
 	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
 	// machine login made at the edge on, which that login's verification_uri names in place of
-	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR.
+	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set, as it does BROKER_EDGE_URL.
 	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route

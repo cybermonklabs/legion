@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -543,4 +545,98 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("a device authorization at the draining edge = %d %v, want it still answered through the drain", status, body)
 	}
+}
+
+// TestTheEdgesGateRefusalsAreCountedAndWriteNoLine: the refusals the edge's two login routes make
+// before any bucket, which a caller on the internet can send at any rate, write no "broker: answer
+// refused" line and are counted in broker_answers_total with port="edge": a device authorization
+// naming a person of the Workspace (EDGE_WORKSPACE_LOGIN), one with no X-Forwarded-For line and a
+// token request whose body is not a form (REQUEST_INVALID), and a grant the edge does not take
+// (EDGE_GRANT_REFUSED). A refusal past the gates still writes its line: a device authorization
+// whose request object is signed for another audience, which the device login refuses, is the one
+// refusal line the edge writes.
+//
+// The named revert: drop the gates' NoteQuiet (api.RegisterEdge), and each of the four writes a
+// line naming port=edge.
+func TestTheEdgesGateRefusalsAreCountedAndWriteNoLine(t *testing.T) {
+	broker := startBroker(t, brokerOptions{Env: []string{
+		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
+		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		"BROKER_EDGE_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_EDGE_URL=" + testEdgeURL,
+		"BROKER_EDGE_MACHINE_LOGIN_URL=" + testEdgeMachineLoginURL,
+		"BROKER_SIGNIN_WORKSPACE_DOMAINS=" + ciphertest.EdgeWorkspaceDomain,
+	}})
+	edgeAddr, _ := broker.AwaitRecord(t, "broker edge listening", nil)["addr"].(string)
+	if edgeAddr == "" {
+		t.Fatalf("the edge's line names no addr:\n%s", broker.Log())
+	}
+	edge := "http://" + edgeAddr
+	through := map[string]string{"X-Forwarded-For": testEdgeClientForwarding}
+	if status, body := postDeviceAuthorization(t, edge, testEdgeURL, "ada@"+ciphertest.SignInDomain, through); status != http.StatusBadRequest || body["code"] != "EDGE_WORKSPACE_LOGIN" {
+		t.Fatalf("a device authorization at the edge naming a person of the Workspace = %d %v, want 400 EDGE_WORKSPACE_LOGIN", status, body)
+	}
+	if status, body := postDeviceAuthorization(t, edge, testEdgeURL, "outside@outside.example", nil); status != http.StatusBadRequest || body["code"] != "REQUEST_INVALID" {
+		t.Fatalf("a device authorization at the edge with no X-Forwarded-For = %d %v, want 400 REQUEST_INVALID", status, body)
+	}
+	grant := url.Values{"grant_type": {"client_credentials"}}
+	if status, body := postEdgeToken(t, edge, "text/plain", grant, through); status != http.StatusBadRequest || body["code"] != "REQUEST_INVALID" {
+		t.Fatalf("a token request at the edge whose body is not a form = %d %v, want 400 REQUEST_INVALID", status, body)
+	}
+	if status, body := postEdgeToken(t, edge, "application/x-www-form-urlencoded", grant, through); status != http.StatusBadRequest || body["code"] != "EDGE_GRANT_REFUSED" {
+		t.Fatalf("a client_credentials grant at the edge = %d %v, want 400 EDGE_GRANT_REFUSED", status, body)
+	}
+	status, body := postDeviceAuthorization(t, edge, "https://another.example", "outside@outside.example", through)
+	controlID, _ := body["answer_id"].(string)
+	if status != http.StatusBadRequest || body["code"] != "REQUEST_INVALID" || controlID == "" {
+		t.Fatalf("a device authorization at the edge signed for another audience = %d %v, want the device login's 400 REQUEST_INVALID with an answer id", status, body)
+	}
+
+	// The line is written before its answer, so once the control's line has arrived every line
+	// the four refusals before it could write has too.
+	broker.AwaitRecord(t, answer.RefusalMessage, map[string]any{"answer_id": controlID, "port": answer.PortEdge, "code": "REQUEST_INVALID"})
+	if lines := recordsWith(broker.Log(), answer.RefusalMessage, map[string]any{"port": answer.PortEdge}); len(lines) != 1 {
+		t.Errorf("the edge wrote %d refusal lines, want 1, the device login's own refusal %s: %v", len(lines), controlID, lines)
+	}
+	samples := map[string]string{}
+	for line := range strings.Lines(metricsScrape(t, broker.MetricsAddr(t))) {
+		if strings.HasPrefix(line, `broker_answers_total{outcome="refused",code="`) && strings.Contains(line, `port="edge"`) {
+			code, _, _ := strings.Cut(strings.TrimPrefix(line, `broker_answers_total{outcome="refused",code="`), `"`)
+			samples[code] = strings.TrimSpace(line[strings.LastIndexByte(line, ' ')+1:])
+		}
+	}
+	if want := map[string]string{"EDGE_WORKSPACE_LOGIN": "1", "REQUEST_INVALID": "3", "EDGE_GRANT_REFUSED": "1"}; !maps.Equal(samples, want) {
+		t.Errorf("broker_answers_total's refused samples at the edge = %v, want %v", samples, want)
+	}
+}
+
+// postEdgeToken posts form to the edge's token route at base as a body of contentType, with
+// headers, and answers the status and the JSON body.
+func postEdgeToken(t *testing.T, base, contentType string, form url.Values, headers map[string]string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("the edge's token route answered %d %s, which is no JSON object", response.StatusCode, raw)
+	}
+	return response.StatusCode, body
 }

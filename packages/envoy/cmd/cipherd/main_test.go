@@ -99,25 +99,33 @@ func productionEnv(t *testing.T) []string {
 	}
 }
 
-// TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL that is not https, however its
-// scheme is written, refuses a start that is not a local run, naming the setting and never the
-// rest of the URL's text but what redact.URL keeps; an https one starts, a broker with no edge is
-// refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set) may serve the edge over http.
+// TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL
+// that is not https, however its scheme is written, refuses a start that is not a local run,
+// naming that setting and never the rest of the URL's text but what redact.URL keeps; https ones
+// start, a broker with no edge is refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set)
+// may use http for either.
 //
-// The named revert: drop refuseHTTPEdgeURLInProduction's scheme check, and the http rows start.
+// The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
+// check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
 func TestAnHTTPEdgeURLIsRefusedOutsideALocalRun(t *testing.T) {
-	for _, edgeURL := range []string{"http://edge.invalid", "HTTP://edge.invalid:8080", "ws://edge.invalid", "edge.invalid"} {
-		err := refuseHTTPEdgeURLInProduction(edgeURL, "")
-		if err == nil || !strings.Contains(err.Error(), "BROKER_EDGE_URL") || !strings.Contains(err.Error(), "must be https in production") {
-			t.Errorf("BROKER_EDGE_URL %s with no BROKER_FAKE_SECRETS_FILE = %v, want the https refusal", edgeURL, err)
-		}
-		if err := refuseHTTPEdgeURLInProduction(edgeURL, "/dev/fake-secrets.json"); err != nil {
-			t.Errorf("BROKER_EDGE_URL %s in a local run = %v, want nil", edgeURL, err)
+	const edgeURL, machineLoginURL = "https://edge.invalid", "https://dispatch.edge.invalid/credentials/machine"
+	for _, plain := range []string{"http://edge.invalid", "HTTP://edge.invalid:8080", "ws://edge.invalid", "edge.invalid"} {
+		for _, row := range []struct{ setting, edgeURL, machineLoginURL string }{
+			{"BROKER_EDGE_URL", plain, machineLoginURL},
+			{"BROKER_EDGE_MACHINE_LOGIN_URL", edgeURL, plain},
+		} {
+			err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "")
+			if err == nil || !strings.HasPrefix(err.Error(), row.setting+" ") || !strings.Contains(err.Error(), "must be https in production") {
+				t.Errorf("%s %s with no BROKER_FAKE_SECRETS_FILE = %v, want the https refusal naming %s", row.setting, plain, err, row.setting)
+			}
+			if err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "/dev/fake-secrets.json"); err != nil {
+				t.Errorf("%s %s in a local run = %v, want nil", row.setting, plain, err)
+			}
 		}
 	}
-	for _, edgeURL := range []string{"https://edge.invalid", "HTTPS://edge.invalid:8443", ""} {
-		if err := refuseHTTPEdgeURLInProduction(edgeURL, ""); err != nil {
-			t.Errorf("BROKER_EDGE_URL %q with no BROKER_FAKE_SECRETS_FILE = %v, want nil", edgeURL, err)
+	for _, row := range [][2]string{{edgeURL, machineLoginURL}, {"HTTPS://edge.invalid:8443", "HTTPS://dispatch.edge.invalid:8443/m"}, {"", ""}} {
+		if err := refuseHTTPEdgeURLsInProduction(row[0], row[1], ""); err != nil {
+			t.Errorf("BROKER_EDGE_URL %q and BROKER_EDGE_MACHINE_LOGIN_URL %q with no BROKER_FAKE_SECRETS_FILE = %v, want nil", row[0], row[1], err)
 		}
 	}
 }
@@ -351,10 +359,10 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 
 // TestMainRefusesAnHTTPEdgeURLInProduction: the binary, with an edge whose BROKER_EDGE_URL is
 // plain http and no BROKER_FAKE_SECRETS_FILE, exits non-zero naming the https refusal before it
-// reaches the database or binds a socket (refuseHTTPEdgeURLInProduction runs beside the port-0
+// reaches the database or binds a socket (refuseHTTPEdgeURLsInProduction runs beside the port-0
 // refusal, before store.Open), as TestMainRefusesPortZeroPublicURLInProduction holds for that one.
 //
-// The named revert: drop the call of refuseHTTPEdgeURLInProduction from main, and the broker goes
+// The named revert: drop the call of refuseHTTPEdgeURLsInProduction from main, and the broker goes
 // on to dial the unreachable database instead of naming the refusal.
 func TestMainRefusesAnHTTPEdgeURLInProduction(t *testing.T) {
 	cmd := exec.Command(buildBroker(t))

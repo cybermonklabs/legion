@@ -23,19 +23,23 @@ import (
 // only after; a device login spends its address's bucket before the provider does any work, and
 // the bucket of the person its request object names only once the broker has verified the request
 // and opened the login, so a request it refuses costs that person nothing.
-// So a flood from one address cannot keep the broker verifying tokens or writing machine logins, a
-// flood naming one operator cannot bury that operator's pending machine logins, and one account
-// cannot log in faster than its bucket allows. A token login whose token verified and that the
-// broker then could not complete (5xx, such as one the database was away for) spends neither
-// bucket: the Legion daemon retries such a login every few seconds through a database outage, and
-// the broker decided nothing about its request, so there is nothing to slow, while a refused
-// credential (any 4xx) still spends every bucket it reached, since the limit exists to slow
-// guessing, and a token that does not verify always keeps its address's request, since that bucket
-// guards the verifier's fetches of the issuer's keys. A daemon behind an address others
-// share is held to that address's bucket too: BROKER_TRUSTED_PROXY_HEADER keys the bucket on the
-// caller's own address behind a proxy, and the daemon renews its credential halfway through its
-// life, which carries it through brief contention for that bucket, not through a caller that keeps
-// it drained until the credential expires.
+// So a flood from one address cannot keep the broker verifying tokens or writing machine logins,
+// a flood naming one operator on the broker's own address cannot bury that operator's pending
+// machine logins, and one account cannot log in faster than its bucket allows. At the edge a
+// person's bucket is keyed per caller address (server.loginKeyByAddress), so a caller with N
+// addresses can open up to N times PerLogin's burst of logins naming one outside person, capped
+// for every caller together by the edge's shared device bucket (DefaultEdgeDeviceLimit); the
+// approval still needs the user code each login shows its own machine. A token login whose token
+// verified and that the broker then could not complete (5xx, such as one the database was away
+// for) spends neither bucket: the Legion daemon retries such a login every few seconds through a
+// database outage, and the broker decided nothing about its request, so there is nothing to slow,
+// while a refused credential (any 4xx) still spends every bucket it reached, since the limit
+// exists to slow guessing, and a token that does not verify always keeps its address's request,
+// since that bucket guards the verifier's fetches of the issuer's keys. A daemon behind an address
+// others share is held to that address's bucket too: BROKER_TRUSTED_PROXY_HEADER keys the bucket
+// on the caller's own address behind a proxy, and the daemon renews its credential halfway through
+// its life, which carries it through brief contention for that bucket, not through a caller that
+// keeps it drained until the credential expires.
 //
 // The per-login bucket, keyed on the request object's own claims rather than the caller's
 // address, is unaffected by trustedProxyHeader and remains a smaller, accepted risk on the

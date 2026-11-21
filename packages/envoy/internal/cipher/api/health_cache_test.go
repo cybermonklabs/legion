@@ -11,9 +11,7 @@ import (
 
 // TestTheEdgesHealthPingsPostgresAtMostOnceASecond: the edge's GET /healthz answers from one
 // Postgres ping for healthCacheFor, so a hundred checks within that second cost one ping and all
-// read its result, a failure included, and a check after it pings again. A check whose own request
-// ended before the ping answered reads that ping's error, which is not kept: the next check pings
-// again rather than read a failure the database never had.
+// read its result, a failure included, and a check after it pings again.
 //
 // The named revert: ping on every result (no cache), and the hundred checks cost a hundred pings.
 func TestTheEdgesHealthPingsPostgresAtMostOnceASecond(t *testing.T) {
@@ -45,22 +43,6 @@ func TestTheEdgesHealthPingsPostgresAtMostOnceASecond(t *testing.T) {
 	}
 	if pings != 2 {
 		t.Fatalf("a check after %s and 49 more within it pinged %d times in all, want 2", healthCacheFor, pings)
-	}
-
-	answer = nil
-	now = now.Add(healthCacheFor)
-	ended, cancel := context.WithCancel(context.Background())
-	cancel()
-	c.ping = func(ctx context.Context) error { pings++; return ctx.Err() }
-	if err := c.result(ended); !errors.Is(err, context.Canceled) {
-		t.Fatalf("a check whose request had ended = %v, want its own context's error", err)
-	}
-	c.ping = func(ctx context.Context) error { pings++; return answer }
-	if err := c.result(context.Background()); err != nil {
-		t.Fatalf("the check after one whose request ended = %v, want a new ping's nil", err)
-	}
-	if pings != 4 {
-		t.Fatalf("pings = %d, want 4: the ended check's error must not be kept", pings)
 	}
 }
 
@@ -102,6 +84,80 @@ func TestTheEdgesHealthWaitersLeaveWhenTheirRequestEnds(t *testing.T) {
 	}
 	if err := c.result(context.Background()); err != nil || pings != 1 {
 		t.Fatalf("a check after the ping ended = %v with %d pings in all, want nil from the one ping", err, pings)
+	}
+}
+
+// TestTheEdgesHealthPingOutlivesACallerWhoLeaves: a check whose request ends while its ping runs
+// does not cancel the ping, which runs on a context of its own (context.WithoutCancel, its own
+// timeout): in pgx a cancelled query closes the pool's connection. The ping's result is kept, so
+// the next check reads it and costs no ping of its own.
+//
+// The named revert: ping on the caller's context and keep the result only while that context has
+// not ended, as before, and the ping sees the cancel, and the next check pings again.
+func TestTheEdgesHealthPingOutlivesACallerWhoLeaves(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan context.Context, 1)
+	var pings int
+	c := &cachedPing{
+		ping: func(ctx context.Context) error {
+			pings++
+			started <- ctx
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return ctx.Err()
+		},
+		now: time.Now,
+	}
+	leaving, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() { first <- c.result(leaving) }()
+	pingCtx := <-started
+	cancel()
+	if err := pingCtx.Err(); err != nil {
+		close(release)
+		t.Fatalf("the ping's context once its caller's request ended = %v, want it running still", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("the check whose request ended = %v, want its ping's nil", err)
+	}
+	if err := c.result(context.Background()); err != nil || pings != 1 {
+		t.Fatalf("the check after one whose caller left = %v with %d pings in all, want nil from the one ping", err, pings)
+	}
+}
+
+// TestTheEdgesHealthPingsAgainAfterAPingThatPanicked: a ping that panics leaves the cache ready
+// for the next check, which pings again, rather than every later check waiting on a ping that
+// will never end: run clears the running ping in a defer.
+//
+// The named revert: clear the running ping after the ping returns, not in a defer, and the next
+// check waits until its own deadline.
+func TestTheEdgesHealthPingsAgainAfterAPingThatPanicked(t *testing.T) {
+	var pings int
+	c := &cachedPing{
+		ping: func(context.Context) error {
+			pings++
+			if pings == 1 {
+				panic("the driver panicked")
+			}
+			return nil
+		},
+		now: time.Now,
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the first ping's panic did not reach its caller")
+			}
+		}()
+		c.result(context.Background())
+	}()
+	next, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.result(next); err != nil || pings != 2 {
+		t.Fatalf("the check after a ping that panicked = %v with %d pings in all, want nil from a ping of its own", err, pings)
 	}
 }
 
